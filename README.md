@@ -3,7 +3,7 @@
 Minimal browser terminal to vibe code on your laptop via your phone on the go.
 
 1. Install [Tailscale](https://tailscale.com/download) on your laptop and phone.
-2. Sign into the same Tailnet on both.
+2. Sign into the same account on both.
 3. Run this on the laptop:
 
 ```bash
