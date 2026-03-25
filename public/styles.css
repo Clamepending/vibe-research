@@ -382,6 +382,13 @@ select {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.toolbar-actions::-webkit-scrollbar {
+  display: none;
 }
 
 .toolbar-actions > .icon-button,
@@ -389,11 +396,13 @@ select {
   min-height: 40px;
   min-width: 40px;
   padding: 0 12px;
+  flex: 0 0 auto;
 }
 
 .toolbar-control {
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.9rem;
+  letter-spacing: 0.02em;
 }
 
 .terminal-stack {
@@ -548,14 +557,14 @@ select:disabled {
   }
 
   .toolbar-actions {
-    gap: 6px;
+    gap: 5px;
   }
 
   .toolbar-actions > .icon-button,
   .toolbar-actions > .ghost-button {
-    min-height: 38px;
-    min-width: 38px;
-    padding: 0 10px;
+    min-height: 36px;
+    min-width: 36px;
+    padding: 0 9px;
   }
 }
 
@@ -618,8 +627,8 @@ select:disabled {
 
   .toolbar-actions > .icon-button,
   .toolbar-actions > .ghost-button {
-    min-height: 36px;
-    min-width: 36px;
-    padding: 0 9px;
+    min-height: 34px;
+    min-width: 34px;
+    padding: 0 8px;
   }
 }

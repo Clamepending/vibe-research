@@ -254,6 +254,14 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
+function sendTerminalInput(data) {
+  if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  state.websocket.send(JSON.stringify({ type: "input", data }));
+}
+
 function renderSessionCards() {
   if (!state.sessions.length) {
     return `<div class="blank-state">no sessions</div>`;
@@ -360,8 +368,11 @@ function renderShell() {
           </div>
           <div class="toolbar-actions">
             <button class="icon-button" type="button" id="refresh-sessions" aria-label="Refresh sessions">↻</button>
-            <button class="ghost-button toolbar-control" type="button" id="shift-tab-button" aria-label="Send Shift Tab" ${activeSession ? "" : "disabled"}>⇧⇥</button>
-            <button class="ghost-button toolbar-control" type="button" id="ctrl-c-button" aria-label="Send Control C" ${activeSession ? "" : "disabled"}>^C</button>
+            <button class="ghost-button toolbar-control" type="button" id="tab-button" data-terminal-control aria-label="Send Tab" ${activeSession ? "" : "disabled"}>tab</button>
+            <button class="ghost-button toolbar-control" type="button" id="shift-tab-button" data-terminal-control aria-label="Send Shift Tab" ${activeSession ? "" : "disabled"}>⇧⇥</button>
+            <button class="ghost-button toolbar-control" type="button" id="ctrl-p-button" data-terminal-control aria-label="Send Control P" ${activeSession ? "" : "disabled"}>^P</button>
+            <button class="ghost-button toolbar-control" type="button" id="ctrl-t-button" data-terminal-control aria-label="Send Control T" ${activeSession ? "" : "disabled"}>^T</button>
+            <button class="ghost-button toolbar-control" type="button" id="ctrl-c-button" data-terminal-control aria-label="Send Control C" ${activeSession ? "" : "disabled"}>^C</button>
           </div>
         </div>
 
@@ -452,8 +463,6 @@ function refreshToolbarUi() {
   const title = document.querySelector("#toolbar-title");
   const meta = document.querySelector("#toolbar-meta");
   const emptyState = document.querySelector("#empty-state");
-  const shiftTabButton = document.querySelector("#shift-tab-button");
-  const ctrlCButton = document.querySelector("#ctrl-c-button");
   const canSend = Boolean(activeSession && activeSession.status !== "exited");
 
   if (title) {
@@ -470,13 +479,9 @@ function refreshToolbarUi() {
     emptyState.classList.toggle("hidden", Boolean(activeSession));
   }
 
-  if (shiftTabButton) {
-    shiftTabButton.disabled = !canSend;
-  }
-
-  if (ctrlCButton) {
-    ctrlCButton.disabled = !canSend;
-  }
+  document.querySelectorAll("[data-terminal-control]").forEach((button) => {
+    button.disabled = !canSend;
+  });
 }
 
 function refreshShellUi({ sessions = true, ports = true } = {}) {
@@ -529,21 +534,11 @@ function bindShellEvents() {
 
   bindSessionEvents();
 
-  document.querySelector("#shift-tab-button")?.addEventListener("click", () => {
-    if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-
-    state.websocket.send(JSON.stringify({ type: "input", data: "\u001b[Z" }));
-  });
-
-  document.querySelector("#ctrl-c-button")?.addEventListener("click", () => {
-    if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-
-    state.websocket.send(JSON.stringify({ type: "input", data: "\u0003" }));
-  });
+  document.querySelector("#tab-button")?.addEventListener("click", () => sendTerminalInput("\t"));
+  document.querySelector("#shift-tab-button")?.addEventListener("click", () => sendTerminalInput("\u001b[Z"));
+  document.querySelector("#ctrl-p-button")?.addEventListener("click", () => sendTerminalInput("\u0010"));
+  document.querySelector("#ctrl-t-button")?.addEventListener("click", () => sendTerminalInput("\u0014"));
+  document.querySelector("#ctrl-c-button")?.addEventListener("click", () => sendTerminalInput("\u0003"));
 
   document.querySelector("#refresh-sessions")?.addEventListener("click", () => loadSessions());
   document.querySelector("#refresh-ports")?.addEventListener("click", () => loadPorts());
