@@ -6,6 +6,7 @@ import pty from "node-pty";
 
 const MAX_BUFFER_LENGTH = 200_000;
 const STARTUP_DELAY_MS = 180;
+const SESSION_META_THROTTLE_MS = 180;
 
 function getShellArgs(shellPath) {
   const shellName = path.basename(shellPath);
@@ -100,6 +101,7 @@ export class SessionManager {
       pty: null,
       buffer: "",
       clients: new Set(),
+      metaBroadcastTimer: null,
     };
 
     const ptyProcess = pty.spawn(shell, getShellArgs(shell), {
@@ -130,7 +132,7 @@ export class SessionManager {
       session.updatedAt = new Date().toISOString();
       session.lastOutputAt = session.updatedAt;
       this.pushOutput(session, chunk);
-      this.broadcastSessionMeta(session);
+      this.scheduleSessionMetaBroadcast(session);
     });
 
     ptyProcess.onExit(({ exitCode, signal }) => {
@@ -143,7 +145,7 @@ export class SessionManager {
         session,
         `\r\n\u001b[1;31m[remote-vibes]\u001b[0m session exited (code ${exitCode}${signal ? `, signal ${signal}` : ""})\r\n`,
       );
-      this.broadcastSessionMeta(session);
+      this.scheduleSessionMetaBroadcast(session, { immediate: true });
     });
 
     if (provider.launchCommand) {
@@ -169,6 +171,7 @@ export class SessionManager {
       client.close();
     }
 
+    this.clearPendingMetaBroadcast(session);
     session.clients.clear();
 
     if (session.status !== "exited") {
@@ -252,6 +255,32 @@ export class SessionManager {
         client.send(JSON.stringify({ type: "output", data: chunk }));
       }
     }
+  }
+
+  clearPendingMetaBroadcast(session) {
+    if (!session.metaBroadcastTimer) {
+      return;
+    }
+
+    clearTimeout(session.metaBroadcastTimer);
+    session.metaBroadcastTimer = null;
+  }
+
+  scheduleSessionMetaBroadcast(session, { immediate = false } = {}) {
+    if (immediate) {
+      this.clearPendingMetaBroadcast(session);
+      this.broadcastSessionMeta(session);
+      return;
+    }
+
+    if (session.metaBroadcastTimer) {
+      return;
+    }
+
+    session.metaBroadcastTimer = setTimeout(() => {
+      session.metaBroadcastTimer = null;
+      this.broadcastSessionMeta(session);
+    }, SESSION_META_THROTTLE_MS);
   }
 
   broadcastSessionMeta(session) {

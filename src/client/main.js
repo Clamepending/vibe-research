@@ -18,6 +18,9 @@ const state = {
   resizeBound: false,
   sidebarOpen: false,
   terminalResizeObserver: null,
+  pendingTerminalOutput: "",
+  terminalOutputFrame: null,
+  sessionRefreshTimer: null,
 };
 
 function escapeHtml(value) {
@@ -99,6 +102,44 @@ function fitTerminalSoon() {
       state.fitAddon.fit();
       sendResize();
     });
+  });
+}
+
+function clearPendingTerminalOutput() {
+  if (state.terminalOutputFrame) {
+    window.cancelAnimationFrame(state.terminalOutputFrame);
+    state.terminalOutputFrame = null;
+  }
+
+  state.pendingTerminalOutput = "";
+}
+
+function flushPendingTerminalOutput() {
+  state.terminalOutputFrame = null;
+
+  if (!state.terminal || !state.pendingTerminalOutput) {
+    state.pendingTerminalOutput = "";
+    return;
+  }
+
+  const nextOutput = state.pendingTerminalOutput;
+  state.pendingTerminalOutput = "";
+  state.terminal.write(nextOutput);
+}
+
+function queueTerminalOutput(chunk) {
+  if (!chunk) {
+    return;
+  }
+
+  state.pendingTerminalOutput += chunk;
+
+  if (state.terminalOutputFrame) {
+    return;
+  }
+
+  state.terminalOutputFrame = window.requestAnimationFrame(() => {
+    flushPendingTerminalOutput();
   });
 }
 
@@ -290,6 +331,75 @@ function bindSessionEvents() {
   });
 }
 
+function refreshSessionsList() {
+  const sessionsList = document.querySelector("#sessions-list");
+  if (!sessionsList) {
+    return;
+  }
+
+  sessionsList.innerHTML = renderSessionCards();
+  bindSessionEvents();
+}
+
+function refreshPortsList() {
+  const portsList = document.querySelector("#ports-list");
+  if (!portsList) {
+    return;
+  }
+
+  portsList.innerHTML = renderPortCards();
+}
+
+function refreshToolbarUi() {
+  const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) || null;
+  const title = document.querySelector("#toolbar-title");
+  const meta = document.querySelector("#toolbar-meta");
+  const emptyState = document.querySelector("#empty-state");
+  const ctrlCButton = document.querySelector("#ctrl-c-button");
+  const canSend = Boolean(activeSession && activeSession.status !== "exited");
+
+  if (title) {
+    title.textContent = activeSession ? activeSession.name : "new session";
+  }
+
+  if (meta) {
+    meta.textContent = activeSession
+      ? `${activeSession.providerLabel} · ${activeSession.cwd}`
+      : state.defaultCwd;
+  }
+
+  if (emptyState) {
+    emptyState.classList.toggle("hidden", Boolean(activeSession));
+  }
+
+  if (ctrlCButton) {
+    ctrlCButton.disabled = !canSend;
+  }
+}
+
+function refreshShellUi({ sessions = true, ports = true } = {}) {
+  if (sessions) {
+    refreshSessionsList();
+  }
+
+  if (ports) {
+    refreshPortsList();
+  }
+
+  refreshToolbarUi();
+}
+
+function scheduleSessionsRefresh() {
+  if (state.sessionRefreshTimer) {
+    return;
+  }
+
+  state.sessionRefreshTimer = window.setTimeout(() => {
+    state.sessionRefreshTimer = null;
+    refreshShellUi({ sessions: true, ports: false });
+  }, 180);
+}
+
 function bindShellEvents() {
   document.querySelector("#session-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -333,6 +443,8 @@ function bindShellEvents() {
 }
 
 function closeWebsocket() {
+  clearPendingTerminalOutput();
+
   if (state.websocket) {
     state.websocket.close();
     state.websocket = null;
@@ -466,30 +578,40 @@ function connectToSession(sessionId) {
   }
 
   closeWebsocket();
+  clearPendingTerminalOutput();
   state.terminal.reset();
   state.connectedSessionId = sessionId;
 
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  state.websocket = new WebSocket(
+  const socket = new WebSocket(
     `${protocol}://${window.location.host}/ws?sessionId=${encodeURIComponent(sessionId)}`,
   );
+  state.websocket = socket;
 
-  state.websocket.addEventListener("open", () => {
+  socket.addEventListener("open", () => {
+    if (state.websocket !== socket) {
+      return;
+    }
+
     fitTerminalSoon();
     state.terminal.focus();
   });
 
-  state.websocket.addEventListener("message", (event) => {
+  socket.addEventListener("message", (event) => {
+    if (state.websocket !== socket) {
+      return;
+    }
+
     const payload = JSON.parse(event.data);
 
     if (payload.type === "snapshot") {
-      state.terminal.write(payload.data || "");
+      queueTerminalOutput(payload.data || "");
       updateSession(payload.session);
       return;
     }
 
     if (payload.type === "output") {
-      state.terminal.write(payload.data || "");
+      queueTerminalOutput(payload.data || "");
       return;
     }
 
@@ -524,45 +646,8 @@ function updateSession(session) {
     state.sessions[index] = session;
   }
 
-  refreshShellUi();
-}
-
-function refreshShellUi() {
-  const sessionsList = document.querySelector("#sessions-list");
-  const portsList = document.querySelector("#ports-list");
-  if (sessionsList) {
-    sessionsList.innerHTML = renderSessionCards();
-    bindSessionEvents();
-  }
-
-  if (portsList) {
-    portsList.innerHTML = renderPortCards();
-  }
-
-  const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) || null;
-  const title = document.querySelector("#toolbar-title");
-  const meta = document.querySelector("#toolbar-meta");
-  const emptyState = document.querySelector("#empty-state");
-  const ctrlCButton = document.querySelector("#ctrl-c-button");
-  const canSend = Boolean(activeSession && activeSession.status !== "exited");
-
-  if (title) {
-    title.textContent = activeSession ? activeSession.name : "new session";
-  }
-
-  if (meta) {
-    meta.textContent = activeSession
-      ? `${activeSession.providerLabel} · ${activeSession.cwd}`
-      : state.defaultCwd;
-  }
-
-  if (emptyState) {
-    emptyState.classList.toggle("hidden", Boolean(activeSession));
-  }
-
-  if (ctrlCButton) {
-    ctrlCButton.disabled = !canSend;
-  }
+  refreshToolbarUi();
+  scheduleSessionsRefresh();
 }
 
 async function loadSessions() {
@@ -595,7 +680,7 @@ async function loadSessions() {
       return;
     }
 
-    refreshShellUi();
+    refreshShellUi({ sessions: true, ports: false });
     if (state.activeSessionId && !state.connectedSessionId) {
       connectToSession(state.activeSessionId);
     }
@@ -608,7 +693,7 @@ async function loadPorts() {
   try {
     const payload = await fetchJson("/api/ports");
     state.ports = payload.ports;
-    refreshShellUi();
+    refreshShellUi({ sessions: false, ports: true });
   } catch (error) {
     console.error(error);
   }
