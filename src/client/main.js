@@ -71,9 +71,29 @@ function getSessionLabel(session) {
 function setSidebarOpen(nextValue) {
   state.sidebarOpen = nextValue;
   const sidebar = document.querySelector("[data-sidebar]");
+  const scrim = document.querySelector("[data-sidebar-scrim]");
   if (sidebar) {
     sidebar.classList.toggle("is-open", nextValue);
   }
+
+  if (scrim) {
+    scrim.classList.toggle("is-open", nextValue);
+  }
+
+  fitTerminalSoon();
+}
+
+function fitTerminalSoon() {
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      if (!state.fitAddon || !state.terminal) {
+        return;
+      }
+
+      state.fitAddon.fit();
+      sendResize();
+    });
+  });
 }
 
 async function fetchJson(url, options = {}) {
@@ -155,35 +175,38 @@ function renderShell() {
 
   app.innerHTML = `
     <main class="screen app-shell">
+      <button class="sidebar-scrim ${state.sidebarOpen ? "is-open" : ""}" type="button" aria-label="Close menu" data-sidebar-scrim></button>
       <aside class="sidebar ${state.sidebarOpen ? "is-open" : ""}" data-sidebar>
         <div class="sidebar-header">
           <div class="brand">rv</div>
           <button class="icon-button hidden-desktop" type="button" id="close-sidebar">×</button>
         </div>
 
-        <form class="session-form" id="session-form">
-          <select name="providerId">${providerOptions}</select>
-          <input type="text" name="cwd" value="${escapeHtml(state.defaultCwd || "")}" placeholder="cwd" />
-          <div class="inline-form">
-            <input type="text" name="name" placeholder="name" />
-            <button class="primary-button" type="submit">+</button>
-          </div>
-        </form>
+        <div class="sidebar-body">
+          <form class="session-form" id="session-form">
+            <select name="providerId">${providerOptions}</select>
+            <input type="text" name="cwd" value="${escapeHtml(state.defaultCwd || "")}" placeholder="cwd" />
+            <div class="inline-form">
+              <input type="text" name="name" placeholder="name" />
+              <button class="primary-button" type="submit">+</button>
+            </div>
+          </form>
 
-        <section class="sidebar-section">
-          <div class="section-head">
-            <span>sessions</span>
-          </div>
-          <div class="list-shell" id="sessions-list">${renderSessionCards()}</div>
-        </section>
+          <section class="sidebar-section">
+            <div class="section-head">
+              <span>sessions</span>
+            </div>
+            <div class="list-shell" id="sessions-list">${renderSessionCards()}</div>
+          </section>
 
-        <section class="sidebar-section">
-          <div class="section-head">
-            <span>ports</span>
-            <button class="icon-button" type="button" id="refresh-ports">↻</button>
-          </div>
-          <div class="list-shell" id="ports-list">${renderPortCards()}</div>
-        </section>
+          <section class="sidebar-section">
+            <div class="section-head">
+              <span>ports</span>
+              <button class="icon-button" type="button" id="refresh-ports">↻</button>
+            </div>
+            <div class="list-shell" id="ports-list">${renderPortCards()}</div>
+          </section>
+        </div>
       </aside>
 
       <section class="terminal-panel">
@@ -319,6 +342,7 @@ function bindShellEvents() {
   document.querySelector("#refresh-ports")?.addEventListener("click", () => loadPorts());
   document.querySelector("#open-sidebar")?.addEventListener("click", () => setSidebarOpen(true));
   document.querySelector("#close-sidebar")?.addEventListener("click", () => setSidebarOpen(false));
+  document.querySelector("[data-sidebar-scrim]")?.addEventListener("click", () => setSidebarOpen(false));
 }
 
 function closeWebsocket() {
@@ -373,7 +397,7 @@ function mountTerminal() {
   state.fitAddon = new FitAddon();
   state.terminal.loadAddon(state.fitAddon);
   state.terminal.open(mount);
-  state.fitAddon.fit();
+  fitTerminalSoon();
 
   state.terminal.onData((data) => {
     if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) {
@@ -384,14 +408,10 @@ function mountTerminal() {
   });
 
   if (!state.resizeBound) {
-    window.addEventListener("resize", () => {
-      if (!state.fitAddon) {
-        return;
-      }
-
-      state.fitAddon.fit();
-      sendResize();
-    });
+    const handleResize = () => fitTerminalSoon();
+    window.addEventListener("resize", handleResize);
+    window.addEventListener("orientationchange", handleResize);
+    window.visualViewport?.addEventListener("resize", handleResize);
     state.resizeBound = true;
   }
 
@@ -437,10 +457,7 @@ function connectToSession(sessionId) {
   );
 
   state.websocket.addEventListener("open", () => {
-    if (state.fitAddon) {
-      state.fitAddon.fit();
-    }
-    sendResize();
+    fitTerminalSoon();
     state.terminal.focus();
   });
 

@@ -11,6 +11,10 @@
   --danger: #ff7f79;
   --terminal: #090b0d;
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.24);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
 }
 
 * {
@@ -29,13 +33,22 @@ body {
 }
 
 body {
-  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  font-size: 16px;
+}
+
+#app {
+  height: 100dvh;
 }
 
 button,
 input,
 select {
   font: inherit;
+  font-size: 16px;
 }
 
 button,
@@ -51,8 +64,8 @@ button {
 input,
 select {
   width: 100%;
-  min-height: 44px;
-  padding: 0 14px;
+  min-height: 48px;
+  padding: 0 16px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.04);
@@ -60,28 +73,30 @@ select {
 }
 
 .screen {
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .app-shell {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .sidebar {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 14px;
   padding: 16px;
   background: linear-gradient(180deg, rgba(16, 19, 22, 0.96), rgba(12, 15, 17, 0.88));
   border-right: 1px solid var(--line);
   backdrop-filter: blur(18px);
+  min-height: 0;
+  overflow: hidden;
 }
 
 .sidebar-header,
 .section-head,
-.terminal-toolbar,
 .inline-form,
 .session-side {
   display: flex;
@@ -90,9 +105,16 @@ select {
 }
 
 .sidebar-header,
-.section-head,
-.terminal-toolbar {
+.section-head {
   justify-content: space-between;
+}
+
+.sidebar-body {
+  display: grid;
+  gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .brand {
@@ -114,8 +136,11 @@ select {
 .primary-button,
 .ghost-button,
 .danger-button {
-  min-height: 44px;
-  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 16px;
   border-radius: 14px;
   transition: transform 120ms ease, background 120ms ease, opacity 120ms ease;
 }
@@ -140,7 +165,7 @@ select {
 }
 
 .danger-button {
-  min-height: 30px;
+  min-height: 32px;
   padding: 0 10px;
   background: rgba(255, 127, 121, 0.14);
   color: #ffd3cf;
@@ -165,7 +190,7 @@ select {
 
 .inline-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 56px;
 }
 
 .section-head {
@@ -180,6 +205,7 @@ select {
   display: grid;
   gap: 8px;
   align-content: start;
+  min-height: 0;
 }
 
 .blank-state {
@@ -284,10 +310,30 @@ select {
   min-width: 0;
   gap: 12px;
   padding: 16px;
+  padding-top: max(16px, calc(var(--safe-top) + 10px));
+  padding-right: max(16px, calc(var(--safe-right) + 12px));
+  padding-bottom: max(16px, calc(var(--safe-bottom) + 10px));
+  padding-left: max(16px, calc(var(--safe-left) + 12px));
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.terminal-toolbar {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(24, 29, 33, 0.9);
+  backdrop-filter: blur(18px);
+  min-height: 72px;
 }
 
 .terminal-copy {
   min-width: 0;
+  text-align: center;
 }
 
 .terminal-copy strong,
@@ -331,12 +377,31 @@ select {
 
 .composer-bar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) 58px 58px;
   gap: 10px;
+  align-items: stretch;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(24, 29, 33, 0.9);
+  backdrop-filter: blur(18px);
 }
 
 .hidden-desktop {
   display: none;
+}
+
+.sidebar-scrim {
+  display: none;
+}
+
+.icon-button:disabled,
+.primary-button:disabled,
+.ghost-button:disabled,
+.danger-button:disabled,
+input:disabled,
+select:disabled {
+  opacity: 0.48;
 }
 
 @media (max-width: 920px) {
@@ -344,13 +409,36 @@ select {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .sidebar-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 4;
+    display: block;
+    background: rgba(6, 8, 10, 0.48);
+    backdrop-filter: blur(8px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 160ms ease;
+  }
+
+  .sidebar-scrim.is-open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
   .sidebar {
     position: fixed;
-    inset: 0 auto 0 0;
+    inset:
+      max(10px, calc(var(--safe-top) + 8px))
+      auto
+      max(10px, calc(var(--safe-bottom) + 8px))
+      max(10px, calc(var(--safe-left) + 8px));
     z-index: 5;
-    width: min(86vw, 320px);
-    transform: translateX(-100%);
-    transition: transform 160ms ease;
+    width: min(86vw, 360px);
+    border: 1px solid var(--line);
+    border-radius: 24px;
+    transform: translateX(calc(-100% - 18px));
+    transition: transform 180ms ease;
     box-shadow: var(--shadow);
   }
 
@@ -363,16 +451,58 @@ select {
   }
 
   .terminal-panel {
-    padding: 12px;
+    padding-top: max(10px, calc(var(--safe-top) + 8px));
+    padding-right: max(10px, calc(var(--safe-right) + 10px));
+    padding-bottom: max(10px, calc(var(--safe-bottom) + 8px));
+    padding-left: max(10px, calc(var(--safe-left) + 10px));
+    gap: 10px;
   }
 
+  .terminal-toolbar,
   .composer-bar {
-    grid-template-columns: 1fr auto auto;
+    border-radius: 20px;
+  }
+
+  .terminal-stack {
+    border-radius: 20px;
   }
 }
 
 @media (max-width: 560px) {
-  .composer-bar {
+  .sidebar {
+    inset:
+      max(8px, calc(var(--safe-top) + 6px))
+      max(8px, calc(var(--safe-right) + 8px))
+      max(8px, calc(var(--safe-bottom) + 6px))
+      max(8px, calc(var(--safe-left) + 8px));
+    width: auto;
+  }
+
+  .session-card {
     grid-template-columns: 1fr;
+  }
+
+  .session-side {
+    justify-content: space-between;
+  }
+
+  .session-time {
+    grid-column: auto;
+  }
+
+  .composer-bar {
+    grid-template-columns: minmax(0, 1fr) 54px 54px;
+  }
+
+  .terminal-toolbar {
+    grid-template-columns: 46px minmax(0, 1fr) 46px;
+    min-height: 68px;
+  }
+
+  .icon-button,
+  .primary-button,
+  .ghost-button {
+    min-height: 46px;
+    padding: 0 14px;
   }
 }
