@@ -19,6 +19,26 @@ function normalizePort(value) {
   return Number.isInteger(port) && port > 0 && port < 65_536 ? port : null;
 }
 
+function getPortFromProxyPath(pathname) {
+  const match = pathname.match(/^\/proxy\/(\d+)(?:\/|$)/);
+  return normalizePort(match?.[1]);
+}
+
+function getPortFromReferrer(request) {
+  const referrer = request.headers.referer;
+
+  if (!referrer) {
+    return null;
+  }
+
+  try {
+    const url = new URL(referrer);
+    return getPortFromProxyPath(url.pathname);
+  } catch {
+    return null;
+  }
+}
+
 function rewriteProxyPath(originalUrl, port) {
   const prefix = `/proxy/${port}`;
   const nextPath = originalUrl.startsWith(prefix) ? originalUrl.slice(prefix.length) : originalUrl;
@@ -32,6 +52,38 @@ function sendProxyError(response, proxyPort) {
   }
 
   response.status(502).json({ error: `Port ${proxyPort} is unavailable.` });
+}
+
+function proxyHttpRequest(request, response, proxyServer, proxyPort, stripPrefix = false) {
+  if (stripPrefix) {
+    request.url = rewriteProxyPath(request.originalUrl, proxyPort);
+  }
+
+  proxyServer.web(
+    request,
+    response,
+    {
+      target: `http://127.0.0.1:${proxyPort}`,
+    },
+    () => sendProxyError(response, proxyPort),
+  );
+}
+
+function proxyWebsocketRequest(request, socket, head, proxyServer, proxyPort, stripPrefix = false) {
+  if (stripPrefix) {
+    const url = new URL(request.url || "/", `http://${request.headers.host}`);
+    request.url = `${rewriteProxyPath(url.pathname, proxyPort)}${url.search}`;
+  }
+
+  proxyServer.ws(
+    request,
+    socket,
+    head,
+    {
+      target: `http://127.0.0.1:${proxyPort}`,
+    },
+    () => socket.destroy(),
+  );
 }
 
 async function getAccessUrls(host, port) {
@@ -102,6 +154,17 @@ export async function createRemoteVibesApp({
 
   app.use(express.json());
 
+  app.use((request, response, next) => {
+    const proxiedPort = getPortFromReferrer(request);
+
+    if (!proxiedPort || getPortFromProxyPath(request.path)) {
+      next();
+      return;
+    }
+
+    proxyHttpRequest(request, response, proxyServer, proxiedPort, false);
+  });
+
   app.get("/api/state", async (_request, response) => {
     response.json({
       appName: "Remote Vibes",
@@ -156,15 +219,7 @@ export async function createRemoteVibesApp({
       return;
     }
 
-    request.url = rewriteProxyPath(request.originalUrl, proxyPort);
-    proxyServer.web(
-      request,
-      response,
-      {
-        target: `http://127.0.0.1:${proxyPort}`,
-      },
-      () => sendProxyError(response, proxyPort),
-    );
+    proxyHttpRequest(request, response, proxyServer, proxyPort, true);
   });
 
   app.use(express.static(publicDir));
@@ -185,7 +240,7 @@ export async function createRemoteVibesApp({
     const url = new URL(request.url || "/", `http://${request.headers.host}`);
 
     if (url.pathname.startsWith("/proxy/")) {
-      const proxyPort = normalizePort(url.pathname.split("/")[2]);
+      const proxyPort = getPortFromProxyPath(url.pathname);
 
       if (!proxyPort) {
         socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
@@ -193,16 +248,13 @@ export async function createRemoteVibesApp({
         return;
       }
 
-      request.url = `${rewriteProxyPath(url.pathname, proxyPort)}${url.search}`;
-      proxyServer.ws(
-        request,
-        socket,
-        head,
-        {
-          target: `http://127.0.0.1:${proxyPort}`,
-        },
-        () => socket.destroy(),
-      );
+      proxyWebsocketRequest(request, socket, head, proxyServer, proxyPort, true);
+      return;
+    }
+
+    const proxiedPort = getPortFromReferrer(request);
+    if (proxiedPort) {
+      proxyWebsocketRequest(request, socket, head, proxyServer, proxiedPort, false);
       return;
     }
 

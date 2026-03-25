@@ -144,6 +144,18 @@ test("shell session streams websocket output and honors custom cwd", async () =>
 
 test("ports are discoverable and proxy through localhost", async () => {
   const previewServer = http.createServer((request, response) => {
+    if (request.url === "/") {
+      response.writeHead(200, { "Content-Type": "text/html" });
+      response.end('<!doctype html><html><head><link rel="stylesheet" href="/style.css"></head><body>preview</body></html>');
+      return;
+    }
+
+    if (request.url === "/style.css") {
+      response.writeHead(200, { "Content-Type": "text/css" });
+      response.end("body{background:rgb(1,2,3)}");
+      return;
+    }
+
     response.writeHead(200, { "Content-Type": "text/plain" });
     response.end(`preview:${request.url}`);
   });
@@ -156,6 +168,18 @@ test("ports are discoverable and proxy through localhost", async () => {
   try {
     const ports = await waitForPort(baseUrl, previewPort);
     assert.ok(ports.some((entry) => entry.port === previewPort));
+
+    const rootResponse = await fetch(`${baseUrl}/proxy/${previewPort}/`);
+    assert.equal(rootResponse.status, 200);
+    assert.match(await rootResponse.text(), /href="\/style\.css"/);
+
+    const stylesheetResponse = await fetch(`${baseUrl}/style.css`, {
+      headers: {
+        Referer: `${baseUrl}/proxy/${previewPort}/`,
+      },
+    });
+    assert.equal(stylesheetResponse.status, 200);
+    assert.equal(await stylesheetResponse.text(), "body{background:rgb(1,2,3)}");
 
     const proxyResponse = await fetch(`${baseUrl}/proxy/${previewPort}/hello`);
     assert.equal(proxyResponse.status, 200);
