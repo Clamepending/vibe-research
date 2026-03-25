@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { once } from "node:events";
+import http from "node:http";
 
 const execFile = promisify(execFileCallback);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +33,14 @@ async function createSourceRepo() {
   await execFile("git", ["commit", "-m", "Initial"], { cwd: repoDir });
 
   return { tempRoot, repoDir };
+}
+
+async function getFreePort() {
+  const server = http.createServer(() => {});
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
 }
 
 test("install.sh clones and updates a checkout in one command", async () => {
@@ -69,6 +79,82 @@ test("install.sh clones and updates a checkout in one command", async () => {
     assert.equal(await readFile(path.join(installDir, "VERSION"), "utf8"), "v2\n");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
+test("install.sh can launch remote vibes in one command", async () => {
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-launch-"));
+  const installDir = path.join(installRoot, "remote-vibes");
+  const port = await getFreePort();
+  const repoUrl = new URL(`file://${rootDir}/`).toString();
+  let child;
+
+  try {
+    child = spawn("bash", [installScript], {
+      cwd: rootDir,
+      env: {
+        ...process.env,
+        REMOTE_VIBES_HOME: installDir,
+        REMOTE_VIBES_REPO_URL: repoUrl,
+        REMOTE_VIBES_PORT: String(port),
+      },
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let combinedOutput = "";
+    const capture = (chunk) => {
+      combinedOutput += String(chunk);
+    };
+
+    child.stdout.on("data", capture);
+    child.stderr.on("data", capture);
+
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`Timed out waiting for launcher output.\n${combinedOutput}`));
+      }, 20_000);
+
+      const handleOutput = () => {
+        if (!combinedOutput.includes("Remote Vibes is live.")) {
+          return;
+        }
+
+        clearTimeout(timeout);
+        child.stdout.off("data", handleOutput);
+        child.stderr.off("data", handleOutput);
+        resolve();
+      };
+
+      child.stdout.on("data", handleOutput);
+      child.stderr.on("data", handleOutput);
+      child.once("exit", (code) => {
+        clearTimeout(timeout);
+        reject(new Error(`Launcher exited early with code ${code}.\n${combinedOutput}`));
+      });
+    });
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/state`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.appName, "Remote Vibes");
+  } finally {
+    if (child && child.exitCode === null) {
+      try {
+        process.kill(-child.pid, "SIGINT");
+      } catch {
+        // Process group already exited.
+      }
+
+      await Promise.race([
+        once(child, "exit"),
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error("Timed out shutting down launcher.")), 10_000);
+        }),
+      ]);
+    }
+
     await rm(installRoot, { recursive: true, force: true });
   }
 });
