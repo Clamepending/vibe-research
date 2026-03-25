@@ -22,6 +22,18 @@ export const providerDefinitions = [
     pathHints: ["/Applications/Codex.app/Contents/Resources/codex"],
   },
   {
+    id: "opencode",
+    label: "OpenCode",
+    command: "opencode",
+    launchCommand: "opencode",
+    defaultName: "OpenCode",
+    pathHints: [
+      "/Applications/OpenCode.app/Contents/MacOS/opencode-cli",
+      "/opt/homebrew/bin/opencode",
+      "/usr/local/bin/opencode",
+    ],
+  },
+  {
     id: "gemini",
     label: "Gemini CLI",
     command: "gemini",

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
-import { detectProviders, resolveProviderCommand } from "../src/providers.js";
+import { detectProviders, providerDefinitions, resolveProviderCommand } from "../src/providers.js";
 
 test("resolveProviderCommand falls back to executable path hints", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-provider-"));
@@ -60,4 +60,17 @@ test("detectProviders promotes a hinted executable into the launch command", asy
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("providerDefinitions includes OpenCode with desktop and common CLI path hints", () => {
+  const provider = providerDefinitions.find((entry) => entry.id === "opencode");
+
+  assert.ok(provider);
+  assert.equal(provider.label, "OpenCode");
+  assert.equal(provider.command, "opencode");
+  assert.deepEqual(provider.pathHints, [
+    "/Applications/OpenCode.app/Contents/MacOS/opencode-cli",
+    "/opt/homebrew/bin/opencode",
+    "/usr/local/bin/opencode",
+  ]);
 });
