@@ -26,6 +26,15 @@ test("buildStartupOutput includes a terminal QR block for the preferred phone UR
   assert.match(output, /[█▄▀]/);
 });
 
+test("renderQrCode scales the terminal QR for easier scanning", () => {
+  const output = renderQrCode("http://100.106.229.117:4123");
+  const lines = output.split("\n");
+  const maxWidth = Math.max(...lines.map((line) => line.length));
+
+  assert.ok(lines.length >= 24);
+  assert.ok(maxWidth >= 48);
+});
+
 test("renderQrCode returns an empty string when no URL is available", () => {
   assert.equal(renderQrCode(""), "");
 });
