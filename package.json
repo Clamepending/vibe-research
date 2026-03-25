@@ -1,0 +1,26 @@
+{
+  "name": "remote-vibes",
+  "version": "0.1.0",
+  "description": "Minimal browser-based terminal sessions for local coding agents over Tailscale.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "postinstall": "node scripts/fix-node-pty.mjs",
+    "build": "node scripts/build-client.mjs",
+    "start": "npm run build && node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "cookie": "^1.0.2",
+    "esbuild": "^0.25.4",
+    "express": "^5.2.1",
+    "node-pty": "^1.1.0",
+    "ws": "^8.18.2",
+    "xterm": "^5.3.0"
+  }
+}
