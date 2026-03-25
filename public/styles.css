@@ -137,7 +137,12 @@ select {
 }
 
 .sidebar-footer {
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
   padding-top: 12px;
+  padding-bottom: 4px;
+  background: linear-gradient(180deg, rgba(12, 15, 17, 0), rgba(12, 15, 17, 0.96) 38%);
 }
 
 .icon-button,
@@ -487,11 +492,12 @@ select:disabled {
     inset:
       max(10px, calc(var(--safe-top) + 8px))
       auto
-      max(10px, calc(var(--safe-bottom) + 8px))
+      max(18px, calc(var(--safe-bottom) + 68px))
       max(10px, calc(var(--safe-left) + 8px));
     z-index: 5;
     width: min(68vw, 340px);
     padding-top: 60px;
+    padding-bottom: max(16px, calc(var(--safe-bottom) + 18px));
     border: 1px solid var(--line);
     border-radius: 24px;
     transform: translateX(calc(-100% - 18px));
@@ -550,7 +556,7 @@ select:disabled {
     inset:
       max(8px, calc(var(--safe-top) + 6px))
       auto
-      max(8px, calc(var(--safe-bottom) + 6px))
+      max(16px, calc(var(--safe-bottom) + 72px))
       max(8px, calc(var(--safe-left) + 8px));
     width: min(72vw, 300px);
   }
