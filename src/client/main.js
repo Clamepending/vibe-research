@@ -177,12 +177,11 @@ function renderShell() {
     <main class="screen app-shell">
       <button class="sidebar-scrim ${state.sidebarOpen ? "is-open" : ""}" type="button" aria-label="Close menu" data-sidebar-scrim></button>
       <aside class="sidebar ${state.sidebarOpen ? "is-open" : ""}" data-sidebar>
-        <div class="sidebar-header">
-          <div class="brand">rv</div>
-          <button class="icon-button hidden-desktop" type="button" id="close-sidebar">×</button>
-        </div>
-
         <div class="sidebar-body">
+          <div class="sidebar-mobile-actions">
+            <button class="icon-button hidden-desktop" type="button" id="close-sidebar">×</button>
+          </div>
+
           <form class="session-form" id="session-form">
             <select name="providerId">${providerOptions}</select>
             <input type="text" name="cwd" value="${escapeHtml(state.defaultCwd || "")}" placeholder="cwd" />
@@ -214,21 +213,18 @@ function renderShell() {
           <button class="icon-button hidden-desktop" type="button" id="open-sidebar">≡</button>
           <div class="terminal-copy">
             <strong id="toolbar-title">${escapeHtml(activeSession ? activeSession.name : "new session")}</strong>
-            <div class="terminal-meta" id="toolbar-meta">${escapeHtml(activeSession ? activeSession.cwd : state.defaultCwd)}</div>
+            <div class="terminal-meta" id="toolbar-meta">${escapeHtml(
+              activeSession ? `${activeSession.providerLabel} · ${activeSession.cwd}` : state.defaultCwd,
+            )}</div>
           </div>
           <button class="icon-button" type="button" id="refresh-sessions">↻</button>
         </div>
 
         <div class="terminal-stack">
+          <button class="ghost-button terminal-signal" type="button" id="ctrl-c-button" ${activeSession ? "" : "disabled"}>^C</button>
           <div class="terminal-mount" id="terminal-mount"></div>
           <div class="empty-state ${activeSession ? "hidden" : ""}" id="empty-state">new session</div>
         </div>
-
-        <form class="composer-bar" id="composer-form">
-          <input id="quick-command" type="text" autocomplete="off" placeholder="send line" ${activeSession ? "" : "disabled"} />
-          <button class="ghost-button" type="button" id="ctrl-c-button" ${activeSession ? "" : "disabled"}>^C</button>
-          <button class="primary-button" type="submit" id="send-button" ${activeSession ? "" : "disabled"}>↵</button>
-        </form>
       </section>
     </main>
   `;
@@ -313,23 +309,6 @@ function bindShellEvents() {
 
   bindSessionEvents();
 
-  document.querySelector("#composer-form")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-
-    if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-
-    const input = document.querySelector("#quick-command");
-    const value = input?.value ?? "";
-    if (!value.trim()) {
-      return;
-    }
-
-    state.websocket.send(JSON.stringify({ type: "input", data: `${value}\r` }));
-    input.value = "";
-  });
-
   document.querySelector("#ctrl-c-button")?.addEventListener("click", () => {
     if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) {
       return;
@@ -398,6 +377,9 @@ function mountTerminal() {
   state.terminal.loadAddon(state.fitAddon);
   state.terminal.open(mount);
   fitTerminalSoon();
+  mount.addEventListener("pointerdown", () => {
+    state.terminal?.focus();
+  });
 
   state.terminal.onData((data) => {
     if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) {
@@ -525,9 +507,7 @@ function refreshShellUi() {
   const title = document.querySelector("#toolbar-title");
   const meta = document.querySelector("#toolbar-meta");
   const emptyState = document.querySelector("#empty-state");
-  const quickCommand = document.querySelector("#quick-command");
   const ctrlCButton = document.querySelector("#ctrl-c-button");
-  const sendButton = document.querySelector("#send-button");
   const canSend = Boolean(activeSession && activeSession.status !== "exited");
 
   if (title) {
@@ -544,16 +524,8 @@ function refreshShellUi() {
     emptyState.classList.toggle("hidden", Boolean(activeSession));
   }
 
-  if (quickCommand) {
-    quickCommand.disabled = !canSend;
-  }
-
   if (ctrlCButton) {
     ctrlCButton.disabled = !canSend;
-  }
-
-  if (sendButton) {
-    sendButton.disabled = !canSend;
   }
 }
 
