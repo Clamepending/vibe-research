@@ -339,6 +339,10 @@ function renderShell() {
             <div class="list-shell" id="ports-list">${renderPortCards()}</div>
           </section>
         </div>
+
+        <div class="sidebar-footer">
+          <button class="danger-button terminate-button" type="button" id="terminate-app">terminate</button>
+        </div>
       </aside>
 
       <section class="terminal-panel">
@@ -540,6 +544,31 @@ function bindShellEvents() {
   document.querySelector("#open-sidebar")?.addEventListener("click", () => setSidebarOpen(true));
   document.querySelector("#close-sidebar")?.addEventListener("click", () => setSidebarOpen(false));
   document.querySelector("[data-sidebar-scrim]")?.addEventListener("click", () => setSidebarOpen(false));
+  document.querySelector("#terminate-app")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+
+    if (!window.confirm("Terminate Remote Vibes on this laptop?")) {
+      return;
+    }
+
+    button.disabled = true;
+    button.textContent = "stopping...";
+
+    try {
+      await fetchJson("/api/terminate", { method: "POST" });
+      closeWebsocket();
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 250);
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "terminate";
+      window.alert(error.message);
+    }
+  });
 }
 
 function closeWebsocket() {

@@ -7,11 +7,12 @@ import { once } from "node:events";
 import { WebSocket } from "ws";
 import { createRemoteVibesApp } from "../src/create-app.js";
 
-async function startApp() {
+async function startApp(options = {}) {
   const app = await createRemoteVibesApp({
     host: "127.0.0.1",
     port: 0,
     cwd: process.cwd(),
+    ...options,
   });
 
   return {
@@ -33,6 +34,20 @@ async function waitForPort(baseUrl, port) {
   }
 
   throw new Error(`Port ${port} never appeared in /api/ports.`);
+}
+
+async function waitForShutdown(baseUrl) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      await fetch(`${baseUrl}/api/state`);
+    } catch {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  throw new Error("Remote Vibes never shut down.");
 }
 
 test("state is available without authentication", async () => {
@@ -208,6 +223,29 @@ test("rejects an invalid working directory", async () => {
     assert.equal(response.status, 400);
     const payload = await response.json();
     assert.match(payload.error, /Working directory does not exist/);
+  } finally {
+    await app.close();
+  }
+});
+
+test("terminate endpoint shuts down the app cleanly", async () => {
+  let terminateCalls = 0;
+  const { app, baseUrl } = await startApp({
+    onTerminate: async () => {
+      terminateCalls += 1;
+    },
+  });
+
+  try {
+    const response = await fetch(`${baseUrl}/api/terminate`, {
+      method: "POST",
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, shuttingDown: true });
+
+    await waitForShutdown(baseUrl);
+    assert.equal(terminateCalls, 1);
   } finally {
     await app.close();
   }

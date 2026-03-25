@@ -140,12 +140,15 @@ export async function createRemoteVibesApp({
   host = process.env.REMOTE_VIBES_HOST || "0.0.0.0",
   port = Number(process.env.REMOTE_VIBES_PORT || 4123),
   cwd = process.cwd(),
+  onTerminate = null,
 } = {}) {
   const providers = await detectProviders();
   const defaultProviderId = getDefaultProviderId(providers);
   const app = express();
   const sessionManager = new SessionManager({ cwd, providers });
   let exposedPort = null;
+  let closePromise = null;
+  let terminatePromise = null;
   const proxyServer = httpProxy.createProxyServer({
     changeOrigin: true,
     ws: true,
@@ -209,6 +212,13 @@ export async function createRemoteVibesApp({
     }
 
     response.json({ ok: true });
+  });
+
+  app.post("/api/terminate", (_request, response) => {
+    response.once("finish", () => {
+      void requestTerminate();
+    });
+    response.json({ ok: true, shuttingDown: true });
   });
 
   app.use("/proxy/:port", (request, response) => {
@@ -306,19 +316,42 @@ export async function createRemoteVibesApp({
   });
 
   async function close() {
-    sessionManager.closeAll();
-    proxyServer.close();
-    await new Promise((resolve) => websocketServer.close(resolve));
-    await new Promise((resolve, reject) =>
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
+    if (closePromise) {
+      return closePromise;
+    }
 
-        resolve();
-      }),
-    );
+    closePromise = (async () => {
+      sessionManager.closeAll();
+      proxyServer.close();
+      await new Promise((resolve) => websocketServer.close(resolve));
+      await new Promise((resolve, reject) =>
+        server.close((error) => {
+          if (error && error.code !== "ERR_SERVER_NOT_RUNNING") {
+            reject(error);
+            return;
+          }
+
+          resolve();
+        }),
+      );
+    })();
+
+    return closePromise;
+  }
+
+  async function requestTerminate() {
+    if (terminatePromise) {
+      return terminatePromise;
+    }
+
+    terminatePromise = (async () => {
+      await close();
+      if (typeof onTerminate === "function") {
+        await onTerminate();
+      }
+    })();
+
+    return terminatePromise;
   }
 
   return {
@@ -335,5 +368,6 @@ export async function createRemoteVibesApp({
     },
     server,
     sessionManager,
+    terminate: requestTerminate,
   };
 }
