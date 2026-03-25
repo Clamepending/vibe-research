@@ -121,6 +121,10 @@ function isCoarsePointerDevice() {
   return window.matchMedia?.("(pointer: coarse)").matches ?? false;
 }
 
+function shouldUseCanvasRenderer() {
+  return !isCoarsePointerDevice() && !/firefox/i.test(window.navigator.userAgent || "");
+}
+
 function syncViewportMetrics() {
   const viewport = window.visualViewport;
   const nextHeight = Math.max(320, Math.round(viewport?.height ?? window.innerHeight));
@@ -582,6 +586,40 @@ function closeWebsocket() {
   state.connectedSessionId = null;
 }
 
+function disposeTerminal() {
+  closeWebsocket();
+  cleanupTerminalInteractions();
+  state.terminalResizeObserver?.disconnect();
+  state.terminalResizeObserver = null;
+
+  if (state.canvasAddon) {
+    try {
+      state.canvasAddon.dispose();
+    } catch (error) {
+      console.warn("[remote-vibes] canvas renderer disposal failed", error);
+    }
+    state.canvasAddon = null;
+  }
+
+  if (state.fitAddon?.dispose) {
+    try {
+      state.fitAddon.dispose();
+    } catch (error) {
+      console.warn("[remote-vibes] fit addon disposal failed", error);
+    }
+  }
+  state.fitAddon = null;
+
+  if (state.terminal) {
+    try {
+      state.terminal.dispose();
+    } catch (error) {
+      console.warn("[remote-vibes] terminal disposal failed", error);
+    }
+    state.terminal = null;
+  }
+}
+
 function observeTerminalMount(mount) {
   state.terminalResizeObserver?.disconnect();
   state.terminalResizeObserver = null;
@@ -598,7 +636,7 @@ function observeTerminalMount(mount) {
 }
 
 function loadCanvasRenderer() {
-  if (!state.terminal) {
+  if (!state.terminal || !shouldUseCanvasRenderer()) {
     return;
   }
 
@@ -784,11 +822,8 @@ function mountTerminal() {
     return;
   }
 
-  cleanupTerminalInteractions();
+  disposeTerminal();
   observeTerminalMount(mount);
-  state.terminal?.dispose();
-  state.canvasAddon = null;
-  closeWebsocket();
 
   state.terminal = new Terminal({
     allowProposedApi: false,
