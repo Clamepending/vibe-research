@@ -9,4 +9,5 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
-exec npm run start
+node scripts/build-client.mjs
+exec node src/server.js
