@@ -169,10 +169,13 @@ select {
 
 .danger-button {
   min-height: 32px;
+  min-width: 32px;
   padding: 0 10px;
   background: rgba(255, 127, 121, 0.14);
-  color: #ffd3cf;
-  font-size: 0.76rem;
+  color: #ff9f99;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .session-form,

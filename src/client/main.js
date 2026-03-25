@@ -181,7 +181,7 @@ function renderSessionCards() {
           </div>
           <div class="session-side">
             <span class="session-status ${status.className}">${status.text}</span>
-            <button class="danger-button" type="button" data-delete-session="${session.id}">del</button>
+            <button class="danger-button" type="button" aria-label="Delete session" data-delete-session="${session.id}">x</button>
           </div>
           <div class="session-time">${relativeTime(session.lastOutputAt)}</div>
         </article>
