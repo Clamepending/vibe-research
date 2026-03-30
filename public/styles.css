@@ -434,7 +434,7 @@ select {
 
 .terminal-mount .xterm-viewport {
   overscroll-behavior: contain;
-  touch-action: none;
+  touch-action: pan-y pinch-zoom;
   -webkit-overflow-scrolling: touch;
 }
 

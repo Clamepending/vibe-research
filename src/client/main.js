@@ -4,9 +4,6 @@ import { CanvasAddon } from "xterm-addon-canvas";
 
 const app = document.querySelector("#app");
 const TOUCH_TAP_SLOP_PX = 10;
-const TOUCH_MOMENTUM_MIN_VELOCITY = 0.08;
-const TOUCH_MOMENTUM_DECAY = 0.92;
-const TOUCH_MOMENTUM_MAX_FRAME_MS = 32;
 
 const state = {
   providers: [],
@@ -24,7 +21,10 @@ const state = {
   sidebarOpen: false,
   terminalResizeObserver: null,
   pendingTerminalOutput: "",
+  pendingTerminalScrollToBottom: false,
   terminalOutputFrame: null,
+  terminalComposing: false,
+  terminalTextareaResetTimer: null,
   sessionRefreshTimer: null,
   terminalInteractionCleanup: null,
   canvasAddon: null,
@@ -115,6 +115,56 @@ function fitTerminalSoon() {
 function cleanupTerminalInteractions() {
   state.terminalInteractionCleanup?.();
   state.terminalInteractionCleanup = null;
+  if (state.terminalTextareaResetTimer) {
+    window.clearTimeout(state.terminalTextareaResetTimer);
+    state.terminalTextareaResetTimer = null;
+  }
+  state.terminalComposing = false;
+}
+
+function configureTerminalTextarea(textarea) {
+  if (!(textarea instanceof HTMLTextAreaElement)) {
+    return;
+  }
+
+  textarea.autocomplete = "off";
+  textarea.autocorrect = "off";
+  textarea.autocapitalize = "none";
+  textarea.spellcheck = false;
+  textarea.setAttribute("autocomplete", "off");
+  textarea.setAttribute("autocorrect", "off");
+  textarea.setAttribute("autocapitalize", "none");
+  textarea.setAttribute("spellcheck", "false");
+  textarea.setAttribute("aria-autocomplete", "none");
+  textarea.setAttribute("data-form-type", "other");
+  textarea.setAttribute("data-gramm", "false");
+  textarea.setAttribute("data-gramm_editor", "false");
+  textarea.setAttribute("data-enable-grammarly", "false");
+}
+
+function resetTerminalTextarea() {
+  if (state.terminalComposing) {
+    return;
+  }
+
+  const textarea = state.terminal?.textarea;
+  if (!(textarea instanceof HTMLTextAreaElement) || !textarea.value) {
+    return;
+  }
+
+  textarea.value = "";
+  textarea.setSelectionRange(0, 0);
+}
+
+function scheduleTerminalTextareaReset(delay = 0) {
+  if (state.terminalTextareaResetTimer) {
+    window.clearTimeout(state.terminalTextareaResetTimer);
+  }
+
+  state.terminalTextareaResetTimer = window.setTimeout(() => {
+    state.terminalTextareaResetTimer = null;
+    resetTerminalTextarea();
+  }, delay);
 }
 
 function isCoarsePointerDevice() {
@@ -202,6 +252,7 @@ function clearPendingTerminalOutput() {
   }
 
   state.pendingTerminalOutput = "";
+  state.pendingTerminalScrollToBottom = false;
 }
 
 function flushPendingTerminalOutput() {
@@ -209,20 +260,28 @@ function flushPendingTerminalOutput() {
 
   if (!state.terminal || !state.pendingTerminalOutput) {
     state.pendingTerminalOutput = "";
+    state.pendingTerminalScrollToBottom = false;
     return;
   }
 
   const nextOutput = state.pendingTerminalOutput;
+  const shouldScrollToBottom = state.pendingTerminalScrollToBottom;
   state.pendingTerminalOutput = "";
-  state.terminal.write(nextOutput);
+  state.pendingTerminalScrollToBottom = false;
+  state.terminal.write(nextOutput, () => {
+    if (shouldScrollToBottom) {
+      state.terminal?.scrollToBottom();
+    }
+  });
 }
 
-function queueTerminalOutput(chunk) {
+function queueTerminalOutput(chunk, { scrollToBottom = false } = {}) {
   if (!chunk) {
     return;
   }
 
   state.pendingTerminalOutput += chunk;
+  state.pendingTerminalScrollToBottom = state.pendingTerminalScrollToBottom || scrollToBottom;
 
   if (state.terminalOutputFrame) {
     return;
@@ -657,62 +716,12 @@ function setupTerminalInteractions(mount) {
     return;
   }
 
+  configureTerminalTextarea(helperTextarea);
+
   const touchState = {
-    lastTime: 0,
-    lastY: 0,
     maxDistance: 0,
     moved: false,
     startY: 0,
-    velocity: 0,
-  };
-
-  let momentumFrame = null;
-  let momentumVelocity = 0;
-  let momentumLastTs = 0;
-
-  const stopMomentum = () => {
-    if (!momentumFrame) {
-      return;
-    }
-
-    window.cancelAnimationFrame(momentumFrame);
-    momentumFrame = null;
-  };
-
-  const startMomentum = () => {
-    if (Math.abs(momentumVelocity) < TOUCH_MOMENTUM_MIN_VELOCITY) {
-      momentumVelocity = 0;
-      return;
-    }
-
-    stopMomentum();
-
-    const step = (timestamp) => {
-      const deltaMs = Math.min(
-        TOUCH_MOMENTUM_MAX_FRAME_MS,
-        Math.max(1, timestamp - (momentumLastTs || timestamp - 16)),
-      );
-      momentumLastTs = timestamp;
-
-      const previousScrollTop = viewport.scrollTop;
-      viewport.scrollTop += momentumVelocity * deltaMs;
-
-      if (viewport.scrollTop === previousScrollTop) {
-        momentumVelocity = 0;
-      } else {
-        momentumVelocity *= Math.pow(TOUCH_MOMENTUM_DECAY, deltaMs / 16);
-      }
-
-      if (Math.abs(momentumVelocity) < TOUCH_MOMENTUM_MIN_VELOCITY) {
-        momentumFrame = null;
-        momentumVelocity = 0;
-        return;
-      }
-
-      momentumFrame = window.requestAnimationFrame(step);
-    };
-
-    momentumFrame = window.requestAnimationFrame(step);
   };
 
   const handlePointerDown = (event) => {
@@ -728,16 +737,10 @@ function setupTerminalInteractions(mount) {
       return;
     }
 
-    stopMomentum();
-    momentumVelocity = 0;
-
     const touch = event.touches[0];
     touchState.startY = touch.pageY;
-    touchState.lastY = touch.pageY;
-    touchState.lastTime = event.timeStamp || performance.now();
     touchState.maxDistance = 0;
     touchState.moved = false;
-    touchState.velocity = 0;
   };
 
   const handleTouchMove = (event) => {
@@ -746,70 +749,109 @@ function setupTerminalInteractions(mount) {
     }
 
     const touch = event.touches[0];
-    const timestamp = event.timeStamp || performance.now();
-    const deltaY = touchState.lastY - touch.pageY;
-    const deltaMs = Math.max(1, timestamp - touchState.lastTime);
-    touchState.lastY = touch.pageY;
-    touchState.lastTime = timestamp;
     touchState.maxDistance = Math.max(touchState.maxDistance, Math.abs(touch.pageY - touchState.startY));
 
-    if (Math.abs(deltaY) < 0.25 && touchState.maxDistance < TOUCH_TAP_SLOP_PX) {
-      return;
+    if (touchState.maxDistance >= TOUCH_TAP_SLOP_PX) {
+      touchState.moved = true;
     }
-
-    touchState.moved = true;
-    touchState.velocity = deltaY / deltaMs;
-    viewport.scrollTop += deltaY;
-    event.preventDefault();
-    event.stopPropagation();
   };
 
   const finishTouch = () => {
     if (!touchState.moved && touchState.maxDistance < TOUCH_TAP_SLOP_PX) {
       state.terminal?.focus();
-      return;
     }
-
-    momentumVelocity = touchState.velocity;
-    momentumLastTs = 0;
-    startMomentum();
   };
 
-  const handleTouchEnd = (event) => {
-    if (event.changedTouches.length) {
-      event.stopPropagation();
-    }
-
+  const handleTouchEnd = () => {
     finishTouch();
   };
 
   const handleTouchCancel = () => {
     touchState.moved = false;
     touchState.maxDistance = 0;
-    touchState.velocity = 0;
-    stopMomentum();
+  };
+
+  const handleBeforeInput = (event) => {
+    const currentValue = helperTextarea?.value || "";
+
+    if (event.inputType === "insertReplacementText") {
+      event.preventDefault();
+      scheduleTerminalTextareaReset();
+      return;
+    }
+
+    if (
+      !isCoarsePointerDevice() ||
+      state.terminalComposing ||
+      event.inputType !== "insertText" ||
+      typeof event.data !== "string" ||
+      !currentValue ||
+      !event.data.startsWith(currentValue)
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    const nextText = event.data.slice(currentValue.length);
+    if (nextText) {
+      sendTerminalInput(nextText);
+    }
+    scheduleTerminalTextareaReset();
+  };
+
+  const handleCompositionStart = () => {
+    state.terminalComposing = true;
+
+    if (state.terminalTextareaResetTimer) {
+      window.clearTimeout(state.terminalTextareaResetTimer);
+      state.terminalTextareaResetTimer = null;
+    }
+  };
+
+  const handleCompositionEnd = () => {
+    window.setTimeout(() => {
+      state.terminalComposing = false;
+      scheduleTerminalTextareaReset();
+    }, 0);
   };
 
   const handleTerminalFocus = () => {
+    configureTerminalTextarea(helperTextarea);
+    scheduleTerminalTextareaReset();
     syncViewportMetrics();
     fitTerminalSoon();
   };
 
+  const handleTerminalBlur = () => {
+    state.terminalComposing = false;
+    if (state.terminalTextareaResetTimer) {
+      window.clearTimeout(state.terminalTextareaResetTimer);
+      state.terminalTextareaResetTimer = null;
+    }
+  };
+
   mount.addEventListener("pointerdown", handlePointerDown);
   viewport.addEventListener("touchstart", handleTouchStart, { capture: true, passive: true });
-  viewport.addEventListener("touchmove", handleTouchMove, { capture: true, passive: false });
+  viewport.addEventListener("touchmove", handleTouchMove, { capture: true, passive: true });
   viewport.addEventListener("touchend", handleTouchEnd, { capture: true, passive: true });
   viewport.addEventListener("touchcancel", handleTouchCancel, { capture: true, passive: true });
+  helperTextarea?.addEventListener("beforeinput", handleBeforeInput, { capture: true });
+  helperTextarea?.addEventListener("compositionstart", handleCompositionStart);
+  helperTextarea?.addEventListener("compositionend", handleCompositionEnd);
   helperTextarea?.addEventListener("focus", handleTerminalFocus);
+  helperTextarea?.addEventListener("blur", handleTerminalBlur);
 
   state.terminalInteractionCleanup = () => {
-    stopMomentum();
     mount.removeEventListener("pointerdown", handlePointerDown);
     viewport.removeEventListener("touchstart", handleTouchStart, true);
     viewport.removeEventListener("touchmove", handleTouchMove, true);
     viewport.removeEventListener("touchend", handleTouchEnd, true);
     viewport.removeEventListener("touchcancel", handleTouchCancel, true);
+    helperTextarea?.removeEventListener("beforeinput", handleBeforeInput, true);
+    helperTextarea?.removeEventListener("compositionstart", handleCompositionStart);
+    helperTextarea?.removeEventListener("compositionend", handleCompositionEnd);
     helperTextarea?.removeEventListener("focus", handleTerminalFocus);
+    helperTextarea?.removeEventListener("blur", handleTerminalBlur);
   };
 }
 
@@ -861,6 +903,8 @@ function mountTerminal() {
   state.fitAddon = new FitAddon();
   state.terminal.loadAddon(state.fitAddon);
   state.terminal.open(mount);
+  configureTerminalTextarea(state.terminal.textarea);
+  resetTerminalTextarea();
   applyTerminalDisplayProfile(mount);
   loadCanvasRenderer();
   setupTerminalInteractions(mount);
@@ -883,6 +927,7 @@ function mountTerminal() {
     }
 
     state.websocket.send(JSON.stringify({ type: "input", data }));
+    scheduleTerminalTextareaReset();
   });
 
   if (!state.resizeBound) {
@@ -954,7 +999,9 @@ function connectToSession(sessionId) {
     }
 
     fitTerminalSoon();
-    state.terminal.focus();
+    if (!isCoarsePointerDevice()) {
+      state.terminal.focus();
+    }
   });
 
   socket.addEventListener("message", (event) => {
@@ -965,7 +1012,7 @@ function connectToSession(sessionId) {
     const payload = JSON.parse(event.data);
 
     if (payload.type === "snapshot") {
-      queueTerminalOutput(payload.data || "");
+      queueTerminalOutput(payload.data || "", { scrollToBottom: true });
       updateSession(payload.session);
       return;
     }
