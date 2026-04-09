@@ -16,6 +16,16 @@ test("pickScanUrl prefers the Tailscale address for phone scanning", () => {
   assert.deepEqual(url, { label: "Tailscale", url: "http://100.106.229.117:4123" });
 });
 
+test("pickScanUrl prefers a 100.x address even without a Tailscale label", () => {
+  const url = pickScanUrl([
+    { label: "Local", url: "http://localhost:4123" },
+    { label: "bridge100", url: "http://198.19.249.2:4123" },
+    { label: "utun8", url: "http://100.88.77.66:4123" },
+  ]);
+
+  assert.deepEqual(url, { label: "utun8", url: "http://100.88.77.66:4123" });
+});
+
 test("buildStartupOutput includes a terminal QR block for the preferred phone URL", () => {
   const output = buildStartupOutput({
     cwd: "/tmp/remote-vibes",

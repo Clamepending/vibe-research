@@ -124,6 +124,12 @@ select {
   justify-content: space-between;
 }
 
+.section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .sidebar-body {
   display: grid;
   gap: 14px;
@@ -331,16 +337,29 @@ select {
   background: rgba(106, 227, 198, 0.1);
 }
 
-.file-root {
-  overflow: hidden;
-  padding: 8px 10px;
+.file-root-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.file-root-input {
+  min-height: 40px;
+  padding: 0 12px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.03);
-  color: var(--muted);
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.72rem;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+}
+
+.file-root-submit,
+.files-root-reset {
+  min-height: 40px;
+  padding: 0 12px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .file-tree {
@@ -509,6 +528,43 @@ select {
   padding: 14px 12px;
 }
 
+.jump-bottom-button {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgba(106, 227, 198, 0.34);
+  border-radius: 999px;
+  background: rgba(9, 11, 13, 0.92);
+  color: var(--accent);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.34);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease,
+    background 140ms ease,
+    border-color 140ms ease;
+}
+
+.jump-bottom-button.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.jump-bottom-button:hover {
+  background: rgba(18, 28, 25, 0.96);
+  border-color: rgba(106, 227, 198, 0.52);
+}
+
 .terminal-mount > .terminal,
 .terminal-mount > .xterm {
   height: 100%;
@@ -642,6 +698,13 @@ select:disabled {
     border-radius: 20px;
   }
 
+  .jump-bottom-button {
+    right: 12px;
+    bottom: 12px;
+    min-height: 38px;
+    padding: 0 12px;
+  }
+
   .toolbar-actions {
     gap: 5px;
   }
@@ -683,6 +746,11 @@ select:disabled {
 
   .terminal-mount {
     padding: 10px 8px;
+  }
+
+  .jump-bottom-button {
+    right: 10px;
+    bottom: 10px;
   }
 
   .icon-button,

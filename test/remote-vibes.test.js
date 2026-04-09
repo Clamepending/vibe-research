@@ -94,6 +94,10 @@ test("state is available without authentication", async () => {
       : "shell";
     assert.equal(state.defaultProviderId, expectedDefaultProviderId);
     assert.ok(state.providers.some((provider) => provider.id === "shell" && provider.available));
+    assert.ok(Array.isArray(state.urls));
+    assert.ok(state.urls.length >= 1);
+    assert.equal(typeof state.preferredUrl, "string");
+    assert.ok(state.urls.some((entry) => entry.url === state.preferredUrl));
   } finally {
     await app.close();
   }

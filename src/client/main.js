@@ -9,6 +9,7 @@ const state = {
   providers: [],
   sessions: [],
   ports: [],
+  filesRootOverride: null,
   filesRoot: "",
   fileTreeEntries: {},
   fileTreeExpanded: new Set([""]),
@@ -33,6 +34,8 @@ const state = {
   sessionRefreshTimer: null,
   terminalInteractionCleanup: null,
   canvasAddon: null,
+  terminalShowJumpToBottom: false,
+  preferredBaseUrl: "",
 };
 
 function escapeHtml(value) {
@@ -233,6 +236,38 @@ function applyTerminalDisplayProfile(mount) {
   }
 }
 
+function isTerminalAtBottom() {
+  const buffer = state.terminal?.buffer?.active;
+  if (!buffer) {
+    return true;
+  }
+
+  return buffer.baseY - buffer.viewportY <= 1;
+}
+
+function refreshTerminalJumpUi() {
+  const button = document.querySelector("#jump-to-bottom");
+  if (!(button instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  const activeSession = getActiveSession();
+  const shouldShow = Boolean(activeSession) && state.terminalShowJumpToBottom;
+  button.classList.toggle("is-visible", shouldShow);
+  button.disabled = !activeSession;
+}
+
+function syncTerminalScrollState() {
+  const nextShowJumpToBottom = !isTerminalAtBottom();
+
+  if (state.terminalShowJumpToBottom === nextShowJumpToBottom) {
+    return;
+  }
+
+  state.terminalShowJumpToBottom = nextShowJumpToBottom;
+  refreshTerminalJumpUi();
+}
+
 function buildTerminalLinkHandler() {
   return {
     activate(_event, text) {
@@ -277,6 +312,8 @@ function flushPendingTerminalOutput() {
     if (shouldScrollToBottom) {
       state.terminal?.scrollToBottom();
     }
+
+    syncTerminalScrollState();
   });
 }
 
@@ -318,6 +355,31 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
+function getAppBaseUrl() {
+  return state.preferredBaseUrl || window.location.origin;
+}
+
+function maybeRedirectToPreferredOrigin() {
+  if (!state.preferredBaseUrl) {
+    return false;
+  }
+
+  let preferredOrigin = "";
+  try {
+    preferredOrigin = new URL(state.preferredBaseUrl).origin;
+  } catch {
+    return false;
+  }
+
+  if (!preferredOrigin || preferredOrigin === window.location.origin) {
+    return false;
+  }
+
+  const nextUrl = `${preferredOrigin}${window.location.pathname}${window.location.search}${window.location.hash}`;
+  window.location.replace(nextUrl);
+  return true;
+}
+
 function sendTerminalInput(data) {
   if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) {
     return;
@@ -340,16 +402,25 @@ function normalizeFileTreePath(value) {
   return normalized === "." ? "" : normalized;
 }
 
+function normalizeWorkspaceRoot(value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  return trimmed.replace(/\/+$/, "") || "/";
+}
+
 function getActiveSession() {
   return state.sessions.find((session) => session.id === state.activeSessionId) || null;
 }
 
 function getPreferredFilesRoot() {
-  return getActiveSession()?.cwd || state.defaultCwd || "";
+  return state.filesRootOverride || getActiveSession()?.cwd || state.defaultCwd || "";
 }
 
 function syncFilesRoot({ force = false } = {}) {
-  const nextRoot = getPreferredFilesRoot();
+  const nextRoot = normalizeWorkspaceRoot(getPreferredFilesRoot());
 
   if (!force && nextRoot === state.filesRoot) {
     return false;
@@ -363,6 +434,13 @@ function syncFilesRoot({ force = false } = {}) {
   return true;
 }
 
+async function applyFilesRoot(rootValue, { force = false } = {}) {
+  state.filesRootOverride = normalizeWorkspaceRoot(rootValue) || null;
+  syncFilesRoot({ force: true });
+  refreshFileTreeUi();
+  await refreshOpenFileTree({ force });
+}
+
 function getFileContentUrl(relativePath) {
   const params = new URLSearchParams();
 
@@ -374,7 +452,7 @@ function getFileContentUrl(relativePath) {
     params.set("path", relativePath);
   }
 
-  return `/api/files/content?${params.toString()}`;
+  return `${getAppBaseUrl()}/api/files/content?${params.toString()}`;
 }
 
 function renderFileTreeNodes(parentPath = "", depth = 0) {
@@ -474,7 +552,7 @@ function renderPortCards() {
   return state.ports
     .map(
       (port) => `
-        <a class="port-card" href="${escapeHtml(port.proxyPath)}" target="_blank" rel="noreferrer">
+        <a class="port-card" href="${escapeHtml(`${getAppBaseUrl()}${port.proxyPath}`)}" target="_blank" rel="noreferrer">
           <span class="port-number">${port.port}</span>
           <span class="port-meta">${escapeHtml(port.command)} · ${escapeHtml(port.hosts.join(", "))}</span>
         </a>
@@ -526,11 +604,26 @@ function renderShell() {
           <section class="sidebar-section">
             <div class="section-head">
               <span>files</span>
-              <button class="icon-button" type="button" id="refresh-files">↻</button>
+              <div class="section-actions">
+                <button class="ghost-button files-root-reset" type="button" id="auto-files-root" ${state.filesRootOverride ? "" : "disabled"}>auto</button>
+                <button class="icon-button" type="button" id="refresh-files">↻</button>
+              </div>
             </div>
-            <div class="file-root" id="files-root" title="${escapeHtml(state.filesRoot || state.defaultCwd || "")}">${escapeHtml(
-              state.filesRoot || state.defaultCwd || "",
-            )}</div>
+            <form class="file-root-form" id="files-root-form">
+              <input
+                class="file-root-input"
+                id="files-root-input"
+                name="root"
+                type="text"
+                value="${escapeHtml(state.filesRoot || state.defaultCwd || "")}"
+                placeholder="${escapeHtml(state.defaultCwd || "workspace path")}"
+                autocomplete="off"
+                autocorrect="off"
+                autocapitalize="none"
+                spellcheck="false"
+              />
+              <button class="ghost-button file-root-submit" type="submit">set</button>
+            </form>
             <div class="file-tree" id="files-tree">${renderFileTree()}</div>
           </section>
 
@@ -569,6 +662,9 @@ function renderShell() {
 
         <div class="terminal-stack">
           <div class="terminal-mount" id="terminal-mount"></div>
+          <button class="jump-bottom-button ${activeSession && state.terminalShowJumpToBottom ? "is-visible" : ""}" type="button" id="jump-to-bottom" aria-label="Jump to bottom" ${activeSession ? "" : "disabled"}>
+            bottom
+          </button>
           <div class="empty-state ${activeSession ? "hidden" : ""}" id="empty-state">
             <p class="empty-state-copy">open the menu by tapping the top left icon, then click + to create a new session</p>
           </div>
@@ -673,13 +769,22 @@ function bindFileTreeEvents() {
 }
 
 function refreshFileTreeUi() {
-  const filesRoot = document.querySelector("#files-root");
+  const filesRootInput = document.querySelector("#files-root-input");
   const filesTree = document.querySelector("#files-tree");
+  const autoFilesRootButton = document.querySelector("#auto-files-root");
   const nextRoot = state.filesRoot || state.defaultCwd || "";
 
-  if (filesRoot) {
-    filesRoot.textContent = nextRoot;
-    filesRoot.setAttribute("title", nextRoot);
+  if (filesRootInput instanceof HTMLInputElement) {
+    if (document.activeElement !== filesRootInput) {
+      filesRootInput.value = nextRoot;
+    }
+
+    filesRootInput.setAttribute("title", nextRoot);
+    filesRootInput.placeholder = state.defaultCwd || "workspace path";
+  }
+
+  if (autoFilesRootButton instanceof HTMLButtonElement) {
+    autoFilesRootButton.disabled = !state.filesRootOverride;
   }
 
   if (!filesTree) {
@@ -714,6 +819,8 @@ function refreshToolbarUi() {
   document.querySelectorAll("[data-terminal-control]").forEach((button) => {
     button.disabled = !canSend;
   });
+
+  refreshTerminalJumpUi();
 }
 
 function refreshShellUi({ sessions = true, ports = true, files = true } = {}) {
@@ -840,12 +947,44 @@ function bindShellEvents() {
   document.querySelector("#ctrl-p-button")?.addEventListener("click", () => sendTerminalInput("\u0010"));
   document.querySelector("#ctrl-t-button")?.addEventListener("click", () => sendTerminalInput("\u0014"));
   document.querySelector("#ctrl-c-button")?.addEventListener("click", () => sendTerminalInput("\u0003"));
+  document.querySelector("#jump-to-bottom")?.addEventListener("click", () => {
+    state.terminal?.scrollToBottom();
+    state.terminal?.focus();
+    syncTerminalScrollState();
+  });
 
   document.querySelector("#refresh-sessions")?.addEventListener("click", () => loadSessions());
   document.querySelector("#refresh-files")?.addEventListener("click", async () => {
     syncFilesRoot({ force: true });
     refreshFileTreeUi();
     await refreshOpenFileTree({ force: true });
+  });
+  document.querySelector("#files-root-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+
+    const formData = new FormData(form);
+    await applyFilesRoot(String(formData.get("root") || ""), { force: true });
+  });
+  document.querySelector("#files-root-input")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") {
+      return;
+    }
+
+    const input = event.currentTarget;
+    if (!(input instanceof HTMLInputElement)) {
+      return;
+    }
+
+    input.value = state.filesRoot || state.defaultCwd || "";
+    input.blur();
+    refreshFileTreeUi();
+  });
+  document.querySelector("#auto-files-root")?.addEventListener("click", async () => {
+    await applyFilesRoot("", { force: true });
   });
   document.querySelector("#refresh-ports")?.addEventListener("click", () => loadPorts());
   document.querySelector("#open-sidebar")?.addEventListener("click", () => setSidebarOpen(true));
@@ -887,6 +1026,8 @@ function closeWebsocket() {
   }
 
   state.connectedSessionId = null;
+  state.terminalShowJumpToBottom = false;
+  refreshTerminalJumpUi();
 }
 
 function disposeTerminal() {
@@ -1177,6 +1318,12 @@ function mountTerminal() {
     scheduleTerminalTextareaReset();
   });
 
+  state.terminal.onScroll(() => {
+    window.requestAnimationFrame(() => {
+      syncTerminalScrollState();
+    });
+  });
+
   if (!state.resizeBound) {
     const handleResize = () => {
       const mount = document.querySelector("#terminal-mount");
@@ -1200,6 +1347,8 @@ function mountTerminal() {
   if (state.activeSessionId) {
     connectToSession(state.activeSessionId);
   }
+
+  syncTerminalScrollState();
 }
 
 function sendResize() {
@@ -1232,6 +1381,8 @@ function connectToSession(sessionId) {
   closeWebsocket();
   clearPendingTerminalOutput();
   state.terminal.reset();
+  state.terminalShowJumpToBottom = false;
+  refreshTerminalJumpUi();
   state.connectedSessionId = sessionId;
 
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -1249,6 +1400,7 @@ function connectToSession(sessionId) {
     if (!isCoarsePointerDevice()) {
       state.terminal.focus();
     }
+    syncTerminalScrollState();
   });
 
   socket.addEventListener("message", (event) => {
@@ -1369,6 +1521,12 @@ async function bootstrapApp() {
   state.ports = payload.ports ?? [];
   state.defaultCwd = payload.cwd;
   state.defaultProviderId = payload.defaultProviderId;
+  state.preferredBaseUrl = payload.preferredUrl ? new URL(payload.preferredUrl).origin : "";
+
+  if (maybeRedirectToPreferredOrigin()) {
+    return;
+  }
+
   state.activeSessionId = payload.sessions[0]?.id ?? null;
   renderShell();
 

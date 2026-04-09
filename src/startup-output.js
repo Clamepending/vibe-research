@@ -1,20 +1,12 @@
 import qrcode from "qrcode-terminal";
+import { pickPreferredUrl } from "./access-url.js";
 
 const TERMINAL_QR_ERROR_LEVEL = "M";
 const ANSI_GREEN = "\u001b[32m";
 const ANSI_RESET = "\u001b[0m";
 
 export function pickScanUrl(urls) {
-  if (!Array.isArray(urls) || urls.length === 0) {
-    return null;
-  }
-
-  return (
-    urls.find((entry) => entry.label === "Tailscale") ??
-    urls.find((entry) => entry.label !== "Local") ??
-    urls[0] ??
-    null
-  );
+  return pickPreferredUrl(urls);
 }
 
 export function renderQrCode(url) {

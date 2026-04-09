@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
 import { WebSocketServer } from "ws";
+import { pickPreferredUrl } from "./access-url.js";
 import { listListeningPorts } from "./ports.js";
 import { SessionManager } from "./session-manager.js";
 import { detectProviders, getDefaultProviderId } from "./providers.js";
@@ -152,6 +153,8 @@ export async function createRemoteVibesApp({
   let exposedPort = null;
   let closePromise = null;
   let terminatePromise = null;
+  let urls = [];
+  let preferredUrl = null;
   const proxyServer = httpProxy.createProxyServer({
     changeOrigin: true,
     ws: true,
@@ -178,6 +181,8 @@ export async function createRemoteVibesApp({
       defaultProviderId,
       providers,
       sessions: sessionManager.listSessions(),
+      urls,
+      preferredUrl,
       ports: await listListeningPorts({ excludePorts: exposedPort ? [exposedPort] : [] }),
     });
   });
@@ -282,7 +287,8 @@ export async function createRemoteVibesApp({
       ? server.address().port
       : port;
   exposedPort = resolvedPort;
-  const urls = await getAccessUrls(host, resolvedPort);
+  urls = await getAccessUrls(host, resolvedPort);
+  preferredUrl = pickPreferredUrl(urls)?.url ?? urls[0]?.url ?? null;
 
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url || "/", `http://${request.headers.host}`);
@@ -402,6 +408,7 @@ export async function createRemoteVibesApp({
       host,
       port: resolvedPort,
       providers,
+      preferredUrl,
       urls,
     },
     server,
