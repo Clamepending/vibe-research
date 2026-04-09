@@ -9,6 +9,11 @@ const state = {
   providers: [],
   sessions: [],
   ports: [],
+  filesRoot: "",
+  fileTreeEntries: {},
+  fileTreeExpanded: new Set([""]),
+  fileTreeLoading: new Set(),
+  fileTreeError: "",
   activeSessionId: null,
   connectedSessionId: null,
   defaultCwd: "",
@@ -321,6 +326,120 @@ function sendTerminalInput(data) {
   state.websocket.send(JSON.stringify({ type: "input", data }));
 }
 
+function normalizeFileTreePath(value) {
+  if (!value) {
+    return "";
+  }
+
+  const normalized = String(value)
+    .replaceAll("\\", "/")
+    .replace(/^\.\/+/, "")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
+
+  return normalized === "." ? "" : normalized;
+}
+
+function getActiveSession() {
+  return state.sessions.find((session) => session.id === state.activeSessionId) || null;
+}
+
+function getPreferredFilesRoot() {
+  return getActiveSession()?.cwd || state.defaultCwd || "";
+}
+
+function syncFilesRoot({ force = false } = {}) {
+  const nextRoot = getPreferredFilesRoot();
+
+  if (!force && nextRoot === state.filesRoot) {
+    return false;
+  }
+
+  state.filesRoot = nextRoot;
+  state.fileTreeEntries = {};
+  state.fileTreeExpanded = new Set([""]);
+  state.fileTreeLoading = new Set();
+  state.fileTreeError = "";
+  return true;
+}
+
+function getFileContentUrl(relativePath) {
+  const params = new URLSearchParams();
+
+  if (state.filesRoot) {
+    params.set("root", state.filesRoot);
+  }
+
+  if (relativePath) {
+    params.set("path", relativePath);
+  }
+
+  return `/api/files/content?${params.toString()}`;
+}
+
+function renderFileTreeNodes(parentPath = "", depth = 0) {
+  const entries = state.fileTreeEntries[normalizeFileTreePath(parentPath)];
+
+  if (!entries?.length) {
+    if (state.fileTreeLoading.has(normalizeFileTreePath(parentPath))) {
+      return `<div class="file-tree-status" style="--depth:${depth}">loading...</div>`;
+    }
+
+    return parentPath === "" ? `<div class="blank-state">no files</div>` : "";
+  }
+
+  return entries
+    .map((entry) => {
+      if (entry.type === "directory") {
+        const expanded = state.fileTreeExpanded.has(entry.relativePath);
+        const children = expanded ? renderFileTreeNodes(entry.relativePath, depth + 1) : "";
+
+        return `
+          <div class="file-node">
+            <button class="file-row file-row-button" type="button" data-file-toggle="${escapeHtml(entry.relativePath)}" style="--depth:${depth}">
+              <span class="file-caret">${expanded ? "v" : ">"}</span>
+              <span class="file-label">${escapeHtml(entry.name)}</span>
+            </button>
+            ${children}
+          </div>
+        `;
+      }
+
+      if (entry.isImage) {
+        return `
+          <a class="file-row file-link" href="${escapeHtml(getFileContentUrl(entry.relativePath))}" target="_blank" rel="noreferrer" style="--depth:${depth}">
+            <span class="file-caret">img</span>
+            <span class="file-label">${escapeHtml(entry.name)}</span>
+          </a>
+        `;
+      }
+
+      return `
+        <div class="file-row file-static" style="--depth:${depth}">
+          <span class="file-caret">-</span>
+          <span class="file-label">${escapeHtml(entry.name)}</span>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderFileTree() {
+  if (!state.filesRoot) {
+    return `<div class="blank-state">no workspace</div>`;
+  }
+
+  if (state.fileTreeError && !state.fileTreeEntries[""]?.length) {
+    return `<div class="blank-state">${escapeHtml(state.fileTreeError)}</div>`;
+  }
+
+  if (state.fileTreeLoading.has("") && !state.fileTreeEntries[""]) {
+    return `<div class="blank-state">loading files</div>`;
+  }
+
+  return renderFileTreeNodes("");
+}
+
 function renderSessionCards() {
   if (!state.sessions.length) {
     return `<div class="blank-state">no sessions</div>`;
@@ -365,6 +484,8 @@ function renderPortCards() {
 }
 
 function renderShell() {
+  syncFilesRoot();
+
   const providerOptions = state.providers
     .map(
       (provider) => `
@@ -400,6 +521,17 @@ function renderShell() {
               <span>sessions</span>
             </div>
             <div class="list-shell" id="sessions-list">${renderSessionCards()}</div>
+          </section>
+
+          <section class="sidebar-section">
+            <div class="section-head">
+              <span>files</span>
+              <button class="icon-button" type="button" id="refresh-files">↻</button>
+            </div>
+            <div class="file-root" id="files-root" title="${escapeHtml(state.filesRoot || state.defaultCwd || "")}">${escapeHtml(
+              state.filesRoot || state.defaultCwd || "",
+            )}</div>
+            <div class="file-tree" id="files-tree">${renderFileTree()}</div>
           </section>
 
           <section class="sidebar-section">
@@ -448,6 +580,7 @@ function renderShell() {
   bindShellEvents();
   mountTerminal();
   refreshShellUi();
+  void refreshOpenFileTree();
 }
 
 function bindSessionEvents() {
@@ -517,6 +650,46 @@ function refreshPortsList() {
   portsList.innerHTML = renderPortCards();
 }
 
+function bindFileTreeEvents() {
+  document.querySelectorAll("[data-file-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const relativePath = normalizeFileTreePath(button.getAttribute("data-file-toggle"));
+
+      if (!relativePath) {
+        return;
+      }
+
+      if (state.fileTreeExpanded.has(relativePath)) {
+        state.fileTreeExpanded.delete(relativePath);
+        refreshFileTreeUi();
+        return;
+      }
+
+      state.fileTreeExpanded.add(relativePath);
+      refreshFileTreeUi();
+      void loadFileTree(relativePath);
+    });
+  });
+}
+
+function refreshFileTreeUi() {
+  const filesRoot = document.querySelector("#files-root");
+  const filesTree = document.querySelector("#files-tree");
+  const nextRoot = state.filesRoot || state.defaultCwd || "";
+
+  if (filesRoot) {
+    filesRoot.textContent = nextRoot;
+    filesRoot.setAttribute("title", nextRoot);
+  }
+
+  if (!filesTree) {
+    return;
+  }
+
+  filesTree.innerHTML = renderFileTree();
+  bindFileTreeEvents();
+}
+
 function refreshToolbarUi() {
   const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) || null;
   const title = document.querySelector("#toolbar-title");
@@ -543,7 +716,7 @@ function refreshToolbarUi() {
   });
 }
 
-function refreshShellUi({ sessions = true, ports = true } = {}) {
+function refreshShellUi({ sessions = true, ports = true, files = true } = {}) {
   if (sessions) {
     refreshSessionsList();
   }
@@ -552,7 +725,76 @@ function refreshShellUi({ sessions = true, ports = true } = {}) {
     refreshPortsList();
   }
 
+  if (files) {
+    refreshFileTreeUi();
+  }
+
   refreshToolbarUi();
+}
+
+async function loadFileTree(relativePath = "", { force = false } = {}) {
+  const pathKey = normalizeFileTreePath(relativePath);
+  const root = state.filesRoot;
+
+  if (!root) {
+    return;
+  }
+
+  if (!force && (state.fileTreeLoading.has(pathKey) || state.fileTreeEntries[pathKey])) {
+    return;
+  }
+
+  state.fileTreeLoading.add(pathKey);
+
+  if (pathKey === "") {
+    state.fileTreeError = "";
+  }
+
+  refreshFileTreeUi();
+
+  try {
+    const params = new URLSearchParams();
+    params.set("root", root);
+    if (pathKey) {
+      params.set("path", pathKey);
+    }
+
+    const payload = await fetchJson(`/api/files?${params.toString()}`);
+
+    if (state.filesRoot !== root) {
+      return;
+    }
+
+    state.fileTreeEntries[pathKey] = payload.entries;
+    state.fileTreeError = "";
+  } catch (error) {
+    if (state.filesRoot !== root) {
+      return;
+    }
+
+    if (pathKey) {
+      state.fileTreeExpanded.delete(pathKey);
+    }
+
+    state.fileTreeError = error.message;
+  } finally {
+    if (state.filesRoot === root) {
+      state.fileTreeLoading.delete(pathKey);
+      refreshFileTreeUi();
+    }
+  }
+}
+
+async function refreshOpenFileTree({ force = false } = {}) {
+  if (!state.filesRoot) {
+    return;
+  }
+
+  const openPaths = Array.from(state.fileTreeExpanded);
+
+  for (const relativePath of openPaths) {
+    await loadFileTree(relativePath, { force });
+  }
 }
 
 function scheduleSessionsRefresh() {
@@ -600,6 +842,11 @@ function bindShellEvents() {
   document.querySelector("#ctrl-c-button")?.addEventListener("click", () => sendTerminalInput("\u0003"));
 
   document.querySelector("#refresh-sessions")?.addEventListener("click", () => loadSessions());
+  document.querySelector("#refresh-files")?.addEventListener("click", async () => {
+    syncFilesRoot({ force: true });
+    refreshFileTreeUi();
+    await refreshOpenFileTree({ force: true });
+  });
   document.querySelector("#refresh-ports")?.addEventListener("click", () => loadPorts());
   document.querySelector("#open-sidebar")?.addEventListener("click", () => setSidebarOpen(true));
   document.querySelector("#close-sidebar")?.addEventListener("click", () => setSidebarOpen(false));
@@ -1136,6 +1383,7 @@ async function bootstrapApp() {
   state.pollTimer = window.setInterval(() => {
     loadSessions();
     loadPorts();
+    void refreshOpenFileTree({ force: true });
   }, 3000);
 }
 

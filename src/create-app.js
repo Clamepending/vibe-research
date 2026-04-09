@@ -9,6 +9,7 @@ import { WebSocketServer } from "ws";
 import { listListeningPorts } from "./ports.js";
 import { SessionManager } from "./session-manager.js";
 import { detectProviders, getDefaultProviderId } from "./providers.js";
+import { listWorkspaceEntries, resolveWorkspaceEntry } from "./workspace-files.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, "..", "public");
@@ -140,12 +141,14 @@ export async function createRemoteVibesApp({
   host = process.env.REMOTE_VIBES_HOST || "0.0.0.0",
   port = Number(process.env.REMOTE_VIBES_PORT || 4123),
   cwd = process.cwd(),
+  persistSessions = true,
   onTerminate = null,
 } = {}) {
   const providers = await detectProviders();
   const defaultProviderId = getDefaultProviderId(providers);
   const app = express();
-  const sessionManager = new SessionManager({ cwd, providers });
+  const sessionManager = new SessionManager({ cwd, providers, persistSessions });
+  await sessionManager.initialize();
   let exposedPort = null;
   let closePromise = null;
   let terminatePromise = null;
@@ -183,6 +186,41 @@ export async function createRemoteVibesApp({
     response.json({
       ports: await listListeningPorts({ excludePorts: exposedPort ? [exposedPort] : [] }),
     });
+  });
+
+  app.get("/api/files", async (request, response) => {
+    try {
+      const payload = await listWorkspaceEntries({
+        root: typeof request.query.root === "string" ? request.query.root : cwd,
+        relativePath: typeof request.query.path === "string" ? request.query.path : "",
+        fallbackCwd: cwd,
+      });
+
+      response.json(payload);
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/files/content", async (request, response) => {
+    try {
+      const entry = await resolveWorkspaceEntry({
+        root: typeof request.query.root === "string" ? request.query.root : cwd,
+        relativePath: typeof request.query.path === "string" ? request.query.path : "",
+        fallbackCwd: cwd,
+      });
+
+      if (!entry.stats.isFile()) {
+        response.status(400).json({ error: "Requested path is not a file." });
+        return;
+      }
+
+      response.setHeader("Cache-Control", "no-store");
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      response.sendFile(entry.targetPath);
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message });
+    }
   });
 
   app.post("/api/sessions", (request, response) => {
@@ -321,7 +359,7 @@ export async function createRemoteVibesApp({
     }
 
     closePromise = (async () => {
-      sessionManager.closeAll();
+      await sessionManager.shutdown({ preserveSessions: persistSessions });
       proxyServer.close();
       await new Promise((resolve) => websocketServer.close(resolve));
       await new Promise((resolve, reject) =>
