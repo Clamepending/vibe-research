@@ -17,6 +17,9 @@ Use that gist URL directly. The repo `raw.githubusercontent.com/.../install.sh` 
 
 You can access any localhost ports by clicking on it in the sidebar.
 
+Example thing I did was text my agent to fix and pretrain GPT2-small on a 4090!
+https://x.com/clamepending/status/2039185482639462763?s=20
+
 tips:
 - Press the "shift+tab" button on the top right to swap to bypass-permisisons mode to not have to approve things all the time.
 - Use builtin voice to text to just speak and send commands
