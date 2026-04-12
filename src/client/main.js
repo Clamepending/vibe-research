@@ -60,6 +60,50 @@ const KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE = [
     edge: "rgba(246, 138, 182, 0.2)",
   },
 ];
+const LIKELY_TEXT_EXTENSIONS = new Set([
+  ".c",
+  ".cc",
+  ".conf",
+  ".cpp",
+  ".css",
+  ".csv",
+  ".env",
+  ".go",
+  ".graphql",
+  ".h",
+  ".html",
+  ".ini",
+  ".java",
+  ".js",
+  ".json",
+  ".jsx",
+  ".log",
+  ".md",
+  ".mjs",
+  ".py",
+  ".rb",
+  ".rs",
+  ".sh",
+  ".sql",
+  ".svg",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".xml",
+  ".yaml",
+  ".yml",
+]);
+const LIKELY_TEXT_FILENAMES = new Set([
+  ".gitignore",
+  ".npmrc",
+  ".prettierignore",
+  ".prettierrc",
+  "dockerfile",
+  "makefile",
+  "readme",
+  "readme.md",
+]);
 
 const state = {
   providers: [],
@@ -138,6 +182,14 @@ const state = {
       cameraInitialized: false,
     },
   },
+  openFileRelativePath: "",
+  openFileName: "",
+  openFileStatus: "idle",
+  openFileContent: "",
+  openFileDraft: "",
+  openFileMessage: "",
+  openFileSaving: false,
+  openFileRequestId: 0,
   activeSessionId: null,
   connectedSessionId: null,
   defaultCwd: "",
@@ -147,7 +199,7 @@ const state = {
   fitAddon: null,
   pollTimer: null,
   resizeBound: false,
-  sidebarOpen: false,
+  mobileSidebar: null,
   terminalResizeObserver: null,
   pendingTerminalOutput: "",
   pendingTerminalScrollToBottom: false,
@@ -164,10 +216,14 @@ const state = {
 function getRouteState() {
   const url = new URL(window.location.href);
   const explicitView = url.searchParams.get("view");
+  const root = normalizeWorkspaceRoot(url.searchParams.get("root") || "");
+  const path = normalizeFileTreePath(url.searchParams.get("path") || "");
 
   if (explicitView === "knowledge-base") {
     return {
       view: "knowledge-base",
+      root,
+      path: "",
       notePath: normalizeFileTreePath(url.searchParams.get("note") || ""),
     };
   }
@@ -175,12 +231,25 @@ function getRouteState() {
   if (explicitView === "gpu") {
     return {
       view: "gpu",
+      root,
+      path: "",
+      notePath: "",
+    };
+  }
+
+  if (explicitView === "file") {
+    return {
+      view: "file",
+      root,
+      path,
       notePath: "",
     };
   }
 
   return {
     view: window.location.hash === "#gpu" ? "gpu" : "shell",
+    root,
+    path,
     notePath: "",
   };
 }
@@ -238,19 +307,29 @@ function getSessionLabel(session) {
     : { text: "idle", className: "idle" };
 }
 
-function setSidebarOpen(nextValue) {
-  state.sidebarOpen = nextValue;
-  const sidebar = document.querySelector("[data-sidebar]");
+function setMobileSidebar(nextSidebar) {
+  state.mobileSidebar = nextSidebar;
+  const leftSidebar = document.querySelector('[data-sidebar-panel="left"]');
+  const rightSidebar = document.querySelector('[data-sidebar-panel="right"]');
   const scrim = document.querySelector("[data-sidebar-scrim]");
-  if (sidebar) {
-    sidebar.classList.toggle("is-open", nextValue);
+
+  if (leftSidebar) {
+    leftSidebar.classList.toggle("is-open", nextSidebar === "left");
+  }
+
+  if (rightSidebar) {
+    rightSidebar.classList.toggle("is-open", nextSidebar === "right");
   }
 
   if (scrim) {
-    scrim.classList.toggle("is-open", nextValue);
+    scrim.classList.toggle("is-open", Boolean(nextSidebar));
   }
 
   fitTerminalSoon();
+}
+
+function closeMobileSidebar() {
+  setMobileSidebar(null);
 }
 
 function fitTerminalSoon() {
@@ -692,6 +771,91 @@ function resolveKnowledgeBaseNotePath(fromPath, targetPath) {
   return candidates.find((candidate) => notePaths.has(candidate)) || "";
 }
 
+function getFileDisplayName(relativePath) {
+  const normalized = normalizeFileTreePath(relativePath);
+  if (!normalized) {
+    return "";
+  }
+
+  const segments = normalized.split("/").filter(Boolean);
+  return segments[segments.length - 1] || normalized;
+}
+
+function isLikelyTextFile(fileName) {
+  const normalized = String(fileName || "").trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  if (LIKELY_TEXT_FILENAMES.has(normalized)) {
+    return true;
+  }
+
+  const extensionIndex = normalized.lastIndexOf(".");
+  if (extensionIndex > 0) {
+    return LIKELY_TEXT_EXTENSIONS.has(normalized.slice(extensionIndex));
+  }
+
+  return !normalized.includes(".");
+}
+
+function isOpenFileDirty() {
+  return state.openFileStatus === "text" && state.openFileDraft !== state.openFileContent;
+}
+
+function resetOpenFile() {
+  state.openFileRequestId += 1;
+  state.openFileRelativePath = "";
+  state.openFileName = "";
+  state.openFileStatus = "idle";
+  state.openFileContent = "";
+  state.openFileDraft = "";
+  state.openFileMessage = "";
+  state.openFileSaving = false;
+}
+
+function setOpenFileSelection(relativePath, { status = "external", message = "opened in a new tab" } = {}) {
+  const normalizedPath = normalizeFileTreePath(relativePath);
+  state.openFileRequestId += 1;
+  state.openFileRelativePath = normalizedPath;
+  state.openFileName = getFileDisplayName(normalizedPath);
+  state.openFileStatus = status;
+  state.openFileContent = "";
+  state.openFileDraft = "";
+  state.openFileMessage = message;
+  state.openFileSaving = false;
+}
+
+function buildAppUrl(params = new URLSearchParams()) {
+  const query = params.toString();
+  return `${getAppBaseUrl()}/${query ? `?${query}` : ""}`;
+}
+
+function getWorkspaceUrl() {
+  const params = new URLSearchParams();
+
+  if (state.filesRoot) {
+    params.set("root", state.filesRoot);
+  }
+
+  return buildAppUrl(params);
+}
+
+function openFileInNewTab(relativePath) {
+  window.open(getFileContentUrl(relativePath), "_blank", "noopener,noreferrer");
+}
+
+function openTextFileInNewTab(relativePath) {
+  const normalizedPath = normalizeFileTreePath(relativePath);
+  if (!normalizedPath) {
+    return;
+  }
+
+  const params = getFileTextRequestParams(normalizedPath);
+  params.set("view", "file");
+  window.open(buildAppUrl(params), "_blank", "noopener,noreferrer");
+}
+
 function getActiveSession() {
   return state.sessions.find((session) => session.id === state.activeSessionId) || null;
 }
@@ -712,6 +876,7 @@ function syncFilesRoot({ force = false } = {}) {
   state.fileTreeExpanded = new Set([""]);
   state.fileTreeLoading = new Set();
   state.fileTreeError = "";
+  resetOpenFile();
   return true;
 }
 
@@ -719,6 +884,7 @@ async function applyFilesRoot(rootValue, { force = false } = {}) {
   state.filesRootOverride = normalizeWorkspaceRoot(rootValue) || null;
   syncFilesRoot({ force: true });
   refreshFileTreeUi();
+  refreshOpenFileUi();
   await refreshOpenFileTree({ force });
 }
 
@@ -750,8 +916,34 @@ function getKnowledgeBaseNoteRawUrl(relativePath) {
   return `${getAppBaseUrl()}/api/files/content?${params.toString()}`;
 }
 
-function updateRoute({ view = state.currentView, notePath = state.knowledgeBase.selectedNotePath } = {}) {
+function getFileTextRequestParams(relativePath) {
+  const params = new URLSearchParams();
+
+  if (state.filesRoot) {
+    params.set("root", state.filesRoot);
+  }
+
+  if (relativePath) {
+    params.set("path", relativePath);
+  }
+
+  return params;
+}
+
+function updateRoute({
+  view = state.currentView,
+  notePath = state.knowledgeBase.selectedNotePath,
+  filePath = state.openFileRelativePath,
+  root = state.filesRoot,
+} = {}) {
   const url = new URL(window.location.href);
+  const normalizedRoot = normalizeWorkspaceRoot(root);
+
+  if (normalizedRoot) {
+    url.searchParams.set("root", normalizedRoot);
+  } else {
+    url.searchParams.delete("root");
+  }
 
   if (view === "knowledge-base") {
     url.searchParams.set("view", "knowledge-base");
@@ -763,14 +955,29 @@ function updateRoute({ view = state.currentView, notePath = state.knowledgeBase.
       url.searchParams.delete("note");
     }
 
+    url.searchParams.delete("path");
     url.hash = "";
   } else if (view === "gpu") {
     url.searchParams.set("view", "gpu");
     url.searchParams.delete("note");
+    url.searchParams.delete("path");
+    url.hash = "";
+  } else if (view === "file") {
+    url.searchParams.set("view", "file");
+    url.searchParams.delete("note");
+    const normalizedFilePath = normalizeFileTreePath(filePath);
+
+    if (normalizedFilePath) {
+      url.searchParams.set("path", normalizedFilePath);
+    } else {
+      url.searchParams.delete("path");
+    }
+
     url.hash = "";
   } else {
     url.searchParams.delete("view");
     url.searchParams.delete("note");
+    url.searchParams.delete("path");
     url.hash = "";
   }
 
@@ -1839,6 +2046,90 @@ function renderKnowledgeBaseApp() {
   `;
 }
 
+function renderOpenFilePanel() {
+  if (!state.openFileRelativePath) {
+    return `<div class="blank-state">no file selected</div>`;
+  }
+
+  const rawHref = getFileContentUrl(state.openFileRelativePath);
+  const dirty = isOpenFileDirty();
+
+  if (state.openFileStatus === "loading") {
+    return `
+      <div class="file-editor-card">
+        <div class="file-editor-head">
+          <div class="file-editor-copy">
+            <div class="file-editor-name">${escapeHtml(state.openFileName)}</div>
+            <div class="file-editor-path" title="${escapeHtml(state.openFileRelativePath)}">${escapeHtml(state.openFileRelativePath)}</div>
+          </div>
+          <a class="ghost-button file-editor-open" href="${escapeHtml(rawHref)}" target="_blank" rel="noreferrer">raw</a>
+        </div>
+        <div class="blank-state">opening file...</div>
+      </div>
+    `;
+  }
+
+  if (state.openFileStatus === "external") {
+    return `
+      <div class="file-editor-card">
+        <div class="file-editor-head">
+          <div class="file-editor-copy">
+            <div class="file-editor-name">${escapeHtml(state.openFileName)}</div>
+            <div class="file-editor-path" title="${escapeHtml(state.openFileRelativePath)}">${escapeHtml(state.openFileRelativePath)}</div>
+          </div>
+          <div class="file-editor-actions">
+            <button class="ghost-button file-editor-button" type="button" id="try-open-file-text">edit</button>
+            <a class="ghost-button file-editor-open" href="${escapeHtml(rawHref)}" target="_blank" rel="noreferrer">open</a>
+          </div>
+        </div>
+        <div class="blank-state">${escapeHtml(state.openFileMessage || "opened in a new tab because this file is not editable as text")}</div>
+      </div>
+    `;
+  }
+
+  if (state.openFileStatus === "error") {
+    return `
+      <div class="file-editor-card">
+        <div class="file-editor-head">
+          <div class="file-editor-copy">
+            <div class="file-editor-name">${escapeHtml(state.openFileName)}</div>
+            <div class="file-editor-path" title="${escapeHtml(state.openFileRelativePath)}">${escapeHtml(state.openFileRelativePath)}</div>
+          </div>
+          <a class="ghost-button file-editor-open" href="${escapeHtml(rawHref)}" target="_blank" rel="noreferrer">raw</a>
+        </div>
+        <div class="blank-state">${escapeHtml(state.openFileMessage || "could not open this file")}</div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="file-editor-card">
+      <div class="file-editor-head">
+        <div class="file-editor-copy">
+          <div class="file-editor-name">${escapeHtml(state.openFileName)}</div>
+          <div class="file-editor-path" title="${escapeHtml(state.openFileRelativePath)}">${escapeHtml(state.openFileRelativePath)}</div>
+        </div>
+        <div class="file-editor-actions">
+          <a class="ghost-button file-editor-open" href="${escapeHtml(rawHref)}" target="_blank" rel="noreferrer">raw</a>
+          <button class="ghost-button file-editor-button" type="button" id="reload-open-file" ${state.openFileSaving ? "disabled" : ""}>reload</button>
+          <button class="${dirty ? "primary-button" : "ghost-button"} file-editor-button" type="button" id="save-open-file" ${(!dirty || state.openFileSaving) ? "disabled" : ""}>${state.openFileSaving ? "saving..." : dirty ? "save" : "saved"}</button>
+        </div>
+      </div>
+      <div class="file-editor-status" id="open-file-status">${escapeHtml(
+        state.openFileSaving ? "saving changes..." : dirty ? "unsaved changes" : "saved",
+      )}</div>
+      <textarea
+        class="file-editor-textarea"
+        id="open-file-editor"
+        spellcheck="false"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="none"
+      >${escapeHtml(state.openFileDraft)}</textarea>
+    </div>
+  `;
+}
+
 function renderFileTreeNodes(parentPath = "", depth = 0) {
   const entries = state.fileTreeEntries[normalizeFileTreePath(parentPath)];
 
@@ -1867,20 +2158,19 @@ function renderFileTreeNodes(parentPath = "", depth = 0) {
         `;
       }
 
-      if (entry.isImage) {
-        return `
-          <a class="file-row file-link" href="${escapeHtml(getFileContentUrl(entry.relativePath))}" target="_blank" rel="noreferrer" style="--depth:${depth}">
-            <span class="file-caret">img</span>
-            <span class="file-label">${escapeHtml(entry.name)}</span>
-          </a>
-        `;
-      }
-
+      const isOpen = entry.relativePath === state.openFileRelativePath;
+      const openMode = entry.isImage ? "raw" : isLikelyTextFile(entry.name) ? "text" : "raw";
       return `
-        <div class="file-row file-static" style="--depth:${depth}">
-          <span class="file-caret">-</span>
+        <button
+          class="file-row file-row-button file-open-button ${isOpen ? "is-active" : ""}"
+          type="button"
+          data-file-open="${escapeHtml(entry.relativePath)}"
+          data-file-open-mode="${openMode}"
+          style="--depth:${depth}"
+        >
+          <span class="file-caret">${entry.isImage ? "img" : openMode === "text" ? "txt" : "file"}</span>
           <span class="file-label">${escapeHtml(entry.name)}</span>
-        </div>
+        </button>
       `;
     })
     .join("");
@@ -1919,7 +2209,11 @@ function renderSessionCards() {
           </div>
           <div class="session-side">
             <span class="session-status ${status.className}">${status.text}</span>
-            <button class="danger-button" type="button" aria-label="Delete session" data-delete-session="${session.id}">x</button>
+            <div class="session-actions">
+              <button class="ghost-button session-action-button" type="button" aria-label="Fork session" data-fork-session="${session.id}">fork</button>
+              <button class="ghost-button session-action-button" type="button" aria-label="Rename session" data-rename-session="${session.id}">edit</button>
+              <button class="danger-button" type="button" aria-label="Delete session" data-delete-session="${session.id}">x</button>
+            </div>
           </div>
           <div class="session-time">${relativeTime(session.lastOutputAt)}</div>
         </article>
@@ -2261,6 +2555,7 @@ function renderTerminalPanel(activeSession) {
           )}</div>
         </div>
         <div class="toolbar-actions">
+          <button class="ghost-button hidden-desktop toolbar-control" type="button" id="open-files-sidebar" aria-label="Open files sidebar">files</button>
           <button class="icon-button" type="button" id="refresh-sessions" aria-label="Refresh sessions">↻</button>
           <button class="ghost-button toolbar-control" type="button" id="tab-button" data-terminal-control aria-label="Send Tab" ${activeSession ? "" : "disabled"}>tab</button>
           <button class="ghost-button toolbar-control" type="button" id="shift-tab-button" data-terminal-control aria-label="Send Shift Tab" ${activeSession ? "" : "disabled"}>⇧⇥</button>
@@ -2354,6 +2649,7 @@ function renderShell() {
 
   teardownKnowledgeBaseGraphInteractions();
   syncFilesRoot();
+  document.title = "Remote Vibes";
 
   const providerOptions = state.providers
     .map(
@@ -2369,10 +2665,10 @@ function renderShell() {
 
   app.innerHTML = `
     <main class="screen app-shell">
-      <button class="sidebar-scrim ${state.sidebarOpen ? "is-open" : ""}" type="button" aria-label="Close menu" data-sidebar-scrim></button>
-      <aside class="sidebar ${state.sidebarOpen ? "is-open" : ""}" data-sidebar>
+      <button class="sidebar-scrim ${state.mobileSidebar ? "is-open" : ""}" type="button" aria-label="Close sidebars" data-sidebar-scrim></button>
+      <aside class="sidebar sidebar-left ${state.mobileSidebar === "left" ? "is-open" : ""}" data-sidebar-panel="left">
         <div class="sidebar-mobile-actions">
-          <button class="icon-button hidden-desktop" type="button" id="close-sidebar">×</button>
+          <button class="icon-button hidden-desktop" type="button" id="close-left-sidebar">×</button>
         </div>
 
         <div class="sidebar-body">
@@ -2476,6 +2772,41 @@ function renderShell() {
 
       ${renderTerminalPanel(activeSession)}
       ${renderAgentPromptModal()}
+      <aside class="sidebar sidebar-right ${state.mobileSidebar === "right" ? "is-open" : ""}" data-sidebar-panel="right">
+        <div class="sidebar-mobile-actions sidebar-mobile-actions-right">
+          <button class="icon-button hidden-desktop" type="button" id="close-right-sidebar">×</button>
+        </div>
+
+        <div class="sidebar-body">
+          <section class="sidebar-section sidebar-section-fill">
+            <div class="section-head">
+              <span>files</span>
+              <div class="section-actions">
+                <button class="ghost-button files-root-reset" type="button" id="auto-files-root" ${state.filesRootOverride ? "" : "disabled"}>auto</button>
+                <button class="icon-button" type="button" id="refresh-files">↻</button>
+              </div>
+            </div>
+            <form class="file-root-form" id="files-root-form">
+              <input
+                class="file-root-input"
+                id="files-root-input"
+                name="root"
+                type="text"
+                value="${escapeHtml(state.filesRoot || state.defaultCwd || "")}"
+                placeholder="${escapeHtml(state.defaultCwd || "workspace path")}"
+                autocomplete="off"
+                autocorrect="off"
+                autocapitalize="none"
+                spellcheck="false"
+              />
+              <button class="ghost-button file-root-submit" type="submit">set</button>
+            </form>
+            <div class="file-browser-stack">
+              <div class="file-tree" id="files-tree">${renderFileTree()}</div>
+            </div>
+          </section>
+        </div>
+      </aside>
     </main>
   `;
 
@@ -2502,7 +2833,7 @@ function bindSessionEvents() {
 
       const nextSessionId = element.getAttribute("data-session-id");
       if (!nextSessionId) {
-        setSidebarOpen(false);
+        closeMobileSidebar();
         return;
       }
 
@@ -2513,14 +2844,72 @@ function bindSessionEvents() {
       if (nextSessionId === state.activeSessionId) {
         renderShell();
         connectToSession(state.activeSessionId);
-        setSidebarOpen(false);
+        closeMobileSidebar();
         return;
       }
 
       state.activeSessionId = nextSessionId;
       renderShell();
       connectToSession(state.activeSessionId);
-      setSidebarOpen(false);
+      closeMobileSidebar();
+    });
+  });
+
+  document.querySelectorAll("[data-rename-session]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const sessionId = button.getAttribute("data-rename-session");
+      const session = state.sessions.find((entry) => entry.id === sessionId);
+
+      if (!sessionId || !session) {
+        return;
+      }
+
+      const nextName = window.prompt("Rename session", session.name);
+      if (nextName === null) {
+        return;
+      }
+
+      if (!nextName.trim()) {
+        window.alert("Session name cannot be empty.");
+        return;
+      }
+
+      try {
+        const payload = await fetchJson(`/api/sessions/${sessionId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name: nextName }),
+        });
+        updateSession(payload.session);
+        refreshShellUi({ sessions: true, ports: false, files: false });
+      } catch (error) {
+        window.alert(error.message);
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-fork-session]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const sessionId = button.getAttribute("data-fork-session");
+
+      if (!sessionId) {
+        return;
+      }
+
+      try {
+        const payload = await fetchJson(`/api/sessions/${sessionId}/fork`, {
+          method: "POST",
+        });
+
+        state.sessions = [payload.session, ...state.sessions.filter((session) => session.id !== payload.session.id)];
+        state.activeSessionId = payload.session.id;
+        renderShell();
+        connectToSession(payload.session.id);
+        closeMobileSidebar();
+      } catch (error) {
+        window.alert(error.message);
+      }
     });
   });
 
@@ -2887,6 +3276,30 @@ function bindFileTreeEvents() {
       void loadFileTree(relativePath);
     });
   });
+
+  document.querySelectorAll("[data-file-open]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const relativePath = normalizeFileTreePath(button.getAttribute("data-file-open"));
+      const openMode = button.getAttribute("data-file-open-mode");
+
+      if (!relativePath) {
+        return;
+      }
+
+      if (openMode === "raw") {
+        setOpenFileSelection(relativePath);
+        refreshFileTreeUi();
+        refreshOpenFileUi();
+        openFileInNewTab(relativePath);
+        return;
+      }
+
+      setOpenFileSelection(relativePath);
+      refreshFileTreeUi();
+      refreshOpenFileUi();
+      openTextFileInNewTab(relativePath);
+    });
+  });
 }
 
 function refreshFileTreeUi() {
@@ -2914,6 +3327,65 @@ function refreshFileTreeUi() {
 
   filesTree.innerHTML = renderFileTree();
   bindFileTreeEvents();
+}
+
+function refreshOpenFileUi() {
+  const fileEditor = document.querySelector("#file-editor");
+  if (!fileEditor) {
+    return;
+  }
+
+  fileEditor.innerHTML = renderOpenFilePanel();
+  bindFileEditorEvents();
+}
+
+function syncOpenFileEditorStateUi() {
+  const status = document.querySelector("#open-file-status");
+  const saveButton = document.querySelector("#save-open-file");
+
+  if (status) {
+    status.textContent = state.openFileSaving
+      ? "saving changes..."
+      : isOpenFileDirty()
+        ? "unsaved changes"
+        : "saved";
+  }
+
+  if (saveButton instanceof HTMLButtonElement) {
+    const dirty = isOpenFileDirty();
+    saveButton.disabled = !dirty || state.openFileSaving;
+    saveButton.textContent = state.openFileSaving ? "saving..." : dirty ? "save" : "saved";
+    saveButton.classList.toggle("primary-button", dirty);
+    saveButton.classList.toggle("ghost-button", !dirty);
+  }
+}
+
+function bindFileEditorEvents() {
+  document.querySelector("#open-file-editor")?.addEventListener("input", (event) => {
+    const textarea = event.currentTarget;
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return;
+    }
+
+    state.openFileDraft = textarea.value;
+    syncOpenFileEditorStateUi();
+  });
+
+  document.querySelector("#save-open-file")?.addEventListener("click", async () => {
+    await saveOpenFile();
+  });
+
+  document.querySelector("#reload-open-file")?.addEventListener("click", async () => {
+    await reloadOpenFile();
+  });
+
+  document.querySelector("#try-open-file-text")?.addEventListener("click", async () => {
+    if (!state.openFileRelativePath) {
+      return;
+    }
+
+    await openWorkspaceFile(state.openFileRelativePath, { force: true });
+  });
 }
 
 function refreshToolbarUi() {
@@ -2955,11 +3427,119 @@ function refreshShellUi({ sessions = true, ports = true, files = true } = {}) {
 
   if (files) {
     refreshFileTreeUi();
+    refreshOpenFileUi();
   }
 
   refreshGpuCard();
   refreshKnowledgeBaseUi();
   refreshToolbarUi();
+}
+
+async function openWorkspaceFile(relativePath, { force = false } = {}) {
+  const normalizedPath = normalizeFileTreePath(relativePath);
+  const root = state.filesRoot;
+
+  if (!root || !normalizedPath) {
+    return;
+  }
+
+  if (!force && state.openFileRelativePath === normalizedPath && state.openFileStatus === "text") {
+    refreshOpenFileUi();
+    return;
+  }
+
+  const requestId = state.openFileRequestId + 1;
+  state.openFileRequestId = requestId;
+  state.openFileRelativePath = normalizedPath;
+  state.openFileName = getFileDisplayName(normalizedPath);
+  state.openFileStatus = "loading";
+  state.openFileContent = "";
+  state.openFileDraft = "";
+  state.openFileMessage = "";
+  state.openFileSaving = false;
+  refreshFileTreeUi();
+  refreshOpenFileUi();
+
+  try {
+    const payload = await fetchJson(`/api/files/text?${getFileTextRequestParams(normalizedPath).toString()}`);
+
+    if (state.openFileRequestId !== requestId || state.filesRoot !== root) {
+      return;
+    }
+
+    state.openFileStatus = "text";
+    state.openFileContent = payload.file.content;
+    state.openFileDraft = payload.file.content;
+    state.openFileMessage = "";
+    state.openFileSaving = false;
+    refreshOpenFileUi();
+  } catch (error) {
+    if (state.openFileRequestId !== requestId || state.filesRoot !== root) {
+      return;
+    }
+
+    if (error.status === 400 || error.status === 413) {
+      state.openFileStatus = "external";
+      state.openFileContent = "";
+      state.openFileDraft = "";
+      state.openFileMessage = "this file is not editable as UTF-8 text, but you can still open it raw";
+      refreshOpenFileUi();
+      return;
+    }
+
+    state.openFileStatus = "error";
+    state.openFileMessage = error.message;
+    refreshOpenFileUi();
+  }
+}
+
+async function reloadOpenFile() {
+  if (!state.openFileRelativePath || state.openFileSaving) {
+    return;
+  }
+
+  await openWorkspaceFile(state.openFileRelativePath, { force: true });
+}
+
+async function saveOpenFile() {
+  if (
+    !state.filesRoot ||
+    !state.openFileRelativePath ||
+    state.openFileStatus !== "text" ||
+    state.openFileSaving ||
+    !isOpenFileDirty()
+  ) {
+    return;
+  }
+
+  const root = state.filesRoot;
+  const relativePath = state.openFileRelativePath;
+  state.openFileSaving = true;
+  syncOpenFileEditorStateUi();
+
+  try {
+    const payload = await fetchJson("/api/files/text", {
+      method: "PUT",
+      body: JSON.stringify({
+        root,
+        path: relativePath,
+        content: state.openFileDraft,
+      }),
+    });
+
+    if (state.filesRoot !== root || state.openFileRelativePath !== relativePath) {
+      return;
+    }
+
+    state.openFileContent = payload.file.content;
+    state.openFileDraft = payload.file.content;
+    state.openFileMessage = "";
+  } catch (error) {
+    window.alert(error.message);
+  } finally {
+    state.openFileSaving = false;
+    syncOpenFileEditorStateUi();
+  }
 }
 
 async function loadFileTree(relativePath = "", { force = false } = {}) {
@@ -3133,7 +3713,7 @@ function bindShellEvents() {
       state.activeSessionId = payload.session.id;
       renderShell();
       connectToSession(payload.session.id);
-      setSidebarOpen(false);
+      closeMobileSidebar();
     } catch (error) {
       window.alert(error.message);
     }
@@ -3217,9 +3797,11 @@ function bindShellEvents() {
     await applyFilesRoot("", { force: true });
   });
   document.querySelector("#refresh-ports")?.addEventListener("click", () => loadPorts());
-  document.querySelector("#open-sidebar")?.addEventListener("click", () => setSidebarOpen(true));
-  document.querySelector("#close-sidebar")?.addEventListener("click", () => setSidebarOpen(false));
-  document.querySelector("[data-sidebar-scrim]")?.addEventListener("click", () => setSidebarOpen(false));
+  document.querySelector("#open-sidebar")?.addEventListener("click", () => setMobileSidebar("left"));
+  document.querySelector("#open-files-sidebar")?.addEventListener("click", () => setMobileSidebar("right"));
+  document.querySelector("#close-left-sidebar")?.addEventListener("click", () => closeMobileSidebar());
+  document.querySelector("#close-right-sidebar")?.addEventListener("click", () => closeMobileSidebar());
+  document.querySelector("[data-sidebar-scrim]")?.addEventListener("click", () => closeMobileSidebar());
   document.querySelector("#relaunch-app")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     if (!(button instanceof HTMLButtonElement)) {
@@ -3789,6 +4371,33 @@ async function loadGpuHistory(range = state.gpuHistory.range || "1d") {
   }
 }
 
+function renderFileEditorPage() {
+  document.title = state.openFileName
+    ? `${state.openFileName} · Remote Vibes`
+    : "File Editor · Remote Vibes";
+
+  app.innerHTML = `
+    <main class="screen file-editor-screen">
+      <section class="file-editor-page-shell">
+        <div class="file-editor-page-toolbar">
+          <div class="file-editor-page-copy">
+            <strong>${escapeHtml(state.openFileName || "file editor")}</strong>
+            <div class="file-editor-page-root" title="${escapeHtml(state.filesRoot || state.defaultCwd || "")}">${escapeHtml(
+              state.filesRoot || state.defaultCwd || "",
+            )}</div>
+          </div>
+          <a class="ghost-button file-editor-page-link" href="${escapeHtml(getWorkspaceUrl())}">workspace</a>
+        </div>
+        <div class="file-editor-page-body">
+          <div class="file-editor" id="file-editor">${renderOpenFilePanel()}</div>
+        </div>
+      </section>
+    </main>
+  `;
+
+  bindFileEditorEvents();
+}
+
 async function bootstrapApp() {
   try {
     if ("virtualKeyboard" in navigator) {
@@ -3815,7 +4424,25 @@ async function bootstrapApp() {
     return;
   }
 
+  const route = getRouteState();
+  state.filesRootOverride = route.root || null;
   state.activeSessionId = payload.sessions[0]?.id ?? null;
+  syncFilesRoot({ force: true });
+
+  if (route.view === "file") {
+    setOpenFileSelection(route.path, {
+      status: route.path ? "loading" : "idle",
+      message: "",
+    });
+    renderFileEditorPage();
+
+    if (route.path) {
+      await openWorkspaceFile(route.path, { force: true });
+    } else {
+      refreshOpenFileUi();
+    }
+    return;
+  }
 
   if (state.currentView === "knowledge-base") {
     await loadKnowledgeBaseIndex();

@@ -15,9 +15,36 @@ bash <(curl -fsSL https://gist.githubusercontent.com/Clamepending/b40db6fc8775b8
 
 Use that gist URL directly. The repo `raw.githubusercontent.com/.../install.sh` link can get rate-limited.
 
+The install command now launches Remote Vibes as a background server, so it keeps running even after the SSH session or terminal closes. Logs and the managed pid live under `~/.remote-vibes/.remote-vibes/`.
+
 You can access any localhost ports by clicking on it in the sidebar.
 
 Example thing I did was text my agent to fix and [pretrain GPT2-small on a 4090!](https://x.com/clamepending/status/2039185482639462763?s=20)
+
+Agents inside Remote Vibes also get an `rv-browser` command on `PATH`, so they can inspect localhost apps with a real browser. A few examples:
+
+```bash
+rv-browser doctor
+rv-browser screenshot 4173
+rv-browser run 4173 --steps-file eval-steps.json --output final.png
+rv-browser run 4173 --steps '[{"action":"type","selector":"textarea","text":"make it cinematic"},{"action":"click","selector":"text=Generate"},{"action":"wait","text":"Done"},{"action":"screenshot","path":"final.png"}]'
+rv-browser describe 4173 --prompt "What visual issues stand out in the rendered UI?"
+rv-browser describe-file results/chart.png --prompt "Critique this chart's readability."
+```
+
+`rv-browser` is meant for arbitrary local UIs, not just Gradio. It works with anything the agent serves on `localhost` or `127.0.0.1`, captures screenshots, can click and type through a simple JSON step plan, and can ask Codex or Claude to turn a screenshot or local image into plain-text qualitative feedback. The recommended `run` actions are `type`, `click`, `select`, `wait`, and `screenshot`, with lower-level actions still available when needed.
+
+For model training or experiment loops, the lightweight pattern is:
+- serve the demo or chart on localhost and inspect it with `rv-browser screenshot`, `run`, or `describe`
+- save generated images or plots to disk and use `rv-browser describe-file` for a qualitative read
+- ask the agent to write a short keep-training / stop-training note grounded in those rendered artifacts
+
+For a repeatable live agent smoke test inside a Remote Vibes shell session, run:
+
+```bash
+node scripts/eval-rv-browser-codex.mjs --provider codex
+node scripts/eval-rv-browser-codex.mjs --provider claude
+```
 
 tips:
 - Press the "shift+tab" button on the top right to swap to bypass-permisisons mode to not have to approve things all the time.

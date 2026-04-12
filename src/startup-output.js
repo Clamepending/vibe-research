@@ -45,6 +45,14 @@ export function buildStartupOutput(config) {
 
   lines.push("Port proxy:");
   lines.push("- /proxy/<port>/");
+  lines.push("Agent browser helper:");
+  lines.push("- rv-browser screenshot 4173");
+  lines.push("- rv-browser run 4173 --steps-file eval-steps.json --output final.png");
+  lines.push("- recommended run actions: type, click, select, wait, screenshot");
+  lines.push("- rv-browser describe 4173 --prompt \"What visual issues stand out in the rendered UI?\"");
+  lines.push(
+    "- rv-browser describe-file results/chart.png --prompt \"What does this output show and what should improve?\"",
+  );
   lines.push("");
   lines.push(`${ANSI_GREEN}running${ANSI_RESET}`);
 

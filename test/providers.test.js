@@ -168,3 +168,13 @@ test("resolveProviderCommand rejects a discovered command that fails provider ve
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("providerDefinitions includes Claude path hints for common installs", () => {
+  const provider = providerDefinitions.find((entry) => entry.id === "claude");
+
+  assert.ok(provider);
+  assert.deepEqual(provider.pathHints, [
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+  ]);
+});

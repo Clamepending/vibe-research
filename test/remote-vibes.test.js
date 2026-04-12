@@ -504,7 +504,7 @@ test("login shells inherit mailbox helpers and agent inbox env vars", async () =
   assert.match(stdout, /rv-session-name/);
 });
 
-test("session rename api updates the live session name", async () => {
+test("session names can be updated after creation", async () => {
   const { app, baseUrl } = await startApp();
 
   try {
@@ -515,7 +515,8 @@ test("session rename api updates the live session name", async () => {
       },
       body: JSON.stringify({
         providerId: "shell",
-        name: "Shell 1",
+        name: "Original Name",
+        cwd: process.cwd(),
       }),
     });
 
@@ -523,25 +524,25 @@ test("session rename api updates the live session name", async () => {
     const { session } = await createResponse.json();
 
     const renameResponse = await fetch(`${baseUrl}/api/sessions/${session.id}`, {
-      method: "PUT",
+      method: "PATCH",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        name: "fib coordinator",
+        name: "Renamed Session",
       }),
     });
 
     assert.equal(renameResponse.status, 200);
     const renamePayload = await renameResponse.json();
-    assert.equal(renamePayload.session.name, "fib coordinator");
+    assert.equal(renamePayload.session.name, "Renamed Session");
 
     const sessionsResponse = await fetch(`${baseUrl}/api/sessions`);
     assert.equal(sessionsResponse.status, 200);
     const sessionsPayload = await sessionsResponse.json();
     assert.equal(
       sessionsPayload.sessions.find((entry) => entry.id === session.id)?.name,
-      "fib coordinator",
+      "Renamed Session",
     );
   } finally {
     await app.close();
@@ -633,6 +634,76 @@ test("rv-session-name falls back to a filesystem request when localhost is unrea
   }
 });
 
+test("sessions can be forked into fresh sibling sessions", async () => {
+  const { app, baseUrl } = await startApp();
+
+  try {
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId: "shell",
+        name: "Parent Session",
+        cwd: process.cwd(),
+      }),
+    });
+
+    assert.equal(createResponse.status, 201);
+    const { session } = await createResponse.json();
+
+    const firstForkResponse = await fetch(`${baseUrl}/api/sessions/${session.id}/fork`, {
+      method: "POST",
+    });
+    assert.equal(firstForkResponse.status, 201);
+    const firstForkPayload = await firstForkResponse.json();
+
+    assert.notEqual(firstForkPayload.session.id, session.id);
+    assert.equal(firstForkPayload.session.providerId, session.providerId);
+    assert.equal(firstForkPayload.session.cwd, session.cwd);
+    assert.equal(firstForkPayload.session.name, "Parent Session fork");
+
+    const secondForkResponse = await fetch(`${baseUrl}/api/sessions/${session.id}/fork`, {
+      method: "POST",
+    });
+    assert.equal(secondForkResponse.status, 201);
+    const secondForkPayload = await secondForkResponse.json();
+    assert.equal(secondForkPayload.session.name, "Parent Session fork 2");
+
+    const sessionsResponse = await fetch(`${baseUrl}/api/sessions`);
+    assert.equal(sessionsResponse.status, 200);
+    const sessionsPayload = await sessionsResponse.json();
+    assert.equal(sessionsPayload.sessions.length, 3);
+
+    const websocket = new WebSocket(
+      `${baseUrl.replace("http", "ws")}/ws?sessionId=${firstForkPayload.session.id}`,
+    );
+    const snapshot = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("Timed out waiting for forked session snapshot."));
+      }, 8_000);
+
+      websocket.on("message", (chunk) => {
+        const payload = JSON.parse(String(chunk));
+
+        if (payload.type === "snapshot") {
+          clearTimeout(timeout);
+          resolve(payload);
+        }
+      });
+    });
+
+    assert.match(snapshot.data, /forked from: Parent Session/);
+    assert.match(snapshot.data, /fresh sibling session/i);
+
+    websocket.close();
+    await once(websocket, "close");
+  } finally {
+    await app.close();
+  }
+});
+
 test("ports are discoverable and proxy through localhost", async () => {
   const previewServer = http.createServer((request, response) => {
     if (request.url === "/") {
@@ -650,15 +721,22 @@ test("ports are discoverable and proxy through localhost", async () => {
     response.writeHead(200, { "Content-Type": "text/plain" });
     response.end(`preview:${request.url}`);
   });
+  const forbiddenServer = http.createServer((_request, response) => {
+    response.writeHead(403, { "Content-Type": "text/plain" });
+    response.end("forbidden");
+  });
 
   await new Promise((resolve) => previewServer.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => forbiddenServer.listen(0, "127.0.0.1", resolve));
   const previewPort = previewServer.address().port;
+  const forbiddenPort = forbiddenServer.address().port;
 
   const { app, baseUrl } = await startApp();
 
   try {
     const ports = await waitForPort(baseUrl, previewPort);
     assert.ok(ports.some((entry) => entry.port === previewPort));
+    assert.ok(!ports.some((entry) => entry.port === forbiddenPort));
 
     const rootResponse = await fetch(`${baseUrl}/proxy/${previewPort}/`);
     assert.equal(rootResponse.status, 200);
@@ -678,6 +756,7 @@ test("ports are discoverable and proxy through localhost", async () => {
   } finally {
     await app.close();
     await new Promise((resolve) => previewServer.close(resolve));
+    await new Promise((resolve) => forbiddenServer.close(resolve));
   }
 });
 
@@ -874,7 +953,75 @@ test("running sessions are restored with their transcript after restart", async 
   }
 });
 
-test("workspace file api lists directories and serves image files", async () => {
+test("renamed sessions keep their updated name after restart", async () => {
+  const workspaceDir = await createTempWorkspace("remote-vibes-rename-persist-");
+  let firstApp = null;
+  let secondApp = null;
+
+  try {
+    const firstRun = await startApp({
+      cwd: workspaceDir,
+      persistSessions: true,
+    });
+    firstApp = firstRun.app;
+
+    const createResponse = await fetch(`${firstRun.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId: "shell",
+        name: "Before Rename",
+        cwd: workspaceDir,
+      }),
+    });
+
+    assert.equal(createResponse.status, 201);
+    const { session } = await createResponse.json();
+
+    const renameResponse = await fetch(`${firstRun.baseUrl}/api/sessions/${session.id}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "After Rename",
+      }),
+    });
+
+    assert.equal(renameResponse.status, 200);
+    assert.equal((await renameResponse.json()).session.name, "After Rename");
+
+    await firstApp.close();
+    firstApp = null;
+
+    const secondRun = await startApp({
+      cwd: workspaceDir,
+      persistSessions: true,
+    });
+    secondApp = secondRun.app;
+
+    const sessionsResponse = await fetch(`${secondRun.baseUrl}/api/sessions`);
+    assert.equal(sessionsResponse.status, 200);
+    const sessionsPayload = await sessionsResponse.json();
+    assert.equal(sessionsPayload.sessions.length, 1);
+    assert.equal(sessionsPayload.sessions[0].id, session.id);
+    assert.equal(sessionsPayload.sessions[0].name, "After Rename");
+  } finally {
+    if (firstApp) {
+      await firstApp.close();
+    }
+
+    if (secondApp) {
+      await secondApp.close();
+    }
+
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("workspace file api lists directories, edits text files, and serves image files", async () => {
   const workspaceDir = await createTempWorkspace("remote-vibes-files-");
   const graphsDir = path.join(workspaceDir, "graphs");
   const internalStateDir = path.join(workspaceDir, ".remote-vibes");
@@ -911,6 +1058,33 @@ test("workspace file api lists directories and serves image files", async () => 
     assert.equal(nestedPayload.entries.length, 1);
     assert.equal(nestedPayload.entries[0].name, "chart.png");
     assert.equal(nestedPayload.entries[0].isImage, true);
+
+    const textResponse = await fetch(
+      `${baseUrl}/api/files/text?root=${encodeURIComponent(workspaceDir)}&path=${encodeURIComponent("notes.txt")}`,
+    );
+    assert.equal(textResponse.status, 200);
+    const textPayload = await textResponse.json();
+    assert.equal(textPayload.file.content, "analysis notes\n");
+
+    const saveResponse = await fetch(`${baseUrl}/api/files/text`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        root: workspaceDir,
+        path: "notes.txt",
+        content: "updated notes\nwith details\n",
+      }),
+    });
+    assert.equal(saveResponse.status, 200);
+    assert.equal((await saveResponse.json()).file.content, "updated notes\nwith details\n");
+
+    const verifyTextResponse = await fetch(
+      `${baseUrl}/api/files/text?root=${encodeURIComponent(workspaceDir)}&path=${encodeURIComponent("notes.txt")}`,
+    );
+    assert.equal(verifyTextResponse.status, 200);
+    assert.equal((await verifyTextResponse.json()).file.content, "updated notes\nwith details\n");
 
     const imageResponse = await fetch(
       `${baseUrl}/api/files/content?root=${encodeURIComponent(workspaceDir)}&path=${encodeURIComponent("graphs/chart.png")}`,
@@ -1057,11 +1231,13 @@ test("workspace file api rejects traversal and invalid entry types", async () =>
   const workspaceDir = await createTempWorkspace("remote-vibes-files-guards-");
   const graphsDir = path.join(workspaceDir, "graphs");
   const internalStateDir = path.join(workspaceDir, ".remote-vibes");
+  const imagePath = path.join(graphsDir, "chart.png");
   const notePath = path.join(workspaceDir, "notes.txt");
   const internalStatePath = path.join(internalStateDir, "sessions.json");
 
   await mkdir(graphsDir, { recursive: true });
   await mkdir(internalStateDir, { recursive: true });
+  await writeFile(imagePath, PNG_FIXTURE);
   await writeFile(notePath, "analysis notes\n", "utf8");
   await writeFile(internalStatePath, "{}\n", "utf8");
 
@@ -1097,6 +1273,26 @@ test("workspace file api rejects traversal and invalid entry types", async () =>
     );
     assert.equal(internalFileResponse.status, 404);
     assert.match((await internalFileResponse.json()).error, /not available in the workspace browser/i);
+
+    const imageAsTextResponse = await fetch(
+      `${baseUrl}/api/files/text?root=${encodeURIComponent(workspaceDir)}&path=${encodeURIComponent("graphs/chart.png")}`,
+    );
+    assert.equal(imageAsTextResponse.status, 400);
+    assert.match((await imageAsTextResponse.json()).error, /not editable as text/i);
+
+    const internalTextResponse = await fetch(`${baseUrl}/api/files/text`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        root: workspaceDir,
+        path: ".remote-vibes/sessions.json",
+        content: "{}\n",
+      }),
+    });
+    assert.equal(internalTextResponse.status, 404);
+    assert.match((await internalTextResponse.json()).error, /not available in the workspace browser/i);
   } finally {
     await app.close();
     await rm(workspaceDir, { recursive: true, force: true });

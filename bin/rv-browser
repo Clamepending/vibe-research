@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_PATH="$ROOT_DIR/bin/rv-browser.mjs"
+export REMOTE_VIBES_APP_ROOT="${REMOTE_VIBES_APP_ROOT:-$ROOT_DIR}"
+
+find_node() {
+  local candidate
+
+  for candidate in "${NODE:-}" "$(command -v node 2>/dev/null || true)" /opt/homebrew/bin/node /usr/local/bin/node; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+NODE_BIN="$(find_node || true)"
+if [ -z "$NODE_BIN" ]; then
+  printf '{"ok":false,"error":{"code":"NODE_NOT_FOUND","message":"Could not find a Node.js executable required for rv-browser."}}\n' >&2
+  exit 1
+fi
+
+exec "$NODE_BIN" "$SCRIPT_PATH" "$@"

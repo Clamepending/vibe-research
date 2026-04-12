@@ -1,5 +1,5 @@
 import path from "node:path";
-import { readdir, realpath, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { resolveCwd } from "./session-manager.js";
 
 const IMAGE_EXTENSIONS = new Set([
@@ -18,6 +18,8 @@ const IMAGE_EXTENSIONS = new Set([
 ]);
 const INTERNAL_PATH_SEGMENTS = new Set([".remote-vibes"]);
 const MANAGED_WORKSPACE_FILES = new Set(["AGENTS.md", "CLAUDE.md", "GEMINI.md"]);
+const MAX_EDITABLE_FILE_BYTES = 1024 * 1024;
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 function buildHttpError(message, statusCode) {
   const error = new Error(message);
@@ -62,6 +64,35 @@ function containsInternalPathSegment(relativePath) {
 function isManagedWorkspaceFile(relativePath) {
   const normalized = normalizeRelativePath(relativePath);
   return normalized && !normalized.includes("/") && MANAGED_WORKSPACE_FILES.has(normalized);
+}
+
+function assertWorkspaceFile(entry) {
+  if (!entry.stats.isFile()) {
+    throw buildHttpError("Requested path is not a file.", 400);
+  }
+}
+
+function assertEditableFileSize(buffer) {
+  if (buffer.byteLength > MAX_EDITABLE_FILE_BYTES) {
+    throw buildHttpError(
+      `Requested file is too large to edit in the browser (max ${MAX_EDITABLE_FILE_BYTES} bytes).`,
+      413,
+    );
+  }
+}
+
+function decodeEditableText(buffer) {
+  assertEditableFileSize(buffer);
+
+  if (buffer.includes(0)) {
+    throw buildHttpError("Requested file is not editable as text.", 400);
+  }
+
+  try {
+    return UTF8_DECODER.decode(buffer);
+  } catch {
+    throw buildHttpError("Requested file is not editable as UTF-8 text.", 400);
+  }
 }
 
 export function isImageFile(fileName) {
@@ -154,5 +185,48 @@ export async function listWorkspaceEntries({
     root: entry.rootPath,
     relativePath: entry.relativePath,
     entries,
+  };
+}
+
+export async function readWorkspaceTextFile({
+  root,
+  relativePath = "",
+  fallbackCwd,
+}) {
+  const entry = await resolveWorkspaceEntry({ root, relativePath, fallbackCwd });
+  assertWorkspaceFile(entry);
+
+  const buffer = await readFile(entry.targetPath);
+  const content = decodeEditableText(buffer);
+
+  return {
+    root: entry.rootPath,
+    relativePath: entry.relativePath,
+    content,
+    byteLength: buffer.byteLength,
+  };
+}
+
+export async function writeWorkspaceTextFile({
+  root,
+  relativePath = "",
+  fallbackCwd,
+  content,
+}) {
+  const entry = await resolveWorkspaceEntry({ root, relativePath, fallbackCwd });
+  assertWorkspaceFile(entry);
+
+  const existingBuffer = await readFile(entry.targetPath);
+  decodeEditableText(existingBuffer);
+
+  const nextBuffer = Buffer.from(String(content ?? ""), "utf8");
+  assertEditableFileSize(nextBuffer);
+  await writeFile(entry.targetPath, nextBuffer);
+
+  return {
+    root: entry.rootPath,
+    relativePath: entry.relativePath,
+    content: nextBuffer.toString("utf8"),
+    byteLength: nextBuffer.byteLength,
   };
 }

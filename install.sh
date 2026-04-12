@@ -100,6 +100,14 @@ main() {
     chmod +x "$INSTALL_DIR/start.sh"
   fi
 
+  if [ -d "$INSTALL_DIR/bin" ]; then
+    for helper in rv-browser rv-browser-detour codex claude open osascript google-chrome chrome chromium chromium-browser firefox; do
+      if [ -f "$INSTALL_DIR/bin/$helper" ] && [ ! -x "$INSTALL_DIR/bin/$helper" ]; then
+        chmod +x "$INSTALL_DIR/bin/$helper"
+      fi
+    done
+  fi
+
   if [ "$SKIP_RUN" = "1" ]; then
     log "Skipping launch because REMOTE_VIBES_SKIP_RUN=1"
     return

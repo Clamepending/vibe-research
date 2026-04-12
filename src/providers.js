@@ -18,6 +18,10 @@ export const providerDefinitions = [
       name: "@anthropic-ai/claude-code",
       bin: "claude",
     },
+    pathHints: [
+      "/opt/homebrew/bin/claude",
+      "/usr/local/bin/claude",
+    ],
   },
   {
     id: "codex",
