@@ -527,11 +527,13 @@ test("agent wrappers inject rv-browser guidance for Codex and Claude", async () 
   try {
     const captureScriptPath = path.join(workspaceDir, "capture-argv.sh");
     const capturedArgsPath = path.join(workspaceDir, "captured-args.txt");
+    const capturedProviderPath = path.join(workspaceDir, "captured-provider.txt");
 
     await writeFile(
       captureScriptPath,
       `#!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$REMOTE_VIBES_PROVIDER" > "$CAPTURED_PROVIDER_PATH"
 printf '%s\n' "$@" > "$CAPTURED_ARGS_PATH"
 `,
       "utf8",
@@ -543,26 +545,34 @@ printf '%s\n' "$@" > "$CAPTURED_ARGS_PATH"
       env: {
         ...browserTestEnv,
         CAPTURED_ARGS_PATH: capturedArgsPath,
+        CAPTURED_PROVIDER_PATH: capturedProviderPath,
         REMOTE_VIBES_REAL_CODEX_COMMAND: captureScriptPath,
       },
     });
     const codexArgs = await readFile(capturedArgsPath, "utf8");
+    const codexProvider = await readFile(capturedProviderPath, "utf8");
     assert.match(codexArgs, /developer_instructions=/);
     assert.match(codexArgs, /rv-browser run <port-or-url> --steps/);
     assert.match(codexArgs, /type, click, select, wait, screenshot/);
+    assert.match(codexArgs, /--provider codex/);
+    assert.equal(codexProvider.trim(), "codex");
 
     await execFile(path.join(rootDir, "bin", "claude"), ["--print", "hello"], {
       cwd: workspaceDir,
       env: {
         ...browserTestEnv,
         CAPTURED_ARGS_PATH: capturedArgsPath,
+        CAPTURED_PROVIDER_PATH: capturedProviderPath,
         REMOTE_VIBES_REAL_CLAUDE_COMMAND: captureScriptPath,
       },
     });
     const claudeArgs = await readFile(capturedArgsPath, "utf8");
+    const claudeProvider = await readFile(capturedProviderPath, "utf8");
     assert.match(claudeArgs, /--append-system-prompt/);
     assert.match(claudeArgs, /rv-browser run <port-or-url> --steps/);
     assert.match(claudeArgs, /type, click, select, wait, screenshot/);
+    assert.match(claudeArgs, /--provider claude/);
+    assert.equal(claudeProvider.trim(), "claude");
   } finally {
     await rm(workspaceDir, { recursive: true, force: true });
   }

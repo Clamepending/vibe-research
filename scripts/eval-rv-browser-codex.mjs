@@ -81,6 +81,33 @@ async function waitForFile(filePath, timeoutMs = DEFAULT_TIMEOUT_MS) {
   throw new Error(`Timed out waiting for ${filePath}`);
 }
 
+async function waitForCliLogPattern(filePath, pattern, timeoutMs = 15_000) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const content = await readFile(filePath, "utf8");
+      if (pattern.test(content)) {
+        return true;
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  return false;
+}
+
+function buildVisionProviderPattern(provider) {
+  return new RegExp(
+    String.raw`(?:\\")?visionProvider(?:\\")?\s*:\s*(?:\\")?${provider}(?:\\")?`,
+  );
+}
+
 async function startDemoServer() {
   const server = http.createServer((request, response) => {
     if (request.url !== "/") {
@@ -184,7 +211,7 @@ async function waitForSnapshot(websocket, timeoutMs) {
   });
 }
 
-function buildPrompt(demoPort) {
+function buildPrompt(demoPort, provider) {
   return [
     `A test UI is running at http://127.0.0.1:${demoPort}.`,
     "Use ONLY rv-browser for browser work. Do not use curl, open, osascript, Chrome, Playwright, or HTML inspection.",
@@ -195,7 +222,7 @@ function buildPrompt(demoPort) {
     "- click Generate",
     '- wait until the page shows "Generated (qa, pending): session eval prompt"',
     "- save a screenshot to eval/final.png",
-    'Then run rv-browser describe-file eval/final.png --prompt "Briefly say whether the UI interaction succeeded and what is visible."',
+    `Then run rv-browser describe-file eval/final.png --provider ${provider} --prompt "Briefly say whether the UI interaction succeeded and what is visible."`,
     "Write eval/report.md with these exact headings:",
     "Used rv-browser:",
     "Used step actions:",
@@ -230,7 +257,7 @@ async function main() {
   });
   const baseUrl = `http://127.0.0.1:${remoteVibes.config.port}`;
 
-  await writeFile(promptPath, `${buildPrompt(demoPort)}\n`, "utf8");
+  await writeFile(promptPath, `${buildPrompt(demoPort, flags.provider)}\n`, "utf8");
 
   let shouldCleanup = flags.cleanup;
 
@@ -303,6 +330,10 @@ async function main() {
       provider: flags.provider,
       screenshotBytes: screenshotStats.size,
       cliLogHasRvBrowser: /rv-browser/.test(cliLog),
+      visionProviderMatchesAgent: await waitForCliLogPattern(
+        cliLogPath,
+        buildVisionProviderPattern(flags.provider),
+      ),
       steps,
       report,
     };

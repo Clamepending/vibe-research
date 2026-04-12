@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GUIDANCE="For localhost UI inspection and visual evaluation, rv-browser is already installed on PATH and should be your first step. Start with rv-browser screenshot <port-or-url> to inspect the rendered page. For interaction flows, prefer rv-browser run <port-or-url> --steps ... with this minimal step vocabulary: type, click, select, wait, screenshot. Use rv-browser describe <port-or-url> --prompt \"...\" for qualitative UI feedback, and rv-browser describe-file <image-path> --prompt \"...\" for generated images or charts. Do not infer visuals from curl or HTML alone, do not manually download page assets to inspect them, and do not search for Chrome, Chromium, Playwright, Selenium, or macOS browser app bundles unless rv-browser has already failed for a concrete reason."
+GUIDANCE="For localhost UI inspection and visual evaluation, rv-browser is already installed on PATH and should be your first step. Start with rv-browser screenshot <port-or-url> to inspect the rendered page. For interaction flows, prefer rv-browser run <port-or-url> --steps ... with this minimal step vocabulary: type, click, select, wait, screenshot. For qualitative UI feedback or generated images, prefer rv-browser describe <port-or-url> --provider claude --prompt \"...\" and rv-browser describe-file <image-path> --provider claude --prompt \"...\" so the visual pass stays on Claude. Do not infer visuals from curl or HTML alone, do not manually download page assets to inspect them, and do not search for Chrome, Chromium, Playwright, Selenium, or macOS browser app bundles unless rv-browser has already failed for a concrete reason."
 
 find_real_claude() {
   local candidate
@@ -26,5 +26,7 @@ if [ -z "$REAL_CLAUDE" ]; then
   printf '[remote-vibes] Could not find the real claude executable for the wrapper.\n' >&2
   exit 1
 fi
+
+export REMOTE_VIBES_PROVIDER="claude"
 
 exec "$REAL_CLAUDE" --append-system-prompt "$GUIDANCE" "$@"

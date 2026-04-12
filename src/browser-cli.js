@@ -1,8 +1,9 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { promisify } from "node:util";
 import { chromium } from "playwright-core";
 import {
   browserCommandHints,
@@ -16,10 +17,12 @@ import {
 } from "./browser-runtime.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+const PROCESS_PROVIDER_LOOKUP_DEPTH = 6;
 const DEFAULT_VIEWPORT = {
   width: 1440,
   height: 960,
 };
+const execFileAsync = promisify(execFile);
 class UsageError extends Error {
   constructor(message) {
     super(message);
@@ -564,6 +567,61 @@ function getRequestedVisionProvider(flags) {
   return requestedProvider;
 }
 
+export function inferVisionProviderFromCommandText(commandText) {
+  const executable = path.basename(String(commandText || "").trim().split(/\s+/, 1)[0] || "").toLowerCase();
+
+  if (executable === "claude") {
+    return "claude";
+  }
+
+  if (executable === "codex") {
+    return "codex";
+  }
+
+  return null;
+}
+
+async function inferVisionProviderFromProcessTree(startPid = process.ppid) {
+  let nextPid = Number(startPid);
+
+  for (let depth = 0; depth < PROCESS_PROVIDER_LOOKUP_DEPTH; depth += 1) {
+    if (!Number.isInteger(nextPid) || nextPid <= 1) {
+      return null;
+    }
+
+    try {
+      const { stdout } = await execFileAsync("ps", [
+        "-o",
+        "ppid=",
+        "-o",
+        "command=",
+        "-p",
+        String(nextPid),
+      ]);
+      const line = stdout.trim();
+      if (!line) {
+        return null;
+      }
+
+      const match = line.match(/^(\d+)\s+([\s\S]+)$/);
+      if (!match) {
+        return null;
+      }
+
+      const provider = inferVisionProviderFromCommandText(match[2]);
+      if (provider) {
+        return provider;
+      }
+
+      nextPid = Number(match[1]);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 async function resolveVisionProvider({ requestedProvider = "auto", env }) {
   const providerCandidates = {
     codex:
@@ -596,6 +654,15 @@ async function resolveVisionProvider({ requestedProvider = "auto", env }) {
 
   if (preferredFromSession === "claude" && providerCandidates.claude) {
     return { id: "claude", command: providerCandidates.claude };
+  }
+
+  const preferredFromProcess = await inferVisionProviderFromProcessTree();
+  if (preferredFromProcess === "claude" && providerCandidates.claude) {
+    return { id: "claude", command: providerCandidates.claude };
+  }
+
+  if (preferredFromProcess === "codex" && providerCandidates.codex) {
+    return { id: "codex", command: providerCandidates.codex };
   }
 
   if (providerCandidates.codex) {
