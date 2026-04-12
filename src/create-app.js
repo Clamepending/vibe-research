@@ -13,6 +13,7 @@ import { getGpuStatus } from "./gpu-manager.js";
 import { listListeningPorts } from "./ports.js";
 import { SessionManager } from "./session-manager.js";
 import { detectProviders, getDefaultProviderId } from "./providers.js";
+import { listKnowledgeBase, readKnowledgeBaseNote } from "./knowledge-base.js";
 import { listWorkspaceEntries, resolveWorkspaceEntry } from "./workspace-files.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -260,6 +261,31 @@ export async function createRemoteVibesApp({
       response.setHeader("Cache-Control", "no-store");
       response.setHeader("X-Content-Type-Options", "nosniff");
       response.sendFile(entry.targetPath);
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/knowledge-base", async (_request, response) => {
+    try {
+      response.json(
+        await listKnowledgeBase({
+          rootPath: path.join(stateDir, "wiki"),
+        }),
+      );
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/knowledge-base/note", async (request, response) => {
+    try {
+      response.json(
+        await readKnowledgeBaseNote({
+          rootPath: path.join(stateDir, "wiki"),
+          relativePath: typeof request.query.path === "string" ? request.query.path : "",
+        }),
+      );
     } catch (error) {
       response.status(error.statusCode || 400).json({ error: error.message });
     }

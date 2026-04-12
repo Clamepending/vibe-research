@@ -39,6 +39,27 @@ const state = {
   fileTreeExpanded: new Set([""]),
   fileTreeLoading: new Set(),
   fileTreeError: "",
+  knowledgeBase: {
+    rootPath: "",
+    relativeRoot: ".remote-vibes/wiki",
+    notes: [],
+    edges: [],
+    loading: false,
+    error: "",
+    selectedNotePath: "",
+    selectedNoteTitle: "",
+    selectedNoteContent: "",
+    selectedNoteLoading: false,
+    selectedNoteError: "",
+    selectedNoteRequestId: 0,
+    noteCache: {},
+    graphLayout: {
+      width: 540,
+      height: 420,
+      nodes: [],
+      edges: [],
+    },
+  },
   activeSessionId: null,
   connectedSessionId: null,
   defaultCwd: "",
@@ -61,6 +82,23 @@ const state = {
   terminalShowJumpToBottom: false,
   preferredBaseUrl: "",
 };
+
+function getRouteState() {
+  const url = new URL(window.location.href);
+  const explicitView = url.searchParams.get("view");
+
+  if (explicitView === "knowledge-base") {
+    return {
+      view: "knowledge-base",
+      notePath: normalizeFileTreePath(url.searchParams.get("note") || ""),
+    };
+  }
+
+  return {
+    view: window.location.hash === "#gpu" ? "gpu" : "shell",
+    notePath: "",
+  };
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -383,6 +421,18 @@ function getAppBaseUrl() {
   return state.preferredBaseUrl || window.location.origin;
 }
 
+function getKnowledgeBaseUrl(notePath = "") {
+  const url = new URL(`${getAppBaseUrl()}/`);
+  url.searchParams.set("view", "knowledge-base");
+
+  const normalizedNotePath = normalizeFileTreePath(notePath);
+  if (normalizedNotePath) {
+    url.searchParams.set("note", normalizedNotePath);
+  }
+
+  return url.toString();
+}
+
 function maybeRedirectToPreferredOrigin() {
   if (!state.preferredBaseUrl) {
     return false;
@@ -435,6 +485,82 @@ function normalizeWorkspaceRoot(value) {
   return trimmed.replace(/\/+$/, "") || "/";
 }
 
+function normalizePosixSegments(value) {
+  const segments = [];
+
+  for (const rawSegment of String(value || "").replaceAll("\\", "/").split("/")) {
+    const segment = rawSegment.trim();
+
+    if (!segment || segment === ".") {
+      continue;
+    }
+
+    if (segment === "..") {
+      if (!segments.length) {
+        return "";
+      }
+
+      segments.pop();
+      continue;
+    }
+
+    segments.push(segment);
+  }
+
+  return segments.join("/");
+}
+
+function getRelativeDirectory(relativePath) {
+  const normalized = normalizeFileTreePath(relativePath);
+  if (!normalized || !normalized.includes("/")) {
+    return "";
+  }
+
+  return normalized.split("/").slice(0, -1).join("/");
+}
+
+function resolveKnowledgeBaseRelativePath(fromPath, targetPath) {
+  const cleanedTarget = String(targetPath || "")
+    .trim()
+    .replace(/^<|>$/g, "");
+
+  if (!cleanedTarget || cleanedTarget.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(cleanedTarget)) {
+    return "";
+  }
+
+  const [withoutHash] = cleanedTarget.split("#");
+  const [withoutQuery] = withoutHash.split("?");
+  const normalizedInput = withoutQuery.replaceAll("\\", "/").trim();
+
+  if (!normalizedInput) {
+    return "";
+  }
+
+  if (normalizedInput.startsWith("/")) {
+    return normalizePosixSegments(normalizedInput.slice(1));
+  }
+
+  return normalizePosixSegments(
+    [getRelativeDirectory(fromPath), normalizedInput].filter(Boolean).join("/"),
+  );
+}
+
+function resolveKnowledgeBaseNotePath(fromPath, targetPath) {
+  const basePath = resolveKnowledgeBaseRelativePath(fromPath, targetPath);
+
+  if (!basePath) {
+    return "";
+  }
+
+  const notePaths = new Set(state.knowledgeBase.notes.map((note) => note.relativePath));
+  const hasExtension = /\.[^./]+$/.test(basePath);
+  const candidates = hasExtension
+    ? [basePath]
+    : [basePath, `${basePath}.md`, `${basePath}.markdown`, `${basePath}/index.md`];
+
+  return candidates.find((candidate) => notePaths.has(candidate)) || "";
+}
+
 function getActiveSession() {
   return state.sessions.find((session) => session.id === state.activeSessionId) || null;
 }
@@ -477,6 +603,739 @@ function getFileContentUrl(relativePath) {
   }
 
   return `${getAppBaseUrl()}/api/files/content?${params.toString()}`;
+}
+
+function getKnowledgeBaseNoteRawUrl(relativePath) {
+  const params = new URLSearchParams();
+
+  if (state.knowledgeBase.rootPath) {
+    params.set("root", state.knowledgeBase.rootPath);
+  }
+
+  if (relativePath) {
+    params.set("path", relativePath);
+  }
+
+  return `${getAppBaseUrl()}/api/files/content?${params.toString()}`;
+}
+
+function updateRoute({ view = state.currentView, notePath = state.knowledgeBase.selectedNotePath } = {}) {
+  const url = new URL(window.location.href);
+
+  if (view === "knowledge-base") {
+    url.searchParams.set("view", "knowledge-base");
+    const normalizedNotePath = normalizeFileTreePath(notePath);
+
+    if (normalizedNotePath) {
+      url.searchParams.set("note", normalizedNotePath);
+    } else {
+      url.searchParams.delete("note");
+    }
+
+    url.hash = "";
+  } else {
+    url.searchParams.delete("view");
+    url.searchParams.delete("note");
+    url.hash = view === "gpu" ? "#gpu" : "";
+  }
+
+  history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+function getKnowledgeBaseDefaultNotePath() {
+  const notes = state.knowledgeBase.notes;
+
+  if (!notes.length) {
+    return "";
+  }
+
+  return notes.find((note) => note.relativePath === "index.md")?.relativePath || notes[0].relativePath;
+}
+
+function getKnowledgeBaseSelectedNoteMeta() {
+  return state.knowledgeBase.notes.find((note) => note.relativePath === state.knowledgeBase.selectedNotePath) || null;
+}
+
+function truncateKnowledgeBaseLabel(value, maxLength = 16) {
+  const text = String(value || "").trim();
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(1, maxLength - 1))}…`;
+}
+
+function createKnowledgeBaseGraphLayout(notes, edges) {
+  const width = 540;
+  const height = 420;
+
+  if (!notes.length) {
+    return { width, height, nodes: [], edges: [] };
+  }
+
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const baseRadius = Math.min(width, height) * 0.34;
+  const nodes = notes.map((note, index) => {
+    const angle = (Math.PI * 2 * index) / Math.max(notes.length, 1);
+    return {
+      relativePath: note.relativePath,
+      title: note.title,
+      x: centerX + Math.cos(angle) * baseRadius,
+      y: centerY + Math.sin(angle) * baseRadius,
+      degree: 0,
+    };
+  });
+  const nodeMap = new Map(nodes.map((node) => [node.relativePath, node]));
+
+  for (const edge of edges) {
+    const source = nodeMap.get(edge.source);
+    const target = nodeMap.get(edge.target);
+
+    if (!source || !target) {
+      continue;
+    }
+
+    source.degree += 1;
+    target.degree += 1;
+  }
+
+  if (nodes.length <= 80) {
+    for (let iteration = 0; iteration < 90; iteration += 1) {
+      for (let leftIndex = 0; leftIndex < nodes.length; leftIndex += 1) {
+        const left = nodes[leftIndex];
+
+        for (let rightIndex = leftIndex + 1; rightIndex < nodes.length; rightIndex += 1) {
+          const right = nodes[rightIndex];
+          const deltaX = right.x - left.x;
+          const deltaY = right.y - left.y;
+          const distanceSquared = Math.max(deltaX * deltaX + deltaY * deltaY, 16);
+          const distance = Math.sqrt(distanceSquared);
+          const repulsion = 2100 / distanceSquared;
+          const forceX = (deltaX / distance) * repulsion;
+          const forceY = (deltaY / distance) * repulsion;
+
+          left.x -= forceX;
+          left.y -= forceY;
+          right.x += forceX;
+          right.y += forceY;
+        }
+      }
+
+      for (const edge of edges) {
+        const source = nodeMap.get(edge.source);
+        const target = nodeMap.get(edge.target);
+
+        if (!source || !target) {
+          continue;
+        }
+
+        const deltaX = target.x - source.x;
+        const deltaY = target.y - source.y;
+        const distance = Math.max(1, Math.sqrt(deltaX * deltaX + deltaY * deltaY));
+        const spring = (distance - 92) * 0.012;
+        const forceX = (deltaX / distance) * spring;
+        const forceY = (deltaY / distance) * spring;
+
+        source.x += forceX;
+        source.y += forceY;
+        target.x -= forceX;
+        target.y -= forceY;
+      }
+
+      for (const node of nodes) {
+        node.x += (centerX - node.x) * 0.015;
+        node.y += (centerY - node.y) * 0.015;
+        node.x = Math.min(width - 28, Math.max(28, node.x));
+        node.y = Math.min(height - 28, Math.max(28, node.y));
+      }
+    }
+  }
+
+  return {
+    width,
+    height,
+    nodes: nodes
+      .map((node) => ({
+        ...node,
+        radius: Math.min(18, 7 + Math.sqrt(node.degree || 0) * 2.2),
+      }))
+      .sort((left, right) => left.relativePath.localeCompare(right.relativePath)),
+    edges: edges.filter((edge) => nodeMap.has(edge.source) && nodeMap.has(edge.target)),
+  };
+}
+
+function applyKnowledgeBaseIndexState(payload) {
+  state.knowledgeBase.rootPath = payload?.rootPath || "";
+  state.knowledgeBase.relativeRoot = payload?.relativeRoot || ".remote-vibes/wiki";
+  state.knowledgeBase.notes = Array.isArray(payload?.notes) ? payload.notes : [];
+  state.knowledgeBase.edges = Array.isArray(payload?.edges) ? payload.edges : [];
+  state.knowledgeBase.graphLayout = createKnowledgeBaseGraphLayout(
+    state.knowledgeBase.notes,
+    state.knowledgeBase.edges,
+  );
+
+  const currentSelection = normalizeFileTreePath(state.knowledgeBase.selectedNotePath);
+  const availablePaths = new Set(state.knowledgeBase.notes.map((note) => note.relativePath));
+  state.knowledgeBase.selectedNotePath = availablePaths.has(currentSelection)
+    ? currentSelection
+    : getKnowledgeBaseDefaultNotePath();
+}
+
+function applyKnowledgeBaseNoteState(payload) {
+  const note = payload?.note || {};
+  const normalizedPath = normalizeFileTreePath(note.relativePath);
+
+  state.knowledgeBase.selectedNotePath = normalizedPath;
+  state.knowledgeBase.selectedNoteTitle = note.title || normalizedPath || "note";
+  state.knowledgeBase.selectedNoteContent = note.content || "";
+  state.knowledgeBase.selectedNoteError = "";
+
+  if (normalizedPath) {
+    state.knowledgeBase.noteCache[normalizedPath] = {
+      title: state.knowledgeBase.selectedNoteTitle,
+      content: state.knowledgeBase.selectedNoteContent,
+    };
+  }
+}
+
+async function loadKnowledgeBaseIndex() {
+  state.knowledgeBase.loading = true;
+  state.knowledgeBase.error = "";
+
+  try {
+    const payload = await fetchJson("/api/knowledge-base");
+    applyKnowledgeBaseIndexState(payload);
+  } catch (error) {
+    state.knowledgeBase.error = error.message;
+  } finally {
+    state.knowledgeBase.loading = false;
+  }
+}
+
+async function loadKnowledgeBaseNote(relativePath, { force = false } = {}) {
+  const normalizedPath = normalizeFileTreePath(relativePath);
+
+  if (!normalizedPath) {
+    state.knowledgeBase.selectedNotePath = "";
+    state.knowledgeBase.selectedNoteTitle = "";
+    state.knowledgeBase.selectedNoteContent = "";
+    state.knowledgeBase.selectedNoteError = "";
+    state.knowledgeBase.selectedNoteLoading = false;
+    return;
+  }
+
+  const cachedNote = !force ? state.knowledgeBase.noteCache[normalizedPath] : null;
+  if (cachedNote) {
+    state.knowledgeBase.selectedNotePath = normalizedPath;
+    state.knowledgeBase.selectedNoteTitle = cachedNote.title;
+    state.knowledgeBase.selectedNoteContent = cachedNote.content;
+    state.knowledgeBase.selectedNoteError = "";
+    state.knowledgeBase.selectedNoteLoading = false;
+    return;
+  }
+
+  const requestId = state.knowledgeBase.selectedNoteRequestId + 1;
+  state.knowledgeBase.selectedNoteRequestId = requestId;
+  state.knowledgeBase.selectedNotePath = normalizedPath;
+  state.knowledgeBase.selectedNoteLoading = true;
+  state.knowledgeBase.selectedNoteError = "";
+
+  try {
+    const payload = await fetchJson(`/api/knowledge-base/note?path=${encodeURIComponent(normalizedPath)}`);
+
+    if (state.knowledgeBase.selectedNoteRequestId !== requestId) {
+      return;
+    }
+
+    applyKnowledgeBaseNoteState(payload);
+  } catch (error) {
+    if (state.knowledgeBase.selectedNoteRequestId !== requestId) {
+      return;
+    }
+
+    state.knowledgeBase.selectedNoteTitle =
+      getKnowledgeBaseSelectedNoteMeta()?.title || normalizedPath;
+    state.knowledgeBase.selectedNoteContent = "";
+    state.knowledgeBase.selectedNoteError = error.message;
+  } finally {
+    if (state.knowledgeBase.selectedNoteRequestId === requestId) {
+      state.knowledgeBase.selectedNoteLoading = false;
+    }
+  }
+}
+
+async function ensureKnowledgeBaseSelectionLoaded({ force = false } = {}) {
+  if (!state.knowledgeBase.notes.length && !state.knowledgeBase.loading && !state.knowledgeBase.error) {
+    await loadKnowledgeBaseIndex();
+  }
+
+  const nextPath = state.knowledgeBase.selectedNotePath || getKnowledgeBaseDefaultNotePath();
+  state.knowledgeBase.selectedNotePath = nextPath;
+
+  if (!nextPath) {
+    return;
+  }
+
+  await loadKnowledgeBaseNote(nextPath, { force });
+}
+
+async function openKnowledgeBaseNote(relativePath, { force = false } = {}) {
+  const normalizedPath = normalizeFileTreePath(relativePath) || getKnowledgeBaseDefaultNotePath();
+
+  if (!normalizedPath) {
+    return;
+  }
+
+  state.knowledgeBase.selectedNotePath = normalizedPath;
+  updateRoute({ view: "knowledge-base", notePath: normalizedPath });
+  renderShell();
+  await loadKnowledgeBaseNote(normalizedPath, { force });
+  renderShell();
+}
+
+function renderKnowledgeBaseInline(text, currentPath) {
+  const tokens = [];
+  const createToken = (html) => `%%KB_TOKEN_${tokens.push(html) - 1}%%`;
+  let output = String(text || "");
+
+  output = output.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, altText, target) => {
+    const relativeAssetPath = resolveKnowledgeBaseRelativePath(currentPath, target);
+
+    if (!relativeAssetPath) {
+      return createToken(`<span>${escapeHtml(altText)}</span>`);
+    }
+
+    return createToken(
+      `<img class="knowledge-base-inline-image" src="${escapeHtml(getKnowledgeBaseNoteRawUrl(relativeAssetPath))}" alt="${escapeHtml(altText)}" loading="lazy" />`,
+    );
+  });
+
+  output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, target) => {
+    const notePath = resolveKnowledgeBaseNotePath(currentPath, target);
+
+    if (notePath) {
+      return createToken(
+        `<button class="knowledge-base-inline-link" type="button" data-kb-open-note="${escapeHtml(notePath)}">${escapeHtml(label)}</button>`,
+      );
+    }
+
+    const relativeAssetPath = resolveKnowledgeBaseRelativePath(currentPath, target);
+    const externalHref = relativeAssetPath
+      ? getKnowledgeBaseNoteRawUrl(relativeAssetPath)
+      : String(target || "").trim();
+    return createToken(
+      `<a class="knowledge-base-external-link" href="${escapeHtml(externalHref)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`,
+    );
+  });
+
+  output = output.replace(/\[\[([^[\]]+)\]\]/g, (_match, body) => {
+    const trimmedBody = String(body || "").trim();
+    if (!trimmedBody) {
+      return "";
+    }
+
+    const [targetWithAnchor, alias] = trimmedBody.split("|");
+    const notePath = resolveKnowledgeBaseNotePath(currentPath, targetWithAnchor);
+    const label = (alias || targetWithAnchor.split("#")[0] || "").trim();
+
+    if (notePath) {
+      return createToken(
+        `<button class="knowledge-base-inline-link" type="button" data-kb-open-note="${escapeHtml(notePath)}">${escapeHtml(label || notePath)}</button>`,
+      );
+    }
+
+    return createToken(`<span>${escapeHtml(label || trimmedBody)}</span>`);
+  });
+
+  output = output.replace(/`([^`]+)`/g, (_match, code) => createToken(`<code>${escapeHtml(code)}</code>`));
+  output = escapeHtml(output)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>")
+    .replace(/~~([^~]+)~~/g, "<del>$1</del>");
+
+  return output.replace(/%%KB_TOKEN_(\d+)%%/g, (_match, index) => tokens[Number(index)] || "");
+}
+
+function renderKnowledgeBaseMarkdown(markdown, currentPath) {
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let index = 0;
+
+  const isListLine = (line) => /^\s*(?:[-*+]\s+|\d+\.\s+)/.test(line);
+  const isBlockBoundary = (line) =>
+    !line.trim() ||
+    /^```/.test(line) ||
+    /^#{1,6}\s+/.test(line) ||
+    /^>\s?/.test(line) ||
+    isListLine(line) ||
+    /^([-*_]){3,}\s*$/.test(line.trim());
+
+  while (index < lines.length) {
+    const line = lines[index];
+
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    if (/^```/.test(line)) {
+      index += 1;
+      const codeLines = [];
+
+      while (index < lines.length && !/^```/.test(lines[index])) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+
+      if (index < lines.length) {
+        index += 1;
+      }
+
+      html.push(`<pre class="knowledge-base-code"><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      const level = Math.min(6, headingMatch[1].length);
+      html.push(`<h${level}>${renderKnowledgeBaseInline(headingMatch[2], currentPath)}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      const quoteLines = [];
+
+      while (index < lines.length && /^>\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^>\s?/, ""));
+        index += 1;
+      }
+
+      html.push(
+        `<blockquote class="knowledge-base-blockquote">${quoteLines
+          .map((entry) => `<p>${renderKnowledgeBaseInline(entry, currentPath)}</p>`)
+          .join("")}</blockquote>`,
+      );
+      continue;
+    }
+
+    if (isListLine(line)) {
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      const items = [];
+
+      while (index < lines.length && isListLine(lines[index])) {
+        items.push(lines[index].replace(/^\s*(?:[-*+]\s+|\d+\.\s+)/, ""));
+        index += 1;
+      }
+
+      html.push(
+        `<${ordered ? "ol" : "ul"}>${items
+          .map((item) => `<li>${renderKnowledgeBaseInline(item, currentPath)}</li>`)
+          .join("")}</${ordered ? "ol" : "ul"}>`,
+      );
+      continue;
+    }
+
+    if (/^([-*_]){3,}\s*$/.test(line.trim())) {
+      html.push(`<hr class="knowledge-base-rule" />`);
+      index += 1;
+      continue;
+    }
+
+    const paragraphLines = [];
+    while (index < lines.length && !isBlockBoundary(lines[index])) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+
+    if (!paragraphLines.length) {
+      paragraphLines.push(line.trim());
+      index += 1;
+    }
+
+    html.push(`<p>${renderKnowledgeBaseInline(paragraphLines.join(" "), currentPath)}</p>`);
+  }
+
+  return html.join("");
+}
+
+function renderKnowledgeBaseNoteList() {
+  if (state.knowledgeBase.loading && !state.knowledgeBase.notes.length) {
+    return `<div class="blank-state">loading notes</div>`;
+  }
+
+  if (state.knowledgeBase.error) {
+    return `<div class="blank-state">${escapeHtml(state.knowledgeBase.error)}</div>`;
+  }
+
+  if (!state.knowledgeBase.notes.length) {
+    return `<div class="blank-state">no markdown notes yet</div>`;
+  }
+
+  return state.knowledgeBase.notes
+    .map((note) => {
+      const isActive = note.relativePath === state.knowledgeBase.selectedNotePath;
+      return `
+        <button
+          class="knowledge-base-note-row ${isActive ? "is-active" : ""}"
+          type="button"
+          data-kb-note="${escapeHtml(note.relativePath)}"
+        >
+          <span class="knowledge-base-note-title">${escapeHtml(note.title)}</span>
+          <span class="knowledge-base-note-path">${escapeHtml(note.relativePath)}</span>
+          <span class="knowledge-base-note-excerpt">${escapeHtml(note.excerpt || "No preview yet.")}</span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function renderKnowledgeBaseGraph() {
+  const layout = state.knowledgeBase.graphLayout;
+
+  if (!layout.nodes.length) {
+    return `<div class="blank-state">graph will appear once markdown notes exist</div>`;
+  }
+
+  const selectedPath = state.knowledgeBase.selectedNotePath;
+  const connectedPaths = new Set([selectedPath]);
+
+  for (const edge of layout.edges) {
+    if (edge.source === selectedPath || edge.target === selectedPath) {
+      connectedPaths.add(edge.source);
+      connectedPaths.add(edge.target);
+    }
+  }
+
+  const nodeMap = new Map(layout.nodes.map((node) => [node.relativePath, node]));
+
+  return `
+    <article class="knowledge-base-graph-card">
+      <div class="knowledge-base-panel-head">
+        <div>
+          <strong>Graph View</strong>
+          <div class="knowledge-base-panel-meta">${escapeHtml(
+            `${layout.nodes.length} notes · ${layout.edges.length} links`,
+          )}</div>
+        </div>
+      </div>
+      <svg
+        class="knowledge-base-graph"
+        id="knowledge-base-graph"
+        viewBox="0 0 ${layout.width} ${layout.height}"
+        role="img"
+        aria-label="Knowledge base graph"
+      >
+        ${layout.edges
+          .map((edge) => {
+            const source = nodeMap.get(edge.source);
+            const target = nodeMap.get(edge.target);
+
+            if (!source || !target) {
+              return "";
+            }
+
+            const isConnected = edge.source === selectedPath || edge.target === selectedPath;
+            return `
+              <line
+                class="knowledge-base-graph-edge ${isConnected ? "is-connected" : ""}"
+                x1="${source.x.toFixed(2)}"
+                y1="${source.y.toFixed(2)}"
+                x2="${target.x.toFixed(2)}"
+                y2="${target.y.toFixed(2)}"
+              ></line>
+            `;
+          })
+          .join("")}
+        ${layout.nodes
+          .map((node) => {
+            const isSelected = node.relativePath === selectedPath;
+            const isConnected = connectedPaths.has(node.relativePath);
+            const shouldShowLabel = layout.nodes.length <= 22 || isSelected || isConnected;
+
+            return `
+              <g
+                class="knowledge-base-graph-node ${isSelected ? "is-selected" : ""} ${isConnected ? "is-connected" : ""}"
+                data-kb-graph-node="${escapeHtml(node.relativePath)}"
+                transform="translate(${node.x.toFixed(2)} ${node.y.toFixed(2)})"
+              >
+                <circle r="${node.radius.toFixed(2)}"></circle>
+                ${
+                  shouldShowLabel
+                    ? `<text y="${(-node.radius - 10).toFixed(2)}">${escapeHtml(
+                        truncateKnowledgeBaseLabel(node.title, 18),
+                      )}</text>`
+                    : ""
+                }
+              </g>
+            `;
+          })
+          .join("")}
+      </svg>
+    </article>
+  `;
+}
+
+function renderKnowledgeBaseView() {
+  const selectedNoteMeta = getKnowledgeBaseSelectedNoteMeta();
+  const selectedNotePath = state.knowledgeBase.selectedNotePath;
+  const rawHref = selectedNotePath ? getKnowledgeBaseNoteRawUrl(selectedNotePath) : "";
+
+  let noteBody = `<div class="blank-state">select a note to view it here</div>`;
+
+  if (state.knowledgeBase.selectedNoteLoading) {
+    noteBody = `<div class="blank-state">opening note...</div>`;
+  } else if (state.knowledgeBase.selectedNoteError) {
+    noteBody = `<div class="blank-state">${escapeHtml(state.knowledgeBase.selectedNoteError)}</div>`;
+  } else if (state.knowledgeBase.selectedNoteContent) {
+    noteBody = `
+      <div class="knowledge-base-markdown">
+        ${renderKnowledgeBaseMarkdown(state.knowledgeBase.selectedNoteContent, selectedNotePath)}
+      </div>
+    `;
+  }
+
+  return `
+    <section class="dashboard-panel knowledge-base-view">
+      <div class="dashboard-toolbar">
+        <div class="dashboard-copy">
+          <strong>Knowledge Base</strong>
+          <div class="terminal-meta">obsidian-style markdown viewer for ${escapeHtml(state.knowledgeBase.relativeRoot)}</div>
+        </div>
+        <div class="dashboard-actions knowledge-base-toolbar-actions">
+          <button class="ghost-button toolbar-control" type="button" id="refresh-knowledge-base">refresh</button>
+          <button class="ghost-button toolbar-control" type="button" id="back-to-shell">back</button>
+        </div>
+      </div>
+      <div class="dashboard-range knowledge-base-summary">
+        <span class="dashboard-range-label">root</span>
+        <span class="knowledge-base-root">${escapeHtml(state.knowledgeBase.relativeRoot)}</span>
+        <span class="dashboard-updated">${escapeHtml(
+          `${state.knowledgeBase.notes.length} notes`,
+        )}</span>
+      </div>
+      <div class="knowledge-base-grid">
+        <aside class="knowledge-base-column knowledge-base-column-list">
+          <div class="knowledge-base-panel-head">
+            <div>
+              <strong>Markdown Notes</strong>
+              <div class="knowledge-base-panel-meta">browse linked pages</div>
+            </div>
+          </div>
+          <div class="knowledge-base-note-list">
+            ${renderKnowledgeBaseNoteList()}
+          </div>
+        </aside>
+        <section class="knowledge-base-column knowledge-base-column-note">
+          <div class="knowledge-base-panel-head">
+            <div>
+              <strong>${escapeHtml(
+                state.knowledgeBase.selectedNoteTitle || selectedNoteMeta?.title || "Note Viewer",
+              )}</strong>
+              <div class="knowledge-base-panel-meta">${escapeHtml(
+                selectedNotePath || selectedNoteMeta?.relativePath || "No note selected",
+              )}</div>
+            </div>
+            ${
+              rawHref
+                ? `<a class="ghost-button toolbar-control" href="${escapeHtml(rawHref)}" target="_blank" rel="noreferrer">raw</a>`
+                : ""
+            }
+          </div>
+          <div class="knowledge-base-note-card">
+            ${noteBody}
+          </div>
+        </section>
+        <aside class="knowledge-base-column knowledge-base-column-graph">
+          ${renderKnowledgeBaseGraph()}
+        </aside>
+      </div>
+    </section>
+  `;
+}
+
+function renderKnowledgeBaseApp() {
+  const selectedNotePath = state.knowledgeBase.selectedNotePath;
+  const rawHref = selectedNotePath ? getKnowledgeBaseNoteRawUrl(selectedNotePath) : "";
+
+  document.title = selectedNotePath
+    ? `${state.knowledgeBase.selectedNoteTitle || selectedNotePath} · Knowledge Base`
+    : "Knowledge Base";
+
+  return `
+    <main class="screen knowledge-base-app">
+      <section class="knowledge-base-app-shell">
+        <header class="knowledge-base-app-toolbar">
+          <div class="knowledge-base-app-copy">
+            <span class="knowledge-base-app-eyebrow">Remote Vibes</span>
+            <strong>Knowledge Base</strong>
+            <div class="knowledge-base-app-meta">${escapeHtml(
+              `Obsidian-style markdown workspace for ${state.knowledgeBase.relativeRoot}`,
+            )}</div>
+          </div>
+          <div class="knowledge-base-app-actions">
+            ${rawHref
+              ? `<a class="ghost-button toolbar-control" href="${escapeHtml(rawHref)}" target="_blank" rel="noreferrer">raw</a>`
+              : ""}
+            <button class="ghost-button toolbar-control" type="button" id="refresh-knowledge-base">refresh</button>
+            <a class="ghost-button toolbar-control" href="${escapeHtml(getAppBaseUrl())}/">remote vibes</a>
+          </div>
+        </header>
+
+        <div class="knowledge-base-app-summary">
+          <span class="dashboard-range-label">root</span>
+          <span class="knowledge-base-root">${escapeHtml(state.knowledgeBase.relativeRoot)}</span>
+          <span class="dashboard-updated">${escapeHtml(
+            `${state.knowledgeBase.notes.length} notes`,
+          )}</span>
+        </div>
+
+        <div class="knowledge-base-grid">
+          <aside class="knowledge-base-column knowledge-base-column-list">
+            <div class="knowledge-base-panel-head">
+              <div>
+                <strong>Markdown Notes</strong>
+                <div class="knowledge-base-panel-meta">browse linked pages</div>
+              </div>
+            </div>
+            <div class="knowledge-base-note-list">
+              ${renderKnowledgeBaseNoteList()}
+            </div>
+          </aside>
+          <section class="knowledge-base-column knowledge-base-column-note">
+            <div class="knowledge-base-panel-head">
+              <div>
+                <strong>${escapeHtml(
+                  state.knowledgeBase.selectedNoteTitle || getKnowledgeBaseSelectedNoteMeta()?.title || "Note Viewer",
+                )}</strong>
+                <div class="knowledge-base-panel-meta">${escapeHtml(
+                  selectedNotePath || getKnowledgeBaseSelectedNoteMeta()?.relativePath || "No note selected",
+                )}</div>
+              </div>
+            </div>
+            <div class="knowledge-base-note-card">
+              ${
+                state.knowledgeBase.selectedNoteLoading
+                  ? `<div class="blank-state">opening note...</div>`
+                  : state.knowledgeBase.selectedNoteError
+                    ? `<div class="blank-state">${escapeHtml(state.knowledgeBase.selectedNoteError)}</div>`
+                    : state.knowledgeBase.selectedNoteContent
+                      ? `<div class="knowledge-base-markdown">${renderKnowledgeBaseMarkdown(
+                          state.knowledgeBase.selectedNoteContent,
+                          selectedNotePath,
+                        )}</div>`
+                      : `<div class="blank-state">select a note to view it here</div>`
+              }
+            </div>
+          </section>
+          <aside class="knowledge-base-column knowledge-base-column-graph">
+            ${renderKnowledgeBaseGraph()}
+          </aside>
+        </div>
+      </section>
+    </main>
+  `;
 }
 
 function renderFileTreeNodes(parentPath = "", depth = 0) {
@@ -776,6 +1635,10 @@ function renderGpuDashboard() {
 }
 
 function renderTerminalPanel(activeSession) {
+  if (state.currentView === "knowledge-base") {
+    return renderKnowledgeBaseView();
+  }
+
   if (state.currentView === "gpu") {
     return renderGpuDashboard();
   }
@@ -866,6 +1729,13 @@ function renderAgentPromptModal() {
 }
 
 function renderShell() {
+  if (state.currentView === "knowledge-base") {
+    app.innerHTML = renderKnowledgeBaseApp();
+    disposeTerminal();
+    refreshKnowledgeBaseUi();
+    return;
+  }
+
   syncFilesRoot();
 
   const providerOptions = state.providers
@@ -910,6 +1780,25 @@ function renderShell() {
               <span>gpu usage</span>
             </div>
             <div id="gpu-card">${renderGpuCard()}</div>
+          </section>
+
+          <section class="sidebar-section">
+            <div class="section-head">
+              <span>knowledge base</span>
+              <a
+                class="ghost-button"
+                id="open-knowledge-base"
+                href="${escapeHtml(getKnowledgeBaseUrl(state.knowledgeBase.selectedNotePath || ""))}"
+                target="_blank"
+                rel="noreferrer"
+              >
+                view
+              </a>
+            </div>
+            <div class="prompt-copy">
+              <div>obsidian-style view for ${escapeHtml(state.agentPromptWikiRoot)}/wiki</div>
+              <div>markdown notes + graph view in a dedicated tab</div>
+            </div>
           </section>
 
           <section class="sidebar-section">
@@ -977,6 +1866,7 @@ function renderShell() {
   } else {
     disposeTerminal();
     refreshGpuCard();
+    refreshKnowledgeBaseUi();
   }
 
   void refreshOpenFileTree();
@@ -1057,6 +1947,53 @@ function refreshGpuCard() {
 
   gpuCard.innerHTML = renderGpuCard();
   bindGpuNavigationEvents();
+}
+
+function bindKnowledgeBaseEvents() {
+  document.querySelectorAll("[data-kb-note]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const notePath = button.getAttribute("data-kb-note");
+      await openKnowledgeBaseNote(notePath || "");
+    });
+  });
+
+  document.querySelectorAll("[data-kb-open-note]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const notePath = button.getAttribute("data-kb-open-note");
+      await openKnowledgeBaseNote(notePath || "");
+    });
+  });
+
+  document.querySelector("#knowledge-base-graph")?.addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+
+    const node = target.closest("[data-kb-graph-node]");
+    const notePath = node?.getAttribute("data-kb-graph-node");
+
+    if (!notePath) {
+      return;
+    }
+
+    await openKnowledgeBaseNote(notePath);
+  });
+
+  document.querySelector("#refresh-knowledge-base")?.addEventListener("click", async () => {
+    await loadKnowledgeBaseIndex();
+    await ensureKnowledgeBaseSelectionLoaded({ force: true });
+    updateRoute({ view: "knowledge-base", notePath: state.knowledgeBase.selectedNotePath });
+    renderShell();
+  });
+}
+
+function refreshKnowledgeBaseUi() {
+  if (state.currentView !== "knowledge-base") {
+    return;
+  }
+
+  bindKnowledgeBaseEvents();
 }
 
 function bindFileTreeEvents() {
@@ -1150,6 +2087,7 @@ function refreshShellUi({ sessions = true, ports = true, files = true } = {}) {
   }
 
   refreshGpuCard();
+  refreshKnowledgeBaseUi();
   refreshToolbarUi();
 }
 
@@ -1261,16 +2199,23 @@ function applyGpuHistoryState(payload) {
 }
 
 function syncViewFromLocation() {
-  state.currentView = window.location.hash === "#gpu" ? "gpu" : "shell";
+  const route = getRouteState();
+  state.currentView = route.view;
+
+  if (route.view === "knowledge-base") {
+    state.knowledgeBase.selectedNotePath = route.notePath;
+  }
 }
 
-function setCurrentView(nextView) {
-  state.currentView = nextView === "gpu" ? "gpu" : "shell";
-  const nextHash = state.currentView === "gpu" ? "#gpu" : "";
-
-  if (window.location.hash !== nextHash) {
-    history.replaceState(null, "", `${window.location.pathname}${window.location.search}${nextHash}`);
+function setCurrentView(nextView, { notePath = state.knowledgeBase.selectedNotePath } = {}) {
+  if (nextView === "knowledge-base") {
+    state.currentView = "knowledge-base";
+    updateRoute({ view: "knowledge-base", notePath });
+    return;
   }
+
+  state.currentView = nextView === "gpu" ? "gpu" : "shell";
+  updateRoute({ view: state.currentView });
 }
 
 function bindGpuNavigationEvents() {
@@ -1964,9 +2909,16 @@ async function bootstrapApp() {
   }
 
   state.activeSessionId = payload.sessions[0]?.id ?? null;
+
+  if (state.currentView === "knowledge-base") {
+    await loadKnowledgeBaseIndex();
+    await ensureKnowledgeBaseSelectionLoaded();
+    updateRoute({ view: "knowledge-base", notePath: state.knowledgeBase.selectedNotePath });
+  }
+
   renderShell();
 
-  if (state.activeSessionId) {
+  if (state.activeSessionId && state.currentView === "shell") {
     connectToSession(state.activeSessionId);
   }
 

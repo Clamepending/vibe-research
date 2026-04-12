@@ -179,6 +179,68 @@ test("agent prompt sync does not overwrite unmanaged instruction files", async (
   }
 });
 
+test("knowledge base api indexes markdown notes and linked note content", async () => {
+  const workspaceDir = await createTempWorkspace("remote-vibes-knowledge-base-");
+  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+  const topicsDir = path.join(wikiDir, "topics");
+
+  await mkdir(topicsDir, { recursive: true });
+  await writeFile(
+    path.join(wikiDir, "index.md"),
+    "# Wiki Index\n\nSee [Topic A](topics/topic-a.md) and [[log]].\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(wikiDir, "log.md"),
+    "# Wiki Log\n\nLinked back to [[index]].\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(topicsDir, "topic-a.md"),
+    "# Topic A\n\nBack to [Index](../index.md).\n",
+    "utf8",
+  );
+
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+
+  try {
+    const indexResponse = await fetch(`${baseUrl}/api/knowledge-base`);
+    assert.equal(indexResponse.status, 200);
+    const indexPayload = await indexResponse.json();
+
+    assert.equal(indexPayload.relativeRoot, ".remote-vibes/wiki");
+    assert.deepEqual(
+      indexPayload.notes.map((note) => note.relativePath),
+      ["index.md", "log.md", "topics/topic-a.md"],
+    );
+    assert.deepEqual(indexPayload.edges, [
+      { source: "index.md", target: "log.md" },
+      { source: "index.md", target: "topics/topic-a.md" },
+      { source: "log.md", target: "index.md" },
+      { source: "topics/topic-a.md", target: "index.md" },
+    ]);
+
+    const noteResponse = await fetch(
+      `${baseUrl}/api/knowledge-base/note?path=${encodeURIComponent("topics/topic-a.md")}`,
+    );
+    assert.equal(noteResponse.status, 200);
+    const notePayload = await noteResponse.json();
+
+    assert.equal(notePayload.note.relativePath, "topics/topic-a.md");
+    assert.equal(notePayload.note.title, "Topic A");
+    assert.match(notePayload.note.content, /Back to \[Index\]/);
+
+    const invalidNoteResponse = await fetch(
+      `${baseUrl}/api/knowledge-base/note?path=${encodeURIComponent("../agent-prompt.md")}`,
+    );
+    assert.equal(invalidNoteResponse.status, 400);
+    assert.match((await invalidNoteResponse.json()).error, /escapes the knowledge base root/i);
+  } finally {
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("shell session streams websocket output and honors custom cwd", async () => {
   const { app, baseUrl } = await startApp();
 
