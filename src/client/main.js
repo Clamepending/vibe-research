@@ -4,6 +4,62 @@ import { CanvasAddon } from "xterm-addon-canvas";
 
 const app = document.querySelector("#app");
 const TOUCH_TAP_SLOP_PX = 10;
+const KNOWLEDGE_BASE_GRAPH_WIDTH = 920;
+const KNOWLEDGE_BASE_GRAPH_HEIGHT = 680;
+const KNOWLEDGE_BASE_GRAPH_MIN_SCALE = 0.35;
+const KNOWLEDGE_BASE_GRAPH_MAX_SCALE = 2.8;
+const KNOWLEDGE_BASE_GRAPH_FIT_PADDING = 72;
+const KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX = 6;
+const KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE = [
+  {
+    fill: "rgba(104, 227, 199, 0.28)",
+    stroke: "rgba(104, 227, 199, 0.72)",
+    label: "#dffaf2",
+    connectedFill: "rgba(104, 227, 199, 0.38)",
+    connectedStroke: "rgba(104, 227, 199, 0.86)",
+    edge: "rgba(104, 227, 199, 0.22)",
+  },
+  {
+    fill: "rgba(112, 175, 255, 0.24)",
+    stroke: "rgba(112, 175, 255, 0.7)",
+    label: "#d9e8ff",
+    connectedFill: "rgba(112, 175, 255, 0.34)",
+    connectedStroke: "rgba(112, 175, 255, 0.82)",
+    edge: "rgba(112, 175, 255, 0.2)",
+  },
+  {
+    fill: "rgba(243, 195, 106, 0.24)",
+    stroke: "rgba(243, 195, 106, 0.72)",
+    label: "#fff0c8",
+    connectedFill: "rgba(243, 195, 106, 0.34)",
+    connectedStroke: "rgba(243, 195, 106, 0.84)",
+    edge: "rgba(243, 195, 106, 0.2)",
+  },
+  {
+    fill: "rgba(255, 150, 118, 0.24)",
+    stroke: "rgba(255, 150, 118, 0.7)",
+    label: "#ffe1d8",
+    connectedFill: "rgba(255, 150, 118, 0.34)",
+    connectedStroke: "rgba(255, 150, 118, 0.82)",
+    edge: "rgba(255, 150, 118, 0.2)",
+  },
+  {
+    fill: "rgba(154, 214, 127, 0.24)",
+    stroke: "rgba(154, 214, 127, 0.68)",
+    label: "#ebffd8",
+    connectedFill: "rgba(154, 214, 127, 0.34)",
+    connectedStroke: "rgba(154, 214, 127, 0.8)",
+    edge: "rgba(154, 214, 127, 0.2)",
+  },
+  {
+    fill: "rgba(246, 138, 182, 0.24)",
+    stroke: "rgba(246, 138, 182, 0.68)",
+    label: "#ffe0ec",
+    connectedFill: "rgba(246, 138, 182, 0.34)",
+    connectedStroke: "rgba(246, 138, 182, 0.8)",
+    edge: "rgba(246, 138, 182, 0.2)",
+  },
+];
 
 const state = {
   providers: [],
@@ -54,10 +110,21 @@ const state = {
     selectedNoteRequestId: 0,
     noteCache: {},
     graphLayout: {
-      width: 540,
-      height: 420,
+      width: KNOWLEDGE_BASE_GRAPH_WIDTH,
+      height: KNOWLEDGE_BASE_GRAPH_HEIGHT,
       nodes: [],
       edges: [],
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+      alpha: 0,
+      running: false,
+      frameHandle: 0,
+      dragState: null,
+      panState: null,
+      refs: null,
+      cleanup: null,
+      cameraInitialized: false,
     },
   },
   activeSessionId: null,
@@ -106,6 +173,10 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function isLive(session) {
@@ -417,6 +488,32 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+async function waitForAppRecovery({ attempts = 40, delayMs = 500 } = {}) {
+  const recoveryUrl = new URL("/api/state", window.location.origin);
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await sleep(delayMs);
+    recoveryUrl.searchParams.set("ts", String(Date.now()));
+
+    try {
+      const response = await fetch(recoveryUrl.toString(), { cache: "no-store" });
+      if (response.ok) {
+        return true;
+      }
+    } catch {
+      // Keep waiting for the relaunched server.
+    }
+  }
+
+  return false;
+}
+
 function getAppBaseUrl() {
   return state.preferredBaseUrl || window.location.origin;
 }
@@ -665,28 +762,383 @@ function truncateKnowledgeBaseLabel(value, maxLength = 16) {
   return `${text.slice(0, Math.max(1, maxLength - 1))}…`;
 }
 
+function hashString(value) {
+  let hash = 0;
+
+  for (const char of String(value || "")) {
+    hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  }
+
+  return hash;
+}
+
+function getKnowledgeBaseGraphGroupKey(relativePath) {
+  const normalizedPath = normalizeFileTreePath(relativePath);
+
+  if (!normalizedPath) {
+    return "root";
+  }
+
+  if (normalizedPath === "index.md") {
+    return "index";
+  }
+
+  if (normalizedPath === "log.md") {
+    return "log";
+  }
+
+  const segments = normalizedPath.split("/").filter(Boolean);
+  if (segments.length > 1) {
+    return segments[0];
+  }
+
+  return "root";
+}
+
+function getKnowledgeBaseGraphColor(groupKey) {
+  const normalizedKey = String(groupKey || "root").toLowerCase();
+  const knownPalette = {
+    index: KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE[0],
+    log: KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE[2],
+    topics: KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE[1],
+    experiments: KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE[3],
+    procedures: KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE[4],
+    entities: KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE[5],
+    root: KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE[0],
+  };
+
+  if (knownPalette[normalizedKey]) {
+    return knownPalette[normalizedKey];
+  }
+
+  return KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE[hashString(normalizedKey) % KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE.length];
+}
+
+function renderStyleVariables(variables) {
+  const entries = Object.entries(variables || {}).filter(([, value]) => value !== undefined && value !== null && value !== "");
+
+  if (!entries.length) {
+    return "";
+  }
+
+  return ` style="${entries
+    .map(([name, value]) => `${name}:${String(value).replaceAll('"', "&quot;")}`)
+    .join(";")}"`;
+}
+
+function createEmptyKnowledgeBaseGraphLayout(previousLayout = null) {
+  return {
+    width: KNOWLEDGE_BASE_GRAPH_WIDTH,
+    height: KNOWLEDGE_BASE_GRAPH_HEIGHT,
+    nodes: [],
+    edges: [],
+    scale: previousLayout?.scale ?? 1,
+    offsetX: previousLayout?.offsetX ?? 0,
+    offsetY: previousLayout?.offsetY ?? 0,
+    alpha: 0,
+    running: false,
+    frameHandle: 0,
+    dragState: null,
+    panState: null,
+    refs: null,
+    cleanup: null,
+    cameraInitialized: previousLayout?.cameraInitialized ?? false,
+  };
+}
+
+function stopKnowledgeBaseGraphSimulation() {
+  const layout = state.knowledgeBase.graphLayout;
+
+  if (layout.frameHandle) {
+    window.cancelAnimationFrame(layout.frameHandle);
+    layout.frameHandle = 0;
+  }
+
+  layout.running = false;
+}
+
+function teardownKnowledgeBaseGraphInteractions() {
+  const layout = state.knowledgeBase.graphLayout;
+  stopKnowledgeBaseGraphSimulation();
+  layout.cleanup?.();
+  layout.cleanup = null;
+  layout.refs = null;
+  layout.dragState = null;
+  layout.panState = null;
+}
+
+function getKnowledgeBaseGraphSvgPoint(svg, clientX, clientY) {
+  if (!(svg instanceof SVGSVGElement)) {
+    return null;
+  }
+
+  const matrix = svg.getScreenCTM();
+  if (!matrix) {
+    return null;
+  }
+
+  const point = svg.createSVGPoint();
+  point.x = clientX;
+  point.y = clientY;
+  return point.matrixTransform(matrix.inverse());
+}
+
+function getKnowledgeBaseGraphWorldPoint(svg, clientX, clientY) {
+  const layout = state.knowledgeBase.graphLayout;
+  const point = getKnowledgeBaseGraphSvgPoint(svg, clientX, clientY);
+
+  if (!point) {
+    return null;
+  }
+
+  return {
+    svgX: point.x,
+    svgY: point.y,
+    x: (point.x - layout.offsetX) / layout.scale,
+    y: (point.y - layout.offsetY) / layout.scale,
+  };
+}
+
+function syncKnowledgeBaseGraphDom() {
+  const layout = state.knowledgeBase.graphLayout;
+  const refs = layout.refs;
+
+  if (!refs?.viewport) {
+    return;
+  }
+
+  refs.viewport.setAttribute(
+    "transform",
+    `translate(${layout.offsetX.toFixed(2)} ${layout.offsetY.toFixed(2)}) scale(${layout.scale.toFixed(4)})`,
+  );
+
+  layout.edges.forEach((edge, index) => {
+    const source = layout.nodes[edge.sourceIndex];
+    const target = layout.nodes[edge.targetIndex];
+    const element = refs.edgeElements[index];
+
+    if (!source || !target || !(element instanceof SVGLineElement)) {
+      return;
+    }
+
+    element.setAttribute("x1", source.x.toFixed(2));
+    element.setAttribute("y1", source.y.toFixed(2));
+    element.setAttribute("x2", target.x.toFixed(2));
+    element.setAttribute("y2", target.y.toFixed(2));
+  });
+
+  layout.nodes.forEach((node, index) => {
+    const element = refs.nodeElements[index];
+    if (!(element instanceof SVGGElement)) {
+      return;
+    }
+
+    element.setAttribute("transform", `translate(${node.x.toFixed(2)} ${node.y.toFixed(2)})`);
+    element.classList.toggle("is-dragging", layout.dragState?.node?.relativePath === node.relativePath);
+  });
+
+  refs.svg.classList.toggle("is-panning", Boolean(layout.panState));
+  refs.svg.classList.toggle("is-dragging-node", Boolean(layout.dragState));
+}
+
+function fitKnowledgeBaseGraphCamera() {
+  const layout = state.knowledgeBase.graphLayout;
+
+  if (!layout.nodes.length) {
+    return;
+  }
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const node of layout.nodes) {
+    minX = Math.min(minX, node.x - node.radius - 20);
+    minY = Math.min(minY, node.y - node.radius - 24);
+    maxX = Math.max(maxX, node.x + node.radius + 20);
+    maxY = Math.max(maxY, node.y + node.radius + 24);
+  }
+
+  const contentWidth = Math.max(180, maxX - minX);
+  const contentHeight = Math.max(180, maxY - minY);
+  const availableWidth = Math.max(120, layout.width - KNOWLEDGE_BASE_GRAPH_FIT_PADDING);
+  const availableHeight = Math.max(120, layout.height - KNOWLEDGE_BASE_GRAPH_FIT_PADDING);
+  const nextScale = clamp(
+    Math.min(availableWidth / contentWidth, availableHeight / contentHeight),
+    KNOWLEDGE_BASE_GRAPH_MIN_SCALE,
+    KNOWLEDGE_BASE_GRAPH_MAX_SCALE,
+  );
+
+  layout.scale = nextScale;
+  layout.offsetX = layout.width / 2 - ((minX + maxX) / 2) * nextScale;
+  layout.offsetY = layout.height / 2 - ((minY + maxY) / 2) * nextScale;
+  layout.cameraInitialized = true;
+  syncKnowledgeBaseGraphDom();
+}
+
+function scheduleKnowledgeBaseGraphFrame() {
+  const layout = state.knowledgeBase.graphLayout;
+
+  if (layout.frameHandle || !layout.running) {
+    return;
+  }
+
+  layout.frameHandle = window.requestAnimationFrame(() => {
+    layout.frameHandle = 0;
+
+    if (!layout.running || !layout.nodes.length) {
+      return;
+    }
+
+    const centerX = layout.width / 2;
+    const centerY = layout.height / 2;
+    const damping = layout.dragState ? 0.72 : 0.84;
+    const baseAlpha = layout.dragState ? 0.2 : 0.085;
+    const alpha = Math.max(layout.alpha || 0, baseAlpha);
+
+    for (const node of layout.nodes) {
+      node.fx = (centerX - node.x) * 0.0054;
+      node.fy = (centerY - node.y) * 0.0054;
+    }
+
+    for (let leftIndex = 0; leftIndex < layout.nodes.length; leftIndex += 1) {
+      const left = layout.nodes[leftIndex];
+
+      for (let rightIndex = leftIndex + 1; rightIndex < layout.nodes.length; rightIndex += 1) {
+        const right = layout.nodes[rightIndex];
+        const deltaX = right.x - left.x;
+        const deltaY = right.y - left.y;
+        const distanceSquared = Math.max(deltaX * deltaX + deltaY * deltaY, 1);
+        const distance = Math.sqrt(distanceSquared);
+        const minimumDistance = left.radius + right.radius + 16;
+        let repulsion = (1650 + minimumDistance * 96) / distanceSquared;
+
+        if (distance < minimumDistance) {
+          repulsion += (minimumDistance - distance) * 0.085;
+        }
+
+        const forceX = (deltaX / distance) * repulsion;
+        const forceY = (deltaY / distance) * repulsion;
+
+        left.fx -= forceX;
+        left.fy -= forceY;
+        right.fx += forceX;
+        right.fy += forceY;
+      }
+    }
+
+    for (const edge of layout.edges) {
+      const source = layout.nodes[edge.sourceIndex];
+      const target = layout.nodes[edge.targetIndex];
+
+      if (!source || !target) {
+        continue;
+      }
+
+      const deltaX = target.x - source.x;
+      const deltaY = target.y - source.y;
+      const distance = Math.max(1, Math.sqrt(deltaX * deltaX + deltaY * deltaY));
+      const spring = (distance - edge.distance) * edge.strength;
+      const forceX = (deltaX / distance) * spring;
+      const forceY = (deltaY / distance) * spring;
+
+      source.fx += forceX;
+      source.fy += forceY;
+      target.fx -= forceX;
+      target.fy -= forceY;
+    }
+
+    let maxVelocity = 0;
+
+    for (const node of layout.nodes) {
+      if (layout.dragState?.node?.relativePath === node.relativePath) {
+        node.vx = 0;
+        node.vy = 0;
+        continue;
+      }
+
+      node.vx = (node.vx + node.fx * alpha) * damping;
+      node.vy = (node.vy + node.fy * alpha) * damping;
+      node.x += node.vx;
+      node.y += node.vy;
+
+      const minX = node.radius + 10;
+      const maxX = layout.width - node.radius - 10;
+      const minY = node.radius + 10;
+      const maxY = layout.height - node.radius - 10;
+
+      if (node.x < minX || node.x > maxX) {
+        node.x = clamp(node.x, minX, maxX);
+        node.vx *= -0.28;
+      }
+
+      if (node.y < minY || node.y > maxY) {
+        node.y = clamp(node.y, minY, maxY);
+        node.vy *= -0.28;
+      }
+
+      maxVelocity = Math.max(maxVelocity, Math.abs(node.vx) + Math.abs(node.vy));
+    }
+
+    layout.alpha = Math.max(0, alpha * 0.985 - 0.00025);
+    syncKnowledgeBaseGraphDom();
+
+    const shouldContinue = Boolean(layout.dragState) || maxVelocity > 0.032 || layout.alpha > 0.026;
+    layout.running = shouldContinue;
+
+    if (shouldContinue) {
+      scheduleKnowledgeBaseGraphFrame();
+    }
+  });
+}
+
+function startKnowledgeBaseGraphSimulation(boost = 0.16) {
+  const layout = state.knowledgeBase.graphLayout;
+
+  if (!layout.nodes.length) {
+    return;
+  }
+
+  layout.running = true;
+  layout.alpha = Math.max(layout.alpha || 0, boost);
+  scheduleKnowledgeBaseGraphFrame();
+}
+
 function createKnowledgeBaseGraphLayout(notes, edges) {
-  const width = 540;
-  const height = 420;
+  const previousLayout = state.knowledgeBase.graphLayout;
+  const width = KNOWLEDGE_BASE_GRAPH_WIDTH;
+  const height = KNOWLEDGE_BASE_GRAPH_HEIGHT;
 
   if (!notes.length) {
-    return { width, height, nodes: [], edges: [] };
+    return createEmptyKnowledgeBaseGraphLayout(previousLayout);
   }
 
   const centerX = width / 2;
   const centerY = height / 2;
   const baseRadius = Math.min(width, height) * 0.34;
+  const previousNodes = new Map((previousLayout?.nodes || []).map((node) => [node.relativePath, node]));
   const nodes = notes.map((note, index) => {
     const angle = (Math.PI * 2 * index) / Math.max(notes.length, 1);
+    const previousNode = previousNodes.get(note.relativePath);
+    const groupKey = getKnowledgeBaseGraphGroupKey(note.relativePath);
+
     return {
       relativePath: note.relativePath,
       title: note.title,
-      x: centerX + Math.cos(angle) * baseRadius,
-      y: centerY + Math.sin(angle) * baseRadius,
+      groupKey,
+      color: getKnowledgeBaseGraphColor(groupKey),
+      x: previousNode?.x ?? centerX + Math.cos(angle) * baseRadius,
+      y: previousNode?.y ?? centerY + Math.sin(angle) * baseRadius,
+      vx: previousNode?.vx ?? 0,
+      vy: previousNode?.vy ?? 0,
+      fx: 0,
+      fy: 0,
       degree: 0,
     };
   });
-  const nodeMap = new Map(nodes.map((node) => [node.relativePath, node]));
+  const nodeMap = new Map(nodes.map((node, index) => [node.relativePath, { node, index }]));
+  const filteredEdges = [];
 
   for (const edge of edges) {
     const source = nodeMap.get(edge.source);
@@ -696,76 +1148,56 @@ function createKnowledgeBaseGraphLayout(notes, edges) {
       continue;
     }
 
-    source.degree += 1;
-    target.degree += 1;
+    source.node.degree += 1;
+    target.node.degree += 1;
+    filteredEdges.push({
+      source: edge.source,
+      target: edge.target,
+      sourceIndex: source.index,
+      targetIndex: target.index,
+      key: `${edge.source}:::${edge.target}`,
+    });
   }
 
-  if (nodes.length <= 80) {
-    for (let iteration = 0; iteration < 90; iteration += 1) {
-      for (let leftIndex = 0; leftIndex < nodes.length; leftIndex += 1) {
-        const left = nodes[leftIndex];
-
-        for (let rightIndex = leftIndex + 1; rightIndex < nodes.length; rightIndex += 1) {
-          const right = nodes[rightIndex];
-          const deltaX = right.x - left.x;
-          const deltaY = right.y - left.y;
-          const distanceSquared = Math.max(deltaX * deltaX + deltaY * deltaY, 16);
-          const distance = Math.sqrt(distanceSquared);
-          const repulsion = 2100 / distanceSquared;
-          const forceX = (deltaX / distance) * repulsion;
-          const forceY = (deltaY / distance) * repulsion;
-
-          left.x -= forceX;
-          left.y -= forceY;
-          right.x += forceX;
-          right.y += forceY;
-        }
-      }
-
-      for (const edge of edges) {
-        const source = nodeMap.get(edge.source);
-        const target = nodeMap.get(edge.target);
-
-        if (!source || !target) {
-          continue;
-        }
-
-        const deltaX = target.x - source.x;
-        const deltaY = target.y - source.y;
-        const distance = Math.max(1, Math.sqrt(deltaX * deltaX + deltaY * deltaY));
-        const spring = (distance - 92) * 0.012;
-        const forceX = (deltaX / distance) * spring;
-        const forceY = (deltaY / distance) * spring;
-
-        source.x += forceX;
-        source.y += forceY;
-        target.x -= forceX;
-        target.y -= forceY;
-      }
-
-      for (const node of nodes) {
-        node.x += (centerX - node.x) * 0.015;
-        node.y += (centerY - node.y) * 0.015;
-        node.x = Math.min(width - 28, Math.max(28, node.x));
-        node.y = Math.min(height - 28, Math.max(28, node.y));
-      }
-    }
-  }
+  const maxDegree = Math.max(1, ...nodes.map((node) => node.degree || 0));
+  const graphNodes = nodes.map((node) => ({
+    ...node,
+    radius: Math.min(26, 6.5 + Math.sqrt(node.degree || 0) * 2.85 + ((node.degree || 0) / maxDegree) * 8.5),
+  }));
+  const sizedNodeMap = new Map(graphNodes.map((node, index) => [node.relativePath, { node, index }]));
 
   return {
     width,
     height,
-    nodes: nodes
-      .map((node) => ({
-        ...node,
-        radius: Math.min(18, 7 + Math.sqrt(node.degree || 0) * 2.2),
-      }))
-      .sort((left, right) => left.relativePath.localeCompare(right.relativePath)),
-    edges: edges.filter((edge) => nodeMap.has(edge.source) && nodeMap.has(edge.target)),
+    nodes: graphNodes,
+    edges: filteredEdges.map((edge) => {
+      const source = sizedNodeMap.get(edge.source)?.node;
+      const target = sizedNodeMap.get(edge.target)?.node;
+      const sameGroup = source?.groupKey && source.groupKey === target?.groupKey;
+
+      return {
+        ...edge,
+        edgeColor: sameGroup ? source?.color?.edge : "rgba(255, 255, 255, 0.08)",
+        distance: 50 + ((source?.radius || 10) + (target?.radius || 10)) * 2.8,
+        strength: 0.010 + 0.00045 * Math.min((source?.degree || 0) + (target?.degree || 0), 12),
+      };
+    }),
+    scale: previousLayout?.scale ?? 1,
+    offsetX: previousLayout?.offsetX ?? 0,
+    offsetY: previousLayout?.offsetY ?? 0,
+    alpha: Math.max(previousLayout?.alpha || 0, 0.22),
+    running: false,
+    frameHandle: 0,
+    dragState: null,
+    panState: null,
+    refs: null,
+    cleanup: null,
+    cameraInitialized: previousLayout?.cameraInitialized ?? false,
   };
 }
 
 function applyKnowledgeBaseIndexState(payload) {
+  teardownKnowledgeBaseGraphInteractions();
   state.knowledgeBase.rootPath = payload?.rootPath || "";
   state.knowledgeBase.relativeRoot = payload?.relativeRoot || ".remote-vibes/wiki";
   state.knowledgeBase.notes = Array.isArray(payload?.notes) ? payload.notes : [];
@@ -1112,67 +1544,98 @@ function renderKnowledgeBaseGraph() {
 
   return `
     <article class="knowledge-base-graph-card">
-      <div class="knowledge-base-panel-head">
-        <div>
+      <div class="knowledge-base-panel-head knowledge-base-graph-head">
+        <div class="knowledge-base-graph-copy">
           <strong>Graph View</strong>
           <div class="knowledge-base-panel-meta">${escapeHtml(
             `${layout.nodes.length} notes · ${layout.edges.length} links`,
           )}</div>
+          <div class="knowledge-base-graph-hint">drag nodes · drag canvas · scroll to zoom</div>
+        </div>
+        <div class="knowledge-base-graph-actions">
+          <button class="ghost-button toolbar-control" type="button" id="fit-knowledge-base-graph">fit</button>
         </div>
       </div>
-      <svg
-        class="knowledge-base-graph"
-        id="knowledge-base-graph"
-        viewBox="0 0 ${layout.width} ${layout.height}"
-        role="img"
-        aria-label="Knowledge base graph"
-      >
-        ${layout.edges
-          .map((edge) => {
-            const source = nodeMap.get(edge.source);
-            const target = nodeMap.get(edge.target);
+      <div class="knowledge-base-graph-frame">
+        <svg
+          class="knowledge-base-graph"
+          id="knowledge-base-graph"
+          viewBox="0 0 ${layout.width} ${layout.height}"
+          role="img"
+          aria-label="Knowledge base graph"
+        >
+          <rect
+            class="knowledge-base-graph-surface"
+            data-kb-graph-surface
+            x="0"
+            y="0"
+            width="${layout.width}"
+            height="${layout.height}"
+            rx="22"
+            ry="22"
+          ></rect>
+          <g
+            data-kb-graph-viewport
+            transform="translate(${layout.offsetX.toFixed(2)} ${layout.offsetY.toFixed(2)}) scale(${layout.scale.toFixed(4)})"
+          >
+            ${layout.edges
+              .map((edge, index) => {
+                const source = nodeMap.get(edge.source);
+                const target = nodeMap.get(edge.target);
 
-            if (!source || !target) {
-              return "";
-            }
-
-            const isConnected = edge.source === selectedPath || edge.target === selectedPath;
-            return `
-              <line
-                class="knowledge-base-graph-edge ${isConnected ? "is-connected" : ""}"
-                x1="${source.x.toFixed(2)}"
-                y1="${source.y.toFixed(2)}"
-                x2="${target.x.toFixed(2)}"
-                y2="${target.y.toFixed(2)}"
-              ></line>
-            `;
-          })
-          .join("")}
-        ${layout.nodes
-          .map((node) => {
-            const isSelected = node.relativePath === selectedPath;
-            const isConnected = connectedPaths.has(node.relativePath);
-            const shouldShowLabel = layout.nodes.length <= 22 || isSelected || isConnected;
-
-            return `
-              <g
-                class="knowledge-base-graph-node ${isSelected ? "is-selected" : ""} ${isConnected ? "is-connected" : ""}"
-                data-kb-graph-node="${escapeHtml(node.relativePath)}"
-                transform="translate(${node.x.toFixed(2)} ${node.y.toFixed(2)})"
-              >
-                <circle r="${node.radius.toFixed(2)}"></circle>
-                ${
-                  shouldShowLabel
-                    ? `<text y="${(-node.radius - 10).toFixed(2)}">${escapeHtml(
-                        truncateKnowledgeBaseLabel(node.title, 18),
-                      )}</text>`
-                    : ""
+                if (!source || !target) {
+                  return "";
                 }
-              </g>
-            `;
-          })
-          .join("")}
-      </svg>
+
+                const isConnected = edge.source === selectedPath || edge.target === selectedPath;
+                return `
+                  <line
+                    class="knowledge-base-graph-edge ${isConnected ? "is-connected" : ""}"
+                    data-kb-graph-edge-index="${index}"
+                    ${renderStyleVariables({ "--kb-edge-stroke": edge.edgeColor })}
+                    x1="${source.x.toFixed(2)}"
+                    y1="${source.y.toFixed(2)}"
+                    x2="${target.x.toFixed(2)}"
+                    y2="${target.y.toFixed(2)}"
+                  ></line>
+                `;
+              })
+              .join("")}
+            ${layout.nodes
+              .map((node, index) => {
+                const isSelected = node.relativePath === selectedPath;
+                const isConnected = connectedPaths.has(node.relativePath);
+                const shouldShowLabel = layout.nodes.length <= 26 || isSelected || isConnected;
+
+                return `
+                  <g
+                    class="knowledge-base-graph-node ${isSelected ? "is-selected" : ""} ${isConnected ? "is-connected" : ""}"
+                    data-kb-graph-node="${escapeHtml(node.relativePath)}"
+                    data-kb-graph-node-index="${index}"
+                    ${renderStyleVariables({
+                      "--kb-node-fill": node.color?.fill,
+                      "--kb-node-stroke": node.color?.stroke,
+                      "--kb-node-label": node.color?.label,
+                      "--kb-node-connected-fill": node.color?.connectedFill,
+                      "--kb-node-connected-stroke": node.color?.connectedStroke,
+                    })}
+                    transform="translate(${node.x.toFixed(2)} ${node.y.toFixed(2)})"
+                  >
+                    <circle r="${node.radius.toFixed(2)}"></circle>
+                    ${
+                      shouldShowLabel
+                        ? `<text y="${(-node.radius - 10).toFixed(2)}">${escapeHtml(
+                            truncateKnowledgeBaseLabel(node.title, 18),
+                          )}</text>`
+                        : ""
+                    }
+                  </g>
+                `;
+              })
+              .join("")}
+          </g>
+        </svg>
+      </div>
     </article>
   `;
 }
@@ -1736,6 +2199,7 @@ function renderShell() {
     return;
   }
 
+  teardownKnowledgeBaseGraphInteractions();
   syncFilesRoot();
 
   const providerOptions = state.providers
@@ -1849,7 +2313,10 @@ function renderShell() {
         </div>
 
         <div class="sidebar-footer">
-          <button class="danger-button terminate-button" type="button" id="terminate-app">terminate</button>
+          <div class="sidebar-footer-actions">
+            <button class="ghost-button relaunch-button" type="button" id="relaunch-app">relaunch</button>
+            <button class="danger-button terminate-button" type="button" id="terminate-app">terminate</button>
+          </div>
         </div>
       </aside>
 
@@ -1949,51 +2416,290 @@ function refreshGpuCard() {
   bindGpuNavigationEvents();
 }
 
+function bindKnowledgeBaseGraphInteractions() {
+  const layout = state.knowledgeBase.graphLayout;
+  const previousCleanup = layout.cleanup;
+  layout.cleanup = null;
+  previousCleanup?.();
+  stopKnowledgeBaseGraphSimulation();
+
+  const svg = document.querySelector("#knowledge-base-graph");
+  if (!(svg instanceof SVGSVGElement)) {
+    layout.refs = null;
+    return;
+  }
+
+  const viewport = svg.querySelector("[data-kb-graph-viewport]");
+  const nodeElements = Array.from(svg.querySelectorAll("[data-kb-graph-node-index]"));
+  const edgeElements = Array.from(svg.querySelectorAll("[data-kb-graph-edge-index]"));
+
+  if (!(viewport instanceof SVGGElement)) {
+    layout.refs = null;
+    return;
+  }
+
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const refs = {
+    svg,
+    viewport,
+    edgeElements,
+    nodeElements,
+  };
+
+  layout.refs = refs;
+
+  const clearInteractionState = () => {
+    layout.dragState = null;
+    layout.panState = null;
+    svg.classList.remove("is-panning", "is-dragging-node");
+    layout.nodes.forEach((_node, index) => {
+      const element = nodeElements[index];
+      if (element instanceof SVGGElement) {
+        element.classList.remove("is-dragging");
+      }
+    });
+  };
+
+  const onPointerMove = (event) => {
+    if (layout.dragState?.pointerId === event.pointerId) {
+      const worldPoint = getKnowledgeBaseGraphWorldPoint(svg, event.clientX, event.clientY);
+      if (!worldPoint) {
+        return;
+      }
+
+      layout.dragState.moved =
+        layout.dragState.moved ||
+        Math.hypot(
+          event.clientX - layout.dragState.startClientX,
+          event.clientY - layout.dragState.startClientY,
+        ) >= KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX;
+
+      layout.dragState.node.x = clamp(
+        worldPoint.x + layout.dragState.pointerOffsetX,
+        layout.dragState.node.radius + 10,
+        layout.width - layout.dragState.node.radius - 10,
+      );
+      layout.dragState.node.y = clamp(
+        worldPoint.y + layout.dragState.pointerOffsetY,
+        layout.dragState.node.radius + 10,
+        layout.height - layout.dragState.node.radius - 10,
+      );
+      layout.dragState.node.vx = 0;
+      layout.dragState.node.vy = 0;
+      syncKnowledgeBaseGraphDom();
+      startKnowledgeBaseGraphSimulation(0.2);
+      return;
+    }
+
+    if (layout.panState?.pointerId === event.pointerId) {
+      const svgPoint = getKnowledgeBaseGraphSvgPoint(svg, event.clientX, event.clientY);
+      if (!svgPoint) {
+        return;
+      }
+
+      layout.panState.moved =
+        layout.panState.moved ||
+        Math.hypot(
+          event.clientX - layout.panState.startClientX,
+          event.clientY - layout.panState.startClientY,
+        ) >= KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX;
+
+      layout.offsetX = layout.panState.originOffsetX + (svgPoint.x - layout.panState.startSvgX);
+      layout.offsetY = layout.panState.originOffsetY + (svgPoint.y - layout.panState.startSvgY);
+      layout.cameraInitialized = true;
+      syncKnowledgeBaseGraphDom();
+    }
+  };
+
+  const onPointerEnd = (event) => {
+    if (layout.dragState?.pointerId === event.pointerId) {
+      const { moved, notePath } = layout.dragState;
+      clearInteractionState();
+      syncKnowledgeBaseGraphDom();
+      startKnowledgeBaseGraphSimulation(0.14);
+
+      if (!moved) {
+        void openKnowledgeBaseNote(notePath);
+      }
+      return;
+    }
+
+    if (layout.panState?.pointerId === event.pointerId) {
+      clearInteractionState();
+      syncKnowledgeBaseGraphDom();
+    }
+  };
+
+  svg.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+
+      const nodeElement = target.closest("[data-kb-graph-node-index]");
+
+      if (nodeElement instanceof SVGGElement) {
+        const nodeIndex = Number.parseInt(nodeElement.getAttribute("data-kb-graph-node-index") || "", 10);
+        const node = layout.nodes[nodeIndex];
+        const worldPoint = getKnowledgeBaseGraphWorldPoint(svg, event.clientX, event.clientY);
+
+        if (!node || !worldPoint) {
+          return;
+        }
+
+        layout.dragState = {
+          pointerId: event.pointerId,
+          node,
+          notePath: node.relativePath,
+          startClientX: event.clientX,
+          startClientY: event.clientY,
+          pointerOffsetX: node.x - worldPoint.x,
+          pointerOffsetY: node.y - worldPoint.y,
+          moved: false,
+        };
+        svg.classList.add("is-dragging-node");
+        nodeElement.classList.add("is-dragging");
+        startKnowledgeBaseGraphSimulation(0.22);
+        syncKnowledgeBaseGraphDom();
+        event.preventDefault();
+        return;
+      }
+
+      const svgPoint = getKnowledgeBaseGraphSvgPoint(svg, event.clientX, event.clientY);
+      if (!svgPoint) {
+        return;
+      }
+
+      layout.panState = {
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startSvgX: svgPoint.x,
+        startSvgY: svgPoint.y,
+        originOffsetX: layout.offsetX,
+        originOffsetY: layout.offsetY,
+        moved: false,
+      };
+      svg.classList.add("is-panning");
+      event.preventDefault();
+    },
+    { signal },
+  );
+
+  window.addEventListener("pointermove", onPointerMove, { signal });
+  window.addEventListener("pointerup", onPointerEnd, { signal });
+  window.addEventListener("pointercancel", onPointerEnd, { signal });
+
+  svg.addEventListener(
+    "wheel",
+    (event) => {
+      const svgPoint = getKnowledgeBaseGraphSvgPoint(svg, event.clientX, event.clientY);
+      if (!svgPoint) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const worldX = (svgPoint.x - layout.offsetX) / layout.scale;
+      const worldY = (svgPoint.y - layout.offsetY) / layout.scale;
+      const zoomFactor = Math.exp(-event.deltaY * 0.0015);
+      const nextScale = clamp(
+        layout.scale * zoomFactor,
+        KNOWLEDGE_BASE_GRAPH_MIN_SCALE,
+        KNOWLEDGE_BASE_GRAPH_MAX_SCALE,
+      );
+
+      if (Math.abs(nextScale - layout.scale) < 0.0001) {
+        return;
+      }
+
+      layout.scale = nextScale;
+      layout.offsetX = svgPoint.x - worldX * nextScale;
+      layout.offsetY = svgPoint.y - worldY * nextScale;
+      layout.cameraInitialized = true;
+      syncKnowledgeBaseGraphDom();
+    },
+    { signal, passive: false },
+  );
+
+  document.querySelector("#fit-knowledge-base-graph")?.addEventListener(
+    "click",
+    () => {
+      fitKnowledgeBaseGraphCamera();
+      startKnowledgeBaseGraphSimulation(0.18);
+    },
+    { signal },
+  );
+
+  layout.cleanup = () => {
+    controller.abort();
+    clearInteractionState();
+    if (layout.refs === refs) {
+      layout.refs = null;
+    }
+  };
+
+  if (!layout.cameraInitialized) {
+    fitKnowledgeBaseGraphCamera();
+  } else {
+    syncKnowledgeBaseGraphDom();
+  }
+
+  startKnowledgeBaseGraphSimulation(0.22);
+}
+
 function bindKnowledgeBaseEvents() {
   document.querySelectorAll("[data-kb-note]").forEach((button) => {
-    button.addEventListener("click", async () => {
+    button.onclick = async () => {
       const notePath = button.getAttribute("data-kb-note");
       await openKnowledgeBaseNote(notePath || "");
-    });
+    };
   });
 
   document.querySelectorAll("[data-kb-open-note]").forEach((button) => {
-    button.addEventListener("click", async () => {
+    button.onclick = async () => {
       const notePath = button.getAttribute("data-kb-open-note");
       await openKnowledgeBaseNote(notePath || "");
-    });
+    };
   });
 
-  document.querySelector("#knowledge-base-graph")?.addEventListener("click", async (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) {
-      return;
-    }
-
-    const node = target.closest("[data-kb-graph-node]");
-    const notePath = node?.getAttribute("data-kb-graph-node");
-
-    if (!notePath) {
-      return;
-    }
-
-    await openKnowledgeBaseNote(notePath);
-  });
-
-  document.querySelector("#refresh-knowledge-base")?.addEventListener("click", async () => {
-    await loadKnowledgeBaseIndex();
-    await ensureKnowledgeBaseSelectionLoaded({ force: true });
-    updateRoute({ view: "knowledge-base", notePath: state.knowledgeBase.selectedNotePath });
-    renderShell();
-  });
+  const refreshButton = document.querySelector("#refresh-knowledge-base");
+  if (refreshButton instanceof HTMLButtonElement) {
+    refreshButton.onclick = async () => {
+      await loadKnowledgeBaseIndex();
+      await ensureKnowledgeBaseSelectionLoaded({ force: true });
+      updateRoute({ view: "knowledge-base", notePath: state.knowledgeBase.selectedNotePath });
+      renderShell();
+    };
+  }
 }
 
 function refreshKnowledgeBaseUi() {
   if (state.currentView !== "knowledge-base") {
+    teardownKnowledgeBaseGraphInteractions();
     return;
   }
 
   bindKnowledgeBaseEvents();
+
+  const graphElement = document.querySelector("#knowledge-base-graph");
+  if (state.knowledgeBase.graphLayout.refs?.svg === graphElement) {
+    if (!state.knowledgeBase.graphLayout.cameraInitialized) {
+      fitKnowledgeBaseGraphCamera();
+    } else {
+      syncKnowledgeBaseGraphDom();
+    }
+    return;
+  }
+
+  bindKnowledgeBaseGraphInteractions();
 }
 
 function bindFileTreeEvents() {
@@ -2348,6 +3054,41 @@ function bindShellEvents() {
   document.querySelector("#open-sidebar")?.addEventListener("click", () => setSidebarOpen(true));
   document.querySelector("#close-sidebar")?.addEventListener("click", () => setSidebarOpen(false));
   document.querySelector("[data-sidebar-scrim]")?.addEventListener("click", () => setSidebarOpen(false));
+  document.querySelector("#relaunch-app")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+
+    if (!window.confirm("Relaunch Remote Vibes on this laptop? Live sessions will be restored if persistence is enabled.")) {
+      return;
+    }
+
+    const terminateButton = document.querySelector("#terminate-app");
+    if (terminateButton instanceof HTMLButtonElement) {
+      terminateButton.disabled = true;
+    }
+
+    button.disabled = true;
+    button.textContent = "relaunching...";
+
+    try {
+      await fetchJson("/api/relaunch", { method: "POST" });
+      closeWebsocket();
+      const recovered = await waitForAppRecovery();
+      if (!recovered) {
+        throw new Error("Remote Vibes did not come back yet. Try refreshing in a moment.");
+      }
+      window.location.reload();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "relaunch";
+      if (terminateButton instanceof HTMLButtonElement) {
+        terminateButton.disabled = false;
+      }
+      window.alert(error.message);
+    }
+  });
   document.querySelector("#terminate-app")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     if (!(button instanceof HTMLButtonElement)) {

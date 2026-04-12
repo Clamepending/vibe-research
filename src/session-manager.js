@@ -1,5 +1,5 @@
 import os from "node:os";
-import { statSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import pty from "node-pty";
@@ -9,6 +9,7 @@ const MAX_BUFFER_LENGTH = 200_000;
 const STARTUP_DELAY_MS = 180;
 const SESSION_META_THROTTLE_MS = 180;
 const SESSION_PERSIST_THROTTLE_MS = 180;
+const SESSION_NAME_MAX_LENGTH = 64;
 
 function getShellArgs(shellPath) {
   const shellName = path.basename(shellPath);
@@ -28,14 +29,46 @@ function trimBuffer(buffer) {
   return buffer.slice(buffer.length - MAX_BUFFER_LENGTH);
 }
 
-function buildSessionEnv(sessionId, providerId) {
+function prependPath(pathEntries) {
+  return pathEntries.filter(Boolean).join(path.delimiter);
+}
+
+function normalizeSessionName(value) {
+  const trimmed = String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!trimmed) {
+    return "";
+  }
+
+  if (trimmed.length <= SESSION_NAME_MAX_LENGTH) {
+    return trimmed;
+  }
+
+  return trimmed.slice(0, SESSION_NAME_MAX_LENGTH).trim();
+}
+
+export function buildSessionEnv(sessionId, providerId, workspaceRoot) {
+  const stateDir = path.join(workspaceRoot, ".remote-vibes");
+  const agentDir = path.join(stateDir, "wiki", "comms", "agents", sessionId);
+
   return {
     ...process.env,
     COLORTERM: "truecolor",
     LANG: "en_US.UTF-8",
     LC_ALL: "en_US.UTF-8",
+    PATH: prependPath([path.join(workspaceRoot, "bin"), process.env.PATH]),
     REMOTE_VIBES_PROVIDER: providerId,
+    REMOTE_VIBES_ROOT: stateDir,
     REMOTE_VIBES_SESSION_ID: sessionId,
+    REMOTE_VIBES_WIKI_DIR: path.join(stateDir, "wiki"),
+    REMOTE_VIBES_COMMS_DIR: path.join(stateDir, "wiki", "comms"),
+    REMOTE_VIBES_AGENT_DIR: agentDir,
+    REMOTE_VIBES_AGENT_INBOX: path.join(agentDir, "inbox"),
+    REMOTE_VIBES_AGENT_PROCESSED_DIR: path.join(agentDir, "processed"),
+    REMOTE_VIBES_MAIL_WATCHER: "rv-mailwatch",
     TERM: "xterm-256color",
   };
 }
@@ -65,6 +98,7 @@ export class SessionManager {
     this.cwd = cwd;
     this.providers = providers;
     this.persistSessions = persistSessions;
+    this.stateDir = stateDir;
     this.sessionStore = new SessionStore({
       enabled: persistSessions,
       stateDir,
@@ -86,12 +120,14 @@ export class SessionManager {
   }
 
   listSessions() {
+    this.consumePendingRenameRequests();
     return Array.from(this.sessions.values())
       .map((session) => this.serializeSession(session))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
   getSession(sessionId) {
+    this.consumePendingRenameRequests();
     return this.sessions.get(sessionId) ?? null;
   }
 
@@ -119,7 +155,7 @@ export class SessionManager {
     const createdAt = new Date().toISOString();
     const session = this.buildSessionRecord({
       cwd: resolveCwd(cwd, this.cwd),
-      name: name?.trim() || this.makeDefaultName(provider),
+      name: normalizeSessionName(name) || this.makeDefaultName(provider),
       providerId: provider.id,
       providerLabel: provider.label,
       createdAt,
@@ -139,6 +175,63 @@ export class SessionManager {
 
     this.schedulePersist({ immediate: true });
     return this.serializeSession(session);
+  }
+
+  renameSession(sessionId, name) {
+    const session = this.sessions.get(sessionId);
+
+    if (!session) {
+      return null;
+    }
+
+    const nextName = normalizeSessionName(name);
+    if (!nextName) {
+      throw new Error("Session name cannot be empty.");
+    }
+
+    if (session.name === nextName) {
+      return this.serializeSession(session);
+    }
+
+    session.name = nextName;
+    session.updatedAt = new Date().toISOString();
+    this.scheduleSessionMetaBroadcast(session, { immediate: true });
+    this.schedulePersist({ immediate: true });
+    return this.serializeSession(session);
+  }
+
+  consumePendingRenameRequests() {
+    const requestDir = path.join(this.stateDir, "session-name-requests");
+    let entries = [];
+
+    try {
+      entries = readdirSync(requestDir, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        return;
+      }
+
+      throw error;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) {
+        continue;
+      }
+
+      const requestPath = path.join(requestDir, entry.name);
+
+      try {
+        const payload = JSON.parse(readFileSync(requestPath, "utf8"));
+        if (payload?.sessionId && payload?.name) {
+          this.renameSession(payload.sessionId, payload.name);
+        }
+      } catch {
+        // Ignore malformed rename requests.
+      } finally {
+        rmSync(requestPath, { force: true });
+      }
+    }
   }
 
   deleteSession(sessionId) {
@@ -389,7 +482,7 @@ export class SessionManager {
 
     const ptyProcess = pty.spawn(session.shell, getShellArgs(session.shell), {
       cwd: sessionCwd,
-      env: buildSessionEnv(session.id, provider.id),
+      env: buildSessionEnv(session.id, provider.id, this.cwd),
       name: "xterm-256color",
       cols: session.cols,
       rows: session.rows,
@@ -465,7 +558,7 @@ export class SessionManager {
       id: snapshot.id || randomUUID(),
       providerId: snapshot.providerId,
       providerLabel: snapshot.providerLabel || snapshot.providerId || "Unknown Provider",
-      name: snapshot.name?.trim() || snapshot.providerLabel || "Restored Session",
+      name: normalizeSessionName(snapshot.name) || snapshot.providerLabel || "Restored Session",
       shell: snapshot.shell || process.env.SHELL || "/bin/zsh",
       cwd: snapshot.cwd || this.cwd,
       createdAt: snapshot.createdAt || new Date().toISOString(),

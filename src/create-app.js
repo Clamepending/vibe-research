@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import httpProxy from "http-proxy";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +20,7 @@ import { listWorkspaceEntries, resolveWorkspaceEntry } from "./workspace-files.j
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, "..", "public");
 const execFileAsync = promisify(execFile);
+const SERVER_INFO_FILENAME = "server.json";
 
 function normalizePort(value) {
   const port = Number(value);
@@ -49,6 +51,34 @@ function rewriteProxyPath(originalUrl, port) {
   const prefix = `/proxy/${port}`;
   const nextPath = originalUrl.startsWith(prefix) ? originalUrl.slice(prefix.length) : originalUrl;
   return nextPath || "/";
+}
+
+function getServerInfoPath(stateDir) {
+  return path.join(stateDir, SERVER_INFO_FILENAME);
+}
+
+function getHelperBaseUrl(host, port) {
+  if (host === "0.0.0.0" || host === "::") {
+    return `http://127.0.0.1:${port}`;
+  }
+
+  if (host.includes(":") && !host.startsWith("[")) {
+    return `http://[${host}]:${port}`;
+  }
+
+  return `http://${host}:${port}`;
+}
+
+async function writeServerInfo(stateDir, payload) {
+  const filePath = getServerInfoPath(stateDir);
+  const tempPath = `${filePath}.tmp`;
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await rename(tempPath, filePath);
+}
+
+async function removeServerInfo(stateDir) {
+  await rm(getServerInfoPath(stateDir), { force: true });
 }
 
 function sendProxyError(response, proxyPort) {
@@ -309,6 +339,21 @@ export async function createRemoteVibesApp({
     response.json({ sessions: sessionManager.listSessions() });
   });
 
+  app.put("/api/sessions/:sessionId", (request, response) => {
+    try {
+      const session = sessionManager.renameSession(request.params.sessionId, request.body?.name);
+
+      if (!session) {
+        response.status(404).json({ error: "Session not found." });
+        return;
+      }
+
+      response.json({ session });
+    } catch (error) {
+      response.status(400).json({ error: error.message });
+    }
+  });
+
   app.get("/api/agent-prompt", async (_request, response) => {
     response.json(await agentPromptStore.getState());
   });
@@ -332,11 +377,30 @@ export async function createRemoteVibesApp({
     response.json({ ok: true });
   });
 
+  function scheduleTerminateAfterResponse(response, options) {
+    let requested = false;
+
+    const requestOnce = () => {
+      if (requested) {
+        return;
+      }
+
+      requested = true;
+      void requestTerminate(options);
+    };
+
+    response.once("finish", requestOnce);
+    response.once("close", requestOnce);
+  }
+
   app.post("/api/terminate", (_request, response) => {
-    response.once("finish", () => {
-      void requestTerminate();
-    });
+    scheduleTerminateAfterResponse(response, { relaunch: false });
     response.json({ ok: true, shuttingDown: true });
+  });
+
+  app.post("/api/relaunch", (_request, response) => {
+    scheduleTerminateAfterResponse(response, { relaunch: true });
+    response.json({ ok: true, relaunching: true });
   });
 
   app.use("/proxy/:port", (request, response) => {
@@ -364,6 +428,13 @@ export async function createRemoteVibesApp({
   exposedPort = resolvedPort;
   urls = await getAccessUrls(host, resolvedPort);
   preferredUrl = pickPreferredUrl(urls)?.url ?? urls[0]?.url ?? null;
+  await writeServerInfo(stateDir, {
+    pid: process.pid,
+    host,
+    port: resolvedPort,
+    helperBaseUrl: getHelperBaseUrl(host, resolvedPort),
+    preferredUrl,
+  });
   gpuHistoryTimer = setInterval(() => {
     void readGpuStatus();
   }, gpuHistoryStore.sampleIntervalMs);
@@ -445,13 +516,14 @@ export async function createRemoteVibesApp({
 
     closePromise = (async () => {
       await sessionManager.shutdown({ preserveSessions: persistSessions });
+      await removeServerInfo(stateDir);
       if (gpuHistoryTimer) {
         clearInterval(gpuHistoryTimer);
         gpuHistoryTimer = null;
       }
       proxyServer.close();
       await new Promise((resolve) => websocketServer.close(resolve));
-      await new Promise((resolve, reject) =>
+      await new Promise((resolve, reject) => {
         server.close((error) => {
           if (error && error.code !== "ERR_SERVER_NOT_RUNNING") {
             reject(error);
@@ -459,14 +531,17 @@ export async function createRemoteVibesApp({
           }
 
           resolve();
-        }),
-      );
+        });
+
+        server.closeIdleConnections?.();
+        server.closeAllConnections?.();
+      });
     })();
 
     return closePromise;
   }
 
-  async function requestTerminate() {
+  async function requestTerminate({ relaunch = false } = {}) {
     if (terminatePromise) {
       return terminatePromise;
     }
@@ -474,7 +549,7 @@ export async function createRemoteVibesApp({
     terminatePromise = (async () => {
       await close();
       if (typeof onTerminate === "function") {
-        await onTerminate();
+        await onTerminate({ relaunch });
       }
     })();
 
@@ -497,6 +572,7 @@ export async function createRemoteVibesApp({
     },
     server,
     sessionManager,
+    relaunch: () => requestTerminate({ relaunch: true }),
     terminate: requestTerminate,
   };
 }

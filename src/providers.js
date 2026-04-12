@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -12,6 +13,11 @@ export const providerDefinitions = [
     command: "claude",
     launchCommand: "claude",
     defaultName: "Claude",
+    verifyArgs: ["--version"],
+    npmPackage: {
+      name: "@anthropic-ai/claude-code",
+      bin: "claude",
+    },
   },
   {
     id: "codex",
@@ -79,6 +85,63 @@ async function findCommandInHints(pathHints = []) {
   return null;
 }
 
+async function resolveNpmPackageCommand(npmPackage, env = process.env) {
+  if (!npmPackage?.name || !npmPackage?.bin) {
+    return null;
+  }
+
+  try {
+    const npmRoot =
+      String(env?.REMOTE_VIBES_NPM_ROOT || "").trim() ||
+      (
+        await (async () => {
+          const npmCommand = await findCommandInShell("npm", env);
+          if (!npmCommand) {
+            return "";
+          }
+
+          const { stdout } = await execFileAsync(npmCommand, ["root", "-g"], { env });
+          return stdout.trim();
+        })()
+      );
+
+    if (!npmRoot) {
+      return null;
+    }
+
+    const packageDir = path.join(npmRoot, npmPackage.name);
+    const packageJsonPath = path.join(packageDir, "package.json");
+    const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
+    const binEntry = packageJson?.bin?.[npmPackage.bin];
+
+    if (!binEntry) {
+      return null;
+    }
+
+    const resolvedBinPath = path.join(packageDir, binEntry);
+    await access(resolvedBinPath, fsConstants.X_OK);
+    return resolvedBinPath;
+  } catch {
+    return null;
+  }
+}
+
+async function verifyResolvedCommand(provider, resolvedCommand, env = process.env) {
+  if (!resolvedCommand || !provider?.verifyArgs?.length) {
+    return true;
+  }
+
+  try {
+    await execFileAsync(resolvedCommand, provider.verifyArgs, {
+      env,
+      timeout: 15_000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function resolveProviderCommand(provider, env = process.env) {
   if (!provider.command) {
     return {
@@ -88,7 +151,7 @@ export async function resolveProviderCommand(provider, env = process.env) {
   }
 
   const shellResolved = await findCommandInShell(provider.command, env);
-  if (shellResolved) {
+  if (shellResolved && await verifyResolvedCommand(provider, shellResolved, env)) {
     return {
       available: true,
       resolvedCommand: shellResolved,
@@ -96,10 +159,18 @@ export async function resolveProviderCommand(provider, env = process.env) {
   }
 
   const hintedCommand = await findCommandInHints(provider.pathHints);
-  if (hintedCommand) {
+  if (hintedCommand && await verifyResolvedCommand(provider, hintedCommand, env)) {
     return {
       available: true,
       resolvedCommand: hintedCommand,
+    };
+  }
+
+  const npmPackageCommand = await resolveNpmPackageCommand(provider.npmPackage, env);
+  if (npmPackageCommand && await verifyResolvedCommand(provider, npmPackageCommand, env)) {
+    return {
+      available: true,
+      resolvedCommand: npmPackageCommand,
     };
   }
 

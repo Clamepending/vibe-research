@@ -121,9 +121,19 @@ function resolveNoteTarget(rawTarget, currentPath, notePathSet) {
     return "";
   }
 
-  let basePath = normalizedInput.startsWith("/")
-    ? normalizeRelativePath(normalizedInput.slice(1))
-    : normalizeRelativePath(path.posix.join(path.posix.dirname(currentPath), normalizedInput));
+  let basePath = "";
+
+  try {
+    basePath = normalizedInput.startsWith("/")
+      ? normalizeRelativePath(normalizedInput.slice(1))
+      : normalizeRelativePath(path.posix.join(path.posix.dirname(currentPath), normalizedInput));
+  } catch (error) {
+    if (error?.statusCode === 400) {
+      return "";
+    }
+
+    throw error;
+  }
 
   if (!basePath) {
     return "";

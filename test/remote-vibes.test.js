@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { WebSocket } from "ws";
 import { createRemoteVibesApp } from "../src/create-app.js";
+import { buildSessionEnv } from "../src/session-manager.js";
+
+const execFileAsync = promisify(execFile);
 
 const PNG_FIXTURE = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -78,6 +83,18 @@ async function waitForShutdown(baseUrl) {
   throw new Error("Remote Vibes never shut down.");
 }
 
+async function waitForValue(check, expectedValue) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (check() === expectedValue) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new Error(`Expected value ${expectedValue} was never observed.`);
+}
+
 test("state is available without authentication", async () => {
   const { app, baseUrl } = await startApp();
 
@@ -134,6 +151,30 @@ test("agent prompt api creates wiki scaffold and managed instruction files", asy
     assert.match(managedClaude, /remote-vibes:managed-agent-prompt/);
     assert.match(managedAgents, /Edit this from Remote Vibes or \.remote-vibes\/agent-prompt\.md/);
     assert.match(promptSource, /Remote Vibes Agent Prompt/);
+    assert.match(promptSource, /remote-vibes:wiki-v2-protocol:v2/);
+    assert.match(promptSource, /Treat links as traversal hints, not decoration/);
+    assert.match(promptSource, /Start with the directly named files, notes, messages, or artifacts/);
+    assert.match(promptSource, /Routine coordination, temporary resource negotiation/);
+    assert.match(promptSource, /processed paths over inbox paths/);
+    assert.match(promptSource, /remote-vibes:agent-mailbox-protocol:v2/);
+    assert.match(promptSource, /sent_at/);
+    assert.match(promptSource, /from_name/);
+    assert.match(promptSource, /subject/);
+    assert.match(promptSource, /short human-readable role or task label/);
+    assert.match(promptSource, /workload-oriented label/);
+    assert.match(promptSource, /rather than `Codex <id>` or `Claude <id>`/);
+    assert.match(promptSource, /Remote Vibes provides `rv-session-name` on your session `PATH`/);
+    assert.match(promptSource, /run `rv-session-name "<short task label>"`/);
+    assert.match(promptSource, /keep `from_name` aligned with your current session name/);
+    assert.match(promptSource, /Remote Vibes provides `rv-mailwatch` on your session `PATH`/);
+    assert.match(promptSource, /prefer launching `rv-mailwatch --quiet --no-bell &`/);
+    assert.match(promptSource, /rv-mailwatch --quiet --no-bell --once --timeout/);
+    assert.match(promptSource, /waiting on a shared inbox rather than your default inbox/);
+    assert.match(promptSource, /rv-mailwatch --inbox <path> --from <peer-session-id> --after <request-sent-at> --print-path/);
+    assert.match(promptSource, /use that same timestamp as the `--after` baseline/);
+    assert.match(promptSource, /confirm the matched message's `from` field before acting/);
+    assert.match(promptSource, /platform-agnostic watcher patterns/);
+    assert.match(promptSource, /On Linux, `inotifywait` is a reasonable fallback/);
     assert.match(wikiIndex, /Wiki Index/);
 
     const updateResponse = await fetch(`${baseUrl}/api/agent-prompt`, {
@@ -149,9 +190,118 @@ test("agent prompt api creates wiki scaffold and managed instruction files", asy
     assert.equal(updateResponse.status, 200);
     const updatedPayload = await updateResponse.json();
     assert.match(updatedPayload.prompt, /Custom Prompt/);
+    assert.match(updatedPayload.prompt, /remote-vibes:wiki-v2-protocol:v2/);
+    assert.match(updatedPayload.prompt, /Prefer fewer, better notes/);
+    assert.match(updatedPayload.prompt, /remote-vibes:agent-mailbox-protocol:v2/);
+    assert.match(updatedPayload.prompt, /subject/);
 
     const updatedManagedAgents = await readFile(path.join(workspaceDir, "AGENTS.md"), "utf8");
     assert.match(updatedManagedAgents, /Custom Prompt/);
+    assert.match(updatedManagedAgents, /Knowledge Model/);
+    assert.match(updatedManagedAgents, /Agent Mailboxes/);
+    assert.match(updatedManagedAgents, /processed\//);
+  } finally {
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("existing prompt files are upgraded with the built-in agent mailbox protocol", async () => {
+  const workspaceDir = await createTempWorkspace("remote-vibes-agent-mailbox-upgrade-");
+  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(
+    path.join(stateDir, "agent-prompt.md"),
+    "# Custom Prompt\n\nAlways leave concise handoff notes in the wiki.\n",
+    "utf8",
+  );
+
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+
+  try {
+    const response = await fetch(`${baseUrl}/api/agent-prompt`);
+    assert.equal(response.status, 200);
+
+    const payload = await response.json();
+    assert.match(payload.prompt, /Custom Prompt/);
+    assert.match(payload.prompt, /remote-vibes:wiki-v2-protocol:v2/);
+    assert.match(payload.prompt, /Search And Traversal/);
+    assert.match(payload.prompt, /remote-vibes:agent-mailbox-protocol:v2/);
+    assert.match(payload.prompt, /REMOTE_VIBES_SESSION_ID/);
+    assert.match(payload.prompt, /older than one hour/);
+    assert.match(payload.prompt, /from_name/);
+    assert.match(payload.prompt, /subject/);
+    assert.match(payload.prompt, /rv-session-name/);
+    assert.match(payload.prompt, /specific exchange or artifact/);
+    assert.match(payload.prompt, /rv-mailwatch/);
+    assert.match(payload.prompt, /--once --timeout/);
+    assert.match(payload.prompt, /platform-agnostic watcher patterns/);
+    assert.match(payload.prompt, /neutral label such as `agent <first 8 chars of session id>`/);
+
+    const savedPrompt = await readFile(path.join(stateDir, "agent-prompt.md"), "utf8");
+    assert.match(savedPrompt, /Custom Prompt/);
+    assert.match(savedPrompt, /Crystallization And Supersession/);
+    assert.match(savedPrompt, /Agent Mailboxes/);
+
+    const managedGemini = await readFile(path.join(workspaceDir, "GEMINI.md"), "utf8");
+    assert.match(managedGemini, /Treat links as traversal hints, not decoration/);
+    assert.match(managedGemini, /Agent Mailboxes/);
+    assert.match(managedGemini, /reply_to/);
+  } finally {
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("legacy built-in prompt sections are replaced with the current versions", async () => {
+  const workspaceDir = await createTempWorkspace("remote-vibes-agent-prompt-legacy-upgrade-");
+  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(
+    path.join(stateDir, "agent-prompt.md"),
+    `# Custom Prompt
+
+Keep a crisp research log.
+
+<!-- remote-vibes:wiki-v2-protocol:v1 -->
+
+## Old Wiki Section
+
+Old guidance.
+
+<!-- remote-vibes:agent-mailbox-protocol:v1 -->
+
+## Old Mailbox Section
+
+Old mailbox guidance.
+`,
+    "utf8",
+  );
+
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+
+  try {
+    const response = await fetch(`${baseUrl}/api/agent-prompt`);
+    assert.equal(response.status, 200);
+
+    const payload = await response.json();
+    assert.match(payload.prompt, /Custom Prompt/);
+    assert.doesNotMatch(payload.prompt, /remote-vibes:wiki-v2-protocol:v1/);
+    assert.doesNotMatch(payload.prompt, /remote-vibes:agent-mailbox-protocol:v1/);
+    assert.match(payload.prompt, /remote-vibes:wiki-v2-protocol:v2/);
+    assert.match(payload.prompt, /remote-vibes:agent-mailbox-protocol:v2/);
+    assert.match(payload.prompt, /from_name/);
+    assert.match(payload.prompt, /Routine coordination, temporary resource negotiation/);
+    assert.match(payload.prompt, /short human-readable role or task label/);
+    assert.match(payload.prompt, /rv-mailwatch/);
+    assert.match(payload.prompt, /On Linux, `inotifywait` is a reasonable fallback/);
+    assert.doesNotMatch(payload.prompt, /Old Wiki Section/);
+    assert.doesNotMatch(payload.prompt, /Old Mailbox Section/);
+
+    const savedPrompt = await readFile(path.join(stateDir, "agent-prompt.md"), "utf8");
+    assert.doesNotMatch(savedPrompt, /remote-vibes:wiki-v2-protocol:v1/);
+    assert.doesNotMatch(savedPrompt, /remote-vibes:agent-mailbox-protocol:v1/);
+    assert.match(savedPrompt, /processed paths over inbox paths/);
   } finally {
     await app.close();
     await rm(workspaceDir, { recursive: true, force: true });
@@ -197,7 +347,7 @@ test("knowledge base api indexes markdown notes and linked note content", async 
   );
   await writeFile(
     path.join(topicsDir, "topic-a.md"),
-    "# Topic A\n\nBack to [Index](../index.md).\n",
+    "# Topic A\n\nBack to [Index](../index.md).\n\nSource manifest: [raw](../../raw/sources/topic-a.md)\n",
     "utf8",
   );
 
@@ -332,6 +482,155 @@ test("shell session streams websocket output and honors custom cwd", async () =>
   }
 });
 
+test("login shells inherit mailbox helpers and agent inbox env vars", async () => {
+  const sessionId = "mailbox-helper-session";
+  const env = buildSessionEnv(sessionId, "shell", process.cwd());
+  const { stdout } = await execFileAsync(
+    process.env.SHELL || "/bin/zsh",
+    [
+      "-i",
+      "-l",
+      "-c",
+      "printf 'INBOX=%s\\n' \"$REMOTE_VIBES_AGENT_INBOX\"; printf 'WATCHER=%s\\n' \"$REMOTE_VIBES_MAIL_WATCHER\"; command -v rv-mailwatch; command -v rv-session-name",
+    ],
+    { env },
+  );
+
+  assert.match(stdout, new RegExp(`INBOX=.*${sessionId}.*/inbox`));
+  assert.match(stdout, /WATCHER=rv-mailwatch/);
+  assert.match(stdout, /rv-mailwatch/);
+  assert.match(stdout, /rv-session-name/);
+});
+
+test("session rename api updates the live session name", async () => {
+  const { app, baseUrl } = await startApp();
+
+  try {
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId: "shell",
+        name: "Shell 1",
+      }),
+    });
+
+    assert.equal(createResponse.status, 201);
+    const { session } = await createResponse.json();
+
+    const renameResponse = await fetch(`${baseUrl}/api/sessions/${session.id}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "fib coordinator",
+      }),
+    });
+
+    assert.equal(renameResponse.status, 200);
+    const renamePayload = await renameResponse.json();
+    assert.equal(renamePayload.session.name, "fib coordinator");
+
+    const sessionsResponse = await fetch(`${baseUrl}/api/sessions`);
+    assert.equal(sessionsResponse.status, 200);
+    const sessionsPayload = await sessionsResponse.json();
+    assert.equal(
+      sessionsPayload.sessions.find((entry) => entry.id === session.id)?.name,
+      "fib coordinator",
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("rv-session-name renames the current session through server metadata", async () => {
+  const workspaceDir = process.cwd();
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+
+  try {
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId: "shell",
+      }),
+    });
+
+    assert.equal(createResponse.status, 201);
+    const { session } = await createResponse.json();
+    const env = buildSessionEnv(session.id, "shell", workspaceDir);
+
+    const helperPath = path.join(workspaceDir, "bin", "rv-session-name");
+    const { stdout } = await execFileAsync(process.execPath, [helperPath, "results reviewer"], {
+      cwd: workspaceDir,
+      env,
+    });
+
+    assert.equal(stdout.trim(), "results reviewer");
+
+    const sessionsResponse = await fetch(`${baseUrl}/api/sessions`);
+    assert.equal(sessionsResponse.status, 200);
+    const sessionsPayload = await sessionsResponse.json();
+    assert.equal(
+      sessionsPayload.sessions.find((entry) => entry.id === session.id)?.name,
+      "results reviewer",
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("rv-session-name falls back to a filesystem request when localhost is unreachable", async () => {
+  const workspaceDir = await createTempWorkspace("remote-vibes-session-rename-fallback-");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+
+  try {
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId: "shell",
+      }),
+    });
+
+    assert.equal(createResponse.status, 201);
+    const { session } = await createResponse.json();
+    const env = buildSessionEnv(session.id, "shell", workspaceDir);
+
+    await writeFile(
+      path.join(workspaceDir, ".remote-vibes", "server.json"),
+      `${JSON.stringify({ helperBaseUrl: "http://127.0.0.1:9" }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const helperPath = path.join(process.cwd(), "bin", "rv-session-name");
+    const { stdout } = await execFileAsync(process.execPath, [helperPath, "resource coordinator"], {
+      cwd: workspaceDir,
+      env,
+    });
+
+    assert.equal(stdout.trim(), "resource coordinator");
+
+    const sessionsResponse = await fetch(`${baseUrl}/api/sessions`);
+    assert.equal(sessionsResponse.status, 200);
+    const sessionsPayload = await sessionsResponse.json();
+    assert.equal(
+      sessionsPayload.sessions.find((entry) => entry.id === session.id)?.name,
+      "resource coordinator",
+    );
+  } finally {
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("ports are discoverable and proxy through localhost", async () => {
   const previewServer = http.createServer((request, response) => {
     if (request.url === "/") {
@@ -420,7 +719,31 @@ test("terminate endpoint shuts down the app cleanly", async () => {
     assert.deepEqual(await response.json(), { ok: true, shuttingDown: true });
 
     await waitForShutdown(baseUrl);
-    assert.equal(terminateCalls, 1);
+    await waitForValue(() => terminateCalls, 1);
+  } finally {
+    await app.close();
+  }
+});
+
+test("relaunch endpoint shuts down the app cleanly and requests a restart", async () => {
+  const terminateCalls = [];
+  const { app, baseUrl } = await startApp({
+    onTerminate: async (options = {}) => {
+      terminateCalls.push(options);
+    },
+  });
+
+  try {
+    const response = await fetch(`${baseUrl}/api/relaunch`, {
+      method: "POST",
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, relaunching: true });
+
+    await waitForShutdown(baseUrl);
+    await waitForValue(() => terminateCalls.length, 1);
+    assert.deepEqual(terminateCalls, [{ relaunch: true }]);
   } finally {
     await app.close();
   }

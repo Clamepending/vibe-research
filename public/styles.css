@@ -159,6 +159,12 @@ textarea {
   background: linear-gradient(180deg, rgba(12, 15, 17, 0), rgba(12, 15, 17, 0.96) 38%);
 }
 
+.sidebar-footer-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .icon-button,
 .primary-button,
 .ghost-button,
@@ -203,12 +209,23 @@ textarea {
 }
 
 .terminate-button {
-  width: 100%;
   min-height: 46px;
   border: 1px solid rgba(255, 127, 121, 0.26);
   border-radius: 16px;
   background: rgba(255, 127, 121, 0.12);
   color: #ffb1ac;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.relaunch-button {
+  min-height: 46px;
+  border: 1px solid rgba(127, 208, 255, 0.2);
+  border-radius: 16px;
+  background: rgba(108, 178, 255, 0.12);
+  color: #b9d7ff;
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.78rem;
   letter-spacing: 0.04em;
@@ -500,24 +517,33 @@ textarea {
 }
 
 .knowledge-base-view {
+  display: grid;
   gap: 12px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .knowledge-base-app {
   min-height: 100vh;
   min-height: var(--app-height);
+  height: 100vh;
+  height: var(--app-height);
   padding: 18px;
   padding-top: max(18px, calc(var(--safe-top) + 12px));
   padding-right: max(18px, calc(var(--safe-right) + 12px));
   padding-bottom: max(18px, calc(var(--safe-bottom) + 12px));
   padding-left: max(18px, calc(var(--safe-left) + 12px));
+  overflow: hidden;
 }
 
 .knowledge-base-app-shell {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 12px;
+  min-height: 0;
   min-height: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 
 .knowledge-base-app-toolbar,
@@ -590,7 +616,7 @@ textarea {
 
 .knowledge-base-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1.2fr) minmax(260px, 0.9fr);
+  grid-template-columns: minmax(220px, 270px) minmax(0, 1.05fr) minmax(320px, 1.15fr);
   gap: 12px;
   min-height: 0;
   overflow: hidden;
@@ -599,6 +625,7 @@ textarea {
 .knowledge-base-column,
 .knowledge-base-graph-card {
   min-height: 0;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 18px;
   background: rgba(24, 29, 33, 0.74);
@@ -634,6 +661,8 @@ textarea {
   min-height: 0;
   overflow-y: auto;
   padding: 0 12px 12px;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .knowledge-base-note-list {
@@ -789,22 +818,65 @@ textarea {
 .knowledge-base-graph-card {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.knowledge-base-graph-head {
+  padding-bottom: 12px;
+}
+
+.knowledge-base-graph-copy {
+  min-width: 0;
+}
+
+.knowledge-base-graph-hint {
+  margin-top: 8px;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+}
+
+.knowledge-base-graph-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.knowledge-base-graph-frame {
+  min-height: 0;
+  padding: 0 12px 12px;
 }
 
 .knowledge-base-graph {
   width: 100%;
   height: auto;
-  padding: 0 12px 12px;
-  overflow: visible;
+  display: block;
+  aspect-ratio: 920 / 680;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+}
+
+.knowledge-base-graph.is-panning,
+.knowledge-base-graph.is-dragging-node {
+  cursor: grabbing;
+}
+
+.knowledge-base-graph-surface {
+  fill: rgba(10, 13, 15, 0.96);
+  stroke: rgba(255, 255, 255, 0.06);
+  stroke-width: 1;
 }
 
 .knowledge-base-graph-edge {
-  stroke: rgba(255, 255, 255, 0.12);
-  stroke-width: 1.4;
+  stroke: var(--kb-edge-stroke, rgba(255, 255, 255, 0.1));
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
 }
 
 .knowledge-base-graph-edge.is-connected {
-  stroke: rgba(106, 227, 198, 0.42);
+  stroke: rgba(106, 227, 198, 0.56);
   stroke-width: 1.8;
 }
 
@@ -813,14 +885,15 @@ textarea {
 }
 
 .knowledge-base-graph-node circle {
-  fill: rgba(255, 255, 255, 0.22);
-  stroke: rgba(255, 255, 255, 0.18);
+  fill: var(--kb-node-fill, rgba(255, 255, 255, 0.24));
+  stroke: var(--kb-node-stroke, rgba(255, 255, 255, 0.16));
   stroke-width: 1.6;
-  transition: fill 120ms ease, stroke 120ms ease, transform 120ms ease;
+  transition: fill 120ms ease, stroke 120ms ease, transform 120ms ease, r 120ms ease;
+  vector-effect: non-scaling-stroke;
 }
 
 .knowledge-base-graph-node text {
-  fill: var(--muted);
+  fill: var(--kb-node-label, var(--muted));
   font-family: "IBM Plex Mono", monospace;
   font-size: 10px;
   text-anchor: middle;
@@ -828,8 +901,14 @@ textarea {
 }
 
 .knowledge-base-graph-node.is-connected circle {
-  fill: rgba(106, 227, 198, 0.18);
-  stroke: rgba(106, 227, 198, 0.36);
+  fill: var(--kb-node-connected-fill, rgba(106, 227, 198, 0.18));
+  stroke: var(--kb-node-connected-stroke, rgba(106, 227, 198, 0.36));
+}
+
+.knowledge-base-graph-node.is-dragging circle,
+.knowledge-base-graph-node:hover circle {
+  fill: rgba(173, 239, 224, 0.28);
+  stroke: rgba(173, 239, 224, 0.68);
 }
 
 .knowledge-base-graph-node.is-selected circle {
@@ -1275,9 +1354,16 @@ select:disabled {
 
   .knowledge-base-grid {
     grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: minmax(300px, auto);
     align-content: start;
     overflow-y: auto;
     padding-right: 2px;
+  }
+
+  .knowledge-base-column-list,
+  .knowledge-base-column-note,
+  .knowledge-base-column-graph {
+    min-height: 320px;
   }
 
   .app-shell {
@@ -1374,7 +1460,7 @@ select:disabled {
   .knowledge-base-note-list,
   .knowledge-base-note-card {
     max-height: none;
-    overflow: visible;
+    overflow-y: auto;
   }
 }
 
