@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import os from "node:os";
-import { readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { closeSync, openSync, readSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
@@ -13,10 +13,12 @@ const STARTUP_DELAY_MS = 180;
 const SESSION_META_THROTTLE_MS = 180;
 const SESSION_PERSIST_THROTTLE_MS = 180;
 const SESSION_NAME_MAX_LENGTH = 64;
+const PROVIDER_SESSION_CAPTURE_ATTEMPTS = 16;
+const PROVIDER_SESSION_CAPTURE_INTERVAL_MS = 250;
+const PROVIDER_SESSION_LOOKBACK_MS = 4_000;
 const OPENCODE_SESSION_LIST_LIMIT = 50;
-const OPENCODE_SESSION_CAPTURE_ATTEMPTS = 16;
-const OPENCODE_SESSION_CAPTURE_INTERVAL_MS = 250;
-const OPENCODE_SESSION_LOOKBACK_MS = 4_000;
+const CODEX_SESSION_SCAN_LIMIT = 80;
+const CODEX_SESSION_HEADER_READ_BYTES = 24_576;
 const execFileAsync = promisify(execFile);
 
 function getShellArgs(shellPath) {
@@ -58,16 +60,17 @@ function normalizeSessionName(value) {
   return trimmed.slice(0, SESSION_NAME_MAX_LENGTH).trim();
 }
 
-export function buildSessionEnv(sessionId, providerId, workspaceRoot) {
+export function buildSessionEnv(sessionId, providerId, workspaceRoot, baseEnv = process.env) {
   const stateDir = path.join(workspaceRoot, ".remote-vibes");
   const agentDir = path.join(stateDir, "wiki", "comms", "agents", sessionId);
+  const env = baseEnv && typeof baseEnv === "object" ? baseEnv : process.env;
 
   return {
-    ...process.env,
+    ...env,
     COLORTERM: "truecolor",
     LANG: "en_US.UTF-8",
     LC_ALL: "en_US.UTF-8",
-    PATH: prependPath([path.join(workspaceRoot, "bin"), process.env.PATH]),
+    PATH: prependPath([path.join(workspaceRoot, "bin"), env.PATH]),
     REMOTE_VIBES_PROVIDER: providerId,
     REMOTE_VIBES_ROOT: stateDir,
     REMOTE_VIBES_SESSION_ID: sessionId,
@@ -122,15 +125,64 @@ function normalizeSessionPath(targetPath) {
   return path.resolve(targetPath);
 }
 
-function matchOpenCodeSessionsByCwd(sessions, cwd) {
-  const normalizedCwd = normalizeSessionPath(cwd);
+function readFileHeader(filePath, maxBytes = CODEX_SESSION_HEADER_READ_BYTES) {
+  let fd = null;
 
-  return sessions
-    .filter((entry) => normalizeSessionPath(entry?.directory) === normalizedCwd)
-    .sort((left, right) => Number(right?.updated || 0) - Number(left?.updated || 0));
+  try {
+    fd = openSync(filePath, "r");
+    const buffer = Buffer.alloc(maxBytes);
+    const bytesRead = readSync(fd, buffer, 0, maxBytes, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } catch {
+    return "";
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Ignore close failures for short-lived session scans.
+      }
+    }
+  }
 }
 
-function pickTrackedOpenCodeSession(sessions, baselineSessionIds, launchedAt) {
+function decodeJsonString(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(`"${value}"`);
+  } catch {
+    return value;
+  }
+}
+
+function getHomeDirectory(env = process.env) {
+  return String(env?.HOME || os.homedir() || "").trim() || os.homedir();
+}
+
+function sortSessionsByUpdated(sessions) {
+  return sessions.sort((left, right) => Number(right?.updated || 0) - Number(left?.updated || 0));
+}
+
+function matchSessionsByPath(sessions, cwd, key) {
+  const normalizedCwd = normalizeSessionPath(cwd);
+
+  return sortSessionsByUpdated(
+    sessions.filter((entry) => normalizeSessionPath(entry?.[key]) === normalizedCwd),
+  );
+}
+
+function matchOpenCodeSessionsByCwd(sessions, cwd) {
+  return matchSessionsByPath(sessions, cwd, "directory");
+}
+
+function matchCodexSessionsByCwd(sessions, cwd) {
+  return matchSessionsByPath(sessions, cwd, "cwd");
+}
+
+function pickTrackedSession(sessions, baselineSessionIds, launchedAt) {
   const freshSession = sessions.find((entry) => !baselineSessionIds.has(entry.id));
 
   if (freshSession) {
@@ -138,7 +190,7 @@ function pickTrackedOpenCodeSession(sessions, baselineSessionIds, launchedAt) {
   }
 
   return (
-    sessions.find((entry) => Number(entry?.updated || 0) >= launchedAt - OPENCODE_SESSION_LOOKBACK_MS)
+    sessions.find((entry) => Number(entry?.updated || 0) >= launchedAt - PROVIDER_SESSION_LOOKBACK_MS)
     ?? null
   );
 }
@@ -166,6 +218,122 @@ async function listOpenCodeSessions(command, cwd, env = process.env) {
   }
 }
 
+function normalizeClaudeProjectDirName(cwd) {
+  const normalizedCwd = normalizeSessionPath(cwd);
+  return normalizedCwd ? normalizedCwd.replaceAll(path.sep, "-") : null;
+}
+
+function listClaudeSessionsForCwd(cwd, env = process.env) {
+  const projectDirName = normalizeClaudeProjectDirName(cwd);
+
+  if (!projectDirName) {
+    return [];
+  }
+
+  const projectDir = path.join(getHomeDirectory(env), ".claude", "projects", projectDirName);
+
+  try {
+    const entries = readdirSync(projectDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+      .map((entry) => {
+        const filePath = path.join(projectDir, entry.name);
+        const sessionId = entry.name.slice(0, -".jsonl".length);
+
+        return {
+          id: sessionId,
+          updated: statSync(filePath).mtimeMs,
+        };
+      });
+
+    return sortSessionsByUpdated(entries);
+  } catch {
+    return [];
+  }
+}
+
+function parseCodexSessionHeader(filePath) {
+  const header = readFileHeader(filePath);
+
+  if (!header) {
+    return null;
+  }
+
+  const idMatch = header.match(/"id":"([^"]+)"/);
+  const cwdMatch = header.match(/"cwd":"((?:\\.|[^"])*)"/);
+  const timestampMatch = header.match(/"timestamp":"([^"]+)"/);
+
+  if (!idMatch?.[1] || !cwdMatch?.[1]) {
+    return null;
+  }
+
+  const timestamp = timestampMatch?.[1] ? Date.parse(timestampMatch[1]) : NaN;
+
+  return {
+    id: idMatch[1],
+    cwd: decodeJsonString(cwdMatch[1]),
+    updated: Number.isFinite(timestamp) ? timestamp : statSync(filePath).mtimeMs,
+  };
+}
+
+function listRecentCodexSessionFiles(rootDir, limit = CODEX_SESSION_SCAN_LIMIT) {
+  const files = [];
+
+  try {
+    const years = readdirSync(rootDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()
+      .reverse();
+
+    for (const year of years) {
+      const yearDir = path.join(rootDir, year);
+      const months = readdirSync(yearDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort()
+        .reverse();
+
+      for (const month of months) {
+        const monthDir = path.join(yearDir, month);
+        const days = readdirSync(monthDir, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => entry.name)
+          .sort()
+          .reverse();
+
+        for (const day of days) {
+          const dayDir = path.join(monthDir, day);
+          const dayFiles = readdirSync(dayDir, { withFileTypes: true })
+            .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+            .map((entry) => path.join(dayDir, entry.name))
+            .sort()
+            .reverse();
+
+          files.push(...dayFiles);
+          if (files.length >= limit) {
+            return files.slice(0, limit);
+          }
+        }
+      }
+    }
+  } catch {
+    return [];
+  }
+
+  return files;
+}
+
+function listCodexSessions(env = process.env) {
+  const sessionsRoot = path.join(getHomeDirectory(env), ".codex", "sessions");
+  const files = listRecentCodexSessionFiles(sessionsRoot);
+
+  return sortSessionsByUpdated(
+    files
+      .map((filePath) => parseCodexSessionHeader(filePath))
+      .filter((entry) => entry?.id && entry?.cwd),
+  );
+}
+
 export class SessionManager {
   constructor({
     cwd,
@@ -174,11 +342,13 @@ export class SessionManager {
     stateDir = path.join(cwd, ".remote-vibes"),
     agentRunStore = null,
     runIdleTimeoutMs = Number(process.env.REMOTE_VIBES_RUN_IDLE_MS || 15_000),
+    env = process.env,
   }) {
     this.cwd = cwd;
     this.providers = providers;
     this.persistSessions = persistSessions;
     this.stateDir = stateDir;
+    this.env = env && typeof env === "object" ? { ...env } : { ...process.env };
     this.sessionStore = new SessionStore({
       enabled: persistSessions,
       stateDir,
@@ -605,6 +775,14 @@ export class SessionManager {
       };
     }
 
+    if (provider.id === "claude") {
+      return this.prepareClaudeLaunch(session, provider, { restored });
+    }
+
+    if (provider.id === "codex") {
+      return this.prepareCodexLaunch(session, provider, { restored });
+    }
+
     if (provider.id !== "opencode") {
       return {
         commandString: buildShellCommand(provider.launchCommand),
@@ -671,9 +849,9 @@ export class SessionManager {
   }
 
   async captureOpenCodeSessionId(session, provider, ptyProcess, baselineSessionIds, launchedAt) {
-    for (let attempt = 0; attempt < OPENCODE_SESSION_CAPTURE_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < PROVIDER_SESSION_CAPTURE_ATTEMPTS; attempt += 1) {
       if (attempt > 0) {
-        await delay(OPENCODE_SESSION_CAPTURE_INTERVAL_MS);
+        await delay(PROVIDER_SESSION_CAPTURE_INTERVAL_MS);
       }
 
       if (session.status !== "running" || session.pty !== ptyProcess) {
@@ -684,11 +862,88 @@ export class SessionManager {
         await listOpenCodeSessions(
           provider.launchCommand,
           session.cwd,
-          buildSessionEnv(session.id, provider.id, this.cwd),
+          buildSessionEnv(session.id, provider.id, this.cwd, this.env),
         ),
         session.cwd,
       );
-      const candidate = pickTrackedOpenCodeSession(matchingSessions, baselineSessionIds, launchedAt);
+      const candidate = pickTrackedSession(matchingSessions, baselineSessionIds, launchedAt);
+
+      if (!candidate?.id) {
+        continue;
+      }
+
+      this.updateProviderState(session, { sessionId: candidate.id });
+      return;
+    }
+  }
+
+  async prepareClaudeLaunch(session, provider, { restored = false } = {}) {
+    const fallbackSessionId = restored
+      ? listClaudeSessionsForCwd(session.cwd, this.env)[0]?.id || null
+      : null;
+    const sessionId = session.providerState?.sessionId || fallbackSessionId || (!restored ? session.id : null);
+
+    if (sessionId) {
+      this.updateProviderState(session, { sessionId });
+    }
+
+    if (restored && sessionId) {
+      return {
+        commandString: buildShellCommand(provider.launchCommand, ["--resume", sessionId]),
+        afterLaunch: null,
+      };
+    }
+
+    if (!restored && sessionId) {
+      return {
+        commandString: buildShellCommand(provider.launchCommand, ["--session-id", sessionId]),
+        afterLaunch: null,
+      };
+    }
+
+    return {
+      commandString: buildShellCommand(provider.launchCommand),
+      afterLaunch: null,
+    };
+  }
+
+  async prepareCodexLaunch(session, provider, { restored = false } = {}) {
+    const knownSessions = matchCodexSessionsByCwd(listCodexSessions(this.env), session.cwd);
+
+    if (restored) {
+      const restoreSessionId = session.providerState?.sessionId || knownSessions[0]?.id || null;
+
+      if (restoreSessionId) {
+        this.updateProviderState(session, { sessionId: restoreSessionId });
+        return {
+          commandString: buildShellCommand(provider.launchCommand, ["resume", restoreSessionId]),
+          afterLaunch: null,
+        };
+      }
+    }
+
+    const baselineSessionIds = new Set(knownSessions.map((entry) => entry.id));
+
+    return {
+      commandString: buildShellCommand(provider.launchCommand),
+      afterLaunch: async (ptyProcess, launchedAt) => {
+        await this.captureCodexSessionId(session, ptyProcess, baselineSessionIds, launchedAt);
+      },
+    };
+  }
+
+  async captureCodexSessionId(session, ptyProcess, baselineSessionIds, launchedAt) {
+    for (let attempt = 0; attempt < PROVIDER_SESSION_CAPTURE_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) {
+        await delay(PROVIDER_SESSION_CAPTURE_INTERVAL_MS);
+      }
+
+      if (session.status !== "running" || session.pty !== ptyProcess) {
+        return;
+      }
+
+      const matchingSessions = matchCodexSessionsByCwd(listCodexSessions(this.env), session.cwd);
+      const candidate = pickTrackedSession(matchingSessions, baselineSessionIds, launchedAt);
 
       if (!candidate?.id) {
         continue;
@@ -705,7 +960,7 @@ export class SessionManager {
 
     const ptyProcess = pty.spawn(session.shell, getShellArgs(session.shell), {
       cwd: sessionCwd,
-      env: buildSessionEnv(session.id, provider.id, this.cwd),
+      env: buildSessionEnv(session.id, provider.id, this.cwd, this.env),
       name: "xterm-256color",
       cols: session.cols,
       rows: session.rows,
