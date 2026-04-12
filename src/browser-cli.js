@@ -1,4 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { chromium } from "playwright-core";
@@ -7,6 +9,7 @@ import {
   browserExecutableHints,
   createBrowserError,
   ensureLocalBrowserTarget,
+  findCommandInPath,
   inspectBrowserRuntime,
   resolveBrowserOutputPath,
   truncateBrowserText,
@@ -17,7 +20,6 @@ const DEFAULT_VIEWPORT = {
   width: 1440,
   height: 960,
 };
-
 class UsageError extends Error {
   constructor(message) {
     super(message);
@@ -34,11 +36,15 @@ function usageText() {
     "  rv-browser doctor",
     "  rv-browser screenshot <port-or-url> [output.png] [--wait-for-selector <selector>] [--wait-for-text <text>] [--timeout <ms>] [--full-page]",
     "  rv-browser run <port-or-url> --steps <json> [--output output.png] [--timeout <ms>] [--wait-until load|domcontentloaded|networkidle] [--width <px>] [--height <px>]",
+    "  rv-browser describe <port-or-url> [output.png] [--prompt <text>] [--provider auto|codex|claude]",
+    "  rv-browser describe-file <image-path> [--prompt <text>] [--provider auto|codex|claude]",
     "",
     "Examples:",
     "  rv-browser screenshot 7860",
     "  rv-browser screenshot http://127.0.0.1:3000/ out.png --wait-for-text Ready",
     "  rv-browser run 7860 --steps-file eval-steps.json --output final.png",
+    "  rv-browser describe 7860 --prompt \"What visual issues do you see?\"",
+    "  rv-browser describe-file results/chart.png --prompt \"Critique this chart's readability.\"",
     "",
     "Step actions supported by `run`:",
     "  goto, click, fill, press, check, uncheck, select, setInputFiles, waitForSelector, waitForText, waitForLoadState, waitForTimeout, screenshot",
@@ -101,6 +107,12 @@ function parseFlags(argv) {
         break;
       case "--output":
         flags.output = consumeValue();
+        break;
+      case "--prompt":
+        flags.prompt = consumeValue();
+        break;
+      case "--provider":
+        flags.provider = consumeValue();
         break;
       case "--timeout":
         flags.timeoutMs = parseNumberOption(consumeValue(), "--timeout");
@@ -493,6 +505,169 @@ function writeJson(stream, payload) {
   stream.write(`${JSON.stringify(payload, null, 2)}\n`);
 }
 
+function getRequestedVisionProvider(flags) {
+  const requestedProvider = String(flags.provider || "auto").trim().toLowerCase();
+  if (!["auto", "codex", "claude"].includes(requestedProvider)) {
+    throw new UsageError("--provider must be one of auto, codex, or claude.");
+  }
+
+  return requestedProvider;
+}
+
+async function resolveVisionProvider({ requestedProvider = "auto", env }) {
+  const providerCandidates = {
+    codex:
+      env.REMOTE_VIBES_REAL_CODEX_COMMAND ||
+      (await findCommandInPath("codex", env.PATH || process.env.PATH || "")),
+    claude:
+      env.REMOTE_VIBES_REAL_CLAUDE_COMMAND ||
+      (await findCommandInPath("claude", env.PATH || process.env.PATH || "")),
+  };
+
+  if (requestedProvider !== "auto") {
+    const command = providerCandidates[requestedProvider];
+    if (!command) {
+      throw createBrowserError(
+        "VISION_PROVIDER_NOT_FOUND",
+        `rv-browser could not find the requested ${requestedProvider} command.`,
+      );
+    }
+
+    return {
+      id: requestedProvider,
+      command,
+    };
+  }
+
+  const preferredFromSession = String(env.REMOTE_VIBES_PROVIDER || "").trim().toLowerCase();
+  if (preferredFromSession === "codex" && providerCandidates.codex) {
+    return { id: "codex", command: providerCandidates.codex };
+  }
+
+  if (preferredFromSession === "claude" && providerCandidates.claude) {
+    return { id: "claude", command: providerCandidates.claude };
+  }
+
+  if (providerCandidates.codex) {
+    return { id: "codex", command: providerCandidates.codex };
+  }
+
+  if (providerCandidates.claude) {
+    return { id: "claude", command: providerCandidates.claude };
+  }
+
+  throw createBrowserError(
+    "VISION_PROVIDER_NOT_FOUND",
+    "rv-browser could not find a Codex or Claude CLI for visual description.",
+  );
+}
+
+async function spawnCommandWithStdin(command, args, input, { cwd, env }) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr, code });
+        return;
+      }
+
+      const error = createBrowserError(
+        "VISION_COMMAND_FAILED",
+        `${path.basename(command)} exited with code ${code}.`,
+      );
+      error.stdout = stdout;
+      error.stderr = stderr;
+      error.exitCode = code;
+      reject(error);
+    });
+
+    child.stdin.end(input);
+  });
+}
+
+async function describeImageWithProvider(imagePath, flags, cwd, env) {
+  const requestedProvider = getRequestedVisionProvider(flags);
+  const provider = await resolveVisionProvider({
+    requestedProvider,
+    env,
+  });
+  const prompt =
+    String(flags.prompt || "").trim() ||
+    "Describe what is visible in this image and call out any obvious visual issues or strengths.";
+
+  if (provider.id === "codex") {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "rv-browser-codex-"));
+    const outputFile = path.join(tempDir, "last-message.txt");
+
+    try {
+      await spawnCommandWithStdin(
+        provider.command,
+        [
+          "exec",
+          "--skip-git-repo-check",
+          "--cd",
+          cwd,
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--output-last-message",
+          outputFile,
+          "-i",
+          imagePath,
+          "-",
+        ],
+        `${prompt}\n`,
+        { cwd, env },
+      );
+
+      const analysis = (await readFile(outputFile, "utf8")).trim();
+      return {
+        provider: provider.id,
+        analysis,
+      };
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  if (provider.id === "claude") {
+    const { stdout } = await spawnCommandWithStdin(
+      provider.command,
+      [
+        "-p",
+        "--permission-mode",
+        "bypassPermissions",
+        "--add-dir",
+        path.dirname(imagePath),
+      ],
+      `${prompt}\nImage path: ${imagePath}\n`,
+      { cwd, env },
+    );
+
+    return {
+      provider: provider.id,
+      analysis: stdout.trim(),
+    };
+  }
+
+  throw createBrowserError(
+    "VISION_PROVIDER_NOT_SUPPORTED",
+    `Unsupported vision provider: ${provider.id}`,
+  );
+}
+
 async function runDoctor(stdout, env) {
   const browserRuntime = await inspectBrowserRuntime({ env });
   writeJson(stdout, {
@@ -601,6 +776,82 @@ async function runPlan(positionals, flags, cwd, env, stdout) {
   });
 }
 
+async function runDescribe(positionals, flags, cwd, env, stdout) {
+  if (!positionals[1]) {
+    throw new UsageError("describe requires a localhost URL or port.");
+  }
+
+  const target = ensureLocalBrowserTarget(positionals[1]);
+  const requestedOutputPath = positionals[2] || flags.output;
+  const defaultTimeoutMs = flags.timeoutMs || DEFAULT_TIMEOUT_MS;
+
+  return withBrowserSession(flags, env, async ({ browserRuntime, page }) => {
+    await page.goto(target, {
+      waitUntil: flags.waitUntil || "load",
+      timeout: defaultTimeoutMs,
+    });
+
+    if (flags.waitForSelector) {
+      await page.locator(flags.waitForSelector).waitFor({
+        state: "visible",
+        timeout: defaultTimeoutMs,
+      });
+    }
+
+    if (flags.waitForText) {
+      await page.getByText(flags.waitForText).first().waitFor({
+        state: "visible",
+        timeout: defaultTimeoutMs,
+      });
+    }
+
+    const outputPath = await resolveBrowserOutputPath(requestedOutputPath, {
+      cwd,
+      prefix: "describe",
+    });
+
+    await page.screenshot({
+      path: outputPath,
+      fullPage: flags.fullPage === true,
+      timeout: defaultTimeoutMs,
+    });
+
+    const description = await describeImageWithProvider(outputPath, flags, cwd, env);
+
+    writeJson(stdout, {
+      ok: true,
+      command: "describe",
+      browser: browserRuntime,
+      target,
+      outputPath,
+      visionProvider: description.provider,
+      analysis: description.analysis,
+      ...(await getPageSummary(page)),
+    });
+
+    return 0;
+  });
+}
+
+async function runDescribeFile(positionals, flags, cwd, env, stdout) {
+  if (!positionals[1]) {
+    throw new UsageError("describe-file requires a local image path.");
+  }
+
+  const imagePath = path.resolve(cwd, positionals[1]);
+  const description = await describeImageWithProvider(imagePath, flags, cwd, env);
+
+  writeJson(stdout, {
+    ok: true,
+    command: "describe-file",
+    imagePath,
+    visionProvider: description.provider,
+    analysis: description.analysis,
+  });
+
+  return 0;
+}
+
 export async function runBrowserCli(
   argv,
   {
@@ -629,6 +880,14 @@ export async function runBrowserCli(
 
     if (command === "run") {
       return await runPlan(positionals, flags, cwd, env, stdout);
+    }
+
+    if (command === "describe") {
+      return await runDescribe(positionals, flags, cwd, env, stdout);
+    }
+
+    if (command === "describe-file") {
+      return await runDescribeFile(positionals, flags, cwd, env, stdout);
     }
 
     throw new UsageError(`Unknown command: ${command}`);

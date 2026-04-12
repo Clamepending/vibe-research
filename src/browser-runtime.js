@@ -30,6 +30,10 @@ export const browserExecutableHints = [
   "/usr/bin/chromium",
   "/snap/bin/chromium",
 ];
+const browserDetourCommandNames = new Set([
+  ...browserCommandHints,
+  "firefox",
+]);
 
 export function createBrowserError(code, message) {
   const error = new Error(message);
@@ -54,10 +58,33 @@ async function isExecutable(targetPath) {
   }
 }
 
-async function findCommandInPath(command, envPath = process.env.PATH || "") {
+function isBrowserDetourWrapper(candidatePath, env = process.env) {
+  const appRoot = String(env.REMOTE_VIBES_APP_ROOT || "").trim();
+  if (!appRoot) {
+    return false;
+  }
+
+  const helperDir = path.resolve(appRoot, "bin");
+  const absoluteCandidatePath = path.resolve(candidatePath);
+
+  return (
+    path.dirname(absoluteCandidatePath) === helperDir &&
+    browserDetourCommandNames.has(path.basename(absoluteCandidatePath))
+  );
+}
+
+export async function findCommandInPath(
+  command,
+  envPath = process.env.PATH || "",
+  { ignore = null } = {},
+) {
   for (const entry of envPath.split(path.delimiter).filter(Boolean)) {
     const candidate = path.join(entry, command);
     if (await isExecutable(candidate)) {
+      if (typeof ignore === "function" && ignore(candidate)) {
+        continue;
+      }
+
       return candidate;
     }
   }
@@ -137,7 +164,9 @@ export async function resolveBrowserExecutablePath({ env = process.env } = {}) {
   }
 
   for (const command of browserCommandHints) {
-    const resolved = await findCommandInPath(command, env.PATH || "");
+    const resolved = await findCommandInPath(command, env.PATH || "", {
+      ignore: (candidate) => isBrowserDetourWrapper(candidate, env),
+    });
     if (resolved) {
       return resolved;
     }

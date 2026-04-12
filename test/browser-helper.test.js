@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -19,6 +19,17 @@ const browserTestEnv = {
   ...process.env,
   PATH: ["/opt/homebrew/bin", "/usr/local/bin", process.env.PATH].filter(Boolean).join(path.delimiter),
 };
+const PNG_FIXTURE = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+  0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+  0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+  0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+  0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92,
+  0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+  0x44, 0xae, 0x42, 0x60, 0x82,
+]);
 
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", `'\"'\"'`)}'`;
@@ -50,6 +61,52 @@ async function waitForFile(filePath, timeoutMs = 20_000) {
   }
 
   throw new Error(`Timed out waiting for ${filePath}`);
+}
+
+async function createFakeVisionProvider(workspaceDir, providerId) {
+  const scriptPath = path.join(workspaceDir, `${providerId}-provider.sh`);
+
+  if (providerId === "codex") {
+    await writeFile(
+      scriptPath,
+      `#!/usr/bin/env bash
+set -euo pipefail
+output_file=""
+image_path=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-last-message)
+      output_file="$2"
+      shift 2
+      ;;
+    -i)
+      image_path="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+cat >/dev/null
+printf 'codex saw %s\\n' "$(basename "$image_path")" > "$output_file"
+`,
+      "utf8",
+    );
+  } else {
+    await writeFile(
+      scriptPath,
+      `#!/usr/bin/env bash
+set -euo pipefail
+cat >/dev/null
+printf 'claude analyzed local image successfully\\n'
+`,
+      "utf8",
+    );
+  }
+
+  await chmod(scriptPath, 0o755);
+  return scriptPath;
 }
 
 async function startDemoServer() {
@@ -164,6 +221,22 @@ test("rv-browser doctor resolves a usable local browser", async () => {
   assert.ok(payload.browser.executablePath.length > 0);
 });
 
+test("rv-browser doctor ignores detour wrappers when repo bin is first on PATH", async () => {
+  const result = await execFile(browserHelperPath, ["doctor"], {
+    cwd: rootDir,
+    env: {
+      ...browserTestEnv,
+      PATH: [path.join(rootDir, "bin"), "/opt/homebrew/bin", "/usr/local/bin", process.env.PATH]
+        .filter(Boolean)
+        .join(path.delimiter),
+    },
+  });
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.ok, true);
+  assert.notEqual(payload.browser.executablePath, path.join(rootDir, "bin", "google-chrome"));
+});
+
 test("rv-browser run can drive a localhost app, upload files, and save screenshots", async () => {
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-browser-"));
   const demoServer = await startDemoServer();
@@ -230,6 +303,110 @@ test("rv-browser rejects non-local targets", async () => {
       const payload = parseJsonPayload(error.stderr);
       assert.equal(payload.ok, false);
       assert.equal(payload.error.code, "TARGET_NOT_LOCAL");
+      return true;
+    },
+  );
+});
+
+test("rv-browser describe can capture a localhost page and pass it through a codex-style vision provider", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-describe-"));
+  const demoServer = await startDemoServer();
+  const demoPort = demoServer.address().port;
+
+  try {
+    const fakeCodexPath = await createFakeVisionProvider(workspaceDir, "codex");
+    const screenshotPath = path.join(workspaceDir, "described.png");
+    const result = await execFile(
+      browserHelperPath,
+      [
+        "describe",
+        String(demoPort),
+        screenshotPath,
+        "--provider",
+        "codex",
+        "--prompt",
+        "Describe the page briefly.",
+      ],
+      {
+        cwd: workspaceDir,
+        env: {
+          ...browserTestEnv,
+          REMOTE_VIBES_REAL_CODEX_COMMAND: fakeCodexPath,
+        },
+      },
+    );
+    const payload = JSON.parse(result.stdout);
+
+    assert.equal(payload.ok, true);
+    assert.equal(payload.command, "describe");
+    assert.equal(payload.visionProvider, "codex");
+    assert.match(payload.analysis, /codex saw described\.png/);
+    assert.ok((await stat(screenshotPath)).size > 0);
+  } finally {
+    await new Promise((resolve) => demoServer.close(resolve));
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("rv-browser describe-file can use a claude-style vision provider", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-describe-file-"));
+
+  try {
+    const imagePath = path.join(workspaceDir, "fixture.png");
+    const fakeClaudePath = await createFakeVisionProvider(workspaceDir, "claude");
+    await writeFile(imagePath, PNG_FIXTURE);
+
+    const result = await execFile(
+      browserHelperPath,
+      [
+        "describe-file",
+        path.basename(imagePath),
+        "--provider",
+        "claude",
+        "--prompt",
+        "Describe the image.",
+      ],
+      {
+        cwd: workspaceDir,
+        env: {
+          ...browserTestEnv,
+          REMOTE_VIBES_REAL_CLAUDE_COMMAND: fakeClaudePath,
+        },
+      },
+    );
+    const payload = JSON.parse(result.stdout);
+
+    assert.equal(payload.ok, true);
+    assert.equal(payload.command, "describe-file");
+    assert.equal(payload.visionProvider, "claude");
+    assert.match(payload.analysis, /claude analyzed local image successfully/);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("browser detour wrappers redirect back to rv-browser", async () => {
+  await assert.rejects(
+    execFile(path.join(rootDir, "bin", "google-chrome"), ["--headless=new", "http://127.0.0.1:4173"], {
+      cwd: rootDir,
+      env: browserTestEnv,
+    }),
+    (error) => {
+      assert.equal(error.code, 64);
+      assert.match(error.stderr, /Use rv-browser screenshot <port-or-url>/);
+      assert.match(error.stderr, /describe-file <image-path>/);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    execFile(path.join(rootDir, "bin", "open"), ["http://127.0.0.1:4173"], {
+      cwd: rootDir,
+      env: browserTestEnv,
+    }),
+    (error) => {
+      assert.equal(error.code, 64);
+      assert.match(error.stderr, /Use rv-browser screenshot <port-or-url>/);
       return true;
     },
   );

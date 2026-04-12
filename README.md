@@ -23,11 +23,18 @@ Agents inside Remote Vibes also get an `rv-browser` command on `PATH`, so they c
 
 ```bash
 rv-browser doctor
-rv-browser screenshot 7860
-rv-browser run 7860 --steps-file eval-steps.json --output final.png
+rv-browser screenshot 4173
+rv-browser run 4173 --steps-file eval-steps.json --output final.png
+rv-browser describe 4173 --prompt "What visual issues stand out in the rendered UI?"
+rv-browser describe-file results/chart.png --prompt "Critique this chart's readability."
 ```
 
-`rv-browser` is meant for arbitrary local UIs, not just Gradio. It works with anything the agent serves on `localhost` or `127.0.0.1`, captures screenshots, and can click/fill/upload files through a simple JSON step plan.
+`rv-browser` is meant for arbitrary local UIs, not just Gradio. It works with anything the agent serves on `localhost` or `127.0.0.1`, captures screenshots, can click/fill/upload files through a simple JSON step plan, and can ask Codex or Claude to turn a screenshot or local image into plain-text qualitative feedback.
+
+For model training or experiment loops, the lightweight pattern is:
+- serve the demo or chart on localhost and inspect it with `rv-browser screenshot`, `run`, or `describe`
+- save generated images or plots to disk and use `rv-browser describe-file` for a qualitative read
+- ask the agent to write a short keep-training / stop-training note grounded in those rendered artifacts
 
 tips:
 - Press the "shift+tab" button on the top right to swap to bypass-permisisons mode to not have to approve things all the time.

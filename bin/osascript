@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL_OSASCRIPT="/usr/bin/osascript"
+ARGS="$*"
+
+if printf '%s' "$ARGS" | /usr/bin/grep -Eqi 'Safari|Chrome|Brave|Arc|open location|do JavaScript'; then
+  printf '[remote-vibes] Use rv-browser screenshot/run/describe instead of osascript browser automation for localhost UI work.\n' >&2
+  exit 64
+fi
+
+exec "$REAL_OSASCRIPT" "$@"

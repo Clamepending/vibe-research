@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT_PATH="$ROOT_DIR/bin/rv-browser.mjs"
+export REMOTE_VIBES_APP_ROOT="${REMOTE_VIBES_APP_ROOT:-$ROOT_DIR}"
 
 find_node() {
   local candidate

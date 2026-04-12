@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUIDANCE="For localhost UI inspection and visual evaluation, rv-browser is already installed on PATH and should be your first step. Start with rv-browser screenshot <port-or-url> to inspect the rendered page, rv-browser run <port-or-url> --steps ... for click/fill flows, rv-browser describe <port-or-url> --prompt \"...\" for qualitative UI feedback, and rv-browser describe-file <image-path> --prompt \"...\" for generated images or charts. Do not infer visuals from curl or HTML alone, do not manually download page assets to inspect them, and do not search for Chrome, Chromium, Playwright, Selenium, or macOS browser app bundles unless rv-browser has already failed for a concrete reason."
+
+find_real_codex() {
+  local candidate
+
+  for candidate in \
+    "${REMOTE_VIBES_REAL_CODEX_COMMAND:-}" \
+    /Applications/Codex.app/Contents/Resources/codex \
+    /opt/homebrew/bin/codex \
+    /usr/local/bin/codex \
+    "$(command -v codex 2>/dev/null || true)"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ] && [ "$candidate" != "$SCRIPT_DIR/codex" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+REAL_CODEX="$(find_real_codex || true)"
+if [ -z "$REAL_CODEX" ]; then
+  printf '[remote-vibes] Could not find the real codex executable for the wrapper.\n' >&2
+  exit 1
+fi
+
+exec "$REAL_CODEX" -c "developer_instructions=\"$GUIDANCE\"" "$@"

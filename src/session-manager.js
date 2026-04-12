@@ -40,7 +40,16 @@ function prependPathEntry(existingPath, entry) {
   return [entry, ...currentEntries.filter((candidate) => candidate !== entry)].join(path.delimiter);
 }
 
-function buildSessionEnv(sessionId, providerId) {
+function getResolvedProviderCommand(providers, providerId) {
+  const provider = providers.find((entry) => entry.id === providerId);
+  if (!provider?.available) {
+    return null;
+  }
+
+  return provider.launchCommand || provider.command || null;
+}
+
+function buildSessionEnv(sessionId, providerId, providers = []) {
   return {
     ...process.env,
     COLORTERM: "truecolor",
@@ -49,7 +58,13 @@ function buildSessionEnv(sessionId, providerId) {
     PATH: prependPathEntry(process.env.PATH, helperBinDir),
     REMOTE_VIBES_APP_ROOT: appRootDir,
     REMOTE_VIBES_BROWSER_COMMAND: "rv-browser",
-    REMOTE_VIBES_BROWSER_HELP: "rv-browser screenshot 7860",
+    REMOTE_VIBES_BROWSER_DESCRIBE:
+      "rv-browser describe 4173 --prompt \"What visual issues stand out in the rendered UI?\"",
+    REMOTE_VIBES_BROWSER_HELP: "rv-browser screenshot 4173",
+    REMOTE_VIBES_BROWSER_IMAGE_HELP:
+      "rv-browser describe-file results/chart.png --prompt \"What does this output show and what should improve?\"",
+    REMOTE_VIBES_REAL_CLAUDE_COMMAND: getResolvedProviderCommand(providers, "claude") || "",
+    REMOTE_VIBES_REAL_CODEX_COMMAND: getResolvedProviderCommand(providers, "codex") || "",
     REMOTE_VIBES_PROVIDER: providerId,
     REMOTE_VIBES_SESSION_ID: sessionId,
     TERM: "xterm-256color",
@@ -482,7 +497,7 @@ export class SessionManager {
 
     const ptyProcess = pty.spawn(session.shell, getShellArgs(session.shell), {
       cwd: sessionCwd,
-      env: buildSessionEnv(session.id, provider.id),
+      env: buildSessionEnv(session.id, provider.id, this.providers),
       name: "xterm-256color",
       cols: session.cols,
       rows: session.rows,
@@ -508,7 +523,10 @@ export class SessionManager {
       : [
           `\u001b[1;36m[remote-vibes]\u001b[0m ${provider.label} session ready`,
           `\u001b[1;36m[remote-vibes]\u001b[0m cwd: ${sessionCwd}`,
-          "\u001b[1;36m[remote-vibes]\u001b[0m localhost browser helper: rv-browser --help",
+          "\u001b[1;36m[remote-vibes]\u001b[0m localhost browser helper: rv-browser screenshot 4173",
+          "\u001b[1;36m[remote-vibes]\u001b[0m click/fill flows: rv-browser run 4173 --steps-file eval-steps.json --output final.png",
+          '\u001b[1;36m[remote-vibes]\u001b[0m qualitative UI feedback: rv-browser describe 4173 --prompt "What visual issues stand out in the rendered UI?"',
+          '\u001b[1;36m[remote-vibes]\u001b[0m image and chart feedback: rv-browser describe-file results/chart.png --prompt "What does this output show and what should improve?"',
           provider.launchCommand
             ? `\u001b[1;36m[remote-vibes]\u001b[0m launching: ${provider.launchCommand}`
             : `\u001b[1;36m[remote-vibes]\u001b[0m vanilla shell active`,

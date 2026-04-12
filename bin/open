@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL_OPEN="/usr/bin/open"
+ARGS="$*"
+
+if printf '%s' "$ARGS" | /usr/bin/grep -Eqi 'https?://(127\.0\.0\.1|localhost|0\.0\.0\.0)'; then
+  printf '[remote-vibes] Use rv-browser screenshot <port-or-url>, rv-browser run ..., or rv-browser describe ... instead of open for localhost UI inspection.\n' >&2
+  exit 64
+fi
+
+exec "$REAL_OPEN" "$@"

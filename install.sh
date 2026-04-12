@@ -100,8 +100,12 @@ main() {
     chmod +x "$INSTALL_DIR/start.sh"
   fi
 
-  if [ -f "$INSTALL_DIR/bin/rv-browser" ] && [ ! -x "$INSTALL_DIR/bin/rv-browser" ]; then
-    chmod +x "$INSTALL_DIR/bin/rv-browser"
+  if [ -d "$INSTALL_DIR/bin" ]; then
+    for helper in rv-browser rv-browser-detour codex claude open osascript google-chrome chrome chromium chromium-browser firefox; do
+      if [ -f "$INSTALL_DIR/bin/$helper" ] && [ ! -x "$INSTALL_DIR/bin/$helper" ]; then
+        chmod +x "$INSTALL_DIR/bin/$helper"
+      fi
+    done
   fi
 
   if [ "$SKIP_RUN" = "1" ]; then
