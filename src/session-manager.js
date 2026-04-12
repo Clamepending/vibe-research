@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import os from "node:os";
 import { readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
 import pty from "node-pty";
 import { AgentRunTracker } from "./agent-run-tracker.js";
 import { SessionStore } from "./session-store.js";
@@ -11,6 +13,11 @@ const STARTUP_DELAY_MS = 180;
 const SESSION_META_THROTTLE_MS = 180;
 const SESSION_PERSIST_THROTTLE_MS = 180;
 const SESSION_NAME_MAX_LENGTH = 64;
+const OPENCODE_SESSION_LIST_LIMIT = 50;
+const OPENCODE_SESSION_CAPTURE_ATTEMPTS = 16;
+const OPENCODE_SESSION_CAPTURE_INTERVAL_MS = 250;
+const OPENCODE_SESSION_LOOKBACK_MS = 4_000;
+const execFileAsync = promisify(execFile);
 
 function getShellArgs(shellPath) {
   const shellName = path.basename(shellPath);
@@ -87,6 +94,76 @@ export function resolveCwd(inputCwd, fallbackCwd) {
 
 function buildPersistedExitMessage(message) {
   return `\r\n\u001b[1;31m[remote-vibes]\u001b[0m ${message}\r\n`;
+}
+
+function shellQuote(value) {
+  const text = String(value ?? "");
+
+  if (!text) {
+    return "''";
+  }
+
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+function buildShellCommand(command, args = []) {
+  return [command, ...args].map((part) => shellQuote(part)).join(" ");
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeSessionPath(targetPath) {
+  if (typeof targetPath !== "string" || !targetPath.trim()) {
+    return null;
+  }
+
+  return path.resolve(targetPath);
+}
+
+function matchOpenCodeSessionsByCwd(sessions, cwd) {
+  const normalizedCwd = normalizeSessionPath(cwd);
+
+  return sessions
+    .filter((entry) => normalizeSessionPath(entry?.directory) === normalizedCwd)
+    .sort((left, right) => Number(right?.updated || 0) - Number(left?.updated || 0));
+}
+
+function pickTrackedOpenCodeSession(sessions, baselineSessionIds, launchedAt) {
+  const freshSession = sessions.find((entry) => !baselineSessionIds.has(entry.id));
+
+  if (freshSession) {
+    return freshSession;
+  }
+
+  return (
+    sessions.find((entry) => Number(entry?.updated || 0) >= launchedAt - OPENCODE_SESSION_LOOKBACK_MS)
+    ?? null
+  );
+}
+
+async function listOpenCodeSessions(command, cwd, env = process.env) {
+  if (!command) {
+    return [];
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      command,
+      ["session", "list", "--format", "json", "-n", String(OPENCODE_SESSION_LIST_LIMIT)],
+      {
+        cwd,
+        env,
+        maxBuffer: 1024 * 1024,
+      },
+    );
+    const payload = JSON.parse(stdout);
+
+    return Array.isArray(payload) ? payload.filter((entry) => typeof entry?.id === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 export class SessionManager {
@@ -474,6 +551,7 @@ export class SessionManager {
     rows = 34,
     buffer = "",
     restoreOnStartup = false,
+    providerState = null,
   }) {
     return {
       id,
@@ -495,8 +573,130 @@ export class SessionManager {
       clients: new Set(),
       metaBroadcastTimer: null,
       restoreOnStartup,
+      providerState:
+        providerState && typeof providerState === "object" ? { ...providerState } : null,
       skipExitHandling: false,
     };
+  }
+
+  updateProviderState(session, nextProviderState) {
+    const normalizedState =
+      nextProviderState && typeof nextProviderState === "object"
+        ? { ...(session.providerState || {}), ...nextProviderState }
+        : null;
+
+    const currentStateJson = JSON.stringify(session.providerState || null);
+    const nextStateJson = JSON.stringify(normalizedState || null);
+
+    if (currentStateJson === nextStateJson) {
+      return;
+    }
+
+    session.providerState = normalizedState;
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist({ immediate: true });
+  }
+
+  async prepareProviderLaunch(session, provider, { restored = false } = {}) {
+    if (!provider.launchCommand) {
+      return {
+        commandString: null,
+        afterLaunch: null,
+      };
+    }
+
+    if (provider.id !== "opencode") {
+      return {
+        commandString: buildShellCommand(provider.launchCommand),
+        afterLaunch: null,
+      };
+    }
+
+    const knownSessions = matchOpenCodeSessionsByCwd(
+      await listOpenCodeSessions(
+        provider.launchCommand,
+        session.cwd,
+        buildSessionEnv(session.id, provider.id, this.cwd),
+      ),
+      session.cwd,
+    );
+
+    if (restored) {
+      const restoreSessionId = session.providerState?.sessionId || knownSessions[0]?.id || null;
+
+      if (restoreSessionId) {
+        this.updateProviderState(session, { sessionId: restoreSessionId });
+        return {
+          commandString: buildShellCommand(provider.launchCommand, ["--session", restoreSessionId]),
+          afterLaunch: null,
+        };
+      }
+    }
+
+    const baselineSessionIds = new Set(knownSessions.map((entry) => entry.id));
+
+    return {
+      commandString: buildShellCommand(provider.launchCommand),
+      afterLaunch: async (ptyProcess, launchedAt) => {
+        await this.captureOpenCodeSessionId(session, provider, ptyProcess, baselineSessionIds, launchedAt);
+      },
+    };
+  }
+
+  async launchProvider(session, provider, ptyProcess, launchContextPromise) {
+    let launchContext = null;
+
+    try {
+      launchContext = await launchContextPromise;
+    } catch {
+      launchContext = null;
+    }
+
+    if (session.status !== "running" || session.pty !== ptyProcess) {
+      return;
+    }
+
+    const commandString = launchContext?.commandString || buildShellCommand(provider.launchCommand);
+
+    if (!commandString) {
+      return;
+    }
+
+    const launchedAt = Date.now();
+    ptyProcess.write(`${commandString}\r`);
+
+    if (typeof launchContext?.afterLaunch === "function") {
+      void launchContext.afterLaunch(ptyProcess, launchedAt);
+    }
+  }
+
+  async captureOpenCodeSessionId(session, provider, ptyProcess, baselineSessionIds, launchedAt) {
+    for (let attempt = 0; attempt < OPENCODE_SESSION_CAPTURE_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) {
+        await delay(OPENCODE_SESSION_CAPTURE_INTERVAL_MS);
+      }
+
+      if (session.status !== "running" || session.pty !== ptyProcess) {
+        return;
+      }
+
+      const matchingSessions = matchOpenCodeSessionsByCwd(
+        await listOpenCodeSessions(
+          provider.launchCommand,
+          session.cwd,
+          buildSessionEnv(session.id, provider.id, this.cwd),
+        ),
+        session.cwd,
+      );
+      const candidate = pickTrackedOpenCodeSession(matchingSessions, baselineSessionIds, launchedAt);
+
+      if (!candidate?.id) {
+        continue;
+      }
+
+      this.updateProviderState(session, { sessionId: candidate.id });
+      return;
+    }
   }
 
   startSession(session, provider, { restored = false } = {}) {
@@ -517,6 +717,7 @@ export class SessionManager {
     session.exitSignal = null;
     session.restoreOnStartup = true;
     session.updatedAt = new Date().toISOString();
+    const launchContextPromise = this.prepareProviderLaunch(session, provider, { restored });
 
     const bannerLines = restored
       ? [
@@ -573,7 +774,7 @@ export class SessionManager {
     if (provider.launchCommand) {
       setTimeout(() => {
         if (session.status === "running" && session.pty === ptyProcess) {
-          ptyProcess.write(`${provider.launchCommand}\r`);
+          void this.launchProvider(session, provider, ptyProcess, launchContextPromise);
         }
       }, STARTUP_DELAY_MS);
     }
@@ -597,6 +798,7 @@ export class SessionManager {
       rows: Number(snapshot.rows) > 0 ? Number(snapshot.rows) : 34,
       buffer: snapshot.buffer || "",
       restoreOnStartup: Boolean(snapshot.restoreOnStartup),
+      providerState: snapshot.providerState || null,
     });
 
     this.sessions.set(session.id, session);
@@ -650,6 +852,7 @@ export class SessionManager {
     return {
       ...this.serializeSession(session),
       buffer: session.buffer,
+      providerState: session.providerState,
       restoreOnStartup: session.restoreOnStartup,
     };
   }
