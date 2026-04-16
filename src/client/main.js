@@ -2666,7 +2666,7 @@ function renderUpdateBanner() {
       <section class="update-card is-applying">
         <div class="update-copy">
           <strong>updating remote vibes</strong>
-          <span>pulling the latest version, then restarting...</span>
+          <span>installing the latest version, then restarting...</span>
         </div>
         <button class="ghost-button update-button" type="button" disabled>working</button>
       </section>
@@ -2677,18 +2677,26 @@ function renderUpdateBanner() {
     return "";
   }
 
-  const current = update.currentShort || "current";
-  const latest = update.latestShort || "latest";
+  const current = update.currentTag || update.currentVersion || update.currentShort || "current";
+  const latest = update.latestVersion || update.latestTag || update.latestShort || "latest";
   const branch = update.branch || "main";
+  const isRelease = update.targetType === "release";
   const detail = update.canUpdate
-    ? `${branch}: ${current} -> ${latest}`
+    ? isRelease
+      ? `${current} -> ${latest}${update.latestName && update.latestName !== latest ? ` · ${update.latestName}` : ""}`
+      : `${branch}: ${current} -> ${latest}`
     : update.reason || "This checkout cannot be updated automatically.";
+  const releaseLink =
+    isRelease && update.releaseUrl
+      ? `<a class="update-link" href="${escapeHtml(update.releaseUrl)}" target="_blank" rel="noreferrer">release notes</a>`
+      : "";
 
   return `
     <section class="update-card ${update.canUpdate ? "" : "is-blocked"}">
       <div class="update-copy">
-        <strong>new version available</strong>
+        <strong>${escapeHtml(isRelease ? `${latest} available` : "new version available")}</strong>
         <span>${escapeHtml(detail)}</span>
+        ${releaseLink}
       </div>
       <button class="${update.canUpdate ? "primary-button" : "ghost-button"} update-button" type="button" id="update-app" ${update.canUpdate ? "" : "disabled"}>
         ${update.canUpdate ? "update & restart" : "blocked"}
@@ -3999,7 +4007,12 @@ function bindUpdateEvents() {
       return;
     }
 
-    if (!window.confirm("Update Remote Vibes to the latest GitHub version and restart it?")) {
+    const targetLabel =
+      state.update?.targetType === "release" && state.update?.latestVersion
+        ? state.update.latestVersion
+        : "the latest GitHub version";
+
+    if (!window.confirm(`Update Remote Vibes to ${targetLabel} and restart it?`)) {
       return;
     }
 

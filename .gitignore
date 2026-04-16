@@ -3,3 +3,4 @@ public/app.js
 public/vendor
 .DS_Store
 .remote-vibes
+.claude/

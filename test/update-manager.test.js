@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { getGitHubHttpsRemoteUrl, UpdateManager } from "../src/update-manager.js";
 
 const execFile = promisify(execFileCallback);
+const MANAGED_PROMPT_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
 
 async function git(cwd, args) {
   return execFile("git", ["-C", cwd, ...args]);
@@ -22,6 +23,7 @@ async function createRepoPair() {
   await git(sourceDir, ["config", "user.name", "Remote Vibes Test"]);
   await git(sourceDir, ["config", "user.email", "test@example.com"]);
   await writeFile(path.join(sourceDir, "VERSION"), "v1\n", "utf8");
+  await writeFile(path.join(sourceDir, "AGENTS.md"), `${MANAGED_PROMPT_MARKER}\nInitial prompt\n`, "utf8");
   await git(sourceDir, ["add", "."]);
   await git(sourceDir, ["commit", "-m", "Initial"]);
   await execFile("git", ["clone", sourceDir, checkoutDir]);
@@ -118,6 +120,31 @@ test("UpdateManager blocks automatic updates when local changes are present", as
   }
 });
 
+test("UpdateManager does not block updates for managed prompt file churn", async () => {
+  const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
+  await commitSourceVersion(sourceDir, "v2");
+  await writeFile(path.join(checkoutDir, "AGENTS.md"), `${MANAGED_PROMPT_MARKER}\nRuntime prompt\n`, "utf8");
+
+  try {
+    const manager = new UpdateManager({
+      cwd: checkoutDir,
+      stateDir: path.join(tempRoot, "state"),
+      cacheMs: 0,
+    });
+    const status = await manager.getStatus({ force: true });
+
+    assert.equal(status.status, "available");
+    assert.equal(status.updateAvailable, true);
+    assert.equal(status.canUpdate, true);
+    assert.equal(status.dirty, true);
+    assert.equal(status.blockingDirty, false);
+    assert.deepEqual(status.dirtyFiles, []);
+    assert.deepEqual(status.ignoredDirtyFiles, ["AGENTS.md"]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("UpdateManager schedules a detached pull and restart for clean updates", async () => {
   const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
   await commitSourceVersion(sourceDir, "v2");
@@ -146,6 +173,77 @@ test("UpdateManager schedules a detached pull and restart for clean updates", as
     assert.equal(spawnCalls[0].options.detached, true);
     assert.equal(spawnCalls[0].options.env.REMOTE_VIBES_STATE_DIR, path.join(tempRoot, "state"));
     assert.equal(await readFile(result.logPath, "utf8"), "");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("UpdateManager prefers GitHub Releases and schedules a tag checkout", async () => {
+  const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
+  const latestCommit = await commitSourceVersion(sourceDir, "v2");
+  await git(checkoutDir, ["remote", "set-url", "origin", "git@github.com:Clamepending/remote-vibes.git"]);
+  const spawnCalls = [];
+
+  try {
+    const manager = new UpdateManager({
+      cwd: checkoutDir,
+      stateDir: path.join(tempRoot, "state"),
+      cacheMs: 0,
+      port: 49124,
+      fetch: async (url) => {
+        assert.equal(url, "https://api.github.com/repos/Clamepending/remote-vibes/releases/latest");
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              tag_name: "v2.0.0",
+              name: "Remote Vibes v2.0.0",
+              html_url: "https://github.com/Clamepending/remote-vibes/releases/tag/v2.0.0",
+              published_at: "2026-04-16T08:00:00Z",
+            };
+          },
+        };
+      },
+      execFile(command, args, options) {
+        if (
+          command === "git" &&
+          args[2] === "ls-remote" &&
+          args[3] === "https://github.com/Clamepending/remote-vibes.git" &&
+          args[4] === "refs/tags/v2.0.0"
+        ) {
+          return Promise.resolve({
+            stdout: `${latestCommit}\trefs/tags/v2.0.0\n`,
+            stderr: "",
+          });
+        }
+
+        return execFile(command, args, options);
+      },
+      spawn(command, args, options) {
+        spawnCalls.push({ command, args, options });
+        return {
+          unref() {},
+        };
+      },
+    });
+
+    const status = await manager.getStatus({ force: true });
+    assert.equal(status.status, "available");
+    assert.equal(status.targetType, "release");
+    assert.equal(status.latestVersion, "v2.0.0");
+    assert.equal(status.latestTag, "v2.0.0");
+    assert.equal(status.latestCommit, latestCommit);
+    assert.equal(status.releaseUrl, "https://github.com/Clamepending/remote-vibes/releases/tag/v2.0.0");
+
+    const result = await manager.scheduleUpdateAndRestart();
+    assert.equal(result.scheduled, true);
+    assert.equal(spawnCalls.length, 1);
+    assert.match(
+      spawnCalls[0].args[1],
+      /git fetch --force --depth 1 'https:\/\/github\.com\/Clamepending\/remote-vibes\.git' 'refs\/tags\/v2\.0\.0:refs\/tags\/v2\.0\.0'/,
+    );
+    assert.match(spawnCalls[0].args[1], /git checkout --detach 'refs\/tags\/v2\.0\.0'/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

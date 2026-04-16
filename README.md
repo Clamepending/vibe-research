@@ -13,7 +13,7 @@ bash <(curl -fsSL https://gist.githubusercontent.com/Clamepending/b40db6fc8775b8
 ```
 
 4. Open the Tailscale URL printed in the terminal on your phone/laptop.
-5. Run the same command again any time you want to update.
+5. When a new GitHub Release is available, Remote Vibes shows an update-and-restart button in the app. You can also run the install command again to update.
 
 ## Raspberry Pi Quickstart
 
@@ -27,7 +27,23 @@ bash -c 'command -v curl >/dev/null || (sudo apt-get update && sudo apt-get inst
 
 Use that gist URL directly. The repo `raw.githubusercontent.com/.../install.sh` link can get rate-limited.
 
+By default, the installer uses the latest GitHub Release when one exists, then falls back to `main` while the project is still bootstrapping. Set `REMOTE_VIBES_UPDATE_CHANNEL=branch` or `REMOTE_VIBES_REF=<branch-or-tag>` before running the installer if you intentionally want a dev checkout.
+
 The install command now launches Remote Vibes as a background server, so it keeps running even after the SSH session or terminal closes. The app checkout lives under `~/.remote-vibes/app`, and settings, logs, session history, and the managed pid live under `~/.remote-vibes/`.
+
+## Releases
+
+Remote Vibes uses GitHub Releases as the stable update channel. Friends' installs update to release tags like `v0.2.1`, not random in-progress commits on `main`.
+
+Cut a release from a clean `main` checkout:
+
+```bash
+npm run release:patch
+npm run release:minor
+npm run release:major
+```
+
+Those commands bump `package.json`, commit `Release vX.Y.Z`, create an annotated git tag, push `main` and the tag, then publish a GitHub Release with generated notes. The in-app updater checks the latest GitHub Release first and only falls back to `main` if no release exists yet.
 
 You can access any localhost ports by clicking on it in the sidebar.
 
