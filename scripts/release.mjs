@@ -109,6 +109,7 @@ if (run("git", ["rev-parse", "-q", "--verify", `refs/tags/${tag}`], { capture: t
 
 const remoteUrl = run("git", ["config", "--get", "remote.origin.url"], { capture: true });
 const repoSlug = getGitHubSlug(remoteUrl);
+const githubPushUrl = repoSlug ? `https://github.com/${repoSlug}.git` : "";
 if (!noGitHubRelease && !repoSlug) {
   fail(`remote.origin.url is not a GitHub remote: ${remoteUrl}`);
 }
@@ -125,6 +126,8 @@ if (!noGitHubRelease) {
   if (!ghAuth) {
     fail("GitHub CLI is not authenticated for github.com. Run `gh auth login` or pass --no-github-release.");
   }
+
+  run("gh", ["auth", "setup-git", "--hostname", "github.com"]);
 }
 
 packageJson.version = version;
@@ -150,8 +153,9 @@ if (noPush) {
   process.exit(0);
 }
 
-run("git", ["push", "origin", currentBranch]);
-run("git", ["push", "origin", tag]);
+const pushRemote = noGitHubRelease || !githubPushUrl ? "origin" : githubPushUrl;
+run("git", ["push", pushRemote, currentBranch]);
+run("git", ["push", pushRemote, tag]);
 
 if (noGitHubRelease) {
   log("Skipping GitHub Release because --no-github-release was passed.");
