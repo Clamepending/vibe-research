@@ -25,6 +25,10 @@ export function renderQrCode(url) {
 export function buildStartupOutput(config) {
   const lines = ["", "Remote Vibes is live.", `Workspace: ${config.cwd}`, "Available URLs:"];
 
+  if (config.stateDir) {
+    lines.splice(3, 0, `State: ${config.stateDir}`);
+  }
+
   for (const entry of config.urls) {
     lines.push(`- ${entry.label}: ${entry.url}`);
   }

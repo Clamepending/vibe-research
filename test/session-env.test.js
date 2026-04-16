@@ -20,9 +20,10 @@ test("prependPathEntries prepends helper and common CLI directories once", () =>
 test("buildSessionEnv exposes helper and common CLI directories on PATH", () => {
   const originalPath = process.env.PATH;
   process.env.PATH = "/usr/bin:/bin";
+  const stateDir = path.join(rootDir, ".remote-vibes");
 
   try {
-    const env = buildSessionEnv("session-1", "shell", []);
+    const env = buildSessionEnv("session-1", "shell", [], rootDir, stateDir);
     const entries = env.PATH.split(path.delimiter);
 
     assert.equal(entries[0], path.join(rootDir, "bin"));
@@ -30,6 +31,8 @@ test("buildSessionEnv exposes helper and common CLI directories on PATH", () => 
     assert.equal(entries[2], "/usr/local/bin");
     assert.ok(entries.includes("/usr/bin"));
     assert.ok(entries.includes("/bin"));
+    assert.equal(env.REMOTE_VIBES_ROOT, stateDir);
+    assert.equal(env.REMOTE_VIBES_AGENT_PROMPT_PATH, path.join(stateDir, "agent-prompt.md"));
   } finally {
     process.env.PATH = originalPath;
   }

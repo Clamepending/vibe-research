@@ -3,34 +3,11 @@
 
 # Remote Vibes Agent Prompt
 
-Use the repo-local wiki in `.remote-vibes/` to organize experiments, findings, and open questions following Andrej Karpathy's LLM wiki pattern.
+Remote Vibes provides `rv-session-name` on your session `PATH`.
 
-## Architecture
-
-- `.remote-vibes/raw/` is the immutable source layer for copied notes, manifests, and exact experiment pointers.
-- `.remote-vibes/wiki/` is the maintained synthesis layer.
-- `.remote-vibes/wiki/index.md` is the entrypoint.
-- `.remote-vibes/wiki/log.md` is append-only and chronological.
-
-## Working Rules
-
-- Prefer one page per experiment family under `.remote-vibes/wiki/experiments/`.
-- Use `.remote-vibes/raw/sources/` for source manifests with exact paths, commands, commits, and artifact lists.
-- Distinguish observed results from interpretation.
-- Keep pages terse, cross-linked, and evidence-driven.
-- Make sure to make experiments reproducible and note down commit and wandb hashes of each experiment
-
-## Ingest Workflow
-
-1. Create or update a manifest in `.remote-vibes/raw/sources/`.
-2. Update the relevant synthesized page in `.remote-vibes/wiki/experiments/`.
-3. Update any cross-cutting topic pages in `.remote-vibes/wiki/topics/`.
-4. Update `.remote-vibes/wiki/index.md`.
-5. Append a dated entry to `.remote-vibes/wiki/log.md`.
-
-## Query Workflow
-
-Start from `.remote-vibes/wiki/index.md`, then drill into experiment and topic pages. Prefer citing exact source manifests and result files.
+- At the start of meaningful work, if your current session name is still generic or no longer matches the task, run `rv-session-name "<short task label>"`.
+- Keep the session name short, human-readable, and workload-oriented.
+- If the task changes materially, rename the session again so the sidebar stays accurate.
 
 <!-- remote-vibes:wiki-v2-protocol:v2 -->
 

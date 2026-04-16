@@ -286,6 +286,57 @@ textarea {
   text-align: center;
 }
 
+.update-slot:empty {
+  display: none;
+}
+
+.update-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(106, 227, 198, 0.28);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(106, 227, 198, 0.16), transparent 44%),
+    rgba(106, 227, 198, 0.08);
+}
+
+.update-card.is-blocked {
+  border-color: rgba(255, 216, 106, 0.28);
+  background:
+    radial-gradient(circle at top right, rgba(255, 216, 106, 0.12), transparent 44%),
+    rgba(255, 216, 106, 0.06);
+}
+
+.update-card.is-applying {
+  border-color: rgba(143, 185, 255, 0.3);
+  background:
+    radial-gradient(circle at top right, rgba(143, 185, 255, 0.14), transparent 44%),
+    rgba(143, 185, 255, 0.06);
+}
+
+.update-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.update-copy strong {
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+}
+
+.update-copy span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.update-button {
+  width: 100%;
+}
+
 .prompt-copy,
 .prompt-modal-copy {
   display: grid;
@@ -1157,6 +1208,8 @@ textarea {
 }
 
 .port-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   text-decoration: none;
   color: inherit;
 }
@@ -1164,6 +1217,24 @@ textarea {
 .port-card:hover {
   border-color: rgba(106, 227, 198, 0.34);
   background: rgba(106, 227, 198, 0.1);
+}
+
+.port-link {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.port-rename-button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
 .file-root-form {

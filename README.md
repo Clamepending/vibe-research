@@ -15,14 +15,19 @@ bash <(curl -fsSL https://gist.githubusercontent.com/Clamepending/b40db6fc8775b8
 4. Open the Tailscale URL printed in the terminal on your phone/laptop.
 5. Run the same command again any time you want to update.
 
+## Raspberry Pi Quickstart
 
+Run this on the Raspberry Pi. It installs `curl` if needed, then the installer handles git, build tools, Node.js 22.x, Remote Vibes, and startup. Coding agents like Claude, Codex, Gemini, or OpenCode are still installed separately.
 
+```bash
+bash -c 'command -v curl >/dev/null || (sudo apt-get update && sudo apt-get install -y curl ca-certificates); bash <(curl -fsSL https://gist.githubusercontent.com/Clamepending/b40db6fc8775b843e6fc06a2b5857604/raw/install.sh)'
+```
 
 ## Details...
 
 Use that gist URL directly. The repo `raw.githubusercontent.com/.../install.sh` link can get rate-limited.
 
-The install command now launches Remote Vibes as a background server, so it keeps running even after the SSH session or terminal closes. Logs and the managed pid live under `~/.remote-vibes/.remote-vibes/`.
+The install command now launches Remote Vibes as a background server, so it keeps running even after the SSH session or terminal closes. The app checkout lives under `~/.remote-vibes/app`, and settings, logs, session history, and the managed pid live under `~/.remote-vibes/`.
 
 You can access any localhost ports by clicking on it in the sidebar.
 

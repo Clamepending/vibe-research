@@ -12,8 +12,11 @@ import { AgentPromptStore } from "./agent-prompt-store.js";
 import { AgentRunStore } from "./agent-run-store.js";
 import { GpuHistoryStore } from "./gpu-history-store.js";
 import { getGpuStatus } from "./gpu-manager.js";
+import { PortAliasStore } from "./port-alias-store.js";
 import { listListeningPorts } from "./ports.js";
 import { SessionManager } from "./session-manager.js";
+import { getRemoteVibesStateDir } from "./state-paths.js";
+import { UpdateManager } from "./update-manager.js";
 import { detectProviders, getDefaultProviderId } from "./providers.js";
 import { listKnowledgeBase, readKnowledgeBaseNote } from "./knowledge-base.js";
 import {
@@ -182,14 +185,16 @@ export async function createRemoteVibesApp({
   host = process.env.REMOTE_VIBES_HOST || "0.0.0.0",
   port = Number(process.env.REMOTE_VIBES_PORT || 4123),
   cwd = process.cwd(),
+  stateDir = getRemoteVibesStateDir({ cwd }),
   persistSessions = true,
   onTerminate = null,
+  updateManager = new UpdateManager({ cwd, stateDir, port }),
 } = {}) {
   const providers = await detectProviders();
   const defaultProviderId = getDefaultProviderId(providers);
   const app = express();
-  const stateDir = path.join(cwd, ".remote-vibes");
   const agentRunStore = new AgentRunStore({ stateDir });
+  const portAliasStore = new PortAliasStore({ stateDir });
   const sessionManager = new SessionManager({
     cwd,
     providers,
@@ -203,6 +208,7 @@ export async function createRemoteVibesApp({
     sampleIntervalMs: Number(process.env.REMOTE_VIBES_GPU_SAMPLE_MS || 60_000),
   });
   await agentRunStore.initialize();
+  await portAliasStore.initialize();
   await sessionManager.initialize();
   await agentPromptStore.initialize();
   await gpuHistoryStore.initialize();
@@ -227,6 +233,11 @@ export async function createRemoteVibesApp({
     return gpu;
   }
 
+  async function listNamedPorts() {
+    const ports = await listListeningPorts({ excludePorts: exposedPort ? [exposedPort] : [] });
+    return portAliasStore.apply(ports);
+  }
+
   app.use(express.json());
 
   app.use((request, response, next) => {
@@ -249,16 +260,69 @@ export async function createRemoteVibesApp({
       gpu: await readGpuStatus(),
       providers,
       sessions: sessionManager.listSessions(),
+      stateDir,
       urls,
       preferredUrl,
-      ports: await listListeningPorts({ excludePorts: exposedPort ? [exposedPort] : [] }),
+      ports: await listNamedPorts(),
     });
   });
 
   app.get("/api/ports", async (_request, response) => {
     response.json({
-      ports: await listListeningPorts({ excludePorts: exposedPort ? [exposedPort] : [] }),
+      ports: await listNamedPorts(),
     });
+  });
+
+  app.patch("/api/ports/:port", async (request, response) => {
+    try {
+      const port = normalizePort(request.params.port);
+
+      if (!port) {
+        response.status(400).json({ error: "Invalid port." });
+        return;
+      }
+
+      const ports = await listNamedPorts();
+      const currentPort = ports.find((entry) => entry.port === port);
+
+      if (!currentPort) {
+        response.status(404).json({ error: "Port not found." });
+        return;
+      }
+
+      const name = typeof request.body?.name === "string" ? request.body.name : request.body?.name;
+      const nextName = await portAliasStore.rename(port, name);
+      const refreshedPorts = await listNamedPorts();
+      const renamedPort =
+        refreshedPorts.find((entry) => entry.port === port) ??
+        {
+          ...currentPort,
+          name: nextName || String(port),
+          customName: Boolean(nextName),
+        };
+
+      response.json({ port: renamedPort });
+    } catch (error) {
+      response.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/update/status", async (request, response) => {
+    const force = request.query.force === "1" || request.query.force === "true";
+    const update = await updateManager.getStatus({ force });
+    response.json({ update });
+  });
+
+  app.post("/api/update/apply", async (_request, response) => {
+    try {
+      const result = await updateManager.scheduleUpdateAndRestart();
+      response.json(result);
+    } catch (error) {
+      response.status(error.statusCode || 500).json({
+        error: error.message || "Could not schedule update.",
+        update: error.update,
+      });
+    }
   });
 
   app.get("/api/gpu", async (_request, response) => {
@@ -490,6 +554,7 @@ export async function createRemoteVibesApp({
       ? server.address().port
       : port;
   exposedPort = resolvedPort;
+  updateManager.setRuntime?.({ port: resolvedPort });
   urls = await getAccessUrls(host, resolvedPort);
   preferredUrl = pickPreferredUrl(urls)?.url ?? urls[0]?.url ?? null;
   await writeServerInfo(stateDir, {
@@ -632,6 +697,7 @@ export async function createRemoteVibesApp({
       port: resolvedPort,
       providers,
       preferredUrl,
+      stateDir,
       urls,
     },
     server,

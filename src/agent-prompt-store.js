@@ -7,7 +7,8 @@ const WIKI_V2_MARKER = "<!-- remote-vibes:wiki-v2-protocol:v2 -->";
 const AGENT_MAILBOX_MARKER = "<!-- remote-vibes:agent-mailbox-protocol:v2 -->";
 const BUILT_IN_SECTION_MARKER_PATTERN =
   /<!-- remote-vibes:(wiki-v2-protocol|agent-mailbox-protocol):v\d+ -->/;
-const PROMPT_FILENAME = "agent-prompt.md";
+export const AGENT_PROMPT_FILENAME = "agent-prompt.md";
+const PROMPT_FILENAME = AGENT_PROMPT_FILENAME;
 const TARGET_FILES = [
   { filename: "AGENTS.md", label: "AGENTS.md" },
   { filename: "CLAUDE.md", label: "CLAUDE.md" },

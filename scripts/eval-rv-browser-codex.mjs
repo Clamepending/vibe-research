@@ -253,6 +253,7 @@ async function main() {
     host: "127.0.0.1",
     port: 0,
     cwd: workspaceDir,
+    stateDir: path.join(workspaceDir, ".remote-vibes"),
     persistSessions: false,
   });
   const baseUrl = `http://127.0.0.1:${remoteVibes.config.port}`;

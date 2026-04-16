@@ -194,10 +194,12 @@ async function startDemoServer() {
 }
 
 async function startRemoteVibes(options = {}) {
+  const appCwd = options.cwd ?? process.cwd();
   const app = await createRemoteVibesApp({
     host: "127.0.0.1",
     port: 0,
-    cwd: process.cwd(),
+    cwd: appCwd,
+    stateDir: options.stateDir ?? path.join(appCwd, ".remote-vibes"),
     persistSessions: false,
     ...options,
   });
@@ -521,13 +523,24 @@ test("shell sessions can invoke rv-browser against localhost apps", async () => 
   }
 });
 
-test("agent wrappers inject rv-browser guidance for Codex and Claude", async () => {
+test("agent wrappers inject rv-browser guidance and the managed agent prompt for Codex and Claude", async () => {
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-agent-wrapper-"));
 
   try {
     const captureScriptPath = path.join(workspaceDir, "capture-argv.sh");
     const capturedArgsPath = path.join(workspaceDir, "captured-args.txt");
     const capturedProviderPath = path.join(workspaceDir, "captured-provider.txt");
+    const agentPromptPath = path.join(workspaceDir, "agent-prompt.md");
+
+    await writeFile(
+      agentPromptPath,
+      `# Remote Vibes Agent Prompt
+
+Remote Vibes provides \`rv-session-name\` on your session \`PATH\`.
+- Run \`rv-session-name "<short task label>"\` at the start of meaningful work.
+`,
+      "utf8",
+    );
 
     await writeFile(
       captureScriptPath,
@@ -546,6 +559,7 @@ printf '%s\n' "$@" > "$CAPTURED_ARGS_PATH"
         ...browserTestEnv,
         CAPTURED_ARGS_PATH: capturedArgsPath,
         CAPTURED_PROVIDER_PATH: capturedProviderPath,
+        REMOTE_VIBES_AGENT_PROMPT_PATH: agentPromptPath,
         REMOTE_VIBES_REAL_CODEX_COMMAND: captureScriptPath,
       },
     });
@@ -555,6 +569,7 @@ printf '%s\n' "$@" > "$CAPTURED_ARGS_PATH"
     assert.match(codexArgs, /rv-browser run <port-or-url> --steps/);
     assert.match(codexArgs, /type, click, select, wait, screenshot/);
     assert.match(codexArgs, /--provider codex/);
+    assert.match(codexArgs, /rv-session-name/);
     assert.equal(codexProvider.trim(), "codex");
 
     await execFile(path.join(rootDir, "bin", "claude"), ["--print", "hello"], {
@@ -563,6 +578,7 @@ printf '%s\n' "$@" > "$CAPTURED_ARGS_PATH"
         ...browserTestEnv,
         CAPTURED_ARGS_PATH: capturedArgsPath,
         CAPTURED_PROVIDER_PATH: capturedProviderPath,
+        REMOTE_VIBES_AGENT_PROMPT_PATH: agentPromptPath,
         REMOTE_VIBES_REAL_CLAUDE_COMMAND: captureScriptPath,
       },
     });
@@ -572,6 +588,7 @@ printf '%s\n' "$@" > "$CAPTURED_ARGS_PATH"
     assert.match(claudeArgs, /rv-browser run <port-or-url> --steps/);
     assert.match(claudeArgs, /type, click, select, wait, screenshot/);
     assert.match(claudeArgs, /--provider claude/);
+    assert.match(claudeArgs, /rv-session-name/);
     assert.equal(claudeProvider.trim(), "claude");
   } finally {
     await rm(workspaceDir, { recursive: true, force: true });

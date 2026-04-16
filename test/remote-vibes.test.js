@@ -26,10 +26,13 @@ const PNG_FIXTURE = Buffer.from([
 ]);
 
 async function startApp(options = {}) {
+  const cwd = options.cwd || process.cwd();
+  const stateDir = options.stateDir || path.join(cwd, ".remote-vibes");
   const app = await createRemoteVibesApp({
     host: "127.0.0.1",
     port: 0,
-    cwd: process.cwd(),
+    cwd,
+    stateDir,
     persistSessions: false,
     ...options,
   });
@@ -128,6 +131,54 @@ test("state is available without authentication", async () => {
     assert.ok(Array.isArray(gpuHistoryPayload.history.agentRuns.buckets));
   } finally {
     await app.close();
+  }
+});
+
+test("update endpoints report status and schedule restart", async () => {
+  const workspaceDir = await createTempWorkspace("remote-vibes-update-");
+  const updatePayload = {
+    status: "available",
+    updateAvailable: true,
+    canUpdate: true,
+    branch: "main",
+    currentShort: "abc1234",
+    latestShort: "def5678",
+  };
+  const forceCalls = [];
+  let runtimePort = null;
+  let applyCalls = 0;
+  const updateManager = {
+    setRuntime({ port }) {
+      runtimePort = port;
+    },
+    async getStatus({ force } = {}) {
+      forceCalls.push(Boolean(force));
+      return updatePayload;
+    },
+    async scheduleUpdateAndRestart() {
+      applyCalls += 1;
+      return { ok: true, scheduled: true, update: updatePayload };
+    },
+  };
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, updateManager });
+
+  try {
+    assert.equal(runtimePort, app.config.port);
+
+    const statusResponse = await fetch(`${baseUrl}/api/update/status?force=1`);
+    assert.equal(statusResponse.status, 200);
+    assert.deepEqual(await statusResponse.json(), { update: updatePayload });
+    assert.deepEqual(forceCalls, [true]);
+
+    const applyResponse = await fetch(`${baseUrl}/api/update/apply`, {
+      method: "POST",
+    });
+    assert.equal(applyResponse.status, 200);
+    assert.deepEqual(await applyResponse.json(), { ok: true, scheduled: true, update: updatePayload });
+    assert.equal(applyCalls, 1);
+  } finally {
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
   }
 });
 
@@ -705,6 +756,7 @@ test("sessions can be forked into fresh sibling sessions", async () => {
 });
 
 test("ports are discoverable and proxy through localhost", async () => {
+  const workspaceDir = await createTempWorkspace("remote-vibes-ports-");
   const previewServer = http.createServer((request, response) => {
     if (request.url === "/") {
       response.writeHead(200, { "Content-Type": "text/html" });
@@ -731,7 +783,7 @@ test("ports are discoverable and proxy through localhost", async () => {
   const previewPort = previewServer.address().port;
   const forbiddenPort = forbiddenServer.address().port;
 
-  const { app, baseUrl } = await startApp();
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
 
   try {
     const ports = await waitForPort(baseUrl, previewPort);
@@ -753,10 +805,43 @@ test("ports are discoverable and proxy through localhost", async () => {
     const proxyResponse = await fetch(`${baseUrl}/proxy/${previewPort}/hello`);
     assert.equal(proxyResponse.status, 200);
     assert.equal(await proxyResponse.text(), "preview:/hello");
+
+    const renameResponse = await fetch(`${baseUrl}/api/ports/${previewPort}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ name: "storybook" }),
+    });
+    assert.equal(renameResponse.status, 200);
+    const renamePayload = await renameResponse.json();
+    assert.equal(renamePayload.port.name, "storybook");
+    assert.equal(renamePayload.port.customName, true);
+
+    const renamedPortsResponse = await fetch(`${baseUrl}/api/ports`);
+    assert.equal(renamedPortsResponse.status, 200);
+    const renamedPortsPayload = await renamedPortsResponse.json();
+    assert.equal(
+      renamedPortsPayload.ports.find((entry) => entry.port === previewPort)?.name,
+      "storybook",
+    );
+
+    const resetResponse = await fetch(`${baseUrl}/api/ports/${previewPort}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ name: "  " }),
+    });
+    assert.equal(resetResponse.status, 200);
+    const resetPayload = await resetResponse.json();
+    assert.equal(resetPayload.port.name, String(previewPort));
+    assert.equal(resetPayload.port.customName, false);
   } finally {
     await app.close();
     await new Promise((resolve) => previewServer.close(resolve));
     await new Promise((resolve) => forbiddenServer.close(resolve));
+    await rm(workspaceDir, { recursive: true, force: true });
   }
 });
 

@@ -247,7 +247,7 @@ async function getPageSummary(page) {
   };
 }
 
-async function performAction(page, step, cwd, defaultTimeoutMs) {
+async function performAction(page, step, cwd, env, defaultTimeoutMs) {
   const action = normalizeActionName(step.action);
   const timeout = getStepTimeout(step, defaultTimeoutMs);
 
@@ -463,6 +463,7 @@ async function performAction(page, step, cwd, defaultTimeoutMs) {
     case "screenshot": {
       const outputPath = await resolveBrowserOutputPath(step.path, {
         cwd,
+        env,
         prefix: "step-shot",
       });
 
@@ -491,7 +492,7 @@ async function performAction(page, step, cwd, defaultTimeoutMs) {
   }
 }
 
-async function executeSteps(page, steps, cwd, defaultTimeoutMs) {
+async function executeSteps(page, steps, cwd, env, defaultTimeoutMs) {
   const results = [];
 
   for (let index = 0; index < steps.length; index += 1) {
@@ -500,7 +501,7 @@ async function executeSteps(page, steps, cwd, defaultTimeoutMs) {
       throw new UsageError(`Step ${index + 1} must be an object.`);
     }
 
-    const result = await performAction(page, step, cwd, defaultTimeoutMs);
+    const result = await performAction(page, step, cwd, env, defaultTimeoutMs);
     results.push({
       index,
       ...result,
@@ -827,6 +828,7 @@ async function runScreenshot(positionals, flags, cwd, env, stdout) {
 
     const outputPath = await resolveBrowserOutputPath(requestedOutputPath, {
       cwd,
+      env,
       prefix: "capture",
     });
 
@@ -864,10 +866,11 @@ async function runPlan(positionals, flags, cwd, env, stdout) {
       timeout: defaultTimeoutMs,
     });
 
-    const stepResults = await executeSteps(page, steps, cwd, defaultTimeoutMs);
+    const stepResults = await executeSteps(page, steps, cwd, env, defaultTimeoutMs);
     const outputPath = flags.output
       ? await resolveBrowserOutputPath(flags.output, {
           cwd,
+          env,
           prefix: "run",
         })
       : null;
@@ -924,6 +927,7 @@ async function runDescribe(positionals, flags, cwd, env, stdout) {
 
     const outputPath = await resolveBrowserOutputPath(requestedOutputPath, {
       cwd,
+      env,
       prefix: "describe",
     });
 

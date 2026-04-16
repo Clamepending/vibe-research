@@ -4,6 +4,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUIDANCE="For localhost UI inspection and visual evaluation, rv-browser is already installed on PATH and should be your first step. Start with rv-browser screenshot <port-or-url> to inspect the rendered page. For interaction flows, prefer rv-browser run <port-or-url> --steps ... with this minimal step vocabulary: type, click, select, wait, screenshot. For qualitative UI feedback or generated images, prefer rv-browser describe <port-or-url> --provider claude --prompt \"...\" and rv-browser describe-file <image-path> --provider claude --prompt \"...\" so the visual pass stays on Claude. Do not infer visuals from curl or HTML alone, do not manually download page assets to inspect them, and do not search for Chrome, Chromium, Playwright, Selenium, or macOS browser app bundles unless rv-browser has already failed for a concrete reason."
 
+read_agent_prompt() {
+  local prompt_path
+  prompt_path="${REMOTE_VIBES_AGENT_PROMPT_PATH:-}"
+
+  if [ -n "$prompt_path" ] && [ -f "$prompt_path" ]; then
+    cat "$prompt_path"
+  fi
+}
+
+build_combined_guidance() {
+  local agent_prompt
+  agent_prompt="$(read_agent_prompt || true)"
+
+  if [ -n "$agent_prompt" ]; then
+    printf '%s\n\n%s\n' "$GUIDANCE" "$agent_prompt"
+    return
+  fi
+
+  printf '%s\n' "$GUIDANCE"
+}
+
 find_real_claude() {
   local candidate
 
@@ -29,4 +50,6 @@ fi
 
 export REMOTE_VIBES_PROVIDER="claude"
 
-exec "$REAL_CLAUDE" --append-system-prompt "$GUIDANCE" "$@"
+COMBINED_GUIDANCE="$(build_combined_guidance)"
+
+exec "$REAL_CLAUDE" --append-system-prompt "$COMBINED_GUIDANCE" "$@"

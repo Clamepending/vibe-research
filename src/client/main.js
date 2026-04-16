@@ -206,6 +206,9 @@ const state = {
   terminalOutputFrame: null,
   terminalComposing: false,
   terminalTextareaResetTimer: null,
+  update: null,
+  updateApplying: false,
+  updateTimer: null,
   sessionRefreshTimer: null,
   terminalInteractionCleanup: null,
   canvasAddon: null,
@@ -305,6 +308,28 @@ function getSessionLabel(session) {
   return isLive(session)
     ? { text: "live", className: "live" }
     : { text: "idle", className: "idle" };
+}
+
+function getPortDisplayName(port) {
+  return typeof port?.name === "string" && port.name.trim() ? port.name.trim() : String(port?.port ?? "");
+}
+
+function getPortMeta(port) {
+  const parts = [];
+
+  if (port?.customName) {
+    parts.push(`:${port.port}`);
+  }
+
+  if (port?.command) {
+    parts.push(port.command);
+  }
+
+  if (Array.isArray(port?.hosts) && port.hosts.length) {
+    parts.push(port.hosts.join(", "));
+  }
+
+  return parts.join(" · ");
 }
 
 function setMobileSidebar(nextSidebar) {
@@ -2230,10 +2255,13 @@ function renderPortCards() {
   return state.ports
     .map(
       (port) => `
-        <a class="port-card" href="${escapeHtml(`${getAppBaseUrl()}${port.proxyPath}`)}" target="_blank" rel="noreferrer">
-          <span class="port-number">${port.port}</span>
-          <span class="port-meta">${escapeHtml(port.command)} · ${escapeHtml(port.hosts.join(", "))}</span>
-        </a>
+        <article class="port-card">
+          <a class="port-link" href="${escapeHtml(`${getAppBaseUrl()}${port.proxyPath}`)}" target="_blank" rel="noreferrer">
+            <span class="port-number">${escapeHtml(getPortDisplayName(port))}</span>
+            <span class="port-meta">${escapeHtml(getPortMeta(port))}</span>
+          </a>
+          <button class="ghost-button port-rename-button" type="button" data-rename-port="${escapeHtml(port.port)}">edit</button>
+        </article>
       `,
     )
     .join("");
@@ -2630,6 +2658,45 @@ function renderAgentPromptModal() {
   `;
 }
 
+function renderUpdateBanner() {
+  const update = state.update;
+
+  if (state.updateApplying) {
+    return `
+      <section class="update-card is-applying">
+        <div class="update-copy">
+          <strong>updating remote vibes</strong>
+          <span>pulling the latest version, then restarting...</span>
+        </div>
+        <button class="ghost-button update-button" type="button" disabled>working</button>
+      </section>
+    `;
+  }
+
+  if (!update?.updateAvailable) {
+    return "";
+  }
+
+  const current = update.currentShort || "current";
+  const latest = update.latestShort || "latest";
+  const branch = update.branch || "main";
+  const detail = update.canUpdate
+    ? `${branch}: ${current} -> ${latest}`
+    : update.reason || "This checkout cannot be updated automatically.";
+
+  return `
+    <section class="update-card ${update.canUpdate ? "" : "is-blocked"}">
+      <div class="update-copy">
+        <strong>new version available</strong>
+        <span>${escapeHtml(detail)}</span>
+      </div>
+      <button class="${update.canUpdate ? "primary-button" : "ghost-button"} update-button" type="button" id="update-app" ${update.canUpdate ? "" : "disabled"}>
+        ${update.canUpdate ? "update & restart" : "blocked"}
+      </button>
+    </section>
+  `;
+}
+
 function renderShell() {
   if (state.currentView === "knowledge-base") {
     app.innerHTML = renderKnowledgeBaseApp();
@@ -2672,6 +2739,8 @@ function renderShell() {
         </div>
 
         <div class="sidebar-body">
+          <div class="update-slot" id="update-banner">${renderUpdateBanner()}</div>
+
           <form class="session-form" id="session-form">
             <select name="providerId">${providerOptions}</select>
             <input type="text" name="cwd" value="${escapeHtml(state.defaultCwd || "")}" placeholder="cwd" />
@@ -2958,6 +3027,17 @@ function refreshPortsList() {
   }
 
   portsList.innerHTML = renderPortCards();
+  bindPortEvents();
+}
+
+function refreshUpdateUi() {
+  const updateBanner = document.querySelector("#update-banner");
+  if (!updateBanner) {
+    return;
+  }
+
+  updateBanner.innerHTML = renderUpdateBanner();
+  bindUpdateEvents();
 }
 
 function refreshGpuCard() {
@@ -2968,6 +3048,52 @@ function refreshGpuCard() {
 
   gpuCard.innerHTML = renderGpuCard();
   bindGpuNavigationEvents();
+}
+
+function bindGpuNavigationEvents() {
+  document.querySelector("#gpu-card .gpu-card")?.addEventListener("click", (event) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    setCurrentView("gpu");
+    void loadGpuHistory(state.gpuHistory.range).then(() => renderShell());
+  });
+}
+
+function bindPortEvents() {
+  document.querySelectorAll("[data-rename-port]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const portNumber = Number(button.getAttribute("data-rename-port"));
+      const port = state.ports.find((entry) => entry.port === portNumber);
+
+      if (!port) {
+        return;
+      }
+
+      const nextName = window.prompt(
+        "Rename port (leave blank to reset)",
+        port.customName ? getPortDisplayName(port) : "",
+      );
+
+      if (nextName === null) {
+        return;
+      }
+
+      try {
+        const payload = await fetchJson(`/api/ports/${portNumber}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name: nextName }),
+        });
+        updatePort(payload.port);
+        refreshShellUi({ sessions: false, ports: true, files: false });
+      } catch (error) {
+        window.alert(error.message);
+      }
+    });
+  });
 }
 
 function bindKnowledgeBaseGraphInteractions() {
@@ -3417,6 +3543,8 @@ function refreshToolbarUi() {
 }
 
 function refreshShellUi({ sessions = true, ports = true, files = true } = {}) {
+  refreshUpdateUi();
+
   if (sessions) {
     refreshSessionsList();
   }
@@ -3720,6 +3848,7 @@ function bindShellEvents() {
   });
 
   bindSessionEvents();
+  bindUpdateEvents();
 
   if (state.currentView === "shell") {
     document.querySelector("#tab-button")?.addEventListener("click", () => sendTerminalInput("\t"));
@@ -3862,6 +3991,63 @@ function bindShellEvents() {
       window.alert(error.message);
     }
   });
+}
+
+function bindUpdateEvents() {
+  document.querySelector("#update-app")?.addEventListener("click", async () => {
+    if (!state.update?.canUpdate || state.updateApplying) {
+      return;
+    }
+
+    if (!window.confirm("Update Remote Vibes to the latest GitHub version and restart it?")) {
+      return;
+    }
+
+    state.updateApplying = true;
+    refreshUpdateUi();
+
+    try {
+      const payload = await fetchJson("/api/update/apply", { method: "POST" });
+      state.update = payload.update ?? state.update;
+      waitForUpdateRestart();
+    } catch (error) {
+      state.updateApplying = false;
+      state.update = {
+        ...(state.update || {}),
+        updateAvailable: true,
+        canUpdate: false,
+        status: "blocked",
+        reason: error.message,
+      };
+      refreshUpdateUi();
+      window.alert(error.message);
+    }
+  });
+}
+
+function waitForUpdateRestart() {
+  let sawShutdown = false;
+  let attempts = 0;
+
+  const timer = window.setInterval(async () => {
+    attempts += 1;
+
+    try {
+      await fetchJson("/api/state", { cache: "no-store" });
+      if (sawShutdown) {
+        window.clearInterval(timer);
+        window.location.reload();
+      }
+    } catch {
+      sawShutdown = true;
+    }
+
+    if (attempts > 90) {
+      window.clearInterval(timer);
+      state.updateApplying = false;
+      void loadUpdateStatus({ force: true });
+    }
+  }, 2000);
 }
 
 function closeWebsocket() {
@@ -4303,6 +4489,16 @@ function updateSession(session) {
   scheduleSessionsRefresh();
 }
 
+function updatePort(port) {
+  const index = state.ports.findIndex((entry) => entry.port === port.port);
+  if (index === -1) {
+    state.ports = [...state.ports, port].sort((left, right) => left.port - right.port);
+    return;
+  }
+
+  state.ports[index] = port;
+}
+
 async function loadSessions() {
   try {
     const previousActiveSessionId = state.activeSessionId;
@@ -4350,6 +4546,24 @@ async function loadPorts() {
   } catch (error) {
     console.error(error);
   }
+}
+
+async function loadUpdateStatus({ force = false } = {}) {
+  try {
+    const payload = await fetchJson(`/api/update/status${force ? "?force=1" : ""}`, {
+      cache: "no-store",
+    });
+    state.update = payload.update;
+  } catch (error) {
+    state.update = {
+      status: "error",
+      updateAvailable: false,
+      canUpdate: false,
+      reason: error.message,
+    };
+  }
+
+  refreshUpdateUi();
 }
 
 async function loadGpu() {
@@ -4451,6 +4665,15 @@ async function bootstrapApp() {
   }
 
   renderShell();
+  void loadUpdateStatus();
+
+  if (state.updateTimer) {
+    window.clearInterval(state.updateTimer);
+  }
+
+  state.updateTimer = window.setInterval(() => {
+    void loadUpdateStatus({ force: true });
+  }, 5 * 60 * 1000);
 
   if (state.activeSessionId && state.currentView === "shell") {
     connectToSession(state.activeSessionId);

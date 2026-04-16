@@ -3,6 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { getLegacyWorkspaceStateDir } from "./state-paths.js";
 
 const execFileAsync = promisify(execFile);
 const LOOPBACK_V4_PATTERN = /^127(?:\.\d{1,3}){3}$/;
@@ -207,8 +208,9 @@ export async function inspectBrowserRuntime({ env = process.env } = {}) {
   };
 }
 
-export async function ensureBrowserArtifactsDir({ cwd = process.cwd() } = {}) {
-  const artifactsDir = path.resolve(cwd, ".remote-vibes", "browser");
+export async function ensureBrowserArtifactsDir({ cwd = process.cwd(), env = process.env } = {}) {
+  const stateDir = env.REMOTE_VIBES_ROOT || getLegacyWorkspaceStateDir(cwd);
+  const artifactsDir = path.resolve(stateDir, "browser");
   await mkdir(artifactsDir, { recursive: true });
   return artifactsDir;
 }
@@ -219,12 +221,12 @@ function buildTimestampToken() {
 
 export async function resolveBrowserOutputPath(
   outputPath,
-  { cwd = process.cwd(), prefix = "capture", extension = ".png" } = {},
+  { cwd = process.cwd(), env = process.env, prefix = "capture", extension = ".png" } = {},
 ) {
   const absolutePath = outputPath
     ? path.resolve(cwd, outputPath)
     : path.join(
-        await ensureBrowserArtifactsDir({ cwd }),
+        await ensureBrowserArtifactsDir({ cwd, env }),
         `${prefix}-${buildTimestampToken()}${extension}`,
       );
 

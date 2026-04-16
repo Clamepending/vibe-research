@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { cp, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import http from "node:http";
@@ -83,6 +83,10 @@ async function waitForShutdown(url) {
   throw new Error(`Timed out waiting for ${url} to shut down.`);
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 test("install.sh clones and updates a checkout in one command", async () => {
   const { tempRoot, repoDir } = await createSourceRepo();
   const installRoot = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-install-"));
@@ -123,6 +127,147 @@ test("install.sh clones and updates a checkout in one command", async () => {
   }
 });
 
+test("install.sh defaults to an app checkout under the home Remote Vibes directory", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const homeDir = path.join(tempRoot, "home");
+  const installDir = path.join(homeDir, ".remote-vibes", "app");
+
+  try {
+    const result = await execFile("bash", [installScript], {
+      env: {
+        ...process.env,
+        HOME: homeDir,
+        REMOTE_VIBES_REPO_URL: repoDir,
+        REMOTE_VIBES_SKIP_RUN: "1",
+      },
+    });
+
+    assert.match(result.stdout, new RegExp(`Cloning into ${escapeRegExp(installDir)}`));
+    assert.match(result.stdout, /Skipping launch/);
+    assert.ok(await stat(path.join(installDir, "start.sh")));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("start.sh refuses to reuse a different workspace already running on the requested port", async () => {
+  const { tempRoot, repoDir } = await createWorkingTreeRepoSnapshot();
+  const port = await getFreePort();
+  const foreignWorkspace = path.join(os.tmpdir(), "remote-vibes-foreign-workspace");
+  const foreignServer = http.createServer((request, response) => {
+    if (request.url === "/api/state") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ appName: "Remote Vibes", cwd: foreignWorkspace }));
+      return;
+    }
+
+    response.statusCode = 404;
+    response.end("not found");
+  });
+
+  await new Promise((resolve) => foreignServer.listen(port, "127.0.0.1", resolve));
+
+  try {
+    await assert.rejects(
+      () =>
+        execFile("bash", [path.join(repoDir, "start.sh")], {
+          env: {
+            ...process.env,
+            REMOTE_VIBES_PORT: String(port),
+            REMOTE_VIBES_READY_TIMEOUT_SECONDS: "1",
+            REMOTE_VIBES_STATE_DIR: path.join(tempRoot, "state"),
+            REMOTE_VIBES_WIKI_DIR: path.join(tempRoot, "mac-brain"),
+          },
+        }),
+      (error) => {
+        const combinedOutput = `${error.stdout || ""}${error.stderr || ""}`;
+        assert.match(
+          combinedOutput,
+          new RegExp(
+            `Port ${port} is already serving Remote Vibes from ${escapeRegExp(foreignWorkspace)}`,
+          ),
+        );
+        return true;
+      },
+    );
+  } finally {
+    await new Promise((resolve) => foreignServer.close(resolve));
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("start.sh relaunches the same workspace when the running state dir differs", async () => {
+  const { tempRoot, repoDir } = await createWorkingTreeRepoSnapshot();
+  const canonicalRepoDir = await realpath(repoDir);
+  const port = await getFreePort();
+  const oldStateDir = path.join(tempRoot, "old-state");
+  const newStateDir = path.join(tempRoot, "new-state");
+  let terminateRequested = false;
+  const runningServer = http.createServer((request, response) => {
+    if (request.url === "/api/state") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ appName: "Remote Vibes", cwd: canonicalRepoDir, stateDir: oldStateDir }));
+      return;
+    }
+
+    if (request.url === "/api/terminate" && request.method === "POST") {
+      terminateRequested = true;
+      response.setHeader("Content-Type", "application/json");
+      response.end("{}");
+      setImmediate(() => {
+        runningServer.close();
+      });
+      return;
+    }
+
+    response.statusCode = 404;
+    response.end("not found");
+  });
+
+  await new Promise((resolve) => runningServer.listen(port, "127.0.0.1", resolve));
+
+  try {
+    const result = await execFile("bash", [path.join(repoDir, "start.sh")], {
+      env: {
+        ...process.env,
+        REMOTE_VIBES_PORT: String(port),
+        REMOTE_VIBES_READY_TIMEOUT_SECONDS: "30",
+        REMOTE_VIBES_STATE_DIR: newStateDir,
+        REMOTE_VIBES_WIKI_DIR: path.join(tempRoot, "mac-brain"),
+      },
+      timeout: 60_000,
+    });
+    const combinedOutput = `${result.stdout}${result.stderr}`;
+
+    assert.equal(terminateRequested, true);
+    assert.match(combinedOutput, new RegExp(`relaunching with ${escapeRegExp(newStateDir)}`));
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/state`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.appName, "Remote Vibes");
+    assert.equal(payload.cwd, canonicalRepoDir);
+    assert.equal(payload.stateDir, newStateDir);
+  } finally {
+    try {
+      await fetch(`http://127.0.0.1:${port}/api/terminate`, {
+        method: "POST",
+      });
+      await waitForShutdown(`http://127.0.0.1:${port}/api/state`);
+    } catch {
+      // Server may have already exited.
+    }
+
+    try {
+      await new Promise((resolve) => runningServer.close(() => resolve()));
+    } catch {
+      // Fake server may already be closed.
+    }
+
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("install.sh can launch remote vibes in one command", async () => {
   const { tempRoot, repoDir } = await createWorkingTreeRepoSnapshot();
   const installRoot = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-launch-"));
@@ -140,6 +285,8 @@ test("install.sh can launch remote vibes in one command", async () => {
         REMOTE_VIBES_HOME: installDir,
         REMOTE_VIBES_REPO_URL: repoUrl,
         REMOTE_VIBES_PORT: String(port),
+        REMOTE_VIBES_STATE_DIR: path.join(installRoot, "state"),
+        REMOTE_VIBES_WIKI_DIR: path.join(installRoot, "mac-brain"),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -151,38 +298,37 @@ test("install.sh can launch remote vibes in one command", async () => {
     child.stdout.on("data", capture);
     child.stderr.on("data", capture);
 
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`Timed out waiting for launcher output.\n${combinedOutput}`));
-      }, 20_000);
-
-      const handleOutput = () => {
-        if (!combinedOutput.includes("Remote Vibes is live.")) {
-          return;
-        }
-
-        clearTimeout(timeout);
-        child.stdout.off("data", handleOutput);
-        child.stderr.off("data", handleOutput);
-        resolve();
-      };
-
-      child.stdout.on("data", handleOutput);
-      child.stderr.on("data", handleOutput);
-      child.once("exit", (code) => {
-        clearTimeout(timeout);
-        reject(new Error(`Launcher exited early with code ${code}.\n${combinedOutput}`));
-      });
-    });
-
-    const [exitCode] = await once(child, "exit");
+    const [exitCode] = await Promise.race([
+      once(child, "exit"),
+      new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error(`Timed out waiting for launcher exit.\n${combinedOutput}`));
+        }, 40_000);
+      }),
+    ]);
     assert.equal(exitCode, 0);
     assert.match(combinedOutput, /Background server pid:/);
+    assert.match(combinedOutput, /will keep running after this terminal closes/);
+    assert.match(combinedOutput, new RegExp(`State directory: ${escapeRegExp(path.join(installRoot, "state"))}`));
+    assert.match(combinedOutput, new RegExp(`Wiki directory: ${escapeRegExp(path.join(installRoot, "mac-brain"))}`));
+    assert.ok(await stat(path.join(installRoot, "state", ".git")));
+    assert.ok(await stat(path.join(installRoot, "mac-brain", ".git")));
 
     const response = await fetch(`http://127.0.0.1:${port}/api/state`);
     assert.equal(response.status, 200);
     const payload = await response.json();
     assert.equal(payload.appName, "Remote Vibes");
+    assert.equal(payload.stateDir, path.join(installRoot, "state"));
+
+    const pidMatch = combinedOutput.match(/Background server pid: (\d+)/);
+    assert.ok(pidMatch);
+    process.kill(Number(pidMatch[1]), "SIGHUP");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const afterHangupResponse = await fetch(`http://127.0.0.1:${port}/api/state`);
+    assert.equal(afterHangupResponse.status, 200);
+    const afterHangupPayload = await afterHangupResponse.json();
+    assert.equal(afterHangupPayload.appName, "Remote Vibes");
   } finally {
     try {
       await fetch(`http://127.0.0.1:${port}/api/terminate`, {
@@ -210,5 +356,74 @@ test("install.sh can launch remote vibes in one command", async () => {
 
     await rm(tempRoot, { recursive: true, force: true });
     await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
+test("start.sh migrates an old home checkout into app and uses home root for settings", async () => {
+  const { tempRoot, repoDir } = await createWorkingTreeRepoSnapshot();
+  const homeDir = path.join(tempRoot, "home");
+  const homeRemoteVibesDir = path.join(homeDir, ".remote-vibes");
+  const port = await getFreePort();
+
+  try {
+    await mkdir(path.join(homeRemoteVibesDir, "src"), { recursive: true });
+    await writeFile(path.join(homeRemoteVibesDir, "package.json"), "{}\n");
+    await writeFile(path.join(homeRemoteVibesDir, "start.sh"), "#!/usr/bin/env bash\n");
+    await writeFile(path.join(homeRemoteVibesDir, "src", "server.js"), "console.log('old checkout');\n");
+
+    await mkdir(path.join(homeRemoteVibesDir, "state"), { recursive: true });
+    await writeFile(path.join(homeRemoteVibesDir, "state", "agent-prompt.md"), "remember root state\n");
+    await mkdir(path.join(homeRemoteVibesDir, ".remote-vibes"), { recursive: true });
+    await writeFile(path.join(homeRemoteVibesDir, ".remote-vibes", "sessions.json"), "{\"sessions\":[]}\n");
+    await mkdir(path.join(repoDir, ".remote-vibes"), { recursive: true });
+    await writeFile(path.join(repoDir, ".remote-vibes", "port-aliases.json"), "{\"aliases\":{}}\n");
+
+    const result = await execFile("bash", [path.join(repoDir, "start.sh")], {
+      env: {
+        ...process.env,
+        HOME: homeDir,
+        REMOTE_VIBES_PORT: String(port),
+        REMOTE_VIBES_READY_TIMEOUT_SECONDS: "30",
+      },
+      timeout: 60_000,
+    });
+    const combinedOutput = `${result.stdout}${result.stderr}`;
+
+    assert.match(combinedOutput, /Moving old Remote Vibes checkout/);
+    assert.match(
+      combinedOutput,
+      new RegExp(`State directory: ${escapeRegExp(homeRemoteVibesDir)}`),
+    );
+    assert.ok(await stat(path.join(homeRemoteVibesDir, "app", "package.json")));
+    assert.ok(await stat(path.join(homeRemoteVibesDir, "app", "src", "server.js")));
+    assert.ok(await stat(path.join(homeRemoteVibesDir, ".git")));
+    const migratedPrompt = await readFile(path.join(homeRemoteVibesDir, "agent-prompt.md"), "utf8");
+    assert.match(migratedPrompt, /^remember root state\n/);
+    assert.match(migratedPrompt, /remote-vibes:wiki-v2-protocol:v2/);
+    const sessionsPayload = JSON.parse(await readFile(path.join(homeRemoteVibesDir, "sessions.json"), "utf8"));
+    assert.deepEqual(sessionsPayload.sessions, []);
+    assert.equal(
+      await readFile(path.join(homeRemoteVibesDir, "port-aliases.json"), "utf8"),
+      "{\"aliases\":{}}\n",
+    );
+    assert.match(await readFile(path.join(homeRemoteVibesDir, ".gitignore"), "utf8"), /^app\/$/m);
+    assert.match(await readFile(path.join(homeRemoteVibesDir, ".gitignore"), "utf8"), /^state\/$/m);
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/state`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.appName, "Remote Vibes");
+    assert.equal(payload.stateDir, homeRemoteVibesDir);
+  } finally {
+    try {
+      await fetch(`http://127.0.0.1:${port}/api/terminate`, {
+        method: "POST",
+      });
+      await waitForShutdown(`http://127.0.0.1:${port}/api/state`);
+    } catch {
+      // Server may have already exited.
+    }
+
+    await rm(tempRoot, { recursive: true, force: true });
   }
 });

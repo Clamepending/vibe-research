@@ -1,25 +1,32 @@
 import { execFile } from "node:child_process";
 import os from "node:os";
-import { closeSync, openSync, readSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { open, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pty from "node-pty";
+import { AGENT_PROMPT_FILENAME } from "./agent-prompt-store.js";
 import { AgentRunTracker } from "./agent-run-tracker.js";
 import { SessionStore } from "./session-store.js";
+import { getLegacyWorkspaceStateDir, getRemoteVibesStateDir } from "./state-paths.js";
 
-const MAX_BUFFER_LENGTH = 200_000;
+const MAX_BUFFER_LENGTH = 2_000_000;
 const STARTUP_DELAY_MS = 180;
 const SESSION_META_THROTTLE_MS = 180;
 const SESSION_PERSIST_THROTTLE_MS = 180;
 const SESSION_NAME_MAX_LENGTH = 64;
+const SESSION_AUTO_NAME_MAX_WORDS = 6;
+const SESSION_AUTO_NAME_BUFFER_LIMIT = 240;
+const PROVIDER_SESSION_LIST_LIMIT = 50;
 const PROVIDER_SESSION_CAPTURE_ATTEMPTS = 16;
 const PROVIDER_SESSION_CAPTURE_INTERVAL_MS = 250;
 const PROVIDER_SESSION_LOOKBACK_MS = 4_000;
-const OPENCODE_SESSION_LIST_LIMIT = 50;
-const CODEX_SESSION_SCAN_LIMIT = 80;
-const CODEX_SESSION_HEADER_READ_BYTES = 24_576;
+const PROVIDER_SESSION_CAPTURE_RETRY_INTERVAL_MS = 5_000;
+const PROVIDER_SESSION_CAPTURE_RETRY_WINDOW_MS = 90_000;
+const CODEX_SESSION_INDEX_LIMIT = 100;
+const CODEX_SESSION_META_READ_LIMIT = 8192;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRootDir = path.resolve(__dirname, "..");
 const helperBinDir = path.join(appRootDir, "bin");
@@ -61,6 +68,109 @@ function normalizeSessionName(value) {
   return trimmed.slice(0, SESSION_NAME_MAX_LENGTH).trim();
 }
 
+function escapeRegex(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isGenericSessionName(name, provider) {
+  const normalizedName = normalizeSessionName(name).toLowerCase();
+  const defaultName = normalizeSessionName(provider?.defaultName || "").toLowerCase();
+  const providerLabel = normalizeSessionName(provider?.label || "").toLowerCase();
+
+  if (!normalizedName) {
+    return true;
+  }
+
+  if (providerLabel && normalizedName === providerLabel) {
+    return true;
+  }
+
+  if (!defaultName) {
+    return false;
+  }
+
+  const defaultPattern = new RegExp(`^${escapeRegex(defaultName)}(?: \\d+)?(?: fork(?: \\d+)?)?$`, "i");
+  return defaultPattern.test(normalizedName);
+}
+
+function shouldAutoRenameFromPrompt(provider, name, enabled = true) {
+  return Boolean(enabled && provider?.id && provider.id !== "shell" && isGenericSessionName(name, provider));
+}
+
+function deriveSessionNameFromPromptLine(line) {
+  let nextName = String(line ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!nextName) {
+    return "";
+  }
+
+  nextName = nextName.replace(/^(?:hey|hi|hello)[,!: ]+/i, "");
+  nextName = nextName.replace(/^(?:codex|claude|assistant)[,:-]?\s+/i, "");
+  nextName = nextName.replace(/^(?:please|pls)\s+/i, "");
+  nextName = nextName.replace(/^(?:can|could|would)\s+you\s+/i, "");
+  nextName = nextName.replace(/^["'`]+|["'`]+$/g, "");
+  nextName = nextName.split(/[.!?](?:\s|$)/, 1)[0]?.trim() || nextName;
+  nextName = nextName
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, SESSION_AUTO_NAME_MAX_WORDS)
+    .join(" ");
+  nextName = nextName.replace(/^[^A-Za-z0-9]+/, "").replace(/[^A-Za-z0-9]+$/, "");
+
+  return normalizeSessionName(nextName);
+}
+
+function consumePromptInput(buffer, input) {
+  const completedLines = [];
+  let nextBuffer = String(buffer ?? "");
+  let escapeSequenceLength = 0;
+
+  for (const character of String(input ?? "").replace(/\r\n/g, "\r")) {
+    if (escapeSequenceLength > 0) {
+      escapeSequenceLength += 1;
+      if ((character >= "@" && character <= "~") || escapeSequenceLength >= 12) {
+        escapeSequenceLength = 0;
+      }
+      continue;
+    }
+
+    if (character === "\u001b") {
+      escapeSequenceLength = 1;
+      continue;
+    }
+
+    if (character === "\r" || character === "\n") {
+      const completedLine = nextBuffer.trim();
+      if (completedLine) {
+        completedLines.push(completedLine);
+      }
+      nextBuffer = "";
+      continue;
+    }
+
+    if (character === "\u0008" || character === "\u007f") {
+      nextBuffer = nextBuffer.slice(0, -1);
+      continue;
+    }
+
+    if (character < " " && character !== "\t") {
+      continue;
+    }
+
+    nextBuffer += character === "\t" ? " " : character;
+    if (nextBuffer.length > SESSION_AUTO_NAME_BUFFER_LIMIT) {
+      nextBuffer = nextBuffer.slice(0, SESSION_AUTO_NAME_BUFFER_LIMIT);
+    }
+  }
+
+  return {
+    completedLines,
+    buffer: nextBuffer,
+  };
+}
+
 export function prependPathEntries(existingPath, entries) {
   const currentEntries = String(existingPath || "")
     .split(path.delimiter)
@@ -85,58 +195,44 @@ function getResolvedProviderCommand(providers, providerId) {
   return provider.launchCommand || provider.command || null;
 }
 
-function isEnvLike(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
+function getManagedProviderLaunchCommand(provider) {
+  if (!provider) {
+    return null;
+  }
 
-function resolveBuildSessionEnvContext(
-  workspaceRootOrProviders,
-  maybeProvidersOrEnv,
-  maybeEnv,
-) {
-  const workspaceRoot =
-    typeof workspaceRootOrProviders === "string" && workspaceRootOrProviders.trim()
-      ? workspaceRootOrProviders
-      : appRootDir;
-  const providers = Array.isArray(workspaceRootOrProviders)
-    ? workspaceRootOrProviders
-    : Array.isArray(maybeProvidersOrEnv)
-      ? maybeProvidersOrEnv
-      : [];
-  const env = isEnvLike(maybeEnv)
-    ? maybeEnv
-    : isEnvLike(maybeProvidersOrEnv)
-      ? maybeProvidersOrEnv
-      : process.env;
+  if (provider.id === "claude" || provider.id === "codex") {
+    return provider.command || provider.launchCommand || null;
+  }
 
-  return {
-    workspaceRoot,
-    providers,
-    env,
-  };
+  return provider.launchCommand || provider.command || null;
 }
 
 export function buildSessionEnv(
   sessionId,
   providerId,
-  workspaceRootOrProviders = appRootDir,
-  maybeProvidersOrEnv = [],
-  maybeEnv = process.env,
+  providersOrWorkspaceRoot = [],
+  workspaceRoot = appRootDir,
+  stateDir = null,
+  baseEnv = process.env,
 ) {
-  const { workspaceRoot, providers, env } = resolveBuildSessionEnvContext(
-    workspaceRootOrProviders,
-    maybeProvidersOrEnv,
-    maybeEnv,
-  );
-  const stateDir = path.join(workspaceRoot, ".remote-vibes");
-  const agentDir = path.join(stateDir, "wiki", "comms", "agents", sessionId);
+  const providers = Array.isArray(providersOrWorkspaceRoot) ? providersOrWorkspaceRoot : [];
+  const resolvedWorkspaceRoot = Array.isArray(providersOrWorkspaceRoot)
+    ? workspaceRoot
+    : providersOrWorkspaceRoot || workspaceRoot;
+  const env = baseEnv && typeof baseEnv === "object" ? baseEnv : process.env;
+  const resolvedStateDir =
+    stateDir ||
+    (Array.isArray(providersOrWorkspaceRoot)
+      ? getRemoteVibesStateDir({ cwd: resolvedWorkspaceRoot, env })
+      : getLegacyWorkspaceStateDir(resolvedWorkspaceRoot));
+  const agentDir = path.join(resolvedStateDir, "wiki", "comms", "agents", sessionId);
 
   return {
     ...env,
     COLORTERM: "truecolor",
     LANG: "en_US.UTF-8",
     LC_ALL: "en_US.UTF-8",
-    PATH: prependPathEntries(env.PATH, [path.join(workspaceRoot, "bin"), ...preferredCliBinDirs]),
+    PATH: prependPathEntries(env.PATH, preferredCliBinDirs),
     REMOTE_VIBES_APP_ROOT: appRootDir,
     REMOTE_VIBES_BROWSER_COMMAND: "rv-browser",
     REMOTE_VIBES_BROWSER_DESCRIBE:
@@ -148,11 +244,12 @@ export function buildSessionEnv(
       "rv-browser describe-file results/chart.png --prompt \"What does this output show and what should improve?\"",
     REMOTE_VIBES_REAL_CLAUDE_COMMAND: getResolvedProviderCommand(providers, "claude") || "",
     REMOTE_VIBES_REAL_CODEX_COMMAND: getResolvedProviderCommand(providers, "codex") || "",
+    REMOTE_VIBES_ROOT: resolvedStateDir,
+    REMOTE_VIBES_AGENT_PROMPT_PATH: path.join(resolvedStateDir, AGENT_PROMPT_FILENAME),
     REMOTE_VIBES_PROVIDER: providerId,
-    REMOTE_VIBES_ROOT: stateDir,
     REMOTE_VIBES_SESSION_ID: sessionId,
-    REMOTE_VIBES_WIKI_DIR: path.join(stateDir, "wiki"),
-    REMOTE_VIBES_COMMS_DIR: path.join(stateDir, "wiki", "comms"),
+    REMOTE_VIBES_WIKI_DIR: path.join(resolvedStateDir, "wiki"),
+    REMOTE_VIBES_COMMS_DIR: path.join(resolvedStateDir, "wiki", "comms"),
     REMOTE_VIBES_AGENT_DIR: agentDir,
     REMOTE_VIBES_AGENT_INBOX: path.join(agentDir, "inbox"),
     REMOTE_VIBES_AGENT_PROCESSED_DIR: path.join(agentDir, "processed"),
@@ -199,64 +296,29 @@ function normalizeSessionPath(targetPath) {
     return null;
   }
 
-  return path.resolve(targetPath);
-}
-
-function readFileHeader(filePath, maxBytes = CODEX_SESSION_HEADER_READ_BYTES) {
-  let fd = null;
+  const resolvedPath = path.resolve(targetPath);
 
   try {
-    fd = openSync(filePath, "r");
-    const buffer = Buffer.alloc(maxBytes);
-    const bytesRead = readSync(fd, buffer, 0, maxBytes, 0);
-    return buffer.subarray(0, bytesRead).toString("utf8");
+    return realpathSync(resolvedPath);
   } catch {
-    return "";
-  } finally {
-    if (fd !== null) {
-      try {
-        closeSync(fd);
-      } catch {
-        // Ignore close failures for short-lived session scans.
-      }
-    }
+    return resolvedPath;
   }
 }
 
-function decodeJsonString(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  try {
-    return JSON.parse(`"${value}"`);
-  } catch {
-    return value;
-  }
+function buildFallbackCommand(commandStrings) {
+  return commandStrings.filter(Boolean).join(" || ");
 }
 
-function getHomeDirectory(env = process.env) {
-  return String(env?.HOME || os.homedir() || "").trim() || os.homedir();
-}
-
-function sortSessionsByUpdated(sessions) {
-  return sessions.sort((left, right) => Number(right?.updated || 0) - Number(left?.updated || 0));
-}
-
-function matchSessionsByPath(sessions, cwd, key) {
-  const normalizedCwd = normalizeSessionPath(cwd);
-
-  return sortSessionsByUpdated(
-    sessions.filter((entry) => normalizeSessionPath(entry?.[key]) === normalizedCwd),
-  );
+function shouldTrackProviderSession(providerId) {
+  return providerId === "codex" || providerId === "gemini" || providerId === "opencode";
 }
 
 function matchOpenCodeSessionsByCwd(sessions, cwd) {
-  return matchSessionsByPath(sessions, cwd, "directory");
-}
+  const normalizedCwd = normalizeSessionPath(cwd);
 
-function matchCodexSessionsByCwd(sessions, cwd) {
-  return matchSessionsByPath(sessions, cwd, "cwd");
+  return sessions
+    .filter((entry) => normalizeSessionPath(entry?.directory) === normalizedCwd)
+    .sort((left, right) => Number(right?.updated || 0) - Number(left?.updated || 0));
 }
 
 function pickTrackedSession(sessions, baselineSessionIds, launchedAt) {
@@ -280,7 +342,7 @@ async function listOpenCodeSessions(command, cwd, env = process.env) {
   try {
     const { stdout } = await execFileAsync(
       command,
-      ["session", "list", "--format", "json", "-n", String(OPENCODE_SESSION_LIST_LIMIT)],
+      ["session", "list", "--format", "json", "-n", String(PROVIDER_SESSION_LIST_LIMIT)],
       {
         cwd,
         env,
@@ -295,8 +357,28 @@ async function listOpenCodeSessions(command, cwd, env = process.env) {
   }
 }
 
+function getProviderHomeDir(homeDir = os.homedir()) {
+  return homeDir || os.homedir() || process.env.HOME || "";
+}
+
+function getHomeDirectory(env = process.env) {
+  return String(env?.HOME || os.homedir() || "").trim() || os.homedir();
+}
+
+function getCodexRootDir(homeDir = os.homedir()) {
+  return path.join(getProviderHomeDir(homeDir), ".codex");
+}
+
+function getGeminiRootDir(homeDir = os.homedir()) {
+  return path.join(getProviderHomeDir(homeDir), ".gemini");
+}
+
+function sortSessionsByUpdated(sessions) {
+  return sessions.sort((left, right) => Number(right?.updated || 0) - Number(left?.updated || 0));
+}
+
 function normalizeClaudeProjectDirName(cwd) {
-  const normalizedCwd = normalizeSessionPath(cwd);
+  const normalizedCwd = typeof cwd === "string" && cwd.trim() ? path.resolve(cwd) : null;
   return normalizedCwd ? normalizedCwd.replaceAll(path.sep, "-") : null;
 }
 
@@ -310,49 +392,183 @@ function listClaudeSessionsForCwd(cwd, env = process.env) {
   const projectDir = path.join(getHomeDirectory(env), ".claude", "projects", projectDirName);
 
   try {
-    const entries = readdirSync(projectDir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
-      .map((entry) => {
-        const filePath = path.join(projectDir, entry.name);
-        const sessionId = entry.name.slice(0, -".jsonl".length);
-
-        return {
-          id: sessionId,
-          updated: statSync(filePath).mtimeMs,
-        };
-      });
-
-    return sortSessionsByUpdated(entries);
+    return sortSessionsByUpdated(
+      readdirSync(projectDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+        .map((entry) => {
+          const filePath = path.join(projectDir, entry.name);
+          return {
+            id: entry.name.slice(0, -".jsonl".length),
+            updated: statSync(filePath).mtimeMs,
+          };
+        }),
+    );
   } catch {
     return [];
   }
 }
 
-function parseCodexSessionHeader(filePath) {
-  const header = readFileHeader(filePath);
+async function readFirstLine(filePath, byteLimit = CODEX_SESSION_META_READ_LIMIT) {
+  let handle;
 
-  if (!header) {
-    return null;
+  try {
+    handle = await open(filePath, "r");
+    const buffer = Buffer.alloc(byteLimit);
+    const { bytesRead } = await handle.read(buffer, 0, byteLimit, 0);
+    return buffer.toString("utf8", 0, bytesRead).split(/\r?\n/, 1)[0] || "";
+  } catch {
+    return "";
+  } finally {
+    await handle?.close().catch(() => {});
   }
-
-  const idMatch = header.match(/"id":"([^"]+)"/);
-  const cwdMatch = header.match(/"cwd":"((?:\\.|[^"])*)"/);
-  const timestampMatch = header.match(/"timestamp":"([^"]+)"/);
-
-  if (!idMatch?.[1] || !cwdMatch?.[1]) {
-    return null;
-  }
-
-  const timestamp = timestampMatch?.[1] ? Date.parse(timestampMatch[1]) : NaN;
-
-  return {
-    id: idMatch[1],
-    cwd: decodeJsonString(cwdMatch[1]),
-    updated: Number.isFinite(timestamp) ? timestamp : statSync(filePath).mtimeMs,
-  };
 }
 
-function listRecentCodexSessionFiles(rootDir, limit = CODEX_SESSION_SCAN_LIMIT) {
+async function readCodexSessionMetaFile(filePath) {
+  const firstLine = await readFirstLine(filePath);
+  if (!firstLine) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(firstLine);
+    const sessionMeta = payload?.type === "session_meta" ? payload.payload : null;
+    if (typeof sessionMeta?.id !== "string") {
+      return null;
+    }
+
+    return {
+      id: sessionMeta.id,
+      cwd: normalizeSessionPath(sessionMeta.cwd),
+      updated: Date.parse(payload.timestamp || sessionMeta.timestamp || 0) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getRecentDatePrefixes(referenceTime = Date.now()) {
+  const prefixes = new Set();
+
+  for (const offset of [-1, 0, 1]) {
+    const candidateDate = new Date(referenceTime + offset * 24 * 60 * 60 * 1000);
+    const year = String(candidateDate.getFullYear()).padStart(4, "0");
+    const month = String(candidateDate.getMonth() + 1).padStart(2, "0");
+    const day = String(candidateDate.getDate()).padStart(2, "0");
+    prefixes.add(path.join(year, month, day));
+  }
+
+  return Array.from(prefixes);
+}
+
+async function findCodexSessionMeta(codexRootDir, sessionId, referenceTime = Date.now()) {
+  const sessionsDir = path.join(codexRootDir, "sessions");
+
+  for (const prefix of getRecentDatePrefixes(referenceTime)) {
+    const dayDir = path.join(sessionsDir, prefix);
+    let files;
+
+    try {
+      files = await readdir(dayDir);
+    } catch {
+      continue;
+    }
+
+    const matchingFile = files.find((entry) => entry.endsWith(`-${sessionId}.jsonl`));
+    if (!matchingFile) {
+      continue;
+    }
+
+    const sessionMeta = await readCodexSessionMetaFile(path.join(dayDir, matchingFile));
+    if (sessionMeta) {
+      return sessionMeta;
+    }
+  }
+
+  const archivedDir = path.join(codexRootDir, "archived_sessions");
+  let archivedFiles;
+
+  try {
+    archivedFiles = await readdir(archivedDir);
+  } catch {
+    return null;
+  }
+
+  const archivedFile = archivedFiles.find((entry) => entry.endsWith(`-${sessionId}.jsonl`));
+  if (!archivedFile) {
+    return null;
+  }
+
+  return readCodexSessionMetaFile(path.join(archivedDir, archivedFile));
+}
+
+async function listCodexSessionIndex(homeDir = os.homedir()) {
+  const indexPath = path.join(getCodexRootDir(homeDir), "session_index.jsonl");
+
+  try {
+    const contents = await readFile(indexPath, "utf8");
+    return contents
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          const entry = JSON.parse(line);
+          return {
+            id: typeof entry?.id === "string" ? entry.id : null,
+            updated: Date.parse(entry?.updated_at || 0) || 0,
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((entry) => typeof entry?.id === "string")
+      .sort((left, right) => Number(right.updated || 0) - Number(left.updated || 0))
+      .slice(0, CODEX_SESSION_INDEX_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+async function listCodexPromptHistory(homeDir = os.homedir()) {
+  const historyPath = path.join(getCodexRootDir(homeDir), "history.jsonl");
+
+  try {
+    const contents = await readFile(historyPath, "utf8");
+    const mergedEntries = new Map();
+
+    for (const line of contents.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean)) {
+      try {
+        const entry = JSON.parse(line);
+        if (typeof entry?.session_id !== "string" || !entry.session_id) {
+          continue;
+        }
+
+        let updated = Number(entry?.ts || 0);
+        if (!Number.isFinite(updated) || updated <= 0) {
+          updated = 0;
+        } else if (updated < 1_000_000_000_000) {
+          updated *= 1000;
+        }
+
+        const existingUpdated = mergedEntries.get(entry.session_id) || 0;
+        if (updated >= existingUpdated) {
+          mergedEntries.set(entry.session_id, updated);
+        }
+      } catch {
+        // Ignore malformed history entries.
+      }
+    }
+
+    return Array.from(mergedEntries.entries())
+      .map(([id, updated]) => ({ id, updated }))
+      .sort((left, right) => Number(right.updated || 0) - Number(left.updated || 0))
+      .slice(0, CODEX_SESSION_INDEX_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function listRecentCodexSessionFiles(rootDir, limit = CODEX_SESSION_INDEX_LIMIT) {
   const files = [];
 
   try {
@@ -400,15 +616,132 @@ function listRecentCodexSessionFiles(rootDir, limit = CODEX_SESSION_SCAN_LIMIT) 
   return files;
 }
 
-function listCodexSessions(env = process.env) {
-  const sessionsRoot = path.join(getHomeDirectory(env), ".codex", "sessions");
-  const files = listRecentCodexSessionFiles(sessionsRoot);
-
-  return sortSessionsByUpdated(
-    files
-      .map((filePath) => parseCodexSessionHeader(filePath))
-      .filter((entry) => entry?.id && entry?.cwd),
+async function listCodexTranscriptSessions(homeDir = os.homedir()) {
+  const sessionsRoot = path.join(getCodexRootDir(homeDir), "sessions");
+  const entries = await Promise.all(
+    listRecentCodexSessionFiles(sessionsRoot).map((filePath) => readCodexSessionMetaFile(filePath)),
   );
+
+  return entries
+    .filter((entry) => typeof entry?.id === "string")
+    .sort((left, right) => Number(right.updated || 0) - Number(left.updated || 0))
+    .slice(0, CODEX_SESSION_INDEX_LIMIT);
+}
+
+async function listCodexTrackedSessions(homeDir = os.homedir()) {
+  const mergedEntries = new Map();
+
+  for (const sourceEntries of await Promise.all([
+    listCodexSessionIndex(homeDir),
+    listCodexPromptHistory(homeDir),
+    listCodexTranscriptSessions(homeDir),
+  ])) {
+    for (const entry of sourceEntries) {
+      if (typeof entry?.id !== "string" || !entry.id) {
+        continue;
+      }
+
+      const existingEntry = mergedEntries.get(entry.id) || null;
+      const existingUpdated = Number(existingEntry?.updated || 0);
+      const nextUpdated = Number(entry.updated || 0);
+      if (nextUpdated >= existingUpdated) {
+        mergedEntries.set(entry.id, {
+          id: entry.id,
+          updated: nextUpdated,
+          cwd: entry.cwd || existingEntry?.cwd || null,
+        });
+      }
+    }
+  }
+
+  return Array.from(mergedEntries.values())
+    .sort((left, right) => Number(right.updated || 0) - Number(left.updated || 0))
+    .slice(0, CODEX_SESSION_INDEX_LIMIT);
+}
+
+function matchCodexSessionsByCwd(sessions, cwd) {
+  const normalizedCwd = normalizeSessionPath(cwd);
+
+  if (!normalizedCwd) {
+    return [];
+  }
+
+  return sessions
+    .filter((entry) => entry?.cwd && normalizeSessionPath(entry.cwd) === normalizedCwd)
+    .sort((left, right) => Number(right.updated || 0) - Number(left.updated || 0));
+}
+
+function normalizeGeminiProjectPath(projectPath) {
+  const normalizedPath = normalizeSessionPath(projectPath) || path.resolve(projectPath);
+  return process.platform === "win32" ? normalizedPath.toLowerCase() : normalizedPath;
+}
+
+function hasGeminiConversationMessages(messages) {
+  return Array.isArray(messages) && messages.some((message) => message?.type === "user" || message?.type === "assistant");
+}
+
+async function listGeminiSessions(cwd, homeDir = os.homedir()) {
+  const normalizedCwd = normalizeSessionPath(cwd);
+  if (!normalizedCwd) {
+    return [];
+  }
+
+  const geminiRootDir = getGeminiRootDir(homeDir);
+  const projectsPath = path.join(geminiRootDir, "projects.json");
+  let registry = null;
+
+  try {
+    registry = JSON.parse(await readFile(projectsPath, "utf8"));
+  } catch {
+    return [];
+  }
+
+  const normalizedProjectPath = normalizeGeminiProjectPath(normalizedCwd);
+  const projectId = Object.entries(registry?.projects || {}).find(([projectPath]) => (
+    normalizeGeminiProjectPath(projectPath) === normalizedProjectPath
+  ))?.[1];
+  if (typeof projectId !== "string" || !projectId.trim()) {
+    return [];
+  }
+
+  const chatsDir = path.join(geminiRootDir, "tmp", projectId, "chats");
+  let files = [];
+
+  try {
+    files = await readdir(chatsDir);
+  } catch {
+    return [];
+  }
+
+  const sessions = [];
+
+  for (const fileName of files) {
+    if (!fileName.startsWith("session-") || !fileName.endsWith(".json")) {
+      continue;
+    }
+
+    try {
+      const payload = JSON.parse(await readFile(path.join(chatsDir, fileName), "utf8"));
+      if (
+        typeof payload?.sessionId !== "string"
+        || !payload.sessionId
+        || !hasGeminiConversationMessages(payload.messages)
+      ) {
+        continue;
+      }
+
+      sessions.push({
+        id: payload.sessionId,
+        updated: Date.parse(payload.lastUpdated || payload.startTime || 0) || 0,
+      });
+    } catch {
+      // Ignore malformed Gemini session files.
+    }
+  }
+
+  return sessions
+    .sort((left, right) => Number(right.updated || 0) - Number(left.updated || 0))
+    .slice(0, PROVIDER_SESSION_LIST_LIMIT);
 }
 
 export class SessionManager {
@@ -416,16 +749,18 @@ export class SessionManager {
     cwd,
     providers,
     persistSessions = true,
-    stateDir = path.join(cwd, ".remote-vibes"),
+    stateDir = getRemoteVibesStateDir({ cwd }),
     agentRunStore = null,
     runIdleTimeoutMs = Number(process.env.REMOTE_VIBES_RUN_IDLE_MS || 15_000),
     env = process.env,
+    userHomeDir = env?.HOME || os.homedir(),
   }) {
     this.cwd = cwd;
     this.providers = providers;
     this.persistSessions = persistSessions;
     this.stateDir = stateDir;
     this.env = env && typeof env === "object" ? { ...env } : { ...process.env };
+    this.userHomeDir = getProviderHomeDir(userHomeDir);
     this.sessionStore = new SessionStore({
       enabled: persistSessions,
       stateDir,
@@ -485,15 +820,17 @@ export class SessionManager {
       throw new Error(`${provider.label} is not installed on this host.`);
     }
 
+    const normalizedName = normalizeSessionName(name);
     const createdAt = new Date().toISOString();
     const session = this.buildSessionRecord({
       cwd: resolveCwd(cwd, this.cwd),
-      name: normalizeSessionName(name) || this.makeDefaultName(provider),
+      name: normalizedName || this.makeDefaultName(provider),
       providerId: provider.id,
       providerLabel: provider.label,
       createdAt,
       updatedAt: createdAt,
       restoreOnStartup: true,
+      autoRenameEnabled: shouldAutoRenameFromPrompt(provider, normalizedName || provider.defaultName, !normalizedName),
     });
 
     this.sessions.set(session.id, session);
@@ -522,11 +859,13 @@ export class SessionManager {
       throw new Error("Session name cannot be empty.");
     }
 
-    if (session.name === nextName) {
+    if (nextName === session.name) {
       return this.serializeSession(session);
     }
 
     session.name = nextName;
+    session.autoRenameEnabled = false;
+    session.autoRenameBuffer = "";
     session.updatedAt = new Date().toISOString();
     this.scheduleSessionMetaBroadcast(session, { immediate: true });
     this.schedulePersist({ immediate: true });
@@ -600,6 +939,7 @@ export class SessionManager {
         `\u001b[1;36m[remote-vibes]\u001b[0m this is a fresh sibling session in the same cwd`,
         "",
       ].join("\r\n"),
+      autoRenameEnabled: sourceSession.providerId !== "shell",
     });
 
     this.sessions.set(forkSession.id, forkSession);
@@ -631,6 +971,7 @@ export class SessionManager {
     session.skipExitHandling = true;
     session.restoreOnStartup = false;
     this.clearPendingMetaBroadcast(session);
+    this.clearPendingProviderCaptureRetry(session);
     session.clients.clear();
     this.queueAgentRunTracking(this.agentRunTracker?.handleSessionDelete(session));
 
@@ -677,6 +1018,8 @@ export class SessionManager {
 
     this.queueAgentRunTracking(this.agentRunTracker?.handleInput(session, input));
     session.pty.write(input);
+    this.maybeAutoRenameSessionFromInput(session, input);
+    this.maybeRetryPendingProviderCaptureFromInput(session, input);
     session.updatedAt = new Date().toISOString();
     this.schedulePersist();
     return true;
@@ -708,6 +1051,7 @@ export class SessionManager {
 
     for (const session of this.sessions.values()) {
       this.clearPendingMetaBroadcast(session);
+      this.clearPendingProviderCaptureRetry(session);
 
       for (const client of session.clients) {
         client.close();
@@ -723,7 +1067,6 @@ export class SessionManager {
 
     if (preserveSessions) {
       await this.flushPersistedSessions();
-      this.agentRunTracker?.reset();
 
       for (const session of this.sessions.values()) {
         if (session.status !== "exited" && session.pty) {
@@ -738,7 +1081,6 @@ export class SessionManager {
 
     this.closeAll();
     await this.flushPersistedSessions();
-    this.agentRunTracker?.reset();
   }
 
   makeDefaultName(provider) {
@@ -863,6 +1205,7 @@ export class SessionManager {
     buffer = "",
     restoreOnStartup = false,
     providerState = null,
+    autoRenameEnabled = false,
   }) {
     return {
       id,
@@ -886,8 +1229,20 @@ export class SessionManager {
       restoreOnStartup,
       providerState:
         providerState && typeof providerState === "object" ? { ...providerState } : null,
+      autoRenameEnabled: Boolean(autoRenameEnabled),
+      autoRenameBuffer: "",
+      pendingProviderCapture: null,
+      providerCapturePromise: null,
+      providerCaptureRetryTimer: null,
       skipExitHandling: false,
     };
+  }
+
+  clearPendingProviderCaptureRetry(session) {
+    if (session?.providerCaptureRetryTimer) {
+      clearTimeout(session.providerCaptureRetryTimer);
+      session.providerCaptureRetryTimer = null;
+    }
   }
 
   updateProviderState(session, nextProviderState) {
@@ -904,12 +1259,148 @@ export class SessionManager {
     }
 
     session.providerState = normalizedState;
+    if (normalizedState?.sessionId) {
+      this.clearPendingProviderCaptureRetry(session);
+      session.pendingProviderCapture = null;
+      session.providerCapturePromise = null;
+    }
     session.updatedAt = new Date().toISOString();
     this.schedulePersist({ immediate: true });
   }
 
+  maybeAutoRenameSessionFromInput(session, input) {
+    const provider = this.getProvider(session.providerId);
+    if (!shouldAutoRenameFromPrompt(provider, session.name, session.autoRenameEnabled)) {
+      session.autoRenameBuffer = "";
+      return;
+    }
+
+    const { completedLines, buffer } = consumePromptInput(session.autoRenameBuffer, input);
+    session.autoRenameBuffer = buffer;
+
+    for (const line of completedLines) {
+      const nextName = deriveSessionNameFromPromptLine(line);
+      if (!nextName) {
+        continue;
+      }
+
+      this.renameSession(session.id, nextName);
+      return;
+    }
+  }
+
+  setPendingProviderCapture(session, providerId, baselineSessionIds = [], launchedAt = null, launchCommand = null) {
+    if (!shouldTrackProviderSession(providerId)) {
+      this.clearPendingProviderCaptureRetry(session);
+      session.pendingProviderCapture = null;
+      session.providerCapturePromise = null;
+      return;
+    }
+
+    this.clearPendingProviderCaptureRetry(session);
+    session.pendingProviderCapture = {
+      providerId,
+      baselineSessionIds: Array.from(baselineSessionIds),
+      launchedAt: launchedAt ? Number(launchedAt) : null,
+      launchCommand: launchCommand || null,
+      retryUntil: launchedAt ? Number(launchedAt) + PROVIDER_SESSION_CAPTURE_RETRY_WINDOW_MS : null,
+    };
+    session.providerCapturePromise = null;
+  }
+
+  schedulePendingProviderCaptureRetry(session, delayMs = PROVIDER_SESSION_CAPTURE_RETRY_INTERVAL_MS) {
+    if (!session?.pendingProviderCapture || session.providerState?.sessionId || !session.pty) {
+      this.clearPendingProviderCaptureRetry(session);
+      return;
+    }
+
+    const launchedAt = Number(session.pendingProviderCapture.launchedAt || 0);
+    if (!launchedAt) {
+      return;
+    }
+
+    const retryUntil =
+      Number(session.pendingProviderCapture.retryUntil || 0)
+      || launchedAt + PROVIDER_SESSION_CAPTURE_RETRY_WINDOW_MS;
+
+    session.pendingProviderCapture.retryUntil = retryUntil;
+
+    if (Date.now() >= retryUntil || session.providerCaptureRetryTimer) {
+      return;
+    }
+
+    session.providerCaptureRetryTimer = setTimeout(() => {
+      session.providerCaptureRetryTimer = null;
+
+      if (!session.pendingProviderCapture || session.providerState?.sessionId || session.status !== "running" || !session.pty) {
+        return;
+      }
+
+      void this.beginPendingProviderCapture(session);
+    }, delayMs);
+  }
+
+  async beginPendingProviderCapture(session) {
+    if (!session?.pendingProviderCapture || session.providerState?.sessionId || !session.pty) {
+      return;
+    }
+
+    if (session.providerCapturePromise) {
+      return session.providerCapturePromise;
+    }
+
+    const { providerId, baselineSessionIds, launchedAt, launchCommand } = session.pendingProviderCapture;
+    if (!shouldTrackProviderSession(providerId) || !launchedAt) {
+      return;
+    }
+
+    const provider = this.getProvider(providerId);
+    const ptyProcess = session.pty;
+    const baselineSet = new Set(baselineSessionIds || []);
+    const capturePromise = (async () => {
+      if (providerId === "codex") {
+        await this.captureCodexSessionId(session, ptyProcess, baselineSet, launchedAt);
+      } else if (providerId === "gemini") {
+        await this.captureGeminiSessionId(session, ptyProcess, baselineSet, launchedAt);
+      } else if (providerId === "opencode" && provider) {
+        await this.captureOpenCodeSessionId(
+          session,
+          { ...provider, launchCommand: launchCommand || provider.launchCommand },
+          ptyProcess,
+          baselineSet,
+          launchedAt,
+        );
+      }
+    })().finally(() => {
+      if (session.providerCapturePromise === capturePromise) {
+        session.providerCapturePromise = null;
+      }
+
+      if (!session.providerState?.sessionId) {
+        this.schedulePendingProviderCaptureRetry(session);
+      }
+    });
+
+    session.providerCapturePromise = capturePromise;
+    return capturePromise;
+  }
+
+  maybeRetryPendingProviderCaptureFromInput(session, input) {
+    if (!session?.pendingProviderCapture || session.providerState?.sessionId) {
+      return;
+    }
+
+    if (!/[\r\n]/.test(String(input ?? ""))) {
+      return;
+    }
+
+    this.clearPendingProviderCaptureRetry(session);
+    void this.beginPendingProviderCapture(session);
+  }
+
   async prepareProviderLaunch(session, provider, { restored = false } = {}) {
     if (!provider.launchCommand) {
+      this.setPendingProviderCapture(session, null);
       return {
         commandString: null,
         afterLaunch: null,
@@ -917,14 +1408,109 @@ export class SessionManager {
     }
 
     if (provider.id === "claude") {
-      return this.prepareClaudeLaunch(session, provider, { restored });
+      const launchCommand = getManagedProviderLaunchCommand(provider);
+      this.setPendingProviderCapture(session, null);
+      const fallbackSessionId = restored
+        ? listClaudeSessionsForCwd(session.cwd, this.env)[0]?.id || null
+        : null;
+      const sessionId = session.providerState?.sessionId || fallbackSessionId || (!restored ? session.id : null);
+
+      if (sessionId) {
+        this.updateProviderState(session, { sessionId });
+      }
+
+      const createCommand = buildShellCommand(launchCommand, ["--session-id", sessionId || session.id]);
+      return {
+        commandString: restored && sessionId
+          ? buildFallbackCommand([
+              buildShellCommand(launchCommand, ["--resume", sessionId]),
+              createCommand,
+            ])
+          : createCommand,
+        afterLaunch: null,
+      };
     }
 
     if (provider.id === "codex") {
-      return this.prepareCodexLaunch(session, provider, { restored });
+      const launchCommand = getManagedProviderLaunchCommand(provider);
+      const resumeLastCommand = buildShellCommand(launchCommand, ["resume", "--last"]);
+      const createCommand = buildShellCommand(launchCommand);
+      const knownSessions = matchCodexSessionsByCwd(
+        await listCodexTrackedSessions(this.userHomeDir),
+        session.cwd,
+      );
+
+      if (restored) {
+        this.setPendingProviderCapture(session, null);
+        const restoreSessionId = session.providerState?.sessionId || knownSessions[0]?.id || null;
+
+        if (restoreSessionId) {
+          this.updateProviderState(session, { sessionId: restoreSessionId });
+        }
+
+        const resumeCommand = restoreSessionId
+          ? buildShellCommand(launchCommand, ["resume", restoreSessionId])
+          : null;
+
+        return {
+          commandString: buildFallbackCommand([resumeCommand, resumeLastCommand, createCommand]),
+          afterLaunch: null,
+        };
+      }
+
+      const baselineSessionIds = new Set((await listCodexTrackedSessions(this.userHomeDir)).map((entry) => entry.id));
+      this.setPendingProviderCapture(session, provider.id, baselineSessionIds, null, provider.launchCommand);
+
+      return {
+        commandString: createCommand,
+        afterLaunch: async (ptyProcess, launchedAt) => {
+          if (session.pendingProviderCapture) {
+            session.pendingProviderCapture.launchedAt = launchedAt;
+            session.pendingProviderCapture.retryUntil = launchedAt + PROVIDER_SESSION_CAPTURE_RETRY_WINDOW_MS;
+          }
+          await this.beginPendingProviderCapture(session);
+        },
+      };
+    }
+
+    if (provider.id === "gemini") {
+      const knownSessions = await listGeminiSessions(session.cwd, this.userHomeDir);
+      const createCommand = buildShellCommand(provider.launchCommand);
+
+      if (restored) {
+        this.setPendingProviderCapture(session, null);
+        const restoreSessionId = session.providerState?.sessionId || knownSessions[0]?.id || null;
+        if (restoreSessionId) {
+          this.updateProviderState(session, { sessionId: restoreSessionId });
+        }
+
+        return {
+          commandString: buildFallbackCommand([
+            restoreSessionId ? buildShellCommand(provider.launchCommand, ["--resume", restoreSessionId]) : null,
+            buildShellCommand(provider.launchCommand, ["--resume", "latest"]),
+            createCommand,
+          ]),
+          afterLaunch: null,
+        };
+      }
+
+      const baselineSessionIds = new Set(knownSessions.map((entry) => entry.id));
+      this.setPendingProviderCapture(session, provider.id, baselineSessionIds, null, provider.launchCommand);
+
+      return {
+        commandString: createCommand,
+        afterLaunch: async (ptyProcess, launchedAt) => {
+          if (session.pendingProviderCapture) {
+            session.pendingProviderCapture.launchedAt = launchedAt;
+            session.pendingProviderCapture.retryUntil = launchedAt + PROVIDER_SESSION_CAPTURE_RETRY_WINDOW_MS;
+          }
+          await this.beginPendingProviderCapture(session);
+        },
+      };
     }
 
     if (provider.id !== "opencode") {
+      this.setPendingProviderCapture(session, null);
       return {
         commandString: buildShellCommand(provider.launchCommand),
         afterLaunch: null,
@@ -935,12 +1521,13 @@ export class SessionManager {
       await listOpenCodeSessions(
         provider.launchCommand,
         session.cwd,
-        buildSessionEnv(session.id, provider.id, this.cwd, this.providers, this.env),
+        buildSessionEnv(session.id, provider.id, this.providers, this.cwd, this.stateDir, this.env),
       ),
       session.cwd,
     );
 
     if (restored) {
+      this.setPendingProviderCapture(session, null);
       const restoreSessionId = session.providerState?.sessionId || knownSessions[0]?.id || null;
 
       if (restoreSessionId) {
@@ -953,11 +1540,16 @@ export class SessionManager {
     }
 
     const baselineSessionIds = new Set(knownSessions.map((entry) => entry.id));
+    this.setPendingProviderCapture(session, provider.id, baselineSessionIds, null, provider.launchCommand);
 
     return {
       commandString: buildShellCommand(provider.launchCommand),
       afterLaunch: async (ptyProcess, launchedAt) => {
-        await this.captureOpenCodeSessionId(session, provider, ptyProcess, baselineSessionIds, launchedAt);
+        if (session.pendingProviderCapture) {
+          session.pendingProviderCapture.launchedAt = launchedAt;
+          session.pendingProviderCapture.retryUntil = launchedAt + PROVIDER_SESSION_CAPTURE_RETRY_WINDOW_MS;
+        }
+        await this.beginPendingProviderCapture(session);
       },
     };
   }
@@ -1003,7 +1595,7 @@ export class SessionManager {
         await listOpenCodeSessions(
           provider.launchCommand,
           session.cwd,
-          buildSessionEnv(session.id, provider.id, this.cwd, this.providers, this.env),
+          buildSessionEnv(session.id, provider.id, this.providers, this.cwd, this.stateDir, this.env),
         ),
         session.cwd,
       );
@@ -1018,62 +1610,9 @@ export class SessionManager {
     }
   }
 
-  async prepareClaudeLaunch(session, provider, { restored = false } = {}) {
-    const fallbackSessionId = restored
-      ? listClaudeSessionsForCwd(session.cwd, this.env)[0]?.id || null
-      : null;
-    const sessionId = session.providerState?.sessionId || fallbackSessionId || (!restored ? session.id : null);
-
-    if (sessionId) {
-      this.updateProviderState(session, { sessionId });
-    }
-
-    if (restored && sessionId) {
-      return {
-        commandString: buildShellCommand(provider.launchCommand, ["--resume", sessionId]),
-        afterLaunch: null,
-      };
-    }
-
-    if (!restored && sessionId) {
-      return {
-        commandString: buildShellCommand(provider.launchCommand, ["--session-id", sessionId]),
-        afterLaunch: null,
-      };
-    }
-
-    return {
-      commandString: buildShellCommand(provider.launchCommand),
-      afterLaunch: null,
-    };
-  }
-
-  async prepareCodexLaunch(session, provider, { restored = false } = {}) {
-    const knownSessions = matchCodexSessionsByCwd(listCodexSessions(this.env), session.cwd);
-
-    if (restored) {
-      const restoreSessionId = session.providerState?.sessionId || knownSessions[0]?.id || null;
-
-      if (restoreSessionId) {
-        this.updateProviderState(session, { sessionId: restoreSessionId });
-        return {
-          commandString: buildShellCommand(provider.launchCommand, ["resume", restoreSessionId]),
-          afterLaunch: null,
-        };
-      }
-    }
-
-    const baselineSessionIds = new Set(knownSessions.map((entry) => entry.id));
-
-    return {
-      commandString: buildShellCommand(provider.launchCommand),
-      afterLaunch: async (ptyProcess, launchedAt) => {
-        await this.captureCodexSessionId(session, ptyProcess, baselineSessionIds, launchedAt);
-      },
-    };
-  }
-
   async captureCodexSessionId(session, ptyProcess, baselineSessionIds, launchedAt) {
+    const codexRootDir = getCodexRootDir(this.userHomeDir);
+
     for (let attempt = 0; attempt < PROVIDER_SESSION_CAPTURE_ATTEMPTS; attempt += 1) {
       if (attempt > 0) {
         await delay(PROVIDER_SESSION_CAPTURE_INTERVAL_MS);
@@ -1083,8 +1622,56 @@ export class SessionManager {
         return;
       }
 
-      const matchingSessions = matchCodexSessionsByCwd(listCodexSessions(this.env), session.cwd);
-      const candidate = pickTrackedSession(matchingSessions, baselineSessionIds, launchedAt);
+      const indexedSessions = await listCodexTrackedSessions(this.userHomeDir);
+      const freshCandidates = indexedSessions.filter((entry) => !baselineSessionIds.has(entry.id));
+      const fallbackCandidates = indexedSessions.filter(
+        (entry) => Number(entry?.updated || 0) >= launchedAt - PROVIDER_SESSION_LOOKBACK_MS,
+      );
+      const candidateEntries = freshCandidates.length > 0 ? freshCandidates : fallbackCandidates;
+
+      if (candidateEntries.length === 0) {
+        continue;
+      }
+
+      for (const candidate of candidateEntries) {
+        if (candidate.cwd && normalizeSessionPath(candidate.cwd) === normalizeSessionPath(session.cwd)) {
+          this.updateProviderState(session, { sessionId: candidate.id });
+          return;
+        }
+
+        const sessionMeta = await findCodexSessionMeta(codexRootDir, candidate.id, candidate.updated || launchedAt);
+        if (!sessionMeta?.id || sessionMeta.cwd !== normalizeSessionPath(session.cwd)) {
+          continue;
+        }
+
+        this.updateProviderState(session, { sessionId: sessionMeta.id });
+        return;
+      }
+
+      // Codex can write the prompt history entry before its session transcript lands on disk.
+      // When exactly one brand-new session id appeared after launch, treat it as the active thread.
+      if (freshCandidates.length === 1 && candidateEntries.length === 1) {
+        this.updateProviderState(session, { sessionId: freshCandidates[0].id });
+        return;
+      }
+    }
+  }
+
+  async captureGeminiSessionId(session, ptyProcess, baselineSessionIds, launchedAt) {
+    for (let attempt = 0; attempt < PROVIDER_SESSION_CAPTURE_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) {
+        await delay(PROVIDER_SESSION_CAPTURE_INTERVAL_MS);
+      }
+
+      if (session.status !== "running" || session.pty !== ptyProcess) {
+        return;
+      }
+
+      const candidate = pickTrackedSession(
+        await listGeminiSessions(session.cwd, this.userHomeDir),
+        baselineSessionIds,
+        launchedAt,
+      );
 
       if (!candidate?.id) {
         continue;
@@ -1101,7 +1688,7 @@ export class SessionManager {
 
     const ptyProcess = pty.spawn(session.shell, getShellArgs(session.shell), {
       cwd: sessionCwd,
-      env: buildSessionEnv(session.id, provider.id, this.cwd, this.providers, this.env),
+      env: buildSessionEnv(session.id, provider.id, this.providers, this.cwd, this.stateDir, this.env),
       name: "xterm-256color",
       cols: session.cols,
       rows: session.rows,
@@ -1151,6 +1738,7 @@ export class SessionManager {
 
     ptyProcess.onExit(({ exitCode, signal }) => {
       session.pty = null;
+      this.clearPendingProviderCaptureRetry(session);
 
       if (session.skipExitHandling) {
         this.agentRunTracker?.forgetSession(session.id);
@@ -1186,7 +1774,7 @@ export class SessionManager {
       id: snapshot.id || randomUUID(),
       providerId: snapshot.providerId,
       providerLabel: snapshot.providerLabel || snapshot.providerId || "Unknown Provider",
-      name: normalizeSessionName(snapshot.name) || snapshot.providerLabel || "Restored Session",
+      name: snapshot.name?.trim() || snapshot.providerLabel || "Restored Session",
       shell: snapshot.shell || process.env.SHELL || "/bin/zsh",
       cwd: snapshot.cwd || this.cwd,
       createdAt: snapshot.createdAt || new Date().toISOString(),
@@ -1209,6 +1797,7 @@ export class SessionManager {
     }
 
     const provider = this.getProvider(session.providerId);
+    session.autoRenameEnabled = shouldAutoRenameFromPrompt(provider, session.name, true);
     if (!provider) {
       this.markSessionRestoreFailure(
         session,
