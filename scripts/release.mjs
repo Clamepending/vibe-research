@@ -13,11 +13,12 @@ const allowNonMain = process.argv.includes("--allow-non-main");
 
 function run(command, args, { capture = false, allowFailure = false } = {}) {
   try {
-    return execFileSync(command, args, {
+    const output = execFileSync(command, args, {
       cwd: rootDir,
       encoding: "utf8",
       stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
-    }).trim();
+    });
+    return typeof output === "string" ? output.trim() : "";
   } catch (error) {
     if (allowFailure) {
       return "";
