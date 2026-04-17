@@ -54,7 +54,10 @@ npm run release:major
 
 Both paths bump `package.json`, commit `Release vX.Y.Z`, create an annotated git tag, push `main` and the tag, then publish a GitHub Release with generated notes. The in-app updater checks the latest GitHub Release first and only falls back to `main` if no release exists yet.
 
-You can access any localhost ports by clicking on it in the sidebar.
+You can access local app ports from the sidebar. Remote Vibes prefers direct
+`http://<tailscale-ip>:<port>/` links when a service is already listening on all
+interfaces, offers an `expose` button for localhost-only services via Tailscale
+Serve, and keeps `/proxy/<port>/` as the fallback.
 
 Example thing I did was text my agent to fix and [pretrain GPT2-small on a 4090!](https://x.com/clamepending/status/2039185482639462763?s=20)
 

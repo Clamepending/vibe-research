@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { pickPreferredUrl } from "./access-url.js";
+import { buildPortUrlFromBase, getTailscaleUrl, pickPreferredUrl } from "./access-url.js";
 import { AgentPromptStore } from "./agent-prompt-store.js";
 import { AgentRunStore } from "./agent-run-store.js";
 import { GpuHistoryStore } from "./gpu-history-store.js";
@@ -16,6 +16,7 @@ import { PortAliasStore } from "./port-alias-store.js";
 import { listListeningPorts } from "./ports.js";
 import { SessionManager } from "./session-manager.js";
 import { getRemoteVibesStateDir } from "./state-paths.js";
+import { TailscaleServeManager } from "./tailscale-serve.js";
 import { UpdateManager } from "./update-manager.js";
 import { detectProviders, getDefaultProviderId } from "./providers.js";
 import { listKnowledgeBase, readKnowledgeBaseNote } from "./knowledge-base.js";
@@ -181,12 +182,65 @@ async function getAccessUrls(host, port) {
   return urls;
 }
 
+function normalizeHost(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/, "$1");
+}
+
+function isLoopbackHost(value) {
+  const host = normalizeHost(value);
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+function isAllInterfacesHost(value) {
+  const host = normalizeHost(value);
+  return host === "0.0.0.0" || host === "::" || host === "*";
+}
+
+function isTailscaleHost(value) {
+  const host = normalizeHost(value);
+  const match = host.match(/^100\.(\d{1,3})\./);
+  return Boolean(match && Number(match[1]) >= 64 && Number(match[1]) <= 127);
+}
+
+function getPortHosts(portEntry) {
+  return Array.isArray(portEntry.hosts) ? portEntry.hosts : [];
+}
+
+function isLocalOnlyPort(portEntry) {
+  const hosts = getPortHosts(portEntry);
+  return hosts.length > 0 && hosts.every((host) => isLoopbackHost(host));
+}
+
+function isDirectlyReachablePort(portEntry, tailscaleBaseUrl) {
+  const hosts = getPortHosts(portEntry);
+  let tailscaleHost = "";
+
+  try {
+    tailscaleHost = normalizeHost(new URL(tailscaleBaseUrl).hostname);
+  } catch {
+    tailscaleHost = "";
+  }
+
+  return hosts.some(
+    (host) =>
+      isAllInterfacesHost(host) ||
+      isTailscaleHost(host) ||
+      (tailscaleHost && normalizeHost(host) === tailscaleHost),
+  );
+}
+
 export async function createRemoteVibesApp({
   host = process.env.REMOTE_VIBES_HOST || "0.0.0.0",
   port = Number(process.env.REMOTE_VIBES_PORT || 4123),
   cwd = process.cwd(),
   stateDir = getRemoteVibesStateDir({ cwd }),
   persistSessions = true,
+  listPorts = listListeningPorts,
+  accessUrlsProvider = getAccessUrls,
+  tailscaleServeManager = new TailscaleServeManager(),
   onTerminate = null,
   updateManager = new UpdateManager({ cwd, stateDir, port }),
 } = {}) {
@@ -233,9 +287,86 @@ export async function createRemoteVibesApp({
     return gpu;
   }
 
+  async function readTailscaleServeStatus({ refresh = false } = {}) {
+    if (!tailscaleServeManager || typeof tailscaleServeManager.getStatus !== "function") {
+      return {
+        available: false,
+        config: null,
+        enabled: false,
+        reason: "Tailscale Serve is not configured.",
+      };
+    }
+
+    try {
+      return await tailscaleServeManager.getStatus({ refresh });
+    } catch (error) {
+      return {
+        available: false,
+        config: null,
+        enabled: false,
+        reason: error.message || "Could not read Tailscale Serve status.",
+      };
+    }
+  }
+
+  async function getTailscalePortStatus(port, serveStatus) {
+    if (!tailscaleServeManager || typeof tailscaleServeManager.getPortStatus !== "function") {
+      return {
+        available: false,
+        enabled: false,
+        port,
+      };
+    }
+
+    try {
+      return await tailscaleServeManager.getPortStatus(port, serveStatus);
+    } catch (error) {
+      return {
+        available: false,
+        enabled: false,
+        port,
+        reason: error.message || "Could not read Tailscale Serve port status.",
+      };
+    }
+  }
+
+  async function decoratePortForAccess(portEntry, serveStatus) {
+    const tailscaleBaseUrl = getTailscaleUrl(urls);
+    const tailscaleUrl = buildPortUrlFromBase(tailscaleBaseUrl, portEntry.port);
+    const localOnly = isLocalOnlyPort(portEntry);
+    const directReachable = Boolean(tailscaleUrl && isDirectlyReachablePort(portEntry, tailscaleBaseUrl));
+    const tailscalePortStatus = await getTailscalePortStatus(portEntry.port, serveStatus);
+    const exposedWithTailscale = Boolean(tailscaleUrl && tailscalePortStatus.enabled);
+    const directUrl = directReachable ? tailscaleUrl : null;
+    const preferredUrl = directUrl || (exposedWithTailscale ? tailscaleUrl : null);
+    const preferredAccess = directUrl
+      ? "direct"
+      : exposedWithTailscale
+        ? "tailscale-serve"
+        : "proxy";
+
+    return {
+      ...portEntry,
+      canExposeWithTailscale: Boolean(
+        tailscaleUrl && localOnly && serveStatus.available && !directReachable && !exposedWithTailscale,
+      ),
+      directUrl,
+      exposedWithTailscale,
+      localOnly,
+      preferredAccess,
+      preferredUrl,
+      tailscaleServeAvailable: Boolean(serveStatus.available),
+      tailscaleServeReason: serveStatus.reason || tailscalePortStatus.reason || null,
+      tailscaleUrl,
+    };
+  }
+
   async function listNamedPorts() {
-    const ports = await listListeningPorts({ excludePorts: exposedPort ? [exposedPort] : [] });
-    return portAliasStore.apply(ports);
+    const ports = await listPorts({ excludePorts: exposedPort ? [exposedPort] : [] });
+    const namedPorts = portAliasStore.apply(ports);
+    const serveStatus = await readTailscaleServeStatus();
+
+    return Promise.all(namedPorts.map((entry) => decoratePortForAccess(entry, serveStatus)));
   }
 
   app.use(express.json());
@@ -304,6 +435,68 @@ export async function createRemoteVibesApp({
       response.json({ port: renamedPort });
     } catch (error) {
       response.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/ports/:port/tailscale", async (request, response) => {
+    try {
+      const port = normalizePort(request.params.port);
+
+      if (!port) {
+        response.status(400).json({ error: "Invalid port." });
+        return;
+      }
+
+      const ports = await listNamedPorts();
+      const currentPort = ports.find((entry) => entry.port === port);
+
+      if (!currentPort) {
+        response.status(404).json({ error: "Port not found." });
+        return;
+      }
+
+      if (!currentPort.tailscaleUrl) {
+        response.status(400).json({ error: "No Tailscale address is available for this Remote Vibes instance." });
+        return;
+      }
+
+      if (currentPort.directUrl || currentPort.exposedWithTailscale) {
+        response.json({
+          ok: true,
+          port: currentPort,
+          tailscale: {
+            available: true,
+            enabled: true,
+            port,
+          },
+        });
+        return;
+      }
+
+      if (!currentPort.canExposeWithTailscale) {
+        response.status(400).json({
+          error:
+            currentPort.tailscaleServeReason ||
+            "This port is not eligible for Tailscale Serve exposure.",
+        });
+        return;
+      }
+
+      if (!tailscaleServeManager || typeof tailscaleServeManager.exposePort !== "function") {
+        response.status(400).json({ error: "Tailscale Serve is not configured." });
+        return;
+      }
+
+      const tailscale = await tailscaleServeManager.exposePort(port);
+      const refreshedPorts = await listNamedPorts();
+
+      response.json({
+        ok: true,
+        port: refreshedPorts.find((entry) => entry.port === port) ?? currentPort,
+        tailscale,
+      });
+    } catch (error) {
+      response.status(400).json({ error: error.message || "Could not expose port with Tailscale Serve." });
     }
   });
 
@@ -555,7 +748,7 @@ export async function createRemoteVibesApp({
       : port;
   exposedPort = resolvedPort;
   updateManager.setRuntime?.({ port: resolvedPort });
-  urls = await getAccessUrls(host, resolvedPort);
+  urls = await accessUrlsProvider(host, resolvedPort);
   preferredUrl = pickPreferredUrl(urls)?.url ?? urls[0]?.url ?? null;
   await writeServerInfo(stateDir, {
     pid: process.pid,

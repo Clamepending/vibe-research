@@ -1219,8 +1219,7 @@ textarea {
 }
 
 .port-card {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: stretch;
   text-decoration: none;
   color: inherit;
 }
@@ -1238,14 +1237,38 @@ textarea {
   text-decoration: none;
 }
 
-.port-rename-button {
+.port-access-pill {
+  justify-self: start;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(106, 227, 198, 0.12);
+  color: var(--accent);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.port-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.port-action-button {
   min-height: 32px;
   padding: 0 10px;
   border-radius: 10px;
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.72rem;
   letter-spacing: 0.03em;
+  text-decoration: none;
   text-transform: uppercase;
+}
+
+.port-primary-button {
+  background: rgba(106, 227, 198, 0.16);
+  color: var(--accent);
 }
 
 .file-root-form {

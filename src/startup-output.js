@@ -47,8 +47,10 @@ export function buildStartupOutput(config) {
     lines.push(`- ${provider.label}: ${provider.available ? "available" : "missing"}`);
   }
 
-  lines.push("Port proxy:");
-  lines.push("- /proxy/<port>/");
+  lines.push("Port access:");
+  lines.push("- all-interface ports open directly at http://<tailscale-ip>:<port>/");
+  lines.push("- localhost-only ports can be exposed with Tailscale Serve from the ports panel");
+  lines.push("- proxy fallback: /proxy/<port>/");
   lines.push("Agent browser helper:");
   lines.push("- rv-browser screenshot 4173");
   lines.push("- rv-browser run 4173 --steps-file eval-steps.json --output final.png");

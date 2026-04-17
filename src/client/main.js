@@ -332,6 +332,43 @@ function getPortMeta(port) {
   return parts.join(" · ");
 }
 
+function getPortProxyUrl(port) {
+  const proxyPath = port?.proxyPath || `/proxy/${port?.port}/`;
+  return `${getAppBaseUrl()}${proxyPath}`;
+}
+
+function getPortPrimaryUrl(port) {
+  return port?.preferredUrl || getPortProxyUrl(port);
+}
+
+function getPortAccessLabel(port) {
+  if (port?.preferredAccess === "direct") {
+    return "open direct";
+  }
+
+  if (port?.preferredAccess === "tailscale-serve") {
+    return "open tailnet";
+  }
+
+  return "open proxy";
+}
+
+function getPortAccessHint(port) {
+  if (port?.preferredAccess === "direct") {
+    return "tailnet ip";
+  }
+
+  if (port?.preferredAccess === "tailscale-serve") {
+    return "tailscale serve";
+  }
+
+  if (port?.canExposeWithTailscale) {
+    return "localhost only";
+  }
+
+  return "remote vibes proxy";
+}
+
 function setMobileSidebar(nextSidebar) {
   state.mobileSidebar = nextSidebar;
   const leftSidebar = document.querySelector('[data-sidebar-panel="left"]');
@@ -2253,17 +2290,30 @@ function renderPortCards() {
   }
 
   return state.ports
-    .map(
-      (port) => `
+    .map((port) => {
+      const primaryUrl = getPortPrimaryUrl(port);
+      const proxyUrl = getPortProxyUrl(port);
+      const showProxyLink = port.preferredAccess && port.preferredAccess !== "proxy";
+      const exposeButton = port.canExposeWithTailscale
+        ? `<button class="ghost-button port-action-button" type="button" data-expose-tailscale-port="${escapeHtml(port.port)}">expose</button>`
+        : "";
+
+      return `
         <article class="port-card">
-          <a class="port-link" href="${escapeHtml(`${getAppBaseUrl()}${port.proxyPath}`)}" target="_blank" rel="noreferrer">
+          <div class="port-link">
             <span class="port-number">${escapeHtml(getPortDisplayName(port))}</span>
             <span class="port-meta">${escapeHtml(getPortMeta(port))}</span>
-          </a>
-          <button class="ghost-button port-rename-button" type="button" data-rename-port="${escapeHtml(port.port)}">edit</button>
+            <span class="port-access-pill">${escapeHtml(getPortAccessHint(port))}</span>
+          </div>
+          <div class="port-action-row">
+            <a class="ghost-button port-action-button port-primary-button" href="${escapeHtml(primaryUrl)}" target="_blank" rel="noreferrer">${escapeHtml(getPortAccessLabel(port))}</a>
+            ${showProxyLink ? `<a class="ghost-button port-action-button" href="${escapeHtml(proxyUrl)}" target="_blank" rel="noreferrer">proxy</a>` : ""}
+            ${exposeButton}
+            <button class="ghost-button port-action-button port-rename-button" type="button" data-rename-port="${escapeHtml(port.port)}">edit</button>
+          </div>
         </article>
-      `,
-    )
+      `;
+    })
     .join("");
 }
 
@@ -3071,6 +3121,37 @@ function bindGpuNavigationEvents() {
 }
 
 function bindPortEvents() {
+  document.querySelectorAll("[data-expose-tailscale-port]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const portNumber = Number(button.getAttribute("data-expose-tailscale-port"));
+      const previousLabel = button.textContent;
+      button.disabled = true;
+      button.textContent = "exposing...";
+
+      try {
+        const payload = await fetchJson(`/api/ports/${portNumber}/tailscale`, {
+          method: "POST",
+        });
+
+        if (payload.port) {
+          updatePort(payload.port);
+        }
+
+        refreshShellUi({ sessions: false, ports: true, files: false });
+
+        const nextUrl = payload.port?.preferredUrl || payload.port?.tailscaleUrl;
+        if (nextUrl) {
+          window.open(nextUrl, "_blank", "noopener,noreferrer");
+        }
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = previousLabel;
+        window.alert(error.message);
+      }
+    });
+  });
+
   document.querySelectorAll("[data-rename-port]").forEach((button) => {
     button.addEventListener("click", async (event) => {
       event.preventDefault();

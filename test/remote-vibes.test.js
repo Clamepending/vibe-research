@@ -845,6 +845,105 @@ test("ports are discoverable and proxy through localhost", async () => {
   }
 });
 
+test("ports prefer direct tailnet URLs and can expose localhost-only ports with Tailscale Serve", async () => {
+  const workspaceDir = await createTempWorkspace("remote-vibes-tailscale-ports-");
+  const exposedPorts = new Set();
+  const fakeTailscaleServeManager = {
+    async getStatus() {
+      return {
+        available: true,
+        config: {
+          TCP: Object.fromEntries(
+            Array.from(exposedPorts).map((port) => [
+              String(port),
+              { target: `tcp://localhost:${port}` },
+            ]),
+          ),
+        },
+        enabled: exposedPorts.size > 0,
+      };
+    },
+    async getPortStatus(port) {
+      return {
+        available: true,
+        config: null,
+        enabled: exposedPorts.has(Number(port)),
+        port: Number(port),
+      };
+    },
+    async exposePort(port) {
+      exposedPorts.add(Number(port));
+      return {
+        available: true,
+        enabled: true,
+        port: Number(port),
+      };
+    },
+  };
+  const listPorts = async () => [
+    {
+      command: "vite",
+      hosts: ["0.0.0.0"],
+      pid: 111,
+      port: 3100,
+      previewStatusCode: 200,
+      proxyPath: "/proxy/3100/",
+    },
+    {
+      command: "gradio",
+      hosts: ["127.0.0.1"],
+      pid: 222,
+      port: 3200,
+      previewStatusCode: 200,
+      proxyPath: "/proxy/3200/",
+    },
+  ];
+  const accessUrlsProvider = async (_host, remoteVibesPort) => [
+    { label: "Local", url: `http://localhost:${remoteVibesPort}` },
+    { label: "Tailscale", url: `http://100.64.0.5:${remoteVibesPort}` },
+  ];
+
+  const { app, baseUrl } = await startApp({
+    accessUrlsProvider,
+    cwd: workspaceDir,
+    listPorts,
+    tailscaleServeManager: fakeTailscaleServeManager,
+  });
+
+  try {
+    const portsResponse = await fetch(`${baseUrl}/api/ports`);
+    assert.equal(portsResponse.status, 200);
+    const portsPayload = await portsResponse.json();
+    const directPort = portsPayload.ports.find((entry) => entry.port === 3100);
+    const localhostPort = portsPayload.ports.find((entry) => entry.port === 3200);
+
+    assert.equal(directPort.directUrl, "http://100.64.0.5:3100/");
+    assert.equal(directPort.preferredAccess, "direct");
+    assert.equal(directPort.preferredUrl, "http://100.64.0.5:3100/");
+    assert.equal(directPort.canExposeWithTailscale, false);
+
+    assert.equal(localhostPort.directUrl, null);
+    assert.equal(localhostPort.localOnly, true);
+    assert.equal(localhostPort.canExposeWithTailscale, true);
+    assert.equal(localhostPort.preferredAccess, "proxy");
+    assert.equal(localhostPort.tailscaleUrl, "http://100.64.0.5:3200/");
+
+    const exposeResponse = await fetch(`${baseUrl}/api/ports/3200/tailscale`, {
+      method: "POST",
+    });
+    assert.equal(exposeResponse.status, 200);
+    const exposePayload = await exposeResponse.json();
+
+    assert.equal(exposePayload.tailscale.enabled, true);
+    assert.equal(exposePayload.port.exposedWithTailscale, true);
+    assert.equal(exposePayload.port.preferredAccess, "tailscale-serve");
+    assert.equal(exposePayload.port.preferredUrl, "http://100.64.0.5:3200/");
+  } finally {
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("rejects an invalid working directory", async () => {
   const { app, baseUrl } = await startApp();
 
