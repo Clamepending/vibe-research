@@ -731,6 +731,12 @@ function applyFolderPickerSelection() {
     input.value = selectedPath;
   }
 
+  if (state.folderPicker.target === "wiki") {
+    state.settings.wikiPath = selectedPath || state.settings.wikiPath;
+  } else {
+    state.defaultCwd = selectedPath || state.defaultCwd;
+  }
+
   state.folderPicker.open = false;
   renderShell();
 }

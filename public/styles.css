@@ -256,6 +256,7 @@ textarea {
 .inline-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 56px;
+  gap: 8px;
 }
 
 .folder-input-row {
