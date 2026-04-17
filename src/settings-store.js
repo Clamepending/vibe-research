@@ -40,6 +40,27 @@ function normalizeIntervalMs(value) {
     : DEFAULT_WIKI_BACKUP_INTERVAL_MS;
 }
 
+function normalizeGitRemoteName(value) {
+  const remoteName = String(value || "origin").trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remoteName) ? remoteName : "origin";
+}
+
+function normalizeGitBranchName(value) {
+  const branchName = String(value || "main").trim();
+  if (
+    !branchName ||
+    branchName.startsWith("-") ||
+    branchName.endsWith("/") ||
+    branchName.includes("..") ||
+    branchName.includes("@{") ||
+    /[\s~^:?*[\]\\]/.test(branchName)
+  ) {
+    return "main";
+  }
+
+  return branchName;
+}
+
 async function writeAtomic(filePath, payload) {
   const tempPath = `${filePath}.${randomUUID()}.tmp`;
   await mkdir(path.dirname(filePath), { recursive: true });
@@ -81,6 +102,10 @@ export class SettingsStore {
   buildDefaults() {
     return {
       wikiGitBackupEnabled: true,
+      wikiGitRemoteBranch: "main",
+      wikiGitRemoteEnabled: false,
+      wikiGitRemoteName: "origin",
+      wikiGitRemoteUrl: "",
       wikiBackupIntervalMs: this.defaultBackupIntervalMs,
       wikiPath: path.join(this.stateDir, "wiki"),
     };
@@ -101,6 +126,15 @@ export class SettingsStore {
         payload.wikiGitBackupEnabled,
         defaults.wikiGitBackupEnabled,
       ),
+      wikiGitRemoteBranch: normalizeGitBranchName(
+        payload.wikiGitRemoteBranch ?? defaults.wikiGitRemoteBranch,
+      ),
+      wikiGitRemoteEnabled: normalizeBoolean(
+        payload.wikiGitRemoteEnabled,
+        defaults.wikiGitRemoteEnabled,
+      ),
+      wikiGitRemoteName: normalizeGitRemoteName(payload.wikiGitRemoteName ?? defaults.wikiGitRemoteName),
+      wikiGitRemoteUrl: String(payload.wikiGitRemoteUrl || "").trim(),
       wikiBackupIntervalMs: normalizeIntervalMs(
         payload.wikiBackupIntervalMs ?? defaults.wikiBackupIntervalMs,
       ),

@@ -47,6 +47,24 @@ async function createTempWorkspace(prefix) {
   return mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
+async function waitForWikiBackupRun(baseUrl, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const response = await fetch(`${baseUrl}/api/settings`);
+    const payload = await response.json();
+    const backup = payload.settings?.wikiBackup;
+
+    if (backup?.lastRunAt) {
+      return backup;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new Error("Timed out waiting for wiki backup to finish");
+}
+
 async function writePersistedSessions(workspaceDir, sessions) {
   const stateDir = path.join(workspaceDir, ".remote-vibes");
   await mkdir(stateDir, { recursive: true });
@@ -123,6 +141,10 @@ test("state is available without authentication", async () => {
     assert.equal(state.agentPrompt.wikiRoot, ".remote-vibes/wiki");
     assert.ok(Array.isArray(state.agentPrompt.targets));
     assert.equal(state.settings.wikiGitBackupEnabled, true);
+    assert.equal(state.settings.wikiGitRemoteEnabled, false);
+    assert.equal(state.settings.wikiGitRemoteBranch, "main");
+    assert.equal(state.settings.wikiGitRemoteName, "origin");
+    assert.equal(state.settings.wikiGitRemoteUrl, "");
     assert.equal(state.settings.wikiRelativeRoot, ".remote-vibes/wiki");
     assert.equal(typeof state.settings.wikiPath, "string");
     assert.equal(state.settings.wikiBackup.enabled, true);
@@ -521,6 +543,56 @@ test("wiki backup endpoint initializes git and commits wiki changes", async () =
     const { stdout } = await execFileAsync("git", ["-C", wikiDir, "log", "--oneline"]);
     assert.match(stdout, /Remote Vibes wiki backup/);
     assert.ok(stdout.trim().split("\n").length >= 2);
+  } finally {
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("wiki backup endpoint can push to a configured private remote", async () => {
+  const workspaceDir = await createTempWorkspace("remote-vibes-wiki-remote-backup-");
+  const remoteDir = path.join(workspaceDir, "private-wiki.git");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+
+  try {
+    await execFileAsync("git", ["init", "--bare", remoteDir]);
+
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        wikiGitRemoteBranch: "main",
+        wikiGitRemoteEnabled: true,
+        wikiGitRemoteUrl: remoteDir,
+      }),
+    });
+    assert.equal(settingsResponse.status, 200);
+    const settingsPayload = await settingsResponse.json();
+    assert.equal(settingsPayload.settings.wikiGitRemoteEnabled, true);
+    assert.equal(settingsPayload.settings.wikiGitRemoteUrl, remoteDir);
+
+    await waitForWikiBackupRun(baseUrl);
+    await writeFile(path.join(wikiDir, "private-note.md"), "# Private note\n", "utf8");
+    const backupResponse = await fetch(`${baseUrl}/api/wiki/backup`, {
+      method: "POST",
+    });
+    assert.equal(backupResponse.status, 200);
+    const backupPayload = await backupResponse.json();
+    assert.equal(backupPayload.backup.lastStatus, "committed");
+    assert.equal(backupPayload.backup.lastPushStatus, "pushed");
+    assert.equal(backupPayload.backup.remoteUrlConfigured, true);
+
+    const { stdout } = await execFileAsync("git", [
+      "--git-dir",
+      remoteDir,
+      "log",
+      "--oneline",
+      "refs/heads/main",
+    ]);
+    assert.match(stdout, /Remote Vibes wiki backup/);
   } finally {
     await app.close();
     await rm(workspaceDir, { recursive: true, force: true });

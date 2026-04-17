@@ -255,6 +255,10 @@ export async function createRemoteVibesApp({
   const wikiBackupService = new WikiBackupService({
     enabled: settingsStore.settings.wikiGitBackupEnabled,
     intervalMs: settingsStore.settings.wikiBackupIntervalMs,
+    remoteBranch: settingsStore.settings.wikiGitRemoteBranch,
+    remoteEnabled: settingsStore.settings.wikiGitRemoteEnabled,
+    remoteName: settingsStore.settings.wikiGitRemoteName,
+    remoteUrl: settingsStore.settings.wikiGitRemoteUrl,
     wikiPath: settingsStore.settings.wikiPath,
   });
   const sessionManager = new SessionManager({
@@ -533,6 +537,10 @@ export async function createRemoteVibesApp({
     try {
       const settings = await settingsStore.update({
         wikiGitBackupEnabled: request.body?.wikiGitBackupEnabled,
+        wikiGitRemoteBranch: request.body?.wikiGitRemoteBranch,
+        wikiGitRemoteEnabled: request.body?.wikiGitRemoteEnabled,
+        wikiGitRemoteName: request.body?.wikiGitRemoteName,
+        wikiGitRemoteUrl: request.body?.wikiGitRemoteUrl,
         wikiPath: request.body?.wikiPath,
       });
 
@@ -542,6 +550,10 @@ export async function createRemoteVibesApp({
       wikiBackupService.setConfig({
         enabled: settings.wikiGitBackupEnabled,
         intervalMs: settings.wikiBackupIntervalMs,
+        remoteBranch: settings.wikiGitRemoteBranch,
+        remoteEnabled: settings.wikiGitRemoteEnabled,
+        remoteName: settings.wikiGitRemoteName,
+        remoteUrl: settings.wikiGitRemoteUrl,
         wikiPath: settings.wikiPath,
       });
       wikiBackupService.start();

@@ -119,6 +119,10 @@ const state = {
     wikiPath: "",
     wikiRelativeRoot: ".remote-vibes/wiki",
     wikiGitBackupEnabled: true,
+    wikiGitRemoteBranch: "main",
+    wikiGitRemoteEnabled: false,
+    wikiGitRemoteName: "origin",
+    wikiGitRemoteUrl: "",
     wikiBackupIntervalMs: 10 * 60 * 1000,
     wikiBackup: null,
   },
@@ -699,13 +703,33 @@ function getFolderPickerTargetInput() {
 
 function getWikiBackupStatusText() {
   const backup = state.settings.wikiBackup;
+  const remoteEnabled = state.settings.wikiGitRemoteEnabled;
 
   if (!state.settings.wikiGitBackupEnabled) {
     return "git backup disabled";
   }
 
+  if (remoteEnabled && !state.settings.wikiGitRemoteUrl && !backup?.remoteUrlConfigured) {
+    return "private remote push enabled; add a remote URL";
+  }
+
+  if (remoteEnabled && backup?.lastPushStatus === "error") {
+    return backup.lastPushMessage || "private remote push failed";
+  }
+
+  if (remoteEnabled && backup?.lastPushStatus === "pushed") {
+    const remoteLabel = `${backup.remoteName || state.settings.wikiGitRemoteName || "origin"}/${
+      backup.remoteBranch || state.settings.wikiGitRemoteBranch || "main"
+    }`;
+    return backup.lastCommit ? `backup ${backup.lastCommit} pushed to ${remoteLabel}` : `wiki pushed to ${remoteLabel}`;
+  }
+
+  if (remoteEnabled && backup?.lastPushStatus === "skipped") {
+    return backup.lastPushMessage || "private remote push skipped";
+  }
+
   if (!backup?.lastStatus || backup.lastStatus === "idle") {
-    return "git backup enabled";
+    return remoteEnabled ? "git backup + private remote push enabled" : "git backup enabled";
   }
 
   if (backup.lastStatus === "committed") {
@@ -2648,6 +2672,37 @@ function renderShell() {
                 <input type="checkbox" name="wikiGitBackupEnabled" ${state.settings.wikiGitBackupEnabled ? "checked" : ""} />
                 <span>git backup every 10 min</span>
               </label>
+              <label class="checkbox-row">
+                <input type="checkbox" name="wikiGitRemoteEnabled" ${state.settings.wikiGitRemoteEnabled ? "checked" : ""} />
+                <span>push backups to a private git remote</span>
+              </label>
+              <label class="field-label" for="wiki-git-remote-url">private remote URL</label>
+              <input
+                class="file-root-input"
+                id="wiki-git-remote-url"
+                name="wikiGitRemoteUrl"
+                type="text"
+                value="${escapeHtml(state.settings.wikiGitRemoteUrl || "")}"
+                placeholder="git@github.com:you/private-mac-brain.git"
+                autocomplete="off"
+                autocorrect="off"
+                autocapitalize="none"
+                spellcheck="false"
+              />
+              <label class="field-label" for="wiki-git-remote-branch">remote branch</label>
+              <input
+                class="file-root-input"
+                id="wiki-git-remote-branch"
+                name="wikiGitRemoteBranch"
+                type="text"
+                value="${escapeHtml(state.settings.wikiGitRemoteBranch || "main")}"
+                placeholder="main"
+                autocomplete="off"
+                autocorrect="off"
+                autocapitalize="none"
+                spellcheck="false"
+              />
+              <input type="hidden" name="wikiGitRemoteName" value="${escapeHtml(state.settings.wikiGitRemoteName || "origin")}" />
               <button class="primary-button settings-save-button" type="submit">save settings</button>
               <div class="settings-status">${escapeHtml(getWikiBackupStatusText())}</div>
             </form>
@@ -3645,6 +3700,14 @@ function applySettingsState(payload) {
       settings.wikiGitBackupEnabled === undefined
         ? state.settings.wikiGitBackupEnabled
         : Boolean(settings.wikiGitBackupEnabled),
+    wikiGitRemoteBranch: settings.wikiGitRemoteBranch || state.settings.wikiGitRemoteBranch || "main",
+    wikiGitRemoteEnabled:
+      settings.wikiGitRemoteEnabled === undefined
+        ? state.settings.wikiGitRemoteEnabled
+        : Boolean(settings.wikiGitRemoteEnabled),
+    wikiGitRemoteName: settings.wikiGitRemoteName || state.settings.wikiGitRemoteName || "origin",
+    wikiGitRemoteUrl:
+      settings.wikiGitRemoteUrl === undefined ? state.settings.wikiGitRemoteUrl || "" : String(settings.wikiGitRemoteUrl || ""),
     wikiBackupIntervalMs:
       Number(settings.wikiBackupIntervalMs) ||
       state.settings.wikiBackupIntervalMs ||
@@ -4560,6 +4623,10 @@ async function saveSettingsFromForm(form) {
     method: "PATCH",
     body: JSON.stringify({
       wikiGitBackupEnabled: formData.get("wikiGitBackupEnabled") === "on",
+      wikiGitRemoteBranch: String(formData.get("wikiGitRemoteBranch") || "main"),
+      wikiGitRemoteEnabled: formData.get("wikiGitRemoteEnabled") === "on",
+      wikiGitRemoteName: String(formData.get("wikiGitRemoteName") || "origin"),
+      wikiGitRemoteUrl: String(formData.get("wikiGitRemoteUrl") || ""),
       wikiPath: String(formData.get("wikiPath") || ""),
     }),
   });

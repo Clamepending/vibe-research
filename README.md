@@ -31,7 +31,7 @@ By default, the installer uses the latest GitHub Release when one exists, then f
 
 The install command now launches Remote Vibes as a background server, so it keeps running even after the SSH session or terminal closes. The app checkout lives under `~/.remote-vibes/app`, and settings, logs, session history, and the managed pid live under `~/.remote-vibes/`.
 
-New sessions can be started by choosing a folder from the browser, then picking the agent provider. The knowledge base folder is configurable in the sidebar settings; by default, Remote Vibes keeps local git backups of the wiki every 10 minutes.
+New sessions can be started by choosing a folder from the browser, then picking the agent provider. The knowledge base folder is configurable in the sidebar settings; by default, Remote Vibes keeps local git backups of the wiki every 10 minutes. To back that wiki up off-machine, create a private Git repo, paste its SSH or credential-helper remote URL into the sidebar's private remote backup field, enable remote push, and Remote Vibes will push wiki backup commits there on each backup run.
 
 ## Releases
 

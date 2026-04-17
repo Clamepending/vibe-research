@@ -13,6 +13,10 @@ async function git(cwd, args) {
   return execFileAsync("git", ["-C", cwd, ...args]);
 }
 
+async function gitBare(gitDir, args) {
+  return execFileAsync("git", ["--git-dir", gitDir, ...args]);
+}
+
 test("wiki backup creates an isolated git repo even inside another checkout", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-wiki-backup-nested-"));
   const wikiDir = path.join(rootDir, "wiki");
@@ -41,6 +45,71 @@ test("wiki backup creates an isolated git repo even inside another checkout", as
     const { stdout: parentLog } = await git(rootDir, ["log", "--oneline"]);
     assert.match(parentLog, /Parent initial/);
     assert.doesNotMatch(parentLog, /Remote Vibes wiki backup/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("wiki backup pushes commits to a configured private remote", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-wiki-backup-remote-"));
+  const wikiDir = path.join(rootDir, "wiki");
+  const remoteDir = path.join(rootDir, "private-wiki.git");
+
+  try {
+    await mkdir(wikiDir, { recursive: true });
+    await execFileAsync("git", ["init", "--bare", remoteDir]);
+    await writeFile(path.join(wikiDir, "index.md"), "# Private Wiki\n", "utf8");
+
+    const backup = new WikiBackupService({
+      wikiPath: wikiDir,
+      enabled: true,
+      remoteBranch: "main",
+      remoteEnabled: true,
+      remoteUrl: remoteDir,
+    });
+    const status = await backup.runBackup();
+
+    assert.equal(status.lastStatus, "committed");
+    assert.equal(status.lastPushStatus, "pushed");
+    assert.equal(status.remoteUrlConfigured, true);
+    assert.match(status.lastCommit, /^[0-9a-f]+$/);
+
+    const { stdout: remoteUrl } = await git(wikiDir, ["remote", "get-url", "origin"]);
+    assert.equal(remoteUrl.trim(), remoteDir);
+
+    const { stdout: remoteLog } = await gitBare(remoteDir, ["log", "--oneline", "refs/heads/main"]);
+    assert.match(remoteLog, /Remote Vibes wiki backup/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("wiki backup pushes existing clean commits when a private remote is added later", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-wiki-backup-late-remote-"));
+  const wikiDir = path.join(rootDir, "wiki");
+  const remoteDir = path.join(rootDir, "private-wiki.git");
+
+  try {
+    await mkdir(wikiDir, { recursive: true });
+    await writeFile(path.join(wikiDir, "index.md"), "# Private Wiki\n", "utf8");
+
+    const backup = new WikiBackupService({ wikiPath: wikiDir, enabled: true });
+    const localStatus = await backup.runBackup();
+    assert.equal(localStatus.lastStatus, "committed");
+
+    await execFileAsync("git", ["init", "--bare", remoteDir]);
+    backup.setConfig({
+      remoteBranch: "main",
+      remoteEnabled: true,
+      remoteUrl: remoteDir,
+    });
+    const pushStatus = await backup.runBackup();
+
+    assert.equal(pushStatus.lastStatus, "clean");
+    assert.equal(pushStatus.lastPushStatus, "pushed");
+
+    const { stdout: remoteLog } = await gitBare(remoteDir, ["log", "--oneline", "refs/heads/main"]);
+    assert.match(remoteLog, /Remote Vibes wiki backup/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
