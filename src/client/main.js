@@ -548,6 +548,15 @@ function relativeTime(timestamp) {
   return `${hours}h`;
 }
 
+function relativeTimeAgo(timestamp) {
+  const label = relativeTime(timestamp);
+  if (label === "quiet") {
+    return "";
+  }
+
+  return label === "live" ? "just now" : `${label} ago`;
+}
+
 function formatBytes(bytes) {
   const value = Number(bytes || 0);
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -1399,6 +1408,43 @@ function getWikiBackupStatusText() {
   }
 
   return backup.lastMessage || backup.lastStatus;
+}
+
+function getKnowledgeBaseSyncLabel() {
+  const backup = state.settings.wikiBackup;
+
+  if (!state.settings.wikiGitBackupEnabled) {
+    return "sync disabled";
+  }
+
+  if (!backup) {
+    return "sync pending";
+  }
+
+  const timestamps = [backup.lastRunAt, backup.lastPullAt, backup.lastPushAt]
+    .filter(Boolean)
+    .map((timestamp) => ({ timestamp, time: new Date(timestamp).getTime() }))
+    .filter((entry) => Number.isFinite(entry.time))
+    .sort((left, right) => right.time - left.time);
+  const age = relativeTimeAgo(timestamps[0]?.timestamp);
+  const failed =
+    backup.hasConflicts ||
+    backup.lastErrorKind === "merge-conflict" ||
+    backup.lastStatus === "error" ||
+    backup.lastPullStatus === "error" ||
+    backup.lastPullStatus === "conflict" ||
+    backup.lastPushStatus === "error" ||
+    backup.lastPushStatus === "conflict";
+
+  if (!age) {
+    return failed ? "sync failed" : "sync pending";
+  }
+
+  return failed ? `sync failed ${age}` : `synced ${age}`;
+}
+
+function getKnowledgeBaseHeaderMeta() {
+  return `obsidian-style markdown viewer for ${state.knowledgeBase.relativeRoot} · ${getKnowledgeBaseSyncLabel()}`;
 }
 
 function formatWikiBackupIntervalLabel() {
@@ -3573,7 +3619,7 @@ function renderKnowledgeBaseView() {
         <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>≡</button>
         <div class="dashboard-copy">
           <strong>Knowledge Base</strong>
-          <div class="terminal-meta">obsidian-style markdown viewer for ${escapeHtml(state.knowledgeBase.relativeRoot)}</div>
+          <div class="terminal-meta" data-knowledge-base-header-meta>${escapeHtml(getKnowledgeBaseHeaderMeta())}</div>
         </div>
         <div class="dashboard-actions knowledge-base-toolbar-actions">
           ${renderKnowledgeSettingsForm({ popover: true })}
@@ -3639,9 +3685,7 @@ function renderKnowledgeBaseApp() {
           <div class="knowledge-base-app-copy">
             <span class="knowledge-base-app-eyebrow">Remote Vibes</span>
             <strong>Knowledge Base</strong>
-            <div class="knowledge-base-app-meta">${escapeHtml(
-              `Obsidian-style markdown workspace for ${state.knowledgeBase.relativeRoot}`,
-            )}</div>
+            <div class="knowledge-base-app-meta" data-knowledge-base-header-meta>${escapeHtml(getKnowledgeBaseHeaderMeta())}</div>
           </div>
           <div class="knowledge-base-app-actions">
             ${renderKnowledgeSettingsForm({ popover: true })}
@@ -5859,6 +5903,10 @@ function refreshKnowledgeSettingsUi() {
   const wikiBackupText = getWikiBackupStatusText();
   document.querySelectorAll("#wiki-backup-status, #wiki-backup-settings-status").forEach((element) => {
     element.textContent = wikiBackupText;
+  });
+
+  document.querySelectorAll("[data-knowledge-base-header-meta]").forEach((element) => {
+    element.textContent = getKnowledgeBaseHeaderMeta();
   });
 
   const intervalLabel = document.querySelector("#wiki-backup-interval-label");
