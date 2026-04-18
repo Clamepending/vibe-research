@@ -9,6 +9,20 @@ function getErrorMessage(error) {
   return String(error?.stderr || error?.stdout || error?.message || error || "Unknown error").trim();
 }
 
+function isMergeConflictMessage(message) {
+  return /CONFLICT|Resolve all conflicts|unmerged|merge conflict|rebase in progress|could not apply/i.test(
+    String(message || ""),
+  );
+}
+
+function formatConflictMessage(conflictFiles) {
+  if (!conflictFiles.length) {
+    return "The wiki repository has an unresolved merge conflict.";
+  }
+
+  return `The wiki repository has unresolved merge conflicts in ${conflictFiles.join(", ")}.`;
+}
+
 function normalizeGitRemoteName(value) {
   const remoteName = String(value || "origin").trim();
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remoteName) ? remoteName : "origin";
@@ -52,7 +66,7 @@ export class WikiBackupService {
   constructor({
     wikiPath,
     enabled = true,
-    intervalMs = 10 * 60 * 1000,
+    intervalMs = 5 * 60 * 1000,
     remoteEnabled = false,
     remoteUrl = "",
     remoteName = "origin",
@@ -61,7 +75,10 @@ export class WikiBackupService {
     now = () => new Date(),
   } = {}) {
     this.enabled = Boolean(enabled);
+    this.conflictFiles = [];
     this.execFile = execFileRunner;
+    this.hasConflicts = false;
+    this.lastErrorKind = "";
     this.intervalMs = intervalMs;
     this.lastRunAt = null;
     this.lastStatus = "idle";
@@ -85,8 +102,11 @@ export class WikiBackupService {
   getStatus() {
     return {
       enabled: this.enabled,
+      conflictFiles: this.conflictFiles,
+      hasConflicts: this.hasConflicts,
       intervalMs: this.intervalMs,
       lastCommit: this.lastCommit,
+      lastErrorKind: this.lastErrorKind,
       lastMessage: this.lastMessage,
       lastPullAt: this.lastPullAt,
       lastPullMessage: this.lastPullMessage,
@@ -226,6 +246,35 @@ export class WikiBackupService {
     }
   }
 
+  clearConflictState() {
+    this.conflictFiles = [];
+    this.hasConflicts = false;
+    if (this.lastErrorKind === "merge-conflict") {
+      this.lastErrorKind = "";
+    }
+  }
+
+  async refreshConflictState(message = "") {
+    let conflictFiles = [];
+
+    try {
+      const { stdout = "" } = await this.git(["diff", "--name-only", "--diff-filter=U"]);
+      conflictFiles = stdout
+        .split(/\r?\n/)
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+    } catch {
+      conflictFiles = [];
+    }
+
+    const looksLikeConflict = isMergeConflictMessage(message);
+    this.conflictFiles = conflictFiles;
+    this.hasConflicts = Boolean(conflictFiles.length || looksLikeConflict);
+    this.lastErrorKind = this.hasConflicts ? "merge-conflict" : "";
+
+    return this.hasConflicts;
+  }
+
   async pullRemoteBackup({ timestamp } = {}) {
     const pullTimestamp = timestamp || this.now().toISOString();
 
@@ -250,6 +299,7 @@ export class WikiBackupService {
         await this.git(["fetch", this.remoteName, this.remoteBranch]);
         await this.git(["checkout", "-B", this.remoteBranch, "FETCH_HEAD"]);
         await this.refreshLastCommit();
+        this.clearConflictState();
         this.lastPullAt = pullTimestamp;
         this.lastPullStatus = "pulled";
         this.lastPullMessage = `Pulled wiki backup from ${this.remoteName}/${this.remoteBranch}.`;
@@ -264,6 +314,7 @@ export class WikiBackupService {
         this.remoteBranch,
       ]);
       await this.refreshLastCommit();
+      this.clearConflictState();
       this.lastPullAt = pullTimestamp;
 
       if (/Already up to date\./i.test(`${stdout}\n${stderr}`)) {
@@ -274,6 +325,7 @@ export class WikiBackupService {
 
       this.lastPullStatus = "pulled";
       this.lastPullMessage = `Pulled wiki backup from ${this.remoteName}/${this.remoteBranch}.`;
+      this.clearConflictState();
       return true;
     } catch (error) {
       const message = getErrorMessage(error);
@@ -284,8 +336,9 @@ export class WikiBackupService {
         return false;
       }
 
+      const hasConflicts = await this.refreshConflictState(message);
       this.lastPullAt = pullTimestamp;
-      this.lastPullStatus = "error";
+      this.lastPullStatus = hasConflicts ? "conflict" : "error";
       this.lastPullMessage = message;
       throw error;
     }
@@ -318,14 +371,17 @@ export class WikiBackupService {
     try {
       await this.ensureRemote();
       await this.git(["push", "-u", this.remoteName, `HEAD:${this.remoteBranch}`]);
+      this.clearConflictState();
       this.lastPushAt = pushTimestamp;
       this.lastPushStatus = "pushed";
       this.lastPushMessage = `Pushed wiki backup to ${this.remoteName}/${this.remoteBranch}.`;
       return true;
     } catch (error) {
+      const message = getErrorMessage(error);
+      const hasConflicts = await this.refreshConflictState(message);
       this.lastPushAt = pushTimestamp;
-      this.lastPushStatus = "error";
-      this.lastPushMessage = getErrorMessage(error);
+      this.lastPushStatus = hasConflicts ? "conflict" : "error";
+      this.lastPushMessage = message;
       throw error;
     }
   }
@@ -341,6 +397,11 @@ export class WikiBackupService {
     try {
       await mkdir(this.wikiPath, { recursive: true });
       await this.ensureGitRepository();
+      await this.refreshConflictState();
+      if (this.hasConflicts) {
+        throw new Error(formatConflictMessage(this.conflictFiles));
+      }
+
       await this.git(["add", "-A"]);
       const { stdout = "" } = await this.git(["status", "--porcelain"]);
       const timestamp = this.now().toISOString();
@@ -371,9 +432,11 @@ export class WikiBackupService {
       await this.pushRemoteBackup({ timestamp });
       return this.getStatus();
     } catch (error) {
+      const message = getErrorMessage(error);
+      await this.refreshConflictState(message);
       this.lastRunAt = this.now().toISOString();
       this.lastStatus = "error";
-      this.lastMessage = getErrorMessage(error);
+      this.lastMessage = message;
       return this.getStatus();
     }
   }

@@ -463,6 +463,91 @@ input[readonly][data-folder-picker-target] {
     rgba(143, 185, 255, 0.06);
 }
 
+.system-toast-stack {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 90;
+  display: grid;
+  gap: 10px;
+  width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.system-toast {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(255, 216, 106, 0.34);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(255, 216, 106, 0.16), transparent 46%),
+    rgba(15, 16, 18, 0.96);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.38);
+  pointer-events: auto;
+}
+
+.system-toast.is-error {
+  border-color: rgba(255, 134, 111, 0.36);
+  background:
+    radial-gradient(circle at top right, rgba(255, 134, 111, 0.15), transparent 46%),
+    rgba(15, 16, 18, 0.96);
+}
+
+.system-toast.is-conflict {
+  border-color: rgba(255, 216, 106, 0.42);
+}
+
+.system-toast-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+}
+
+.system-toast-head strong {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.system-toast-dismiss {
+  width: 30px;
+  min-height: 30px;
+  padding: 0;
+}
+
+.system-toast-message {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.system-toast-actions,
+.system-toast-resolve-row {
+  display: flex;
+  gap: 8px;
+}
+
+.system-toast-resolve-row {
+  align-items: stretch;
+}
+
+.system-toast-provider {
+  min-width: 0;
+  flex: 1;
+}
+
+.system-toast-action {
+  white-space: nowrap;
+}
+
 .update-copy {
   display: grid;
   gap: 4px;

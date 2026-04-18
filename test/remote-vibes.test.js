@@ -155,6 +155,7 @@ test("state is available without authentication", async () => {
     assert.equal(state.settings.wikiGitRemoteBranch, "main");
     assert.equal(state.settings.wikiGitRemoteName, "origin");
     assert.equal(state.settings.wikiGitRemoteUrl, "");
+    assert.equal(state.settings.wikiBackupIntervalMs, 5 * 60 * 1000);
     assert.equal(state.settings.wikiRelativeRoot, ".remote-vibes/wiki");
     assert.equal(typeof state.settings.wikiPath, "string");
     assert.equal(state.settings.wikiBackup.enabled, true);

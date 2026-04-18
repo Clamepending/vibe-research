@@ -7,7 +7,8 @@ import { promisify } from "node:util";
 
 const SETTINGS_FILE_VERSION = 1;
 const SETTINGS_FILENAME = "settings.json";
-const DEFAULT_WIKI_BACKUP_INTERVAL_MS = 10 * 60 * 1000;
+const DEFAULT_WIKI_BACKUP_INTERVAL_MS = 5 * 60 * 1000;
+const LEGACY_WIKI_BACKUP_INTERVAL_MS = 10 * 60 * 1000;
 const execFileAsync = promisify(execFile);
 
 function expandHomePath(value, homeDir = os.homedir()) {
@@ -38,9 +39,14 @@ function normalizeBoolean(value, fallback) {
 
 function normalizeIntervalMs(value) {
   const intervalMs = Number(value);
-  return Number.isFinite(intervalMs) && intervalMs >= 1_000
-    ? Math.round(intervalMs)
-    : DEFAULT_WIKI_BACKUP_INTERVAL_MS;
+  if (!Number.isFinite(intervalMs) || intervalMs < 1_000) {
+    return DEFAULT_WIKI_BACKUP_INTERVAL_MS;
+  }
+
+  const roundedIntervalMs = Math.round(intervalMs);
+  return roundedIntervalMs === LEGACY_WIKI_BACKUP_INTERVAL_MS
+    ? DEFAULT_WIKI_BACKUP_INTERVAL_MS
+    : roundedIntervalMs;
 }
 
 function normalizeGitRemoteName(value) {

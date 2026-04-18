@@ -125,7 +125,7 @@ const state = {
     wikiGitRemoteEnabled: true,
     wikiGitRemoteName: "origin",
     wikiGitRemoteUrl: "",
-    wikiBackupIntervalMs: 10 * 60 * 1000,
+    wikiBackupIntervalMs: 5 * 60 * 1000,
     wikiBackup: null,
   },
   folderPicker: {
@@ -215,8 +215,11 @@ const state = {
   terminalTextareaResetTimer: null,
   update: null,
   updateApplying: false,
+  lastUpdateError: null,
   updateTimer: null,
+  settingsPollTimer: null,
   sessionRefreshTimer: null,
+  systemToastDismissedKeys: new Set(),
   terminalInteractionCleanup: null,
   canvasAddon: null,
   terminalShowJumpToBottom: false,
@@ -802,6 +805,18 @@ function getSelectedSessionProviderId() {
   return state.defaultProviderId;
 }
 
+function renderProviderOptions(selectedProviderId = state.defaultProviderId) {
+  return state.providers
+    .map(
+      (provider) => `
+        <option value="${provider.id}" ${provider.id === selectedProviderId ? "selected" : ""} ${provider.available ? "" : "disabled"}>
+          ${escapeHtml(provider.label)}${provider.available ? "" : " · missing"}
+        </option>
+      `,
+    )
+    .join("");
+}
+
 function getSleepPreventionStatusText() {
   const sleep = state.settings.sleepPrevention;
 
@@ -840,11 +855,17 @@ function getWikiBackupStatusText() {
     return "private remote push enabled; add a remote URL";
   }
 
-  if (remoteEnabled && backup?.lastPushStatus === "error") {
+  if (backup?.hasConflicts || backup?.lastErrorKind === "merge-conflict") {
+    return backup.conflictFiles?.length
+      ? `wiki sync merge conflict: ${backup.conflictFiles.join(", ")}`
+      : "wiki sync has a merge conflict";
+  }
+
+  if (remoteEnabled && (backup?.lastPushStatus === "error" || backup?.lastPushStatus === "conflict")) {
     return backup.lastPushMessage || "private remote push failed";
   }
 
-  if (remoteEnabled && backup?.lastPullStatus === "error") {
+  if (remoteEnabled && (backup?.lastPullStatus === "error" || backup?.lastPullStatus === "conflict")) {
     return backup.lastPullMessage || "private remote pull failed";
   }
 
@@ -882,6 +903,137 @@ function getWikiBackupStatusText() {
   return backup.lastMessage || backup.lastStatus;
 }
 
+function formatWikiBackupIntervalLabel() {
+  const intervalMs = Number(state.settings.wikiBackupIntervalMs) || 5 * 60 * 1000;
+  const minutes = Math.max(1, Math.round(intervalMs / 60_000));
+  return `git backup every ${minutes} min`;
+}
+
+function getWikiBackupFailureMessage(backup) {
+  if (!backup) {
+    return "";
+  }
+
+  if (backup.lastPullStatus === "error" || backup.lastPullStatus === "conflict") {
+    return backup.lastPullMessage || "private remote pull failed";
+  }
+
+  if (backup.lastPushStatus === "error" || backup.lastPushStatus === "conflict") {
+    return backup.lastPushMessage || "private remote push failed";
+  }
+
+  if (backup.lastStatus === "error") {
+    return backup.lastMessage || "wiki backup failed";
+  }
+
+  return backup.lastMessage || "";
+}
+
+function getSystemToasts() {
+  const toasts = [];
+  const backup = state.settings.wikiBackup;
+  const backupFailed =
+    state.settings.wikiGitBackupEnabled &&
+    backup &&
+    (backup.lastStatus === "error" ||
+      backup.lastPullStatus === "error" ||
+      backup.lastPullStatus === "conflict" ||
+      backup.lastPushStatus === "error" ||
+      backup.lastPushStatus === "conflict" ||
+      backup.hasConflicts ||
+      backup.lastErrorKind === "merge-conflict");
+
+  if (backupFailed) {
+    const conflictFiles = Array.isArray(backup.conflictFiles) ? backup.conflictFiles : [];
+    const isConflict = Boolean(backup.hasConflicts || backup.lastErrorKind === "merge-conflict" || conflictFiles.length);
+    const message = getWikiBackupFailureMessage(backup);
+    const timestamp = backup.lastRunAt || backup.lastPullAt || backup.lastPushAt || "";
+    toasts.push({
+      action: isConflict ? "resolve-wiki-conflict" : "retry-wiki-backup",
+      key: `wiki:${isConflict ? "conflict" : "error"}:${timestamp}:${message}`,
+      message:
+        isConflict && conflictFiles.length
+          ? `${message || "Resolve the wiki git conflict."} Conflicts: ${conflictFiles.join(", ")}`
+          : message || "Remote Vibes could not sync the knowledge base.",
+      title: isConflict ? "Knowledge base merge conflict" : "Knowledge base sync failed",
+      type: isConflict ? "conflict" : "error",
+    });
+  }
+
+  const updateErrorMessage = state.lastUpdateError?.message || (state.update?.status === "error" ? state.update.reason : "");
+  if (updateErrorMessage) {
+    toasts.push({
+      action: "retry-update-check",
+      key: `update:${state.lastUpdateError?.occurredAt || state.update?.checkedAt || ""}:${updateErrorMessage}`,
+      message: updateErrorMessage,
+      title: "Remote Vibes update failed",
+      type: "error",
+    });
+  }
+
+  return toasts.filter((toast) => !state.systemToastDismissedKeys.has(toast.key));
+}
+
+function renderSystemToastActions(toast) {
+  if (toast.action === "resolve-wiki-conflict") {
+    return `
+      <div class="system-toast-resolve-row">
+        <select class="system-toast-provider" data-wiki-conflict-provider aria-label="Agent for merge conflict">
+          ${renderProviderOptions(state.defaultProviderId)}
+        </select>
+        <button class="primary-button system-toast-action" type="button" data-system-toast-action="resolve-wiki-conflict" data-system-toast-key="${escapeHtml(toast.key)}">
+          fix with agent
+        </button>
+      </div>
+    `;
+  }
+
+  if (toast.action === "retry-wiki-backup") {
+    return `
+      <button class="primary-button system-toast-action" type="button" data-system-toast-action="retry-wiki-backup" data-system-toast-key="${escapeHtml(toast.key)}">
+        retry sync
+      </button>
+    `;
+  }
+
+  if (toast.action === "retry-update-check") {
+    return `
+      <button class="primary-button system-toast-action" type="button" data-system-toast-action="retry-update-check" data-system-toast-key="${escapeHtml(toast.key)}">
+        check again
+      </button>
+    `;
+  }
+
+  return "";
+}
+
+function renderSystemToasts() {
+  const toasts = getSystemToasts();
+
+  if (!toasts.length) {
+    return "";
+  }
+
+  return `
+    <div class="system-toast-stack" id="system-toasts" role="status" aria-live="polite">
+      ${toasts
+        .map(
+          (toast) => `
+            <section class="system-toast is-${escapeHtml(toast.type)}">
+              <div class="system-toast-head">
+                <strong>${escapeHtml(toast.title)}</strong>
+                <button class="icon-button system-toast-dismiss" type="button" aria-label="Dismiss" data-system-toast-dismiss="${escapeHtml(toast.key)}">×</button>
+              </div>
+              <div class="system-toast-message">${escapeHtml(toast.message)}</div>
+              <div class="system-toast-actions">${renderSystemToastActions(toast)}</div>
+            </section>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function getSessionProjectKey(cwd) {
   return normalizeWorkspaceRoot(cwd || state.defaultCwd || "") || "__unknown__";
 }
@@ -914,17 +1066,16 @@ function expandSessionProject(cwd) {
   state.sessionProjectExpanded.add(key);
 }
 
-async function createSessionInFolder(cwd) {
+async function createSessionInFolder(cwd, { providerId = getSelectedSessionProviderId(), name = "" } = {}) {
   const selectedCwd = normalizeWorkspaceRoot(cwd);
 
   if (!selectedCwd) {
     throw new Error("Choose a folder before starting a session.");
   }
 
-  const providerId = getSelectedSessionProviderId();
   const payload = await fetchJson("/api/sessions", {
     method: "POST",
-    body: JSON.stringify({ providerId, cwd: selectedCwd }),
+    body: JSON.stringify({ providerId, cwd: selectedCwd, name }),
   });
 
   state.defaultCwd = selectedCwd;
@@ -2623,6 +2774,7 @@ function renderKnowledgeBaseApp() {
           </aside>
         </div>
       </section>
+      ${renderSystemToasts()}
     </main>
   `;
 }
@@ -3254,15 +3406,7 @@ function renderShell() {
   syncFilesRoot();
   document.title = "Remote Vibes";
 
-  const providerOptions = state.providers
-    .map(
-      (provider) => `
-        <option value="${provider.id}" ${provider.id === state.defaultProviderId ? "selected" : ""} ${provider.available ? "" : "disabled"}>
-          ${escapeHtml(provider.label)}${provider.available ? "" : " · missing"}
-        </option>
-      `,
-    )
-    .join("");
+  const providerOptions = renderProviderOptions(state.defaultProviderId);
 
   const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) || null;
 
@@ -3313,7 +3457,7 @@ function renderShell() {
             </div>
             <div class="prompt-copy">
               <div>obsidian-style view for ${escapeHtml(state.settings.wikiRelativeRoot || state.agentPromptWikiRoot)}</div>
-              <div>${escapeHtml(getWikiBackupStatusText())}</div>
+              <div id="wiki-backup-status">${escapeHtml(getWikiBackupStatusText())}</div>
             </div>
             <form class="settings-form" id="settings-form">
               <label class="field-label" for="wiki-path-input">wiki folder</label>
@@ -3336,7 +3480,7 @@ function renderShell() {
               </div>
               <label class="checkbox-row">
                 <input type="checkbox" name="wikiGitBackupEnabled" ${state.settings.wikiGitBackupEnabled ? "checked" : ""} />
-                <span>git backup every 10 min</span>
+                <span id="wiki-backup-interval-label">${escapeHtml(formatWikiBackupIntervalLabel())}</span>
               </label>
               <label class="checkbox-row">
                 <input type="checkbox" name="preventSleepEnabled" ${state.settings.preventSleepEnabled ? "checked" : ""} />
@@ -3375,7 +3519,7 @@ function renderShell() {
               />
               <input type="hidden" name="wikiGitRemoteName" value="${escapeHtml(state.settings.wikiGitRemoteName || "origin")}" />
               <button class="primary-button settings-save-button" type="submit">save settings</button>
-              <div class="settings-status">${escapeHtml(getWikiBackupStatusText())}</div>
+              <div class="settings-status" id="wiki-backup-settings-status">${escapeHtml(getWikiBackupStatusText())}</div>
             </form>
           </section>
 
@@ -3439,6 +3583,7 @@ function renderShell() {
       ${renderTerminalPanel(activeSession)}
       ${renderAgentPromptModal()}
       ${renderFolderPickerModal()}
+      ${renderSystemToasts()}
     </main>
   `;
 
@@ -3643,6 +3788,111 @@ function refreshUpdateUi() {
 
   updateBanner.innerHTML = renderUpdateBanner();
   bindUpdateEvents();
+}
+
+function refreshKnowledgeSettingsUi() {
+  const wikiBackupText = getWikiBackupStatusText();
+  document.querySelectorAll("#wiki-backup-status, #wiki-backup-settings-status").forEach((element) => {
+    element.textContent = wikiBackupText;
+  });
+
+  const intervalLabel = document.querySelector("#wiki-backup-interval-label");
+  if (intervalLabel) {
+    intervalLabel.textContent = formatWikiBackupIntervalLabel();
+  }
+}
+
+function refreshSystemToastsUi() {
+  const currentStack = document.querySelector("#system-toasts");
+  const nextHtml = renderSystemToasts();
+
+  if (currentStack) {
+    if (nextHtml) {
+      currentStack.outerHTML = nextHtml;
+      bindSystemToastEvents();
+      return;
+    }
+
+    currentStack.remove();
+    return;
+  }
+
+  if (!nextHtml) {
+    return;
+  }
+
+  document.querySelector("main.screen")?.insertAdjacentHTML("beforeend", nextHtml);
+  bindSystemToastEvents();
+}
+
+function bindSystemToastEvents() {
+  document.querySelectorAll("[data-system-toast-dismiss]").forEach((button) => {
+    button.onclick = () => {
+      const key = button.getAttribute("data-system-toast-dismiss");
+      if (key) {
+        state.systemToastDismissedKeys.add(key);
+      }
+      refreshSystemToastsUi();
+    };
+  });
+
+  document.querySelectorAll("[data-system-toast-action]").forEach((button) => {
+    button.onclick = async () => {
+      const action = button.getAttribute("data-system-toast-action") || "";
+      const key = button.getAttribute("data-system-toast-key") || "";
+      const previousText = button.textContent;
+
+      if (button instanceof HTMLButtonElement) {
+        button.disabled = true;
+        button.textContent = action === "resolve-wiki-conflict" ? "opening..." : "trying...";
+      }
+
+      try {
+        if (action === "resolve-wiki-conflict") {
+          const providerSelect = document.querySelector("[data-wiki-conflict-provider]");
+          const providerId =
+            providerSelect instanceof HTMLSelectElement && providerSelect.value
+              ? providerSelect.value
+              : state.defaultProviderId;
+          await createSessionInFolder(state.settings.wikiPath, {
+            providerId,
+            name: "fix wiki conflict",
+          });
+          if (key) {
+            state.systemToastDismissedKeys.add(key);
+          }
+          return;
+        }
+
+        if (action === "retry-wiki-backup") {
+          await backupWikiNow();
+          refreshKnowledgeSettingsUi();
+          refreshSystemToastsUi();
+          return;
+        }
+
+        if (action === "retry-update-check") {
+          state.lastUpdateError = null;
+          await loadUpdateStatus({ force: true });
+          refreshSystemToastsUi();
+        }
+      } catch (error) {
+        if (button instanceof HTMLButtonElement) {
+          button.disabled = false;
+          button.textContent = previousText;
+        }
+        if (action === "retry-update-check") {
+          state.lastUpdateError = {
+            message: error.message,
+            occurredAt: new Date().toISOString(),
+          };
+          refreshSystemToastsUi();
+          return;
+        }
+        window.alert(error.message);
+      }
+    };
+  });
 }
 
 function bindPortEvents() {
@@ -3979,6 +4229,7 @@ function refreshKnowledgeBaseSearchUi() {
 
 function bindKnowledgeBaseEvents() {
   bindKnowledgeBaseNoteOpenEvents();
+  bindSystemToastEvents();
 
   document.querySelector("#knowledge-base-search")?.addEventListener("input", (event) => {
     const input = event.currentTarget;
@@ -4236,6 +4487,8 @@ function refreshToolbarUi() {
 
 function refreshShellUi({ sessions = true, ports = true, files = true } = {}) {
   refreshUpdateUi();
+  refreshSystemToastsUi();
+  refreshKnowledgeSettingsUi();
 
   if (sessions) {
     refreshSessionsList();
@@ -4662,7 +4915,7 @@ function applySettingsState(payload) {
     wikiBackupIntervalMs:
       Number(settings.wikiBackupIntervalMs) ||
       state.settings.wikiBackupIntervalMs ||
-      10 * 60 * 1000,
+      5 * 60 * 1000,
     wikiBackup: backup || null,
   };
   state.agentPromptWikiRoot = state.settings.wikiRelativeRoot;
@@ -4769,6 +5022,7 @@ function bindShellEvents() {
 
   bindSessionEvents();
   bindUpdateEvents();
+  bindSystemToastEvents();
 
   if (state.currentView === "shell") {
     document.querySelector("#tab-button")?.addEventListener("click", () => sendTerminalInput("\t"));
@@ -4968,6 +5222,10 @@ function bindUpdateEvents() {
       waitForUpdateRestart();
     } catch (error) {
       state.updateApplying = false;
+      state.lastUpdateError = {
+        message: error.message,
+        occurredAt: new Date().toISOString(),
+      };
       state.update = {
         ...(state.update || {}),
         updateAvailable: true,
@@ -4976,7 +5234,7 @@ function bindUpdateEvents() {
         reason: error.message,
       };
       refreshUpdateUi();
-      window.alert(error.message);
+      refreshSystemToastsUi();
     }
   });
 }
@@ -5514,7 +5772,14 @@ async function loadUpdateStatus({ force = false } = {}) {
       cache: "no-store",
     });
     state.update = payload.update;
+    if (state.update?.status !== "error") {
+      state.lastUpdateError = null;
+    }
   } catch (error) {
+    state.lastUpdateError = {
+      message: error.message,
+      occurredAt: new Date().toISOString(),
+    };
     state.update = {
       status: "error",
       updateAvailable: false,
@@ -5524,6 +5789,20 @@ async function loadUpdateStatus({ force = false } = {}) {
   }
 
   refreshUpdateUi();
+  refreshSystemToastsUi();
+}
+
+async function loadSettingsStatus() {
+  try {
+    const payload = await fetchJson("/api/settings", {
+      cache: "no-store",
+    });
+    applySettingsState(payload.settings);
+    refreshKnowledgeSettingsUi();
+    refreshSystemToastsUi();
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 async function loadFolderPicker(root, { target = state.folderPicker.target } = {}) {
@@ -5703,10 +5982,12 @@ function renderFileEditorPage() {
           <div class="file-editor" id="file-editor">${renderOpenFilePanel()}</div>
         </div>
       </section>
+      ${renderSystemToasts()}
     </main>
   `;
 
   bindFileEditorEvents();
+  bindSystemToastEvents();
 }
 
 async function bootstrapApp() {
@@ -5770,6 +6051,14 @@ async function bootstrapApp() {
   state.updateTimer = window.setInterval(() => {
     void loadUpdateStatus({ force: true });
   }, 5 * 60 * 1000);
+
+  if (state.settingsPollTimer) {
+    window.clearInterval(state.settingsPollTimer);
+  }
+
+  state.settingsPollTimer = window.setInterval(() => {
+    void loadSettingsStatus();
+  }, 30 * 1000);
 
   if (state.activeSessionId && state.currentView === "shell") {
     connectToSession(state.activeSessionId);

@@ -160,6 +160,54 @@ test("wiki backup pulls new commits from a configured private remote", async () 
   }
 });
 
+test("wiki backup reports merge conflicts from private remote sync", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-wiki-backup-conflict-"));
+  const remoteDir = path.join(rootDir, "private-wiki.git");
+  const seedDir = path.join(rootDir, "seed");
+  const wikiDir = path.join(rootDir, "wiki");
+
+  try {
+    await execFileAsync("git", ["init", "--bare", remoteDir]);
+    await gitBare(remoteDir, ["symbolic-ref", "HEAD", "refs/heads/main"]);
+    await execFileAsync("git", ["clone", remoteDir, seedDir]);
+    await git(seedDir, ["checkout", "-b", "main"]);
+    await git(seedDir, ["config", "user.name", "Remote Vibes Test"]);
+    await git(seedDir, ["config", "user.email", "test@example.com"]);
+    await writeFile(path.join(seedDir, "index.md"), "# Private Wiki\n\nbase\n", "utf8");
+    await git(seedDir, ["add", "index.md"]);
+    await git(seedDir, ["commit", "-m", "Initial wiki"]);
+    await git(seedDir, ["push", "-u", "origin", "main"]);
+
+    await execFileAsync("git", ["clone", remoteDir, wikiDir]);
+    await git(wikiDir, ["config", "user.name", "Remote Vibes Test"]);
+    await git(wikiDir, ["config", "user.email", "test@example.com"]);
+
+    await writeFile(path.join(wikiDir, "index.md"), "# Private Wiki\n\nlocal\n", "utf8");
+    await writeFile(path.join(seedDir, "index.md"), "# Private Wiki\n\nremote\n", "utf8");
+    await git(seedDir, ["add", "index.md"]);
+    await git(seedDir, ["commit", "-m", "Remote conflicting update"]);
+    await git(seedDir, ["push"]);
+
+    const backup = new WikiBackupService({
+      wikiPath: wikiDir,
+      enabled: true,
+      remoteBranch: "main",
+      remoteEnabled: true,
+      remoteUrl: remoteDir,
+    });
+    const status = await backup.runBackup();
+
+    assert.equal(status.lastStatus, "error");
+    assert.equal(status.lastPullStatus, "conflict");
+    assert.equal(status.lastErrorKind, "merge-conflict");
+    assert.equal(status.hasConflicts, true);
+    assert.deepEqual(status.conflictFiles, ["index.md"]);
+    assert.match(status.lastPullMessage, /CONFLICT|could not apply|Resolve all conflicts/i);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("disabled wiki backup does not initialize git", async () => {
   const wikiDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-wiki-backup-disabled-"));
 
