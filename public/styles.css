@@ -343,12 +343,12 @@ textarea {
 
 .sidebar-nav-item {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 31px minmax(0, 1fr);
   align-items: center;
-  gap: 9px;
-  min-height: 34px;
+  gap: 10px;
+  min-height: 38px;
   width: 100%;
-  padding: 5px 8px;
+  padding: 5px 9px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
@@ -380,16 +380,26 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
-  color: rgba(232, 236, 240, 0.64);
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(232, 236, 240, 0.76);
   font-family: "IBM Plex Mono", monospace;
-  font-size: 0.86rem;
+  font-size: 1.12rem;
+  font-weight: 700;
+  line-height: 1;
+  transition: background 140ms ease, color 140ms ease, transform 140ms ease;
 }
 
 .sidebar-nav-item.is-active .sidebar-nav-icon {
+  background: rgba(242, 138, 104, 0.13);
   color: var(--accent);
+}
+
+.sidebar-nav-item:hover .sidebar-nav-icon {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(244, 247, 251, 0.92);
 }
 
 .sidebar-nav-copy {
