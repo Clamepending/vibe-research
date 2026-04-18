@@ -4893,7 +4893,7 @@ function scheduleSessionsRefresh() {
 
   state.sessionRefreshTimer = window.setTimeout(() => {
     state.sessionRefreshTimer = null;
-    refreshShellUi({ sessions: true, ports: false });
+    refreshShellUi({ sessions: true, ports: false, files: false });
   }, 180);
 }
 
@@ -5774,7 +5774,7 @@ async function loadSessions() {
       return;
     }
 
-    refreshShellUi({ sessions: true, ports: false });
+    refreshShellUi({ sessions: true, ports: false, files: false });
     if (state.activeSessionId && !state.connectedSessionId) {
       connectToSession(state.activeSessionId);
     }
@@ -5787,7 +5787,7 @@ async function loadPorts() {
   try {
     const payload = await fetchJson("/api/ports");
     state.ports = payload.ports;
-    refreshShellUi({ sessions: false, ports: true });
+    refreshShellUi({ sessions: false, ports: true, files: false });
   } catch (error) {
     console.error(error);
   }
@@ -6107,7 +6107,6 @@ async function bootstrapApp() {
   state.pollTimer = window.setInterval(() => {
     loadSessions();
     loadPorts();
-    void refreshOpenFileTree({ force: true });
   }, 3000);
 }
 
