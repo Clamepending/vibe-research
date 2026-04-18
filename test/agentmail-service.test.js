@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { readFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -49,6 +49,10 @@ function createFetch(responses = []) {
   return fetchImpl;
 }
 
+function flushAsyncHandlers() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 test("AgentMail WebSocket listener subscribes and queues incoming email into an agent session", async () => {
   FakeSocket.instances = [];
   const createdSessions = [];
@@ -66,6 +70,7 @@ test("AgentMail WebSocket listener subscribes and queues incoming email into an 
         return true;
       },
     },
+    pollIntervalMs: 0,
     setTimeoutImpl(callback) {
       callback();
       return 1;
@@ -88,8 +93,7 @@ test("AgentMail WebSocket listener subscribes and queues incoming email into an 
   socket.emit("open");
   assert.deepEqual(JSON.parse(socket.sent[0]), {
     type: "subscribe",
-    inbox_ids: ["agent@example.com"],
-    event_types: ["message.received"],
+    inboxIds: ["agent@example.com"],
   });
 
   socket.emit(
@@ -109,7 +113,7 @@ test("AgentMail WebSocket listener subscribes and queues incoming email into an 
       },
     }),
   );
-  await Promise.resolve();
+  await flushAsyncHandlers();
 
   assert.equal(createdSessions.length, 1);
   assert.equal(createdSessions[0].providerId, "claude");
@@ -133,7 +137,7 @@ test("AgentMail WebSocket listener subscribes and queues incoming email into an 
       },
     }),
   );
-  await Promise.resolve();
+  await flushAsyncHandlers();
   assert.equal(createdSessions.length, 1, "duplicate event ids should be ignored");
 
   socket.emit(
@@ -150,8 +154,122 @@ test("AgentMail WebSocket listener subscribes and queues incoming email into an 
       },
     }),
   );
-  await Promise.resolve();
+  await flushAsyncHandlers();
   assert.equal(createdSessions.length, 2, "SDK-style message_received events should be accepted too");
+
+  socket.emit(
+    "message",
+    JSON.stringify({
+      type: "message_received",
+      eventId: "evt-3",
+      message_received: {
+        message: {
+          from_: "api-reference@example.com",
+          inboxId: "agent@example.com",
+          messageId: "<message-3@example.com>",
+          subject: "Nested event payload",
+          text: "This matches the API reference wrapper shape.",
+        },
+      },
+    }),
+  );
+  await flushAsyncHandlers();
+  assert.equal(createdSessions.length, 3, "nested message_received payloads should be accepted");
+});
+
+test("AgentMail polling backfills unread inbox messages and persists processed ids", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-agentmail-processed-"));
+  const message = {
+    from: "person@example.com",
+    inbox_id: "agent@example.com",
+    labels: ["received", "unread"],
+    message_id: "<poll-message@example.com>",
+    subject: "Missed while offline",
+    text: "Please reply when the listener comes back.",
+    timestamp: "2026-04-18T19:38:39.000Z",
+    to: ["agent@example.com"],
+  };
+  const createdSessions = [];
+  const writes = [];
+  const fetchImpl = createFetch([
+    { body: { count: 1, messages: [message] } },
+    { body: { count: 1, messages: [message] } },
+  ]);
+
+  try {
+    const service = new AgentMailService({
+      fetchImpl,
+      pollIntervalMs: 0,
+      promptDelayMs: 0,
+      sessionManager: {
+        createSession(input) {
+          const session = { id: `session-${createdSessions.length + 1}`, ...input };
+          createdSessions.push(session);
+          return session;
+        },
+        write(sessionId, input) {
+          writes.push({ input, sessionId });
+          return true;
+        },
+      },
+      setTimeoutImpl(callback) {
+        callback();
+        return 1;
+      },
+      settings: {
+        agentMailApiKey: "am_test",
+        agentMailEnabled: true,
+        agentMailInboxId: "agent@example.com",
+        agentMailProviderId: "claude",
+        wikiPath: "/tmp/wiki",
+      },
+      stateDir,
+    });
+
+    const firstPoll = await service.pollInboxOnce({ reason: "startup" });
+    assert.equal(firstPoll.length, 1);
+    assert.equal(createdSessions.length, 1);
+    assert.equal(createdSessions[0].cwd, "/tmp/wiki");
+    assert.equal(createdSessions[0].name, "email: Missed while offline");
+    assert.equal(writes.length, 1);
+    assert.match(writes[0].input, /simple greeting or test email/);
+    assert.match(writes[0].input, /Missed while offline/);
+    assert.equal(service.getStatus().lastStatus, "queued-startup");
+    assert.equal(service.getStatus().lastPollSeen, 1);
+
+    const processed = JSON.parse(await readFile(path.join(stateDir, "agentmail-processed.json"), "utf8"));
+    assert.deepEqual(processed.messageIds, ["<poll-message@example.com>"]);
+
+    const secondService = new AgentMailService({
+      fetchImpl,
+      pollIntervalMs: 0,
+      promptDelayMs: 0,
+      sessionManager: {
+        createSession(input) {
+          const session = { id: `session-${createdSessions.length + 1}`, ...input };
+          createdSessions.push(session);
+          return session;
+        },
+        write(sessionId, input) {
+          writes.push({ input, sessionId });
+          return true;
+        },
+      },
+      settings: {
+        agentMailApiKey: "am_test",
+        agentMailEnabled: true,
+        agentMailInboxId: "agent@example.com",
+      },
+      stateDir,
+    });
+
+    const secondPoll = await secondService.pollInboxOnce({ reason: "restart" });
+    assert.equal(secondPoll.length, 0);
+    assert.equal(createdSessions.length, 1, "processed messages should not relaunch after restart");
+    assert.equal(writes.length, 1, "processed messages should not be re-prompted after restart");
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
 });
 
 test("AgentMail REST helpers create inboxes and send replies without exposing the API key to prompts", async () => {

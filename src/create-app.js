@@ -297,6 +297,7 @@ export async function createRemoteVibesApp({
           cwd,
           sessionManager,
           settings: settingsStore.settings,
+          stateDir,
         });
   await agentRunStore.initialize();
   await portAliasStore.initialize();

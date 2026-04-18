@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import WebSocket from "ws";
 
 const AGENTMAIL_API_BASE_URL = "https://api.agentmail.to";
 const AGENTMAIL_WS_URL = "wss://ws.agentmail.to/v0";
+const DEFAULT_POLL_INTERVAL_MS = 60_000;
 const DEFAULT_RECONNECT_MS = 10_000;
 const DEFAULT_PROMPT_DELAY_MS = 1_200;
 const MAX_SEEN_EVENTS = 250;
+const MAX_PROCESSED_MESSAGES = 1_000;
 const EMAIL_BODY_LIMIT = 12_000;
 
 function normalizeBoolean(value, fallback = false) {
@@ -36,6 +39,64 @@ function encodePathSegment(value) {
   return encodeURIComponent(String(value || ""));
 }
 
+function normalizeEmailAddress(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  const match = raw.match(/<([^>]+)>/);
+  return (match?.[1] || raw).trim();
+}
+
+function normalizeAddressList(value) {
+  if (Array.isArray(value)) {
+    return value.map(normalizeEmailAddress).filter(Boolean);
+  }
+  const address = normalizeEmailAddress(value);
+  return address ? [address] : [];
+}
+
+function getMessageId(message) {
+  return String(message?.message_id || message?.messageId || "").trim();
+}
+
+function getMessageTimestampMs(message) {
+  const timestamp = message?.timestamp || message?.created_at || message?.createdAt || message?.updated_at || message?.updatedAt || "";
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isIncomingInboxMessage(message, inboxId) {
+  const labels = Array.isArray(message?.labels)
+    ? message.labels.map((label) => String(label || "").toLowerCase())
+    : [];
+  if (labels.some((label) => ["sent", "draft", "outbound"].includes(label))) {
+    return false;
+  }
+
+  if (labels.some((label) => ["received", "unread", "inbox"].includes(label))) {
+    return true;
+  }
+
+  const normalizedInbox = normalizeEmailAddress(inboxId);
+  const recipients = normalizeAddressList(message?.to);
+  const senders = normalizeAddressList(message?.from || message?.from_);
+  return Boolean(
+    normalizedInbox &&
+      recipients.includes(normalizedInbox) &&
+      !senders.includes(normalizedInbox),
+  );
+}
+
+function getMessageFromEvent(event) {
+  const candidates = [
+    event?.message,
+    event?.message_received?.message,
+    event?.messageReceived?.message,
+    event?.payload?.message,
+    event?.data?.message,
+  ];
+
+  return candidates.find((candidate) => candidate && typeof candidate === "object") || null;
+}
+
 function buildEmailPrompt({ message, replyCommand = "rv-agentmail-reply" }) {
   const inboxId = message?.inbox_id || message?.inboxId || "";
   const messageId = message?.message_id || message?.messageId || "";
@@ -53,6 +114,7 @@ function buildEmailPrompt({ message, replyCommand = "rv-agentmail-reply" }) {
     "",
     "Decide whether a reply is appropriate. If no reply is needed, briefly explain why in this session.",
     `If a reply is needed, send it with ${replyCommand} exactly once. Prefer plain text and keep it concise.`,
+    "If this is a simple greeting or test email, send a short friendly acknowledgement so the sender can verify the loop works.",
     "",
     "Reply command template:",
     "```sh",
@@ -86,41 +148,55 @@ function buildEmailPrompt({ message, replyCommand = "rv-agentmail-reply" }) {
   ].join("\n");
 }
 
-function getMessageFromEvent(event) {
-  return event?.message && typeof event.message === "object" ? event.message : null;
-}
-
 export class AgentMailService {
   constructor({
     cwd = process.cwd(),
     fetchImpl = globalThis.fetch,
+    pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
     promptDelayMs = DEFAULT_PROMPT_DELAY_MS,
     reconnectMs = DEFAULT_RECONNECT_MS,
     sessionManager,
     settings = {},
     setTimeoutImpl = setTimeout,
     clearTimeoutImpl = clearTimeout,
+    stateDir = "",
     WebSocketImpl = WebSocket,
   } = {}) {
     this.clearTimeout = clearTimeoutImpl;
     this.cwd = cwd;
     this.fetch = fetchImpl;
+    this.pollIntervalMs = pollIntervalMs;
     this.promptDelayMs = promptDelayMs;
     this.reconnectMs = reconnectMs;
     this.replyToken = randomUUID();
     this.sessionManager = sessionManager;
     this.setTimeout = setTimeoutImpl;
     this.settings = settings;
+    this.stateDir = stateDir;
+    this.processedFilePath = stateDir ? path.join(stateDir, "agentmail-processed.json") : "";
     this.status = {
       connected: false,
+      ignoredCount: 0,
       lastError: "",
       lastEventAt: "",
+      lastIgnoredEventType: "",
       lastInboxId: settings.agentMailInboxId || "",
       lastMessageId: "",
+      lastPollAt: "",
+      lastPollError: "",
+      lastPollSeen: 0,
       lastSessionId: "",
+      lastSocketEventType: "",
+      lastSocketMessageAt: "",
       lastStatus: "idle",
       processedCount: 0,
     };
+    this.processedLoaded = false;
+    this.processedLoadPromise = null;
+    this.processedMessageIds = [];
+    this.processedMessageSet = new Set();
+    this.pollInFlight = false;
+    this.pollTimer = null;
     this.seenEventIds = [];
     this.seenEventSet = new Set();
     this.socket = null;
@@ -174,12 +250,21 @@ export class AgentMailService {
     }
 
     this.connectWebSocket(config);
+    if (this.pollIntervalMs > 0) {
+      void this.pollInboxOnce({ reason: "startup" });
+      this.schedulePoll();
+    }
   }
 
   stop() {
     if (this.reconnectTimer) {
       this.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+
+    if (this.pollTimer) {
+      this.clearTimeout(this.pollTimer);
+      this.pollTimer = null;
     }
 
     if (this.socket) {
@@ -224,8 +309,7 @@ export class AgentMailService {
       socket.send(
         JSON.stringify({
           type: "subscribe",
-          inbox_ids: [config.inboxId],
-          event_types: ["message.received"],
+          inboxIds: [config.inboxId],
         }),
       );
     });
@@ -270,9 +354,14 @@ export class AgentMailService {
       return;
     }
 
+    const eventType = event?.event_type || event?.eventType || event?.type;
+    this.status.lastSocketEventType = eventType || "";
+    this.status.lastSocketMessageAt = new Date().toISOString();
+
     if (event?.type === "subscribed") {
       this.status.lastStatus = "connected";
       this.status.lastError = "";
+      void this.pollInboxOnce({ reason: "subscribed" });
       return;
     }
 
@@ -282,13 +371,22 @@ export class AgentMailService {
       return;
     }
 
-    const eventType = event?.event_type || event?.eventType || event?.type;
-    if (eventType === "message_received") {
+    if (
+      eventType === "message_received" ||
+      eventType === "message_received_spam" ||
+      eventType === "message_received_blocked"
+    ) {
       void this.handleIncomingMessage(event);
       return;
     }
 
-    if (eventType !== "message.received") {
+    if (
+      eventType !== "message.received" &&
+      eventType !== "message.received.spam" &&
+      eventType !== "message.received.blocked"
+    ) {
+      this.status.ignoredCount += 1;
+      this.status.lastIgnoredEventType = eventType || "(missing type)";
       return;
     }
 
@@ -313,7 +411,143 @@ export class AgentMailService {
     return false;
   }
 
-  async handleIncomingMessage(event) {
+  async loadProcessedMessages() {
+    if (this.processedLoaded) {
+      return;
+    }
+
+    if (this.processedLoadPromise) {
+      await this.processedLoadPromise;
+      return;
+    }
+
+    this.processedLoadPromise = (async () => {
+      if (!this.processedFilePath) {
+        this.processedLoaded = true;
+        return;
+      }
+
+      try {
+        const raw = await readFile(this.processedFilePath, "utf8");
+        const payload = JSON.parse(raw);
+        const ids = Array.isArray(payload?.messageIds) ? payload.messageIds : [];
+        this.processedMessageIds = ids.map((id) => String(id || "").trim()).filter(Boolean);
+        this.processedMessageSet = new Set(this.processedMessageIds);
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          this.status.lastPollError = error.message || "Could not load processed AgentMail messages.";
+        }
+      } finally {
+        this.processedLoaded = true;
+        this.processedLoadPromise = null;
+      }
+    })();
+
+    await this.processedLoadPromise;
+  }
+
+  async saveProcessedMessages() {
+    if (!this.processedFilePath) {
+      return;
+    }
+
+    await mkdir(path.dirname(this.processedFilePath), { recursive: true });
+    const payload = {
+      savedAt: new Date().toISOString(),
+      messageIds: this.processedMessageIds,
+    };
+    const tempPath = `${this.processedFilePath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`);
+    await rename(tempPath, this.processedFilePath);
+  }
+
+  async rememberProcessedMessage(messageId) {
+    const normalizedId = String(messageId || "").trim();
+    if (!normalizedId) {
+      return false;
+    }
+
+    await this.loadProcessedMessages();
+    if (this.processedMessageSet.has(normalizedId)) {
+      return true;
+    }
+
+    this.processedMessageSet.add(normalizedId);
+    this.processedMessageIds.push(normalizedId);
+    while (this.processedMessageIds.length > MAX_PROCESSED_MESSAGES) {
+      const removed = this.processedMessageIds.shift();
+      this.processedMessageSet.delete(removed);
+    }
+    await this.saveProcessedMessages();
+    return false;
+  }
+
+  schedulePoll() {
+    if (this.pollTimer || this.pollIntervalMs <= 0) {
+      return;
+    }
+
+    this.pollTimer = this.setTimeout(() => {
+      this.pollTimer = null;
+      void this.pollInboxOnce({ reason: "timer" }).finally(() => this.schedulePoll());
+    }, this.pollIntervalMs);
+    this.pollTimer.unref?.();
+  }
+
+  async pollInboxOnce({ reason = "manual" } = {}) {
+    const config = this.getConfig();
+    if (!config.enabled || !config.apiKey || !config.inboxId || this.pollInFlight) {
+      return [];
+    }
+
+    this.pollInFlight = true;
+    try {
+      await this.loadProcessedMessages();
+      const payload = await this.requestAgentMail({
+        apiKey: config.apiKey,
+        method: "GET",
+        path: `/v0/inboxes/${encodePathSegment(config.inboxId)}/messages?limit=25`,
+      });
+      const messages = (Array.isArray(payload?.messages) ? payload.messages : [])
+        .filter((message) => isIncomingInboxMessage(message, config.inboxId))
+        .sort((left, right) => getMessageTimestampMs(left) - getMessageTimestampMs(right));
+      this.status.lastPollAt = new Date().toISOString();
+      this.status.lastPollError = "";
+      this.status.lastPollSeen = messages.length;
+
+      const processed = [];
+      for (const message of messages) {
+        const messageId = getMessageId(message);
+        if (messageId && this.processedMessageSet.has(messageId)) {
+          continue;
+        }
+
+        const session = await this.handleIncomingMessage(
+          {
+            type: "message_received",
+            event_id: messageId ? `${reason}:${messageId}` : "",
+            message,
+          },
+          { source: reason },
+        );
+        if (session) {
+          processed.push(session);
+        }
+      }
+
+      return processed;
+    } catch (error) {
+      this.status.lastPollError = error.message || "AgentMail inbox poll failed.";
+      if (!this.status.lastError) {
+        this.status.lastError = this.status.lastPollError;
+      }
+      return [];
+    } finally {
+      this.pollInFlight = false;
+    }
+  }
+
+  async handleIncomingMessage(event, { source = "websocket" } = {}) {
     const eventId = event?.event_id || event?.eventId || "";
     if (this.rememberEvent(eventId)) {
       return null;
@@ -328,7 +562,13 @@ export class AgentMailService {
 
     const config = this.getConfig();
     const inboxId = message.inbox_id || message.inboxId || config.inboxId;
-    const messageId = message.message_id || message.messageId || "";
+    const messageId = getMessageId(message);
+    const processedKey = messageId || eventId;
+    await this.loadProcessedMessages();
+    if (processedKey && this.processedMessageSet.has(processedKey)) {
+      return null;
+    }
+
     const subject = compactWhitespace(message.subject || "new email");
     const sessionName = `email: ${subject || "new message"}`.slice(0, 64);
     const sessionCwd = this.settings.wikiPath || this.cwd;
@@ -339,11 +579,12 @@ export class AgentMailService {
         name: sessionName,
         cwd: sessionCwd,
       });
+      await this.rememberProcessedMessage(processedKey);
       this.status.lastEventAt = new Date().toISOString();
       this.status.lastInboxId = inboxId;
       this.status.lastMessageId = messageId;
       this.status.lastSessionId = session.id;
-      this.status.lastStatus = "queued";
+      this.status.lastStatus = source === "websocket" ? "queued" : `queued-${source}`;
       this.status.processedCount += 1;
 
       const prompt = buildEmailPrompt({ message });
