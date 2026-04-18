@@ -4621,6 +4621,9 @@ function renderPluginsView() {
 }
 
 function renderAutomationsView() {
+  const wikiBackupEnabled = Boolean(state.settings.wikiGitBackupEnabled);
+  const wikiBackupLabel = wikiBackupEnabled ? "enabled" : "disabled";
+
   return `
     <section class="dashboard-panel main-view automations-view">
       <div class="dashboard-toolbar">
@@ -4636,8 +4639,15 @@ function renderAutomationsView() {
         <span class="dashboard-updated">${escapeHtml(state.settings.wikiGitBackupEnabled ? "wiki backup on" : "wiki backup off")}</span>
       </div>
       <div class="main-results-grid automation-grid">
-        <article class="automation-card">
-          <span class="main-search-kind">enabled</span>
+        <article class="automation-card ${wikiBackupEnabled ? "is-enabled" : "is-disabled"}">
+          <button
+            class="main-search-kind automation-status-toggle ${wikiBackupEnabled ? "is-enabled" : "is-disabled"}"
+            type="button"
+            data-toggle-automation="wiki-backup"
+            aria-pressed="${wikiBackupEnabled ? "true" : "false"}"
+            aria-label="${wikiBackupEnabled ? "Disable" : "Enable"} knowledge base git backup"
+            ${tooltipAttributes(`${wikiBackupEnabled ? "Disable" : "Enable"} knowledge base git backup`)}
+          >${escapeHtml(wikiBackupLabel)}</button>
           <strong>Knowledge base git backup</strong>
           <p>Backs up the selected wiki every ${escapeHtml(String(Math.round((state.settings.wikiBackupIntervalMs || 0) / 60000) || 5))} minutes when enabled.</p>
           <button class="ghost-button toolbar-control" type="button" data-open-main-view="knowledge-base">open settings</button>
@@ -5861,6 +5871,31 @@ function refreshPluginSearchUi() {
   }
 
   results.innerHTML = renderPluginCards();
+}
+
+function bindAutomationEvents() {
+  document.querySelectorAll("[data-toggle-automation]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const automation = button.getAttribute("data-toggle-automation");
+      if (automation !== "wiki-backup" || !(button instanceof HTMLButtonElement)) {
+        return;
+      }
+
+      const nextEnabled = !state.settings.wikiGitBackupEnabled;
+      const previousText = button.textContent;
+      button.disabled = true;
+      button.textContent = nextEnabled ? "enabling..." : "disabling...";
+
+      try {
+        await updateWikiBackupAutomation(nextEnabled);
+        renderShell();
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = previousText;
+        window.alert(error.message);
+      }
+    });
+  });
 }
 
 function refreshAgentMailPluginUi() {
@@ -7366,6 +7401,7 @@ function bindShellEvents() {
   bindPortEvents();
   bindFileTreeEvents();
   bindSearchResultEvents();
+  bindAutomationEvents();
   bindUpdateEvents();
   bindSystemToastEvents();
 
@@ -8450,6 +8486,18 @@ async function backupWikiNow() {
   });
 
   applySettingsState(payload.settings || { wikiBackup: payload.backup });
+}
+
+async function updateWikiBackupAutomation(enabled) {
+  const payload = await fetchJson("/api/settings", {
+    method: "PATCH",
+    body: JSON.stringify({
+      wikiGitBackupEnabled: Boolean(enabled),
+    }),
+  });
+
+  applySettingsState(payload.settings);
+  applyAgentPromptState(payload.agentPrompt);
 }
 
 function renderFileEditorPage() {

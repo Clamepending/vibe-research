@@ -1053,6 +1053,28 @@ input[readonly][data-folder-picker-target] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.automation-status-toggle {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, opacity 140ms ease;
+}
+
+.automation-status-toggle:hover {
+  border-color: rgba(242, 138, 104, 0.24);
+  background: rgba(242, 138, 104, 0.14);
+  color: #ffd2c2;
+  transform: none;
+}
+
+.automation-status-toggle.is-disabled {
+  background: rgba(255, 255, 255, 0.055);
+  color: rgba(232, 236, 240, 0.58);
+}
+
+.automation-status-toggle:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .system-dashboard {
   display: grid;
   align-content: start;
