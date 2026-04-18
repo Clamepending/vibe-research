@@ -218,8 +218,9 @@ test("update endpoints report status and schedule restart", async () => {
 
 test("system endpoint reports host storage and utilization metrics", async () => {
   const workspaceDir = await createTempWorkspace("remote-vibes-system-");
+  const checkedAt = new Date().toISOString();
   const systemPayload = {
-    checkedAt: "2026-04-18T10:00:00.000Z",
+    checkedAt,
     hostname: "test-host",
     platform: "test",
     uptimeSeconds: 120,
@@ -266,6 +267,14 @@ test("system endpoint reports host storage and utilization metrics", async () =>
     const response = await fetch(`${baseUrl}/api/system`);
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { system: systemPayload });
+    const historyResponse = await fetch(`${baseUrl}/api/system/history?range=1h`);
+    assert.equal(historyResponse.status, 200);
+    const history = (await historyResponse.json()).history;
+    assert.equal(history.range, "1h");
+    assert.equal(history.rawSampleCount, 1);
+    assert.equal(history.samples[0].checkedAt, checkedAt);
+    assert.equal(history.samples[0].memory.usedPercent, 50);
+    assert.equal(history.samples[0].storage.primary.usedPercent, 70);
     assert.equal(calls, 1);
   } finally {
     await app.close();

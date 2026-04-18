@@ -20,6 +20,7 @@ import { SessionManager } from "./session-manager.js";
 import { SleepPreventionService } from "./sleep-prevention.js";
 import { getRemoteVibesStateDir } from "./state-paths.js";
 import { collectSystemMetrics } from "./system-metrics.js";
+import { SystemMetricsHistoryStore } from "./system-metrics-history.js";
 import { TailscaleServeManager } from "./tailscale-serve.js";
 import { UpdateManager } from "./update-manager.js";
 import { WikiBackupService } from "./wiki-backup.js";
@@ -254,6 +255,7 @@ export async function createRemoteVibesApp({
   onTerminate = null,
   agentMailServiceFactory = null,
   systemMetricsProvider = collectSystemMetrics,
+  systemMetricsSampleIntervalMs = 60_000,
   updateManager = new UpdateManager({ cwd, stateDir, port }),
 } = {}) {
   const providers = Array.isArray(providerOverrides) ? providerOverrides : await detectProviders();
@@ -261,8 +263,10 @@ export async function createRemoteVibesApp({
   const app = express();
   const agentRunStore = new AgentRunStore({ stateDir });
   const settingsStore = new SettingsStore({ cwd, stateDir });
+  const systemMetricsHistoryStore = new SystemMetricsHistoryStore({ stateDir });
   const portAliasStore = new PortAliasStore({ stateDir });
   await settingsStore.initialize();
+  await systemMetricsHistoryStore.initialize();
   const wikiBackupService = new WikiBackupService({
     enabled: settingsStore.settings.wikiGitBackupEnabled,
     intervalMs: settingsStore.settings.wikiBackupIntervalMs,
@@ -307,6 +311,7 @@ export async function createRemoteVibesApp({
   let exposedPort = null;
   let closePromise = null;
   let terminatePromise = null;
+  let systemMetricsTimer = null;
   let urls = [];
   let preferredUrl = null;
   const proxyServer = httpProxy.createProxyServer({
@@ -405,6 +410,29 @@ export async function createRemoteVibesApp({
     });
   }
 
+  async function collectAndRecordSystemMetrics({ forceHistory = false } = {}) {
+    const system = await systemMetricsProvider({ cwd, wikiPath: settingsStore.settings.wikiPath });
+    await systemMetricsHistoryStore.record(system, { force: forceHistory });
+    return system;
+  }
+
+  let systemMetricsSamplePromise = null;
+  function sampleSystemMetricsHistory() {
+    if (systemMetricsSamplePromise) {
+      return systemMetricsSamplePromise;
+    }
+
+    systemMetricsSamplePromise = collectAndRecordSystemMetrics()
+      .catch((error) => {
+        console.error("[remote-vibes] system metrics history sample failed:", error);
+      })
+      .finally(() => {
+        systemMetricsSamplePromise = null;
+      });
+
+    return systemMetricsSamplePromise;
+  }
+
   app.use(express.json());
 
   app.use((request, response, next) => {
@@ -448,11 +476,17 @@ export async function createRemoteVibesApp({
   app.get("/api/system", async (_request, response) => {
     try {
       response.json({
-        system: await systemMetricsProvider({ cwd, wikiPath: settingsStore.settings.wikiPath }),
+        system: await collectAndRecordSystemMetrics(),
       });
     } catch (error) {
       response.status(500).json({ error: error.message || "Could not read system metrics." });
     }
+  });
+
+  app.get("/api/system/history", (request, response) => {
+    response.json({
+      history: systemMetricsHistoryStore.getHistory(String(request.query.range || "1h")),
+    });
   });
 
   app.patch("/api/ports/:port", async (request, response) => {
@@ -998,6 +1032,12 @@ export async function createRemoteVibesApp({
     helperBaseUrl: getHelperBaseUrl(host, resolvedPort),
     preferredUrl,
   });
+  if (systemMetricsSampleIntervalMs > 0) {
+    systemMetricsTimer = setInterval(() => {
+      void sampleSystemMetricsHistory();
+    }, systemMetricsSampleIntervalMs);
+    systemMetricsTimer.unref?.();
+  }
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url || "/", `http://${request.headers.host}`);
 
@@ -1078,6 +1118,10 @@ export async function createRemoteVibesApp({
       agentMailService.stop();
       wikiBackupService.stop();
       sleepPreventionService.stop();
+      if (systemMetricsTimer) {
+        clearInterval(systemMetricsTimer);
+        systemMetricsTimer = null;
+      }
       proxyServer.close();
       await new Promise((resolve) => websocketServer.close(resolve));
       await new Promise((resolve, reject) => {

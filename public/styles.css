@@ -1668,6 +1668,70 @@ input[readonly][data-folder-picker-target] {
   gap: 10px;
 }
 
+.system-history-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.system-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 18px;
+  background: var(--surface);
+}
+
+.system-history-head > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.system-history-head strong {
+  font-size: 1rem;
+  letter-spacing: -0.01em;
+}
+
+.system-history-head span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-history-ranges {
+  display: inline-flex;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.system-history-range-button {
+  min-height: 28px;
+  padding: 0 11px;
+  border-radius: 999px;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.system-history-range-button:hover,
+.system-history-range-button.is-active {
+  background: var(--surface-active);
+  color: var(--text);
+  transform: none;
+}
+
 .system-chart-card {
   display: grid;
   gap: 12px;
@@ -4348,11 +4412,24 @@ select:disabled {
   }
 
   .system-storage-head,
+  .system-history-head,
   .system-section-head,
   .system-device-head {
     align-items: flex-start;
     flex-direction: column;
     gap: 4px;
+  }
+
+  .system-history-head {
+    padding: 12px;
+  }
+
+  .system-history-ranges {
+    width: 100%;
+  }
+
+  .system-history-range-button {
+    flex: 1 1 0;
   }
 
   .system-storage-head strong,

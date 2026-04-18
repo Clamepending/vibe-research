@@ -14,7 +14,12 @@ const KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX = 6;
 const PORT_PREVIEW_TAB_PREFIX = "port:";
 const ROUTED_MAIN_VIEWS = new Set(["search", "plugins", "automations", "system", "swarm"]);
 const SESSION_WORKING_SPINNER_MS = 900;
-const SYSTEM_HISTORY_LIMIT = 48;
+const SYSTEM_HISTORY_REFRESH_MS = 30_000;
+const SYSTEM_HISTORY_RANGES = [
+  { id: "1h", label: "1h", title: "last hour" },
+  { id: "1d", label: "1d", title: "last day" },
+  { id: "1w", label: "1w", title: "last week" },
+];
 const SYSTEM_CHART_COLORS = [
   "#f4f4f5",
   "#c7c9d1",
@@ -353,6 +358,12 @@ const state = {
   lastUpdateError: null,
   systemMetrics: null,
   systemMetricHistory: [],
+  systemHistoryRange: "1h",
+  systemHistoryMeta: null,
+  systemHistoryLoading: false,
+  systemHistoryError: "",
+  systemHistoryLoadedAt: 0,
+  systemHistoryRequestId: 0,
   systemMetricsLoading: false,
   systemMetricsError: "",
   systemMetricsRequestId: 0,
@@ -4843,30 +4854,25 @@ function createSystemMetricHistorySample(system) {
         utilizationPercent: getFiniteMetricPercent(core?.utilizationPercent),
       })),
     },
+    storage: {
+      primary: system.storage?.primary
+        ? {
+            name: system.storage.primary.name || "Disk",
+            usedPercent: getFiniteMetricPercent(system.storage.primary.usedPercent ?? system.storage.primary.capacityPercent),
+          }
+        : null,
+    },
+    memory: system.memory
+      ? {
+          usedPercent: getFiniteMetricPercent(system.memory.usedPercent),
+        }
+      : null,
     gpus: (Array.isArray(system.gpus) ? system.gpus : []).map((gpu, index) => ({
       id: String(gpu?.id || `gpu-${index}`),
       name: gpu?.name || `GPU ${index + 1}`,
       utilizationPercent: getFiniteMetricPercent(gpu?.utilizationPercent),
     })),
   };
-}
-
-function appendSystemMetricHistory(system) {
-  const sample = createSystemMetricHistorySample(system);
-  if (!sample) {
-    return;
-  }
-
-  const lastSample = state.systemMetricHistory.at(-1);
-  if (lastSample?.checkedAt === sample.checkedAt) {
-    state.systemMetricHistory[state.systemMetricHistory.length - 1] = sample;
-  } else {
-    state.systemMetricHistory.push(sample);
-  }
-
-  if (state.systemMetricHistory.length > SYSTEM_HISTORY_LIMIT) {
-    state.systemMetricHistory.splice(0, state.systemMetricHistory.length - SYSTEM_HISTORY_LIMIT);
-  }
 }
 
 function getSystemChartHistory(system) {
@@ -4899,6 +4905,27 @@ function buildCpuCoreChartSeries(history) {
       return getFiniteMetricPercent(core?.utilizationPercent);
     }),
   }));
+}
+
+function buildMemoryChartSeries(history) {
+  return [
+    {
+      id: "memory",
+      label: "Memory",
+      values: history.map((sample) => getFiniteMetricPercent(sample.memory?.usedPercent)),
+    },
+  ];
+}
+
+function buildStorageChartSeries(history) {
+  const latestPrimary = [...history].reverse().find((sample) => sample.storage?.primary)?.storage?.primary;
+  return [
+    {
+      id: "storage",
+      label: latestPrimary?.name || "Disk",
+      values: history.map((sample) => getFiniteMetricPercent(sample.storage?.primary?.usedPercent)),
+    },
+  ];
 }
 
 function buildGpuChartSeries(history) {
@@ -5027,23 +5054,67 @@ function renderUtilizationLineChart({ emptyMessage, series, subtitle, title }) {
 
 function renderSystemUtilizationCharts(system) {
   const history = getSystemChartHistory(system);
-  const sampleText = history.length === 1 ? "1 sample" : `${history.length} samples`;
+  const range = SYSTEM_HISTORY_RANGES.find((entry) => entry.id === state.systemHistoryRange) || SYSTEM_HISTORY_RANGES[0];
+  const sampleCount = state.systemHistoryMeta?.sampleCount ?? history.length;
+  const rawSampleCount = state.systemHistoryMeta?.rawSampleCount ?? sampleCount;
+  const sampleText = sampleCount === 1 ? "1 sample" : `${sampleCount} samples`;
+  const rawText = rawSampleCount > sampleCount ? ` · ${rawSampleCount} raw samples` : "";
+  const intervalText = state.systemHistoryMeta?.minSampleIntervalMs
+    ? ` · collected every ${Math.round(state.systemHistoryMeta.minSampleIntervalMs / 1000)}s`
+    : "";
 
   return `
-    <div class="system-chart-grid">
-      ${renderUtilizationLineChart({
-        title: "CPU core history",
-        subtitle: sampleText,
-        series: buildCpuCoreChartSeries(history),
-        emptyMessage: "CPU core history starts after the first sample.",
-      })}
-      ${renderUtilizationLineChart({
-        title: "GPU history",
-        subtitle: sampleText,
-        series: buildGpuChartSeries(history),
-        emptyMessage: "GPU utilization is not exposed by this host.",
-      })}
-    </div>
+    <section class="system-history-panel">
+      <div class="system-history-head">
+        <div>
+          <strong>History</strong>
+          <span>${escapeHtml(range.title)} · ${escapeHtml(sampleText)}${escapeHtml(rawText)}${escapeHtml(intervalText)}</span>
+        </div>
+        <div class="system-history-ranges" role="group" aria-label="System history range">
+          ${SYSTEM_HISTORY_RANGES.map(
+            (entry) => `
+              <button
+                class="system-history-range-button ${entry.id === state.systemHistoryRange ? "is-active" : ""}"
+                type="button"
+                data-system-history-range="${escapeHtml(entry.id)}"
+                aria-pressed="${entry.id === state.systemHistoryRange ? "true" : "false"}"
+              >${escapeHtml(entry.label)}</button>
+            `,
+          ).join("")}
+        </div>
+      </div>
+      ${
+        state.systemHistoryError
+          ? `<div class="system-error-card">${escapeHtml(state.systemHistoryError)}</div>`
+          : ""
+      }
+      <div class="system-chart-grid">
+        ${renderUtilizationLineChart({
+          title: "CPU core history",
+          subtitle: state.systemHistoryLoading ? "loading history..." : sampleText,
+          series: buildCpuCoreChartSeries(history),
+          emptyMessage: "CPU core history starts after the first sample.",
+        })}
+        ${renderUtilizationLineChart({
+          title: "GPU history",
+          subtitle: state.systemHistoryLoading ? "loading history..." : sampleText,
+          series: buildGpuChartSeries(history),
+          emptyMessage: "GPU utilization is not exposed by this host.",
+        })}
+        ${renderUtilizationLineChart({
+          title: "Memory history",
+          subtitle: state.systemHistoryLoading ? "loading history..." : sampleText,
+          series: buildMemoryChartSeries(history),
+          emptyMessage: "Memory history starts after the first sample.",
+        })}
+        ${renderUtilizationLineChart({
+          title: "Disk history",
+          subtitle: state.systemHistoryLoading ? "loading history..." : sampleText,
+          series: buildStorageChartSeries(history),
+          emptyMessage: "Disk history starts after the first sample.",
+        })}
+      </div>
+    </section>
   `;
 }
 
@@ -8326,6 +8397,20 @@ function bindShellEvents() {
   document.querySelector("#refresh-system")?.addEventListener("click", () => {
     void loadSystemMetrics({ forceRender: true });
   });
+  document.querySelectorAll("[data-system-history-range]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const range = button.getAttribute("data-system-history-range") || "1h";
+      if (range === state.systemHistoryRange) {
+        return;
+      }
+
+      state.systemHistoryRange = range;
+      state.systemMetricHistory = [];
+      state.systemHistoryMeta = null;
+      state.systemHistoryLoadedAt = 0;
+      void loadSystemMetricHistory({ forceRender: true });
+    });
+  });
   document.querySelector("#open-sidebar")?.addEventListener("click", () => setMobileSidebar("left"));
   document.querySelector("#close-left-sidebar")?.addEventListener("click", () => closeMobileSidebar());
   document.querySelector("[data-sidebar-scrim]")?.addEventListener("click", () => closeMobileSidebar());
@@ -9051,6 +9136,59 @@ async function loadSettingsStatus() {
   }
 }
 
+function normalizeSystemMetricHistorySample(sample) {
+  return createSystemMetricHistorySample(sample);
+}
+
+async function loadSystemMetricHistory({ forceRender = false, renderOnComplete = true } = {}) {
+  const requestId = Date.now();
+  state.systemHistoryLoading = true;
+  state.systemHistoryRequestId = requestId;
+
+  if (state.currentView === "system" && forceRender) {
+    renderShell();
+  }
+
+  try {
+    const payload = await fetchJson(`/api/system/history?range=${encodeURIComponent(state.systemHistoryRange)}`, {
+      cache: "no-store",
+    });
+
+    if (state.systemHistoryRequestId !== requestId) {
+      return;
+    }
+
+    const history = payload.history || {};
+    state.systemMetricHistory = (Array.isArray(history.samples) ? history.samples : [])
+      .map((sample) => normalizeSystemMetricHistorySample(sample))
+      .filter(Boolean);
+    state.systemHistoryMeta = {
+      range: history.range || state.systemHistoryRange,
+      windowMs: Number(history.windowMs || 0),
+      from: history.from || "",
+      to: history.to || "",
+      sampleCount: Number(history.sampleCount ?? state.systemMetricHistory.length),
+      rawSampleCount: Number(history.rawSampleCount ?? state.systemMetricHistory.length),
+      minSampleIntervalMs: Number(history.minSampleIntervalMs || 0),
+    };
+    state.systemHistoryLoadedAt = Date.now();
+    state.systemHistoryError = "";
+  } catch (error) {
+    if (state.systemHistoryRequestId !== requestId) {
+      return;
+    }
+
+    state.systemHistoryError = error.message || "Could not load system history.";
+  } finally {
+    if (state.systemHistoryRequestId === requestId) {
+      state.systemHistoryLoading = false;
+      if (renderOnComplete && state.currentView === "system") {
+        renderShell();
+      }
+    }
+  }
+}
+
 async function loadSystemMetrics({ forceRender = false } = {}) {
   const requestId = Date.now();
   state.systemMetricsLoading = true;
@@ -9070,8 +9208,14 @@ async function loadSystemMetrics({ forceRender = false } = {}) {
     }
 
     state.systemMetrics = payload.system || null;
-    appendSystemMetricHistory(state.systemMetrics);
     state.systemMetricsError = "";
+    if (
+      forceRender
+      || !state.systemHistoryLoadedAt
+      || Date.now() - state.systemHistoryLoadedAt > SYSTEM_HISTORY_REFRESH_MS
+    ) {
+      await loadSystemMetricHistory({ renderOnComplete: false });
+    }
   } catch (error) {
     if (state.systemMetricsRequestId !== requestId) {
       return;
