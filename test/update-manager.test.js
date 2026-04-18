@@ -76,6 +76,54 @@ test("UpdateManager reports current checkouts as current", async () => {
   }
 });
 
+test("UpdateManager reports non-git workspaces as unsupported without raw git errors", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-not-git-"));
+
+  try {
+    const manager = new UpdateManager({
+      cwd: tempRoot,
+      stateDir: path.join(tempRoot, "state"),
+      cacheMs: 0,
+    });
+    const status = await manager.getStatus({ force: true });
+
+    assert.equal(status.supported, false);
+    assert.equal(status.status, "unsupported");
+    assert.equal(status.updateAvailable, false);
+    assert.equal(status.canUpdate, false);
+    assert.equal(status.cwd, tempRoot);
+    assert.match(status.reason, /not running from a git checkout/);
+    assert.doesNotMatch(status.reason, /Command failed|rev-parse|fatal:/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("UpdateManager rejects apply from non-git workspaces with a friendly error", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-not-git-"));
+
+  try {
+    const manager = new UpdateManager({
+      cwd: tempRoot,
+      stateDir: path.join(tempRoot, "state"),
+      cacheMs: 0,
+    });
+
+    await assert.rejects(
+      () => manager.scheduleUpdateAndRestart(),
+      (error) => {
+        assert.equal(error.statusCode, 409);
+        assert.match(error.message, /not running from a git checkout/);
+        assert.doesNotMatch(error.message, /Command failed|rev-parse|fatal:/);
+        assert.equal(error.update?.status, "unsupported");
+        return true;
+      },
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("UpdateManager reports a clean checkout behind the remote as updateable", async () => {
   const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
   const latestCommit = await commitSourceVersion(sourceDir, "v2");

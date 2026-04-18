@@ -10,6 +10,8 @@ const DEFAULT_UPDATE_CHANNEL = "release";
 const MANAGED_PROMPT_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
 const MANAGED_PROMPT_FILES = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
 const MANAGED_PROMPT_FILE_SET = new Set(MANAGED_PROMPT_FILES);
+const NON_GIT_CHECKOUT_REASON =
+  "Automatic updates are unavailable because Remote Vibes is not running from a git checkout.";
 
 function trim(value) {
   return String(value ?? "").trim();
@@ -174,6 +176,11 @@ function getStatusLabel({ updateAvailable, canUpdate, reason }) {
   return canUpdate ? "available" : reason ? "blocked" : "available";
 }
 
+function isNotGitRepositoryError(error) {
+  const message = `${error?.stderr || ""}\n${error?.message || ""}`;
+  return /not a git repository|not a git work tree/i.test(message);
+}
+
 export class UpdateManager {
   constructor({
     cwd = process.cwd(),
@@ -240,16 +247,18 @@ export class UpdateManager {
     const checkedAt = new Date().toISOString();
 
     try {
-      const inside = await this.git(["rev-parse", "--is-inside-work-tree"]);
+      let inside;
+      try {
+        inside = await this.git(["rev-parse", "--is-inside-work-tree"]);
+      } catch (error) {
+        if (isNotGitRepositoryError(error)) {
+          return this.createUnsupportedStatus(checkedAt);
+        }
+        throw error;
+      }
+
       if (trim(inside.stdout) !== "true") {
-        return {
-          supported: false,
-          status: "unsupported",
-          updateAvailable: false,
-          canUpdate: false,
-          checkedAt,
-          reason: "Remote Vibes is not running from a git checkout.",
-        };
+        return this.createUnsupportedStatus(checkedAt);
       }
 
       const [currentCommitResult, branchResult, remoteUrlResult, dirtyResult] =
@@ -347,18 +356,36 @@ export class UpdateManager {
         reason,
       };
     } catch (error) {
+      const notGitCheckout = isNotGitRepositoryError(error);
+
       return {
         supported: false,
-        status: "error",
+        status: notGitCheckout ? "unsupported" : "error",
         updateAvailable: false,
         canUpdate: false,
         checkedAt,
         remote: this.remote,
         branch: this.branch,
         channel: this.channel,
-        reason: error.message || "Could not check for updates.",
+        cwd: this.cwd,
+        reason: notGitCheckout ? NON_GIT_CHECKOUT_REASON : error.message || "Could not check for updates.",
       };
     }
+  }
+
+  createUnsupportedStatus(checkedAt) {
+    return {
+      supported: false,
+      status: "unsupported",
+      updateAvailable: false,
+      canUpdate: false,
+      checkedAt,
+      remote: this.remote,
+      branch: this.branch,
+      channel: this.channel,
+      cwd: this.cwd,
+      reason: NON_GIT_CHECKOUT_REASON,
+    };
   }
 
   readCurrentVersion() {
@@ -626,6 +653,13 @@ export class UpdateManager {
 
   async scheduleUpdateAndRestart() {
     const status = await this.getStatus({ force: true });
+
+    if (!status.supported || status.status === "error") {
+      const error = new Error(status.reason || "Automatic updates are unavailable for this checkout.");
+      error.statusCode = 409;
+      error.update = status;
+      throw error;
+    }
 
     if (!status.updateAvailable) {
       const error = new Error("Remote Vibes is already up to date.");
