@@ -27,6 +27,11 @@
   box-sizing: border-box;
 }
 
+::selection {
+  background: rgba(242, 138, 104, 0.34);
+  color: #fffaf6;
+}
+
 html,
 body {
   margin: 0;
@@ -117,6 +122,50 @@ textarea {
   height: var(--app-height);
   overflow: hidden;
   overflow-x: clip;
+}
+
+.app-shell,
+.file-editor-screen,
+.dashboard-panel,
+.terminal-panel,
+.sidebar,
+.file-editor-card,
+.knowledge-base-markdown,
+.syntax-code {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.sidebar-scrim,
+.icon-button,
+.ghost-button,
+.primary-button,
+.danger-button,
+.toolbar-control,
+.session-action-button,
+.file-row-button,
+.session-provider-trigger,
+.session-provider-option,
+.knowledge-base-graph,
+.file-image-preview {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.port-preview-trigger,
+.port-preview-trigger *,
+.session-card .session-name,
+.session-card .session-subtitle,
+.session-subagent-card .session-name,
+.session-subagent-card .session-subtitle,
+.main-search-result .main-search-copy,
+.main-search-result .main-search-copy *,
+.plugin-card,
+.plugin-card *,
+.automation-card p,
+.folder-picker-path {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .app-shell > * {

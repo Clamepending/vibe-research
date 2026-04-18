@@ -18,6 +18,7 @@ const FILE_IMAGE_MIN_ZOOM = 1;
 const FILE_IMAGE_MAX_ZOOM = 8;
 const FILE_IMAGE_ZOOM_STEP = 0.25;
 const SYSTEM_HISTORY_REFRESH_MS = 30_000;
+const SELECTION_REFRESH_RETRY_MS = 250;
 const SYSTEM_HISTORY_RANGES = [
   { id: "1h", label: "1h", title: "last hour" },
   { id: "1d", label: "1d", title: "last day" },
@@ -229,6 +230,8 @@ const state = {
   sessions: [],
   sessionReadAt: loadSessionReadState(),
   sessionsRefreshDeferred: false,
+  deferredSelectableRefreshes: new Set(),
+  deferredSelectableRefreshTimer: null,
   ports: [],
   currentView: "shell",
   globalSearchQuery: "",
@@ -351,6 +354,7 @@ const state = {
   resizeBound: false,
   mobileSidebar: null,
   terminalResizeObserver: null,
+  terminalSelectionDisposable: null,
   pendingTerminalOutput: "",
   pendingTerminalScrollToBottom: false,
   terminalOutputFrame: null,
@@ -6777,6 +6781,136 @@ function getUiNow() {
   return globalThis.performance?.now ? globalThis.performance.now() : Date.now();
 }
 
+function isNodeInsideApp(node) {
+  return Boolean(node && app && (node === app || app.contains(node)));
+}
+
+function hasSelectedTextInActiveControl() {
+  const activeElement = document.activeElement;
+  if (!(activeElement instanceof HTMLInputElement) && !(activeElement instanceof HTMLTextAreaElement)) {
+    return false;
+  }
+
+  if (!isNodeInsideApp(activeElement)) {
+    return false;
+  }
+
+  const selectionStart = Number(activeElement.selectionStart);
+  const selectionEnd = Number(activeElement.selectionEnd);
+  return Number.isFinite(selectionStart) && Number.isFinite(selectionEnd) && selectionStart !== selectionEnd;
+}
+
+function hasSelectedDocumentText() {
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0 || !selection.toString()) {
+    return false;
+  }
+
+  return isNodeInsideApp(selection.anchorNode) || isNodeInsideApp(selection.focusNode);
+}
+
+function hasSelectedDocumentTextWithin(element) {
+  const selection = window.getSelection?.();
+  if (!(element instanceof Element) || !selection || selection.isCollapsed || selection.rangeCount === 0 || !selection.toString()) {
+    return false;
+  }
+
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    try {
+      if (selection.getRangeAt(index).intersectsNode(element)) {
+        return true;
+      }
+    } catch {
+      // A detached node can throw while the DOM is being replaced.
+    }
+  }
+
+  return false;
+}
+
+function hasActiveUserTextSelection() {
+  return (
+    hasSelectedTextInActiveControl()
+    || hasSelectedDocumentText()
+    || Boolean(state.terminal?.hasSelection?.())
+  );
+}
+
+function scheduleSelectableRefreshFlush(delay = SELECTION_REFRESH_RETRY_MS) {
+  if (state.deferredSelectableRefreshTimer) {
+    window.clearTimeout(state.deferredSelectableRefreshTimer);
+  }
+
+  state.deferredSelectableRefreshTimer = window.setTimeout(() => {
+    state.deferredSelectableRefreshTimer = null;
+    flushDeferredSelectableRefreshes();
+  }, delay);
+}
+
+function deferSelectableRefresh(kind) {
+  if (!kind) {
+    return;
+  }
+
+  state.deferredSelectableRefreshes.add(kind);
+  scheduleSelectableRefreshFlush();
+}
+
+function shouldDeferSelectableRefresh({ force = false } = {}) {
+  return !force && hasActiveUserTextSelection();
+}
+
+function flushDeferredSelectableRefreshes({ force = false } = {}) {
+  if (!state.deferredSelectableRefreshes.size) {
+    return;
+  }
+
+  if (!force && hasActiveUserTextSelection()) {
+    scheduleSelectableRefreshFlush();
+    return;
+  }
+
+  const refreshes = new Set(state.deferredSelectableRefreshes);
+  state.deferredSelectableRefreshes.clear();
+
+  if (refreshes.has("system-view") && state.currentView === "system") {
+    renderShell();
+    return;
+  }
+
+  if (refreshes.has("sessions")) {
+    refreshSessionsList({ force: true });
+  }
+
+  if (refreshes.has("ports")) {
+    refreshPortsList({ force: true });
+  }
+
+  if (refreshes.has("update")) {
+    refreshUpdateUi({ force: true });
+  }
+
+  if (refreshes.has("toasts")) {
+    refreshSystemToastsUi({ force: true });
+  }
+
+  if (refreshes.has("agentmail")) {
+    refreshAgentMailPluginUi({ force: true });
+  }
+}
+
+function bindSelectableRefreshEvents() {
+  document.addEventListener("selectionchange", () => {
+    if (!hasActiveUserTextSelection()) {
+      scheduleSelectableRefreshFlush(40);
+    }
+  });
+
+  window.addEventListener("copy", () => {
+    scheduleSelectableRefreshFlush(400);
+  });
+}
+
 function isSessionListTemporarilyProtected() {
   return getUiNow() < state.sessionListInteractionUntil;
 }
@@ -6945,6 +7079,10 @@ function bindSessionEvents() {
         return;
       }
 
+      if (hasSelectedDocumentTextWithin(element)) {
+        return;
+      }
+
       const nextSessionId = element.getAttribute("data-session-id");
       if (!nextSessionId) {
         closeMobileSidebar();
@@ -7073,6 +7211,11 @@ function refreshSessionsList({ force = false } = {}) {
     return;
   }
 
+  if (shouldDeferSelectableRefresh({ force })) {
+    deferSelectableRefresh("sessions");
+    return;
+  }
+
   if (!force && isSessionListInteractionActive()) {
     state.sessionsRefreshDeferred = true;
     if (isSessionListTemporarilyProtected()) {
@@ -7087,9 +7230,14 @@ function refreshSessionsList({ force = false } = {}) {
   bindSessionEvents();
 }
 
-function refreshPortsList() {
+function refreshPortsList({ force = false } = {}) {
   const portsList = document.querySelector("#ports-list");
   if (!portsList) {
+    return;
+  }
+
+  if (shouldDeferSelectableRefresh({ force })) {
+    deferSelectableRefresh("ports");
     return;
   }
 
@@ -7169,9 +7317,14 @@ function bindAutomationEvents() {
   });
 }
 
-function refreshAgentMailPluginUi() {
+function refreshAgentMailPluginUi({ force = false } = {}) {
   const card = document.querySelector(".agentmail-plugin-card");
   if (!card) {
+    return;
+  }
+
+  if (shouldDeferSelectableRefresh({ force })) {
+    deferSelectableRefresh("agentmail");
     return;
   }
 
@@ -7212,9 +7365,14 @@ function bindAgentMailForm() {
   });
 }
 
-function refreshUpdateUi() {
+function refreshUpdateUi({ force = false } = {}) {
   const updateBanner = document.querySelector("#update-banner");
   if (!updateBanner) {
+    return;
+  }
+
+  if (shouldDeferSelectableRefresh({ force })) {
+    deferSelectableRefresh("update");
     return;
   }
 
@@ -7238,9 +7396,14 @@ function refreshKnowledgeSettingsUi() {
   }
 }
 
-function refreshSystemToastsUi() {
+function refreshSystemToastsUi({ force = false } = {}) {
   const currentStack = document.querySelector("#system-toasts");
   const nextHtml = renderSystemToasts();
+
+  if (shouldDeferSelectableRefresh({ force })) {
+    deferSelectableRefresh("toasts");
+    return;
+  }
 
   if (currentStack) {
     if (nextHtml) {
@@ -7335,6 +7498,9 @@ function bindPortEvents() {
   document.querySelectorAll("[data-open-port-preview]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();
+      if (hasSelectedDocumentTextWithin(button)) {
+        return;
+      }
       const portNumber = Number(button.getAttribute("data-open-port-preview"));
       openPortPreview(portNumber);
     });
@@ -9184,7 +9350,7 @@ function bindUpdateEvents() {
     }
 
     state.updateApplying = true;
-    refreshUpdateUi();
+    refreshUpdateUi({ force: true });
 
     try {
       const payload = await fetchJson("/api/update/apply", { method: "POST" });
@@ -9203,8 +9369,8 @@ function bindUpdateEvents() {
         status: "blocked",
         reason: error.message,
       };
-      refreshUpdateUi();
-      refreshSystemToastsUi();
+      refreshUpdateUi({ force: true });
+      refreshSystemToastsUi({ force: true });
     }
   });
 }
@@ -9279,6 +9445,13 @@ function disposeTerminal() {
     }
     state.terminal = null;
   }
+
+  try {
+    state.terminalSelectionDisposable?.dispose?.();
+  } catch {
+    // Best-effort cleanup only.
+  }
+  state.terminalSelectionDisposable = null;
 }
 
 function observeTerminalMount(mount) {
@@ -9529,6 +9702,11 @@ function mountTerminal() {
 
   state.fitAddon = new FitAddon();
   state.terminal.loadAddon(state.fitAddon);
+  state.terminalSelectionDisposable = state.terminal.onSelectionChange?.(() => {
+    if (!state.terminal?.hasSelection?.()) {
+      scheduleSelectableRefreshFlush(40);
+    }
+  });
   state.terminal.open(mount);
   configureTerminalTextarea(state.terminal.textarea);
   resetTerminalTextarea();
@@ -9884,7 +10062,11 @@ async function loadSystemMetricHistory({ forceRender = false, renderOnComplete =
     if (state.systemHistoryRequestId === requestId) {
       state.systemHistoryLoading = false;
       if (renderOnComplete && state.currentView === "system") {
-        renderShell();
+        if (shouldDeferSelectableRefresh({ force: forceRender })) {
+          deferSelectableRefresh("system-view");
+        } else {
+          renderShell();
+        }
       }
     }
   }
@@ -9895,7 +10077,7 @@ async function loadSystemMetrics({ forceRender = false } = {}) {
   state.systemMetricsLoading = true;
   state.systemMetricsRequestId = requestId;
 
-  if (state.currentView === "system" && (forceRender || !state.systemMetrics)) {
+  if (state.currentView === "system" && (forceRender || (!state.systemMetrics && !hasActiveUserTextSelection()))) {
     renderShell();
   }
 
@@ -9927,7 +10109,11 @@ async function loadSystemMetrics({ forceRender = false } = {}) {
     if (state.systemMetricsRequestId === requestId) {
       state.systemMetricsLoading = false;
       if (state.currentView === "system") {
-        renderShell();
+        if (shouldDeferSelectableRefresh({ force: forceRender })) {
+          deferSelectableRefresh("system-view");
+        } else {
+          renderShell();
+        }
       }
     }
   }
@@ -10177,6 +10363,7 @@ async function bootstrapApp() {
   try {
     installTerminalDisposalGuard();
     installDelayedTooltips();
+    bindSelectableRefreshEvents();
 
     if ("virtualKeyboard" in navigator) {
       navigator.virtualKeyboard.overlaysContent = false;
