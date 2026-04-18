@@ -4235,8 +4235,6 @@ function renderSessionCards() {
               aria-expanded="${expanded ? "true" : "false"}"
               title="${escapeHtml(group.cwd || group.name)}"
             >
-              <span class="file-caret">${expanded ? "▾" : "▸"}</span>
-              <span class="file-icon file-icon-folder ${expanded ? "is-open" : ""}" aria-hidden="true"></span>
               <span class="session-project-copy">
                 <span class="session-project-name">${escapeHtml(group.name)}</span>
               </span>

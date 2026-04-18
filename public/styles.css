@@ -2559,13 +2559,12 @@ input[readonly][data-folder-picker-target] {
 .session-project-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
   min-width: 0;
-  min-height: 34px;
-  padding: 4px 5px;
+  min-height: 37px;
+  padding: 5px 8px;
   border-radius: 8px;
   background: transparent;
-  color: rgba(222, 228, 235, 0.68);
+  color: rgba(230, 234, 240, 0.76);
   text-align: left;
 }
 
@@ -2588,12 +2587,10 @@ input[readonly][data-folder-picker-target] {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.session-project-name {
-  font-size: 0.86rem;
-  font-weight: 700;
-  line-height: 1.2;
+  font-size: 1.02rem;
+  font-weight: 800;
+  letter-spacing: -0.018em;
+  line-height: 1.1;
 }
 
 .session-project-new,
