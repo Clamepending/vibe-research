@@ -7,7 +7,10 @@ const AGENTMAIL_API_BASE_URL = "https://api.agentmail.to";
 const AGENTMAIL_WS_URL = "wss://ws.agentmail.to/v0";
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 const DEFAULT_RECONNECT_MS = 10_000;
-const DEFAULT_PROMPT_DELAY_MS = 1_200;
+const DEFAULT_PROMPT_DELAY_MS = 6_000;
+const DEFAULT_PROMPT_READY_IDLE_MS = 1_200;
+const DEFAULT_PROMPT_READY_TIMEOUT_MS = 45_000;
+const DEFAULT_PROMPT_RETRY_MS = 500;
 const MAX_SEEN_EVENTS = 250;
 const MAX_PROCESSED_MESSAGES = 1_000;
 const EMAIL_BODY_LIMIT = 12_000;
@@ -97,6 +100,31 @@ function getMessageFromEvent(event) {
   return candidates.find((candidate) => candidate && typeof candidate === "object") || null;
 }
 
+function providerHasReadyHint(providerId, buffer) {
+  const text = String(buffer || "");
+  if (!text.trim()) {
+    return false;
+  }
+
+  if (providerId === "claude") {
+    return /Claude\s*Code\s*v|bypass\s*permissions|❯|Welcome back/i.test(text);
+  }
+
+  if (providerId === "codex") {
+    return /Ask for follow-up changes|Full access|GPT-|❯|›/i.test(text);
+  }
+
+  if (providerId === "gemini") {
+    return /Gemini|Type your message|❯|>/i.test(text);
+  }
+
+  if (providerId === "opencode") {
+    return /OpenCode\s*v|opencode\s*v|❯|>/i.test(text);
+  }
+
+  return true;
+}
+
 function buildEmailPrompt({ message, replyCommand = "rv-agentmail-reply" }) {
   const inboxId = message?.inbox_id || message?.inboxId || "";
   const messageId = message?.message_id || message?.messageId || "";
@@ -152,8 +180,12 @@ export class AgentMailService {
   constructor({
     cwd = process.cwd(),
     fetchImpl = globalThis.fetch,
+    nowImpl = Date.now,
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
     promptDelayMs = DEFAULT_PROMPT_DELAY_MS,
+    promptReadyIdleMs = DEFAULT_PROMPT_READY_IDLE_MS,
+    promptReadyTimeoutMs = DEFAULT_PROMPT_READY_TIMEOUT_MS,
+    promptRetryMs = DEFAULT_PROMPT_RETRY_MS,
     reconnectMs = DEFAULT_RECONNECT_MS,
     sessionManager,
     settings = {},
@@ -165,8 +197,12 @@ export class AgentMailService {
     this.clearTimeout = clearTimeoutImpl;
     this.cwd = cwd;
     this.fetch = fetchImpl;
+    this.now = nowImpl;
     this.pollIntervalMs = pollIntervalMs;
     this.promptDelayMs = promptDelayMs;
+    this.promptReadyIdleMs = promptReadyIdleMs;
+    this.promptReadyTimeoutMs = promptReadyTimeoutMs;
+    this.promptRetryMs = promptRetryMs;
     this.reconnectMs = reconnectMs;
     this.replyToken = randomUUID();
     this.sessionManager = sessionManager;
@@ -185,6 +221,7 @@ export class AgentMailService {
       lastPollAt: "",
       lastPollError: "",
       lastPollSeen: 0,
+      lastPromptSentAt: "",
       lastSessionId: "",
       lastSocketEventType: "",
       lastSocketMessageAt: "",
@@ -588,9 +625,10 @@ export class AgentMailService {
       this.status.processedCount += 1;
 
       const prompt = buildEmailPrompt({ message });
-      this.setTimeout(() => {
-        this.sessionManager.write(session.id, `${prompt}\r`);
-      }, this.promptDelayMs);
+      this.queuePromptForSession(session.id, prompt, {
+        providerId: config.providerId,
+        source,
+      });
 
       return session;
     } catch (error) {
@@ -598,6 +636,56 @@ export class AgentMailService {
       this.status.lastStatus = "error";
       return null;
     }
+  }
+
+  queuePromptForSession(sessionId, prompt, { providerId = "", source = "websocket" } = {}) {
+    const startedAt = this.now();
+    const writePrompt = () => {
+      const ok = this.sessionManager.write(sessionId, `${prompt}\r`);
+      if (!ok) {
+        this.status.lastError = "Email agent session exited before Remote Vibes could send the prompt.";
+        this.status.lastStatus = "error";
+        return false;
+      }
+
+      this.status.lastError = "";
+      this.status.lastPromptSentAt = new Date().toISOString();
+      this.status.lastStatus = source === "websocket" ? "prompt-sent" : `prompt-sent-${source}`;
+      return true;
+    };
+
+    if (typeof this.sessionManager.getSession !== "function") {
+      this.setTimeout(writePrompt, this.promptDelayMs);
+      return;
+    }
+
+    const attempt = () => {
+      const session = this.sessionManager.getSession(sessionId);
+      if (!session || session.status === "exited") {
+        this.status.lastError = "Email agent session exited before Remote Vibes could send the prompt.";
+        this.status.lastStatus = "error";
+        return;
+      }
+
+      const now = this.now();
+      const lastOutputAt = Date.parse(session.lastOutputAt || session.updatedAt || session.createdAt || "") || startedAt;
+      const elapsedMs = now - startedAt;
+      const idleMs = now - lastOutputAt;
+      const hasReadyHint = providerHasReadyHint(providerId, session.buffer);
+      const isReady =
+        elapsedMs >= this.promptDelayMs &&
+        idleMs >= this.promptReadyIdleMs &&
+        hasReadyHint;
+
+      if (isReady || elapsedMs >= this.promptReadyTimeoutMs) {
+        writePrompt();
+        return;
+      }
+
+      this.setTimeout(attempt, this.promptRetryMs);
+    };
+
+    this.setTimeout(attempt, Math.min(this.promptRetryMs, this.promptDelayMs));
   }
 
   async createInbox({ apiKey, clientId, displayName = "", domain = "", username = "" } = {}) {

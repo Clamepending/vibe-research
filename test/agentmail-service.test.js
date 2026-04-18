@@ -234,7 +234,8 @@ test("AgentMail polling backfills unread inbox messages and persists processed i
     assert.equal(writes.length, 1);
     assert.match(writes[0].input, /simple greeting or test email/);
     assert.match(writes[0].input, /Missed while offline/);
-    assert.equal(service.getStatus().lastStatus, "queued-startup");
+    assert.equal(service.getStatus().lastStatus, "prompt-sent-startup");
+    assert.ok(service.getStatus().lastPromptSentAt);
     assert.equal(service.getStatus().lastPollSeen, 1);
 
     const processed = JSON.parse(await readFile(path.join(stateDir, "agentmail-processed.json"), "utf8"));
@@ -270,6 +271,90 @@ test("AgentMail polling backfills unread inbox messages and persists processed i
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }
+});
+
+test("AgentMail waits for the agent UI to settle before injecting the email prompt", async () => {
+  const timers = [];
+  const writes = [];
+  const sessions = new Map();
+  let now = 0;
+
+  const service = new AgentMailService({
+    nowImpl() {
+      return now;
+    },
+    pollIntervalMs: 0,
+    promptDelayMs: 1_000,
+    promptReadyIdleMs: 500,
+    promptReadyTimeoutMs: 10_000,
+    promptRetryMs: 100,
+    sessionManager: {
+      createSession(input) {
+        const session = {
+          id: "session-ready-test",
+          ...input,
+          buffer: "launching Claude",
+          createdAt: new Date(0).toISOString(),
+          lastOutputAt: new Date(900).toISOString(),
+          status: "running",
+          updatedAt: new Date(900).toISOString(),
+        };
+        sessions.set(session.id, session);
+        return session;
+      },
+      getSession(sessionId) {
+        return sessions.get(sessionId) || null;
+      },
+      write(sessionId, input) {
+        writes.push({ input, sessionId });
+        return true;
+      },
+    },
+    setTimeoutImpl(callback) {
+      timers.push(callback);
+      return timers.length;
+    },
+    settings: {
+      agentMailApiKey: "am_test",
+      agentMailEnabled: true,
+      agentMailInboxId: "agent@example.com",
+      agentMailProviderId: "claude",
+      wikiPath: "/tmp/wiki",
+    },
+  });
+
+  await service.handleIncomingMessage(
+    {
+      eventId: "evt-ready",
+      message: {
+        from: "person@example.com",
+        inboxId: "agent@example.com",
+        messageId: "<ready-message@example.com>",
+        subject: "Wait for Claude",
+        text: "Please reply after Claude is ready.",
+        to: ["agent@example.com"],
+      },
+    },
+    { source: "startup" },
+  );
+
+  assert.equal(writes.length, 0);
+  assert.equal(timers.length, 1);
+
+  now = 1_200;
+  sessions.get("session-ready-test").lastOutputAt = new Date(1_100).toISOString();
+  timers.shift()();
+  assert.equal(writes.length, 0, "prompt should wait while the agent is still producing output");
+  assert.equal(timers.length, 1);
+
+  now = 2_500;
+  sessions.get("session-ready-test").buffer = "Claude Code\n❯ ";
+  sessions.get("session-ready-test").lastOutputAt = new Date(1_000).toISOString();
+  timers.shift()();
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].sessionId, "session-ready-test");
+  assert.match(writes[0].input, /Wait for Claude/);
+  assert.equal(service.getStatus().lastStatus, "prompt-sent-startup");
 });
 
 test("AgentMail REST helpers create inboxes and send replies without exposing the API key to prompts", async () => {
