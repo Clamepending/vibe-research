@@ -11,6 +11,65 @@ const KNOWLEDGE_BASE_GRAPH_MAX_SCALE = 2.8;
 const KNOWLEDGE_BASE_GRAPH_FIT_PADDING = 72;
 const KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX = 6;
 const PORT_PREVIEW_TAB_PREFIX = "port:";
+const ROUTED_MAIN_VIEWS = new Set(["search", "plugins", "automations"]);
+const PLUGIN_CATALOG = [
+  {
+    name: "GitHub",
+    category: "Coding",
+    description: "Triage PRs, inspect issues, and publish changes from agent sessions.",
+    status: "available in Codex",
+    source: "plugin",
+  },
+  {
+    name: "Google Drive",
+    category: "Knowledge",
+    description: "Search Docs, Sheets, Slides, and shared project files when the host agent supports it.",
+    status: "MCP-ready",
+    source: "mcp",
+  },
+  {
+    name: "Google Calendar",
+    category: "Planning",
+    description: "Look up events and availability from connected agent tooling.",
+    status: "MCP-ready",
+    source: "mcp",
+  },
+  {
+    name: "Stripe",
+    category: "Business",
+    description: "Use official Stripe docs and account tools from capable coding agents.",
+    status: "available in Codex",
+    source: "plugin",
+  },
+  {
+    name: "Slack",
+    category: "Team",
+    description: "A placeholder for chat-driven workflows once Remote Vibes exposes imported MCPs directly.",
+    status: "coming soon",
+    source: "mcp",
+  },
+  {
+    name: "Figma",
+    category: "Design",
+    description: "Design-to-code workflows belong here when a local MCP is configured for the agent.",
+    status: "coming soon",
+    source: "mcp",
+  },
+  {
+    name: "Localhost Apps",
+    category: "Remote Vibes",
+    description: "Preview web apps from discovered ports without leaving the current session.",
+    status: "built in",
+    source: "remote-vibes",
+  },
+  {
+    name: "Knowledge Base",
+    category: "Remote Vibes",
+    description: "Search and edit the shared markdown wiki that agents receive in their prompt.",
+    status: "built in",
+    source: "remote-vibes",
+  },
+];
 const KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE = [
   {
     fill: "rgba(104, 227, 199, 0.28)",
@@ -111,6 +170,8 @@ const state = {
   sessions: [],
   ports: [],
   currentView: "shell",
+  globalSearchQuery: "",
+  pluginSearchQuery: "",
   agentPrompt: "",
   agentPromptPath: "",
   agentPromptWikiRoot: ".remote-vibes/wiki",
@@ -244,6 +305,15 @@ function getRouteState() {
   if (explicitView === "agent-prompt") {
     return {
       view: "agent-prompt",
+      root,
+      path: "",
+      notePath: "",
+    };
+  }
+
+  if (ROUTED_MAIN_VIEWS.has(explicitView)) {
+    return {
+      view: explicitView,
       root,
       path: "",
       notePath: "",
@@ -487,7 +557,31 @@ function isCoarsePointerDevice() {
 }
 
 function shouldUseCanvasRenderer() {
-  return !isCoarsePointerDevice() && !/firefox/i.test(window.navigator.userAgent || "");
+  // The canvas addon can leave xterm viewport timers pointed at a disposed renderer
+  // when Remote Vibes swaps the terminal for another main view.
+  return false;
+}
+
+function isKnownTerminalDisposalError(error) {
+  const message = String(error?.message || error || "");
+  const stack = String(error?.stack || "");
+  return message.includes("Cannot read properties of undefined (reading 'dimensions')") && stack.includes("Viewport");
+}
+
+function installTerminalDisposalGuard() {
+  window.addEventListener(
+    "error",
+    (event) => {
+      if (!isKnownTerminalDisposalError(event.error || event.message)) {
+        return;
+      }
+
+      // xterm can fire a delayed viewport refresh after its renderer has already
+      // been torn down during a main-view switch. The terminal is gone by then.
+      event.preventDefault();
+    },
+    true,
+  );
 }
 
 function syncViewportMetrics() {
@@ -731,6 +825,22 @@ function getKnowledgeBaseUrl(notePath = "") {
 function getAgentPromptUrl() {
   const url = new URL(`${getAppBaseUrl()}/`);
   url.searchParams.set("view", "agent-prompt");
+  return url.toString();
+}
+
+function getMainViewUrl(view) {
+  if (view === "knowledge-base") {
+    return getKnowledgeBaseUrl(state.knowledgeBase.selectedNotePath || "");
+  }
+
+  if (view === "agent-prompt") {
+    return getAgentPromptUrl();
+  }
+
+  const url = new URL(`${getAppBaseUrl()}/`);
+  if (ROUTED_MAIN_VIEWS.has(view)) {
+    url.searchParams.set("view", view);
+  }
   return url.toString();
 }
 
@@ -1615,6 +1725,11 @@ function updateRoute({
     url.hash = "";
   } else if (view === "agent-prompt") {
     url.searchParams.set("view", "agent-prompt");
+    url.searchParams.delete("note");
+    url.searchParams.delete("path");
+    url.hash = "";
+  } else if (ROUTED_MAIN_VIEWS.has(view)) {
+    url.searchParams.set("view", view);
     url.searchParams.delete("note");
     url.searchParams.delete("path");
     url.hash = "";
@@ -3200,19 +3315,17 @@ function renderSessionCard(session) {
 
   return `
     <article class="session-card ${session.id === state.activeSessionId ? "is-active" : ""}" data-session-id="${session.id}">
+      <span class="session-activity-dot ${status.className}" aria-hidden="true"></span>
       <div class="session-main">
         <div class="session-name">${escapeHtml(session.name)}</div>
         <div class="session-subtitle">${escapeHtml(session.providerLabel)}</div>
       </div>
-      <div class="session-side">
-        <span class="session-status ${status.className}">${status.text}</span>
-        <div class="session-actions">
-          <button class="ghost-button session-action-button" type="button" aria-label="Fork session" data-fork-session="${session.id}">fork</button>
-          <button class="ghost-button session-action-button" type="button" aria-label="Rename session" data-rename-session="${session.id}">edit</button>
-          <button class="danger-button" type="button" aria-label="Delete session" data-delete-session="${session.id}">x</button>
-        </div>
+      <span class="session-time">${relativeTime(session.lastOutputAt)}</span>
+      <div class="session-actions">
+        <button class="ghost-button session-action-button" type="button" aria-label="Fork session" title="Fork session" data-fork-session="${session.id}">fork</button>
+        <button class="ghost-button session-action-button" type="button" aria-label="Rename session" title="Rename session" data-rename-session="${session.id}">edit</button>
+        <button class="danger-button session-delete-button" type="button" aria-label="Delete session" title="Delete session" data-delete-session="${session.id}">x</button>
       </div>
-      <div class="session-time">${relativeTime(session.lastOutputAt)}</div>
     </article>
   `;
 }
@@ -3268,35 +3381,77 @@ function renderSessionCards() {
     .join("");
 }
 
-function renderSidebarNav() {
-  const knowledgeBaseActive = state.currentView === "knowledge-base";
-  const agentPromptActive = state.currentView === "agent-prompt";
+function getSelectedProviderLabel() {
+  return state.providers.find((provider) => provider.id === state.defaultProviderId)?.label || "agent";
+}
+
+function renderSidebarNav(providerOptions) {
   const wikiLabel = state.settings.wikiRelativeRoot || state.agentPromptWikiRoot || "wiki";
+  const primaryItems = [
+    {
+      view: "search",
+      icon: "⌕",
+      label: "Search",
+      meta: "sessions, ports, notes",
+    },
+    {
+      view: "plugins",
+      icon: "⌘",
+      label: "Plugins",
+      meta: "MCPs and integrations",
+    },
+    {
+      view: "automations",
+      icon: "◷",
+      label: "Automations",
+      meta: "scheduled helpers",
+    },
+  ];
+  const workspaceItems = [
+    {
+      view: "knowledge-base",
+      icon: "◇",
+      label: "Knowledge Base",
+      meta: `${state.knowledgeBase.notes.length} notes · ${wikiLabel}`,
+    },
+    {
+      view: "agent-prompt",
+      icon: "✎",
+      label: "Agent Prompt",
+      meta: getAgentPromptTargetSummary(),
+    },
+  ];
+
+  const renderItem = (item) => `
+    <a
+      class="sidebar-nav-item ${state.currentView === item.view ? "is-active" : ""}"
+      href="${escapeHtml(getMainViewUrl(item.view))}"
+      data-open-main-view="${escapeHtml(item.view)}"
+    >
+      <span class="sidebar-nav-icon" aria-hidden="true">${escapeHtml(item.icon)}</span>
+      <span class="sidebar-nav-copy">
+        <span class="sidebar-nav-label">${escapeHtml(item.label)}</span>
+        <span class="sidebar-nav-meta">${escapeHtml(item.meta)}</span>
+      </span>
+    </a>
+  `;
 
   return `
-    <nav class="sidebar-nav" aria-label="Main views">
-      <a
-        class="sidebar-nav-item ${knowledgeBaseActive ? "is-active" : ""}"
-        href="${escapeHtml(getKnowledgeBaseUrl(state.knowledgeBase.selectedNotePath || ""))}"
-        data-open-main-view="knowledge-base"
-      >
-        <span class="sidebar-nav-icon" aria-hidden="true">◇</span>
+    <nav class="sidebar-nav sidebar-primary-nav" aria-label="Main views">
+      <button class="sidebar-nav-item sidebar-nav-button" type="button" data-folder-picker-target="session">
+        <span class="sidebar-nav-icon" aria-hidden="true">+</span>
         <span class="sidebar-nav-copy">
-          <span class="sidebar-nav-label">Knowledge Base</span>
-          <span class="sidebar-nav-meta">${escapeHtml(`${state.knowledgeBase.notes.length} notes · ${wikiLabel}`)}</span>
+          <span class="sidebar-nav-label">New chat</span>
+          <span class="sidebar-nav-meta">${escapeHtml(`${getSelectedProviderLabel()} · choose folder`)}</span>
         </span>
-      </a>
-      <a
-        class="sidebar-nav-item ${agentPromptActive ? "is-active" : ""}"
-        href="${escapeHtml(getAgentPromptUrl())}"
-        data-open-main-view="agent-prompt"
-      >
-        <span class="sidebar-nav-icon" aria-hidden="true">✎</span>
-        <span class="sidebar-nav-copy">
-          <span class="sidebar-nav-label">Agent Prompt</span>
-          <span class="sidebar-nav-meta">${escapeHtml(getAgentPromptTargetSummary())}</span>
-        </span>
-      </a>
+      </button>
+      <form class="session-form session-launcher" id="session-form">
+        <select id="session-provider-select" name="providerId" aria-label="Session CLI">${providerOptions}</select>
+      </form>
+      ${primaryItems.map(renderItem).join("")}
+    </nav>
+    <nav class="sidebar-nav sidebar-workspace-nav" aria-label="Workspace views">
+      ${workspaceItems.map(renderItem).join("")}
     </nav>
   `;
 }
@@ -3336,6 +3491,265 @@ function renderPortCards() {
     .join("");
 }
 
+function searchMatches(values, query) {
+  if (!query) {
+    return true;
+  }
+
+  const normalizedQuery = query.toLowerCase();
+  return values.some((value) => String(value || "").toLowerCase().includes(normalizedQuery));
+}
+
+function getGlobalSearchResults() {
+  const query = String(state.globalSearchQuery || "").trim().toLowerCase();
+  const results = [];
+
+  for (const session of state.sessions) {
+    if (!searchMatches([session.name, session.providerLabel, session.cwd], query)) {
+      continue;
+    }
+
+    results.push({
+      type: "session",
+      title: session.name,
+      meta: `${session.providerLabel} · ${relativeTime(session.lastOutputAt)}`,
+      excerpt: session.cwd,
+      sessionId: session.id,
+    });
+  }
+
+  for (const group of getSessionProjectGroups()) {
+    if (!searchMatches([group.name, group.cwd, group.sessions.map((session) => session.name).join(" ")], query)) {
+      continue;
+    }
+
+    results.push({
+      type: "project",
+      title: group.name,
+      meta: `${group.sessions.length} ${group.sessions.length === 1 ? "session" : "sessions"}`,
+      excerpt: group.cwd,
+      cwd: group.cwd,
+    });
+  }
+
+  for (const port of state.ports) {
+    if (!searchMatches([getPortDisplayName(port), getPortMeta(port), port.process, port.port], query)) {
+      continue;
+    }
+
+    results.push({
+      type: "port",
+      title: getPortDisplayName(port),
+      meta: getPortAccessHint(port),
+      excerpt: getPortMeta(port),
+      port: port.port,
+    });
+  }
+
+  for (const note of state.knowledgeBase.notes) {
+    if (!searchMatches([note.title, note.relativePath, note.excerpt, note.searchText], query)) {
+      continue;
+    }
+
+    results.push({
+      type: "note",
+      title: note.title,
+      meta: note.relativePath,
+      excerpt: note.excerpt || "markdown note",
+      notePath: note.relativePath,
+    });
+  }
+
+  return results.slice(0, 60);
+}
+
+function getGlobalSearchResultLabel() {
+  const query = String(state.globalSearchQuery || "").trim();
+  const count = getGlobalSearchResults().length;
+
+  if (!query) {
+    return `${count} recent items`;
+  }
+
+  return `${count} result${count === 1 ? "" : "s"} for "${query}"`;
+}
+
+function renderSearchResult(result) {
+  const actionLabel =
+    result.type === "session"
+      ? "open"
+      : result.type === "project"
+        ? "new"
+        : result.type === "port"
+          ? "preview"
+          : "read";
+  const attributes =
+    result.type === "session"
+      ? `data-session-id="${escapeHtml(result.sessionId)}"`
+      : result.type === "project"
+        ? `data-create-session-in-cwd="${escapeHtml(result.cwd)}"`
+        : result.type === "port"
+          ? `data-open-port-preview="${escapeHtml(result.port)}"`
+          : `data-open-search-note="${escapeHtml(result.notePath)}"`;
+
+  return `
+    <button class="main-search-result" type="button" ${attributes}>
+      <span class="main-search-kind">${escapeHtml(result.type)}</span>
+      <span class="main-search-copy">
+        <strong>${escapeHtml(result.title)}</strong>
+        <span>${escapeHtml(result.meta)}</span>
+        <em>${escapeHtml(result.excerpt || "")}</em>
+      </span>
+      <span class="main-search-action">${escapeHtml(actionLabel)}</span>
+    </button>
+  `;
+}
+
+function renderSearchResults() {
+  const results = getGlobalSearchResults();
+
+  if (state.knowledgeBase.loading && !state.knowledgeBase.notes.length) {
+    return `<div class="blank-state">loading knowledge base notes...</div>`;
+  }
+
+  if (!results.length) {
+    return `<div class="blank-state">nothing matched yet</div>`;
+  }
+
+  return results.map((result) => renderSearchResult(result)).join("");
+}
+
+function renderSearchView() {
+  return `
+    <section class="dashboard-panel main-view search-view">
+      <div class="dashboard-toolbar">
+        <button class="icon-button hidden-desktop" type="button" id="open-sidebar">≡</button>
+        <div class="dashboard-copy">
+          <strong>Search</strong>
+          <div class="terminal-meta">jump across sessions, project folders, ports, and wiki notes</div>
+        </div>
+      </div>
+      <div class="main-search-shell">
+        <span class="main-search-icon" aria-hidden="true">⌕</span>
+        <input
+          id="global-search-input"
+          class="main-search-input"
+          type="search"
+          value="${escapeHtml(state.globalSearchQuery)}"
+          placeholder="Search Remote Vibes"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <span class="main-search-count">${escapeHtml(getGlobalSearchResultLabel())}</span>
+      </div>
+      <div class="main-results-grid" id="global-search-results">${renderSearchResults()}</div>
+    </section>
+  `;
+}
+
+function getFilteredPlugins() {
+  const query = String(state.pluginSearchQuery || "").trim().toLowerCase();
+  return PLUGIN_CATALOG.filter((plugin) =>
+    searchMatches([plugin.name, plugin.category, plugin.description, plugin.status, plugin.source], query),
+  );
+}
+
+function renderPluginCards() {
+  const plugins = getFilteredPlugins();
+
+  if (!plugins.length) {
+    return `<div class="blank-state">no plugins match "${escapeHtml(state.pluginSearchQuery)}"</div>`;
+  }
+
+  return plugins
+    .map(
+      (plugin) => `
+        <article class="plugin-card">
+          <div class="plugin-icon" aria-hidden="true">${escapeHtml(plugin.name.slice(0, 1))}</div>
+          <div class="plugin-copy">
+            <strong>${escapeHtml(plugin.name)}</strong>
+            <span>${escapeHtml(plugin.description)}</span>
+            <em>${escapeHtml(plugin.category)}</em>
+          </div>
+          <span class="plugin-status">${escapeHtml(plugin.status)}</span>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function renderPluginsView() {
+  return `
+    <section class="dashboard-panel main-view plugins-view">
+      <div class="dashboard-toolbar">
+        <button class="icon-button hidden-desktop" type="button" id="open-sidebar">≡</button>
+        <div class="dashboard-copy">
+          <strong>Plugins</strong>
+          <div class="terminal-meta">a Codex-style place for MCPs, integrations, and built-in Remote Vibes tools</div>
+        </div>
+      </div>
+      <div class="main-search-shell">
+        <span class="main-search-icon" aria-hidden="true">⌘</span>
+        <input
+          id="plugin-search-input"
+          class="main-search-input"
+          type="search"
+          value="${escapeHtml(state.pluginSearchQuery)}"
+          placeholder="Search plugins"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <span class="main-search-count">${escapeHtml(`${getFilteredPlugins().length} shown`)}</span>
+      </div>
+      <div class="plugins-layout">
+        <section class="plugin-grid" id="plugin-results">${renderPluginCards()}</section>
+        <aside class="mcp-import-card">
+          <span class="main-search-kind">MCP bridge</span>
+          <strong>Port the MCPs your agents already use</strong>
+          <p>Remote Vibes launches the real Codex, Claude, Gemini, and OpenCode CLIs, so their existing MCP/plugin configs still matter inside each session. This page is the first shared surface for making those tools visible from Remote Vibes itself.</p>
+          <p class="mcp-import-paths">Common places to import from next: <code>~/.codex</code>, <code>~/.claude</code>, project MCP files, and agent-specific config folders.</p>
+        </aside>
+      </div>
+    </section>
+  `;
+}
+
+function renderAutomationsView() {
+  return `
+    <section class="dashboard-panel main-view automations-view">
+      <div class="dashboard-toolbar">
+        <button class="icon-button hidden-desktop" type="button" id="open-sidebar">≡</button>
+        <div class="dashboard-copy">
+          <strong>Automations</strong>
+          <div class="terminal-meta">scheduled Remote Vibes helpers live here as this grows</div>
+        </div>
+      </div>
+      <div class="dashboard-range">
+        <span class="dashboard-range-label">status</span>
+        <span>Local automations are starting with wiki backup and will grow into plugin-backed jobs.</span>
+        <span class="dashboard-updated">${escapeHtml(state.settings.wikiGitBackupEnabled ? "wiki backup on" : "wiki backup off")}</span>
+      </div>
+      <div class="main-results-grid automation-grid">
+        <article class="automation-card">
+          <span class="main-search-kind">enabled</span>
+          <strong>Knowledge base git backup</strong>
+          <p>Backs up the selected wiki every ${escapeHtml(String(Math.round((state.settings.wikiBackupIntervalMs || 0) / 60000) || 5))} minutes when enabled.</p>
+          <button class="ghost-button toolbar-control" type="button" data-open-main-view="knowledge-base">open settings</button>
+        </article>
+        <article class="automation-card">
+          <span class="main-search-kind">coming soon</span>
+          <strong>Agent check-ins</strong>
+          <p>A future home for heartbeat tasks, plugin-backed automations, and proactive session health checks.</p>
+        </article>
+      </div>
+    </section>
+  `;
+}
+
 function renderTerminalPanel(activeSession) {
   if (state.currentView === "knowledge-base") {
     return renderKnowledgeBaseView();
@@ -3343,6 +3757,18 @@ function renderTerminalPanel(activeSession) {
 
   if (state.currentView === "agent-prompt") {
     return renderAgentPromptView();
+  }
+
+  if (state.currentView === "search") {
+    return renderSearchView();
+  }
+
+  if (state.currentView === "plugins") {
+    return renderPluginsView();
+  }
+
+  if (state.currentView === "automations") {
+    return renderAutomationsView();
   }
 
   return `
@@ -3634,12 +4060,14 @@ function renderUpdateBanner() {
 function renderShell() {
   teardownKnowledgeBaseGraphInteractions();
   syncFilesRoot();
-  document.title =
-    state.currentView === "knowledge-base"
-      ? "Knowledge Base · Remote Vibes"
-      : state.currentView === "agent-prompt"
-        ? "Agent Prompt · Remote Vibes"
-        : "Remote Vibes";
+  const viewTitles = {
+    "knowledge-base": "Knowledge Base · Remote Vibes",
+    "agent-prompt": "Agent Prompt · Remote Vibes",
+    search: "Search · Remote Vibes",
+    plugins: "Plugins · Remote Vibes",
+    automations: "Automations · Remote Vibes",
+  };
+  document.title = viewTitles[state.currentView] || "Remote Vibes";
 
   const providerOptions = renderProviderOptions(state.defaultProviderId);
 
@@ -3656,22 +4084,22 @@ function renderShell() {
         <div class="sidebar-body">
           <div class="update-slot" id="update-banner">${renderUpdateBanner()}</div>
 
-          <form class="session-form session-launcher" id="session-form">
-            <select id="session-provider-select" name="providerId" aria-label="Session CLI">${providerOptions}</select>
-            <button
-              class="primary-button session-folder-button"
-              type="button"
-              data-folder-picker-target="session"
-              aria-label="Add new project"
-              title="Add new project"
-            >+</button>
-          </form>
+          <div class="sidebar-chrome" aria-hidden="true">
+            <span class="sidebar-window-dot is-red"></span>
+            <span class="sidebar-window-dot is-yellow"></span>
+            <span class="sidebar-window-dot is-green"></span>
+          </div>
 
-          ${renderSidebarNav()}
+          ${renderSidebarNav(providerOptions)}
 
-          <section class="sidebar-section">
+          <section class="sidebar-section sessions-section">
             <div class="section-head">
-              <span>sessions</span>
+              <span>Threads</span>
+              <div class="section-actions">
+                <button class="icon-button sidebar-head-button" type="button" id="expand-session-projects" aria-label="Expand projects" title="Expand projects">↙</button>
+                <button class="icon-button sidebar-head-button" type="button" id="collapse-session-projects" aria-label="Collapse projects" title="Collapse projects">≡</button>
+                <button class="icon-button sidebar-head-button" type="button" data-folder-picker-target="session" aria-label="Add project" title="Add project">+</button>
+              </div>
             </div>
             <div class="list-shell" id="sessions-list">${renderSessionCards()}</div>
           </section>
@@ -3714,6 +4142,10 @@ function renderShell() {
         </div>
 
         <div class="sidebar-footer">
+          <button class="sidebar-settings-link" type="button" data-open-main-view="knowledge-base">
+            <span aria-hidden="true">⚙</span>
+            <span>Settings</span>
+          </button>
           <div class="sidebar-footer-actions">
             <button class="ghost-button relaunch-button" type="button" id="relaunch-app">relaunch</button>
             <button class="danger-button terminate-button" type="button" id="terminate-app">terminate</button>
@@ -3919,6 +4351,53 @@ function refreshPortsList() {
 
   portsList.innerHTML = renderPortCards();
   bindPortEvents();
+}
+
+function bindSearchResultEvents() {
+  document.querySelectorAll("[data-open-search-note]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const notePath = button.getAttribute("data-open-search-note") || "";
+      setCurrentView("knowledge-base", { notePath });
+      closeMobileSidebar();
+
+      if (!state.knowledgeBase.notes.length && !state.knowledgeBase.loading) {
+        await loadKnowledgeBaseIndex();
+      }
+
+      await openKnowledgeBaseNote(notePath);
+    });
+  });
+}
+
+function refreshGlobalSearchUi() {
+  const count = document.querySelector(".main-search-count");
+  if (count) {
+    count.textContent = getGlobalSearchResultLabel();
+  }
+
+  const results = document.querySelector("#global-search-results");
+  if (!results) {
+    return;
+  }
+
+  results.innerHTML = renderSearchResults();
+  bindSessionEvents();
+  bindPortEvents();
+  bindSearchResultEvents();
+}
+
+function refreshPluginSearchUi() {
+  const count = document.querySelector(".plugins-view .main-search-count");
+  if (count) {
+    count.textContent = `${getFilteredPlugins().length} shown`;
+  }
+
+  const results = document.querySelector("#plugin-results");
+  if (!results) {
+    return;
+  }
+
+  results.innerHTML = renderPluginCards();
 }
 
 function refreshUpdateUi() {
@@ -5122,6 +5601,12 @@ function setCurrentView(nextView, { notePath = state.knowledgeBase.selectedNoteP
     return;
   }
 
+  if (ROUTED_MAIN_VIEWS.has(nextView)) {
+    state.currentView = nextView;
+    updateRoute({ view: nextView });
+    return;
+  }
+
   state.currentView = "shell";
   updateRoute({ view: state.currentView });
 }
@@ -5146,6 +5631,19 @@ async function openMainView(nextView) {
     setCurrentView("agent-prompt");
     closeMobileSidebar();
     renderShell();
+    return;
+  }
+
+  if (ROUTED_MAIN_VIEWS.has(nextView)) {
+    setCurrentView(nextView);
+    closeMobileSidebar();
+    renderShell();
+
+    if (nextView === "search" && !state.knowledgeBase.notes.length && !state.knowledgeBase.loading) {
+      await loadKnowledgeBaseIndex();
+      renderShell();
+    }
+
     return;
   }
 
@@ -5246,8 +5744,42 @@ function bindShellEvents() {
   });
 
   bindSessionEvents();
+  bindPortEvents();
+  bindSearchResultEvents();
   bindUpdateEvents();
   bindSystemToastEvents();
+
+  document.querySelector("#global-search-input")?.addEventListener("input", (event) => {
+    const input = event.currentTarget;
+    if (!(input instanceof HTMLInputElement)) {
+      return;
+    }
+
+    state.globalSearchQuery = input.value;
+    refreshGlobalSearchUi();
+  });
+
+  document.querySelector("#plugin-search-input")?.addEventListener("input", (event) => {
+    const input = event.currentTarget;
+    if (!(input instanceof HTMLInputElement)) {
+      return;
+    }
+
+    state.pluginSearchQuery = input.value;
+    refreshPluginSearchUi();
+  });
+
+  document.querySelector("#expand-session-projects")?.addEventListener("click", () => {
+    state.sessionProjectInteractionSeen = true;
+    state.sessionProjectExpanded = new Set(getSessionProjectGroups().map((group) => group.key));
+    refreshSessionsList();
+  });
+
+  document.querySelector("#collapse-session-projects")?.addEventListener("click", () => {
+    state.sessionProjectInteractionSeen = true;
+    state.sessionProjectExpanded.clear();
+    refreshSessionsList();
+  });
 
   if (state.currentView === "shell") {
     document.querySelector("#tab-button")?.addEventListener("click", () => sendTerminalInput("\t"));
@@ -6244,6 +6776,8 @@ function renderFileEditorPage() {
 
 async function bootstrapApp() {
   try {
+    installTerminalDisposalGuard();
+
     if ("virtualKeyboard" in navigator) {
       navigator.virtualKeyboard.overlaysContent = false;
     }
