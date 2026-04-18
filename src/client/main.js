@@ -217,6 +217,7 @@ function saveSessionReadState() {
 
 const state = {
   providers: [],
+  sessionProviderPickerGlobalListenersBound: false,
   sessions: [],
   sessionReadAt: loadSessionReadState(),
   sessionsRefreshDeferred: false,
@@ -1320,10 +1321,10 @@ function getFolderPickerTargetInput() {
 }
 
 function getSelectedSessionProviderId() {
-  const select = document.querySelector("#session-provider-select");
+  const input = document.querySelector("[data-session-provider-value]");
 
-  if (select instanceof HTMLSelectElement && select.value) {
-    return select.value;
+  if (input instanceof HTMLInputElement && input.value) {
+    return input.value;
   }
 
   return state.defaultProviderId;
@@ -1339,6 +1340,60 @@ function renderProviderOptions(selectedProviderId = state.defaultProviderId) {
       `,
     )
     .join("");
+}
+
+function getSelectedProvider() {
+  return (
+    state.providers.find((provider) => provider.id === state.defaultProviderId)
+    || state.providers.find((provider) => provider.available)
+    || state.providers[0]
+    || null
+  );
+}
+
+function renderSessionProviderPicker() {
+  const selectedProvider = getSelectedProvider();
+  const selectedProviderId = selectedProvider?.id || state.defaultProviderId || "";
+  const selectedLabel = selectedProvider
+    ? `${selectedProvider.label}${selectedProvider.available ? "" : " · missing"}`
+    : "Choose CLI";
+
+  return `
+    <div class="session-provider-picker" data-session-provider-picker>
+      <input type="hidden" name="providerId" value="${escapeHtml(selectedProviderId)}" data-session-provider-value>
+      <button
+        class="session-provider-trigger"
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded="false"
+        aria-label="Session CLI"
+        data-session-provider-trigger
+      >
+        <span class="session-provider-trigger-label">${escapeHtml(selectedLabel)}</span>
+        <span class="session-provider-trigger-caret" aria-hidden="true">⌄</span>
+      </button>
+      <div class="session-provider-menu" role="listbox" aria-label="Session CLI">
+        ${state.providers
+          .map(
+            (provider) => `
+              <button
+                class="session-provider-option ${provider.id === selectedProviderId ? "is-selected" : ""}"
+                type="button"
+                role="option"
+                aria-selected="${provider.id === selectedProviderId ? "true" : "false"}"
+                ${provider.available ? "" : "aria-disabled=\"true\" disabled"}
+                data-session-provider-option="${escapeHtml(provider.id)}"
+              >
+                <span class="session-provider-option-check" aria-hidden="true">${provider.id === selectedProviderId ? "✓" : ""}</span>
+                <span class="session-provider-option-label">${escapeHtml(provider.label)}</span>
+                ${provider.available ? "" : `<span class="session-provider-option-status">missing</span>`}
+              </button>
+            `,
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
 }
 
 function getSleepPreventionStatusText() {
@@ -4266,10 +4321,10 @@ function renderSessionCards() {
 }
 
 function getSelectedProviderLabel() {
-  return state.providers.find((provider) => provider.id === state.defaultProviderId)?.label || "agent";
+  return getSelectedProvider()?.label || "agent";
 }
 
-function renderSidebarNav(providerOptions) {
+function renderSidebarNav() {
   const wikiLabel = state.settings.wikiRelativeRoot || state.agentPromptWikiRoot || "wiki";
   const primaryItems = [
     {
@@ -4332,7 +4387,7 @@ function renderSidebarNav(providerOptions) {
           </span>
         </button>
         <form class="session-form session-launcher" id="session-form">
-          <select id="session-provider-select" name="providerId" aria-label="Session CLI">${providerOptions}</select>
+          ${renderSessionProviderPicker()}
         </form>
         ${primaryItems.map(renderItem).join("")}
       </nav>
@@ -5883,8 +5938,6 @@ function renderShell() {
   };
   document.title = viewTitles[state.currentView] || "Remote Vibes";
 
-  const providerOptions = renderProviderOptions(state.defaultProviderId);
-
   const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) || null;
 
   app.innerHTML = `
@@ -5898,7 +5951,7 @@ function renderShell() {
         <div class="sidebar-body">
           <div class="update-slot" id="update-banner">${renderUpdateBanner()}</div>
 
-          ${renderSidebarNav(providerOptions)}
+          ${renderSidebarNav()}
 
           <section class="sidebar-section sessions-section">
             <div class="section-head">
@@ -7725,8 +7778,73 @@ async function openSwarmGraph(sessionId, { refresh = false } = {}) {
   renderShell();
 }
 
+function closeSessionProviderPicker() {
+  const picker = document.querySelector("[data-session-provider-picker]");
+  const trigger = document.querySelector("[data-session-provider-trigger]");
+  picker?.classList.remove("is-open");
+  trigger?.setAttribute("aria-expanded", "false");
+}
+
+function bindSessionProviderPicker() {
+  const picker = document.querySelector("[data-session-provider-picker]");
+  const trigger = document.querySelector("[data-session-provider-trigger]");
+
+  if (!picker || !(trigger instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  trigger.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const nextOpen = !picker.classList.contains("is-open");
+    picker.classList.toggle("is-open", nextOpen);
+    trigger.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+  });
+
+  document.querySelectorAll("[data-session-provider-option]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        return;
+      }
+
+      const providerId = button.getAttribute("data-session-provider-option") || "";
+      if (!providerId) {
+        return;
+      }
+
+      state.defaultProviderId = providerId;
+      closeSessionProviderPicker();
+      renderShell();
+    });
+  });
+}
+
+function ensureSessionProviderPickerGlobalListeners() {
+  if (state.sessionProviderPickerGlobalListenersBound) {
+    return;
+  }
+
+  state.sessionProviderPickerGlobalListenersBound = true;
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest("[data-session-provider-picker]")) {
+      return;
+    }
+    closeSessionProviderPicker();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeSessionProviderPicker();
+    }
+  });
+}
+
 function bindShellEvents() {
   bindLineNumberEditors();
+  ensureSessionProviderPickerGlobalListeners();
+  bindSessionProviderPicker();
 
   document.querySelectorAll("[data-open-main-view]").forEach((link) => {
     link.addEventListener("click", (event) => {
@@ -7734,10 +7852,6 @@ function bindShellEvents() {
       const nextView = link.getAttribute("data-open-main-view") || "shell";
       void openMainView(nextView);
     });
-  });
-
-  document.querySelector("#session-provider-select")?.addEventListener("change", () => {
-    state.defaultProviderId = getSelectedSessionProviderId();
   });
 
   document.querySelectorAll("[data-folder-picker-target]").forEach((button) => {
