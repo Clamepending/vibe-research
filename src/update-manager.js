@@ -54,6 +54,53 @@ function parseLsRemoteRef(stdout, preferredRef) {
   );
 }
 
+function parseVersionTag(tag) {
+  const match = trim(tag).match(/^v?(\d+)\.(\d+)\.(\d+)$/);
+  return match ? match.slice(1).map((part) => Number(part)) : null;
+}
+
+function compareVersionParts(left, right) {
+  for (let index = 0; index < 3; index += 1) {
+    const difference = left[index] - right[index];
+    if (difference !== 0) {
+      return difference;
+    }
+  }
+
+  return 0;
+}
+
+function parseLsRemoteTags(stdout) {
+  const tags = new Map();
+  for (const line of trim(stdout).split(/\r?\n/).filter(Boolean)) {
+    const [commit, rawRef] = line.split(/\s+/);
+    if (!/^[0-9a-f]{40}$/i.test(commit) || !rawRef?.startsWith("refs/tags/")) {
+      continue;
+    }
+
+    const peeled = rawRef.endsWith("^{}");
+    const ref = peeled ? rawRef.slice(0, -3) : rawRef;
+    const tag = ref.replace(/^refs\/tags\//, "");
+    const versionParts = parseVersionTag(tag);
+    if (!versionParts) {
+      continue;
+    }
+
+    const entry = tags.get(tag) || { tag, versionParts, commit: "", peeledCommit: "" };
+    if (peeled) {
+      entry.peeledCommit = commit;
+    } else {
+      entry.commit = commit;
+    }
+    tags.set(tag, entry);
+  }
+
+  return [...tags.values()]
+    .map((entry) => ({ ...entry, commit: entry.peeledCommit || entry.commit }))
+    .filter((entry) => entry.commit)
+    .sort((left, right) => compareVersionParts(right.versionParts, left.versionParts))[0];
+}
+
 function parseStatusPath(line) {
   const rawPath = line.slice(3).trim();
   const renamedPath = rawPath.includes(" -> ") ? rawPath.split(" -> ").at(-1).trim() : rawPath;
@@ -377,6 +424,16 @@ export class UpdateManager {
       } catch (error) {
         releaseCheck = error.message || "GitHub release lookup failed.";
       }
+
+      try {
+        const tagTarget = await this.readLatestGitTagRelease(remoteUrl, releaseCheck);
+        if (tagTarget?.commit) {
+          return tagTarget;
+        }
+      } catch (error) {
+        const tagError = error.message || "git tag lookup failed.";
+        releaseCheck = releaseCheck ? `${releaseCheck}; ${tagError}` : tagError;
+      }
     }
 
     const branchTarget = await this.readLatestBranchCommit(remoteUrl);
@@ -390,6 +447,53 @@ export class UpdateManager {
       publishedAt: "",
       releaseCheck,
     };
+  }
+
+  async readLatestGitTagRelease(remoteUrl, releaseCheck = "skipped") {
+    const candidates = [];
+    const githubHttpsRemoteUrl = getGitHubHttpsRemoteUrl(remoteUrl);
+
+    if (githubHttpsRemoteUrl) {
+      candidates.push(githubHttpsRemoteUrl);
+    }
+
+    candidates.push(this.remote);
+
+    let lastError = null;
+    for (const candidate of [...new Set(candidates)]) {
+      try {
+        const result = await this.git(["ls-remote", "--tags", candidate, "refs/tags/v*"]);
+        const latestTag = parseLsRemoteTags(result.stdout);
+
+        if (latestTag?.commit) {
+          const repo = parseGitHubRepo(candidate);
+          return {
+            commit: latestTag.commit,
+            source: candidate,
+            targetType: "release",
+            tag: latestTag.tag,
+            version: normalizeVersionTag(latestTag.tag),
+            name: latestTag.tag,
+            releaseUrl: repo
+              ? `https://github.com/${repo.owner}/${repo.repo}/releases/tag/${encodeURIComponent(latestTag.tag)}`
+              : "",
+            publishedAt: "",
+            releaseCheck:
+              releaseCheck && releaseCheck !== "skipped"
+                ? `git-tags fallback after ${releaseCheck}`
+                : "git-tags",
+          };
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+
+    return null;
   }
 
   async readLatestGitHubRelease(remoteUrl) {

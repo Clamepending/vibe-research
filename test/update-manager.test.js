@@ -249,6 +249,77 @@ test("UpdateManager prefers GitHub Releases and schedules a tag checkout", async
   }
 });
 
+test("UpdateManager falls back to remote version tags for detached release checkouts", async () => {
+  const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
+  const { stdout: currentCommitStdout } = await git(checkoutDir, ["rev-parse", "HEAD"]);
+  const currentCommit = currentCommitStdout.trim();
+  const latestCommit = await commitSourceVersion(sourceDir, "v2");
+  await git(checkoutDir, ["checkout", "--detach"]);
+  await git(checkoutDir, ["remote", "set-url", "origin", "git@github.com:Clamepending/remote-vibes.git"]);
+  const spawnCalls = [];
+
+  try {
+    const manager = new UpdateManager({
+      cwd: checkoutDir,
+      stateDir: path.join(tempRoot, "state"),
+      cacheMs: 0,
+      port: 49125,
+      fetch: async () => ({
+        ok: false,
+        status: 403,
+      }),
+      execFile(command, args, options) {
+        if (
+          command === "git" &&
+          args[2] === "ls-remote" &&
+          args[3] === "--tags" &&
+          args[4] === "https://github.com/Clamepending/remote-vibes.git" &&
+          args[5] === "refs/tags/v*"
+        ) {
+          return Promise.resolve({
+            stdout: [
+              "1111111111111111111111111111111111111111\trefs/tags/v1.0.0",
+              `${currentCommit}\trefs/tags/v1.0.0^{}`,
+              "2222222222222222222222222222222222222222\trefs/tags/v2.0.0",
+              `${latestCommit}\trefs/tags/v2.0.0^{}`,
+            ].join("\n"),
+            stderr: "",
+          });
+        }
+
+        return execFile(command, args, options);
+      },
+      spawn(command, args, options) {
+        spawnCalls.push({ command, args, options });
+        return {
+          unref() {},
+        };
+      },
+    });
+
+    const status = await manager.getStatus({ force: true });
+
+    assert.equal(status.status, "available");
+    assert.equal(status.currentBranch, "");
+    assert.equal(status.canUpdate, true);
+    assert.equal(status.targetType, "release");
+    assert.equal(status.latestVersion, "v2.0.0");
+    assert.equal(status.latestCommit, latestCommit);
+    assert.equal(status.releaseCheck, "git-tags fallback after GitHub release lookup failed with HTTP 403.");
+
+    await manager.scheduleUpdateAndRestart();
+
+    assert.equal(spawnCalls.length, 1);
+    assert.match(
+      spawnCalls[0].args[1],
+      /git fetch --force --depth 1 'https:\/\/github\.com\/Clamepending\/remote-vibes\.git' 'refs\/tags\/v2\.0\.0:refs\/tags\/v2\.0\.0'/,
+    );
+    assert.match(spawnCalls[0].args[1], /git checkout --detach 'refs\/tags\/v2\.0\.0'/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("UpdateManager does not offer to downgrade branch checkouts ahead of the latest release", async () => {
   const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
   const releaseCommit = await commitSourceVersion(sourceDir, "v2");
