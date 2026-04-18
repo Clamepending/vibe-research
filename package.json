@@ -1,6 +1,6 @@
 {
   "name": "remote-vibes",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Minimal browser-based terminal sessions for local coding agents over Tailscale.",
   "private": true,
   "type": "module",
