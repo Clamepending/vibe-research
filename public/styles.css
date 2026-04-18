@@ -1924,6 +1924,8 @@ input[readonly][data-folder-picker-target] {
   border-radius: 9px;
   background: transparent;
   cursor: pointer;
+  overflow: hidden;
+  position: relative;
 }
 
 .session-card:hover {
@@ -1944,18 +1946,29 @@ input[readonly][data-folder-picker-target] {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  grid-column: 2 / -1;
-  justify-self: start;
-  max-height: 0;
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  z-index: 2;
+  padding: 2px;
+  border-radius: 9px;
+  background: linear-gradient(90deg, rgba(38, 36, 43, 0), rgba(38, 36, 43, 0.96) 18%);
   opacity: 0;
-  overflow: hidden;
-  transition: max-height 120ms ease, opacity 120ms ease;
+  pointer-events: none;
+  transform: translate(4px, -50%);
+  transition: opacity 120ms ease, transform 120ms ease;
 }
 
 .session-card:hover .session-actions,
 .session-card:focus-within .session-actions {
-  max-height: 32px;
   opacity: 1;
+  pointer-events: auto;
+  transform: translate(0, -50%);
+}
+
+.session-card:hover .session-time,
+.session-card:focus-within .session-time {
+  opacity: 0;
 }
 
 .session-action-button {
@@ -2071,6 +2084,7 @@ input[readonly][data-folder-picker-target] {
 .session-time {
   justify-self: end;
   font-size: 0.68rem;
+  transition: opacity 120ms ease;
   white-space: nowrap;
 }
 
