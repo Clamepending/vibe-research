@@ -364,29 +364,29 @@ input[readonly][data-folder-picker-target] {
 
 .folder-picker-list {
   display: grid;
-  gap: 6px;
+  align-content: start;
+  gap: 0;
   min-height: 180px;
   max-height: min(48vh, 420px);
   overflow-y: auto;
-}
-
-.folder-picker-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 38px;
-  padding: 8px 10px;
-  border: 1px solid transparent;
+  padding: 4px 0;
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
-  color: inherit;
-  text-align: left;
+  background: rgba(18, 21, 24, 0.82);
 }
 
-.folder-picker-row:hover {
-  border-color: rgba(106, 227, 198, 0.34);
-  background: rgba(106, 227, 198, 0.1);
+.folder-picker-tree-row.is-active {
+  border-color: transparent;
+  background: rgba(120, 126, 150, 0.34);
+  color: #f4f7fb;
+}
+
+.folder-picker-root-row .file-label {
+  font-weight: 700;
+}
+
+.folder-picker-tree-status {
+  min-height: 27px;
 }
 
 .knowledge-settings-section .section-head {

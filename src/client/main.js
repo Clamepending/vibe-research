@@ -136,6 +136,11 @@ const state = {
     currentPath: "",
     parentPath: "",
     entries: [],
+    treeEntries: {},
+    treeExpanded: new Set([""]),
+    treeLoading: new Set(),
+    treeErrors: {},
+    requestId: 0,
     loading: false,
     error: "",
   },
@@ -706,6 +711,72 @@ function getFolderPickerCurrentPath() {
   return state.folderPicker.currentPath || state.folderPicker.root || state.defaultCwd || "";
 }
 
+function getWorkspacePathLeafName(value) {
+  const normalized = normalizeWorkspaceRoot(value);
+
+  if (!normalized) {
+    return "folder";
+  }
+
+  if (normalized === "/") {
+    return "/";
+  }
+
+  const parts = normalized.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) || normalized;
+}
+
+function getWorkspaceParentPath(value) {
+  const normalized = normalizeWorkspaceRoot(value);
+
+  if (!normalized || normalized === "/") {
+    return "";
+  }
+
+  const trimmed = normalized.replace(/[\\/]+$/, "");
+  const separatorIndex = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+
+  if (separatorIndex < 0) {
+    return "";
+  }
+
+  if (separatorIndex === 0) {
+    return "/";
+  }
+
+  return trimmed.slice(0, separatorIndex);
+}
+
+function getFolderPickerAbsolutePath(relativePath) {
+  const normalizedRelativePath = normalizeFileTreePath(relativePath);
+  const root = normalizeWorkspaceRoot(state.folderPicker.root || state.defaultCwd || "/");
+
+  if (!normalizedRelativePath) {
+    return root;
+  }
+
+  const existingEntry = Object.values(state.folderPicker.treeEntries)
+    .flat()
+    .find((entry) => entry.relativePath === normalizedRelativePath);
+
+  if (existingEntry?.path) {
+    return existingEntry.path;
+  }
+
+  return root === "/" ? `/${normalizedRelativePath}` : `${root}/${normalizedRelativePath}`;
+}
+
+function getFolderPickerChildRelativePath(parentPath, childName) {
+  const normalizedParentPath = normalizeFileTreePath(parentPath);
+  const normalizedChildName = normalizeFileTreePath(childName);
+
+  if (!normalizedChildName) {
+    return normalizedParentPath;
+  }
+
+  return normalizedParentPath ? `${normalizedParentPath}/${normalizedChildName}` : normalizedChildName;
+}
+
 function getFolderPickerTargetInput() {
   if (state.folderPicker.target === "wiki") {
     return document.querySelector("#wiki-path-input");
@@ -833,6 +904,7 @@ async function createSessionInFolder(cwd) {
 
 async function createFolderFromPicker(folderName) {
   const currentPath = getFolderPickerCurrentPath();
+  const parentPath = normalizeFileTreePath(state.folderPicker.path);
   const payload = await fetchJson("/api/folders", {
     method: "POST",
     body: JSON.stringify({
@@ -851,7 +923,23 @@ async function createFolderFromPicker(folderName) {
     return;
   }
 
-  await loadFolderPicker(createdPath, { target: state.folderPicker.target });
+  const createdRelativePath = getFolderPickerChildRelativePath(parentPath, payload.folder.name);
+  const createdEntry = {
+    ...payload.folder,
+    relativePath: createdRelativePath,
+  };
+  const parentEntries = state.folderPicker.treeEntries[parentPath] || [];
+  state.folderPicker.treeEntries[parentPath] = [
+    ...parentEntries.filter((entry) => entry.relativePath !== createdRelativePath),
+    createdEntry,
+  ].sort((left, right) => left.name.localeCompare(right.name));
+  state.folderPicker.treeExpanded.add(parentPath);
+  state.folderPicker.treeExpanded.add(createdRelativePath);
+  state.folderPicker.currentPath = createdPath;
+  state.folderPicker.path = createdRelativePath;
+  state.folderPicker.parentPath = currentPath;
+  state.folderPicker.treeEntries[createdRelativePath] = [];
+  renderShell();
 }
 
 async function applyFolderPickerSelection() {
@@ -2741,29 +2829,82 @@ function renderAgentPromptModal() {
   `;
 }
 
+function renderFolderPickerTreeStatus(message, depth) {
+  return `<div class="file-tree-status folder-picker-tree-status" style="--depth:${depth}">${escapeHtml(message)}</div>`;
+}
+
+function renderFolderPickerTreeNodes(parentPath = "", depth = 1) {
+  const pathKey = normalizeFileTreePath(parentPath);
+  const entries = state.folderPicker.treeEntries[pathKey] || [];
+
+  if (state.folderPicker.treeLoading.has(pathKey) && !entries.length) {
+    return renderFolderPickerTreeStatus("loading...", depth);
+  }
+
+  if (state.folderPicker.treeErrors[pathKey]) {
+    return renderFolderPickerTreeStatus(state.folderPicker.treeErrors[pathKey], depth);
+  }
+
+  if (!entries.length) {
+    return renderFolderPickerTreeStatus(pathKey ? "empty" : "no subfolders", depth);
+  }
+
+  return entries
+    .map((entry) => {
+      const entryPath = normalizeFileTreePath(entry.relativePath);
+      const expanded = state.folderPicker.treeExpanded.has(entryPath);
+      const selected = entryPath === state.folderPicker.path;
+      const children = expanded ? renderFolderPickerTreeNodes(entryPath, depth + 1) : "";
+
+      return `
+        <div class="file-node folder-picker-node">
+          <button
+            class="file-row file-row-button folder-picker-tree-row ${selected ? "is-active" : ""}"
+            type="button"
+            data-folder-picker-select="${escapeHtml(entryPath)}"
+            data-folder-picker-path="${escapeHtml(entry.path)}"
+            style="--depth:${depth}"
+          >
+            <span class="file-caret">${expanded ? "▾" : "▸"}</span>
+            <span class="file-icon file-icon-folder ${expanded ? "is-open" : ""}" aria-hidden="true"></span>
+            <span class="file-label">${escapeHtml(entry.name)}</span>
+          </button>
+          ${children ? `<div class="file-children" style="--depth:${depth}">${children}</div>` : ""}
+        </div>
+      `;
+    })
+    .join("");
+}
+
 function renderFolderPickerEntries() {
-  if (state.folderPicker.loading) {
+  if (state.folderPicker.loading && !state.folderPicker.treeEntries[""]) {
     return `<div class="blank-state">loading folders...</div>`;
   }
 
-  if (state.folderPicker.error) {
+  if (state.folderPicker.error && !state.folderPicker.treeEntries[""]) {
     return `<div class="blank-state">${escapeHtml(state.folderPicker.error)}</div>`;
   }
 
-  if (!state.folderPicker.entries.length) {
-    return `<div class="blank-state">no subfolders</div>`;
-  }
+  const rootPath = state.folderPicker.root || getFolderPickerCurrentPath();
+  const rootSelected = !state.folderPicker.path;
+  const rootChildren = renderFolderPickerTreeNodes("", 1);
 
-  return state.folderPicker.entries
-    .map(
-      (entry) => `
-        <button class="folder-picker-row" type="button" data-folder-picker-open="${escapeHtml(entry.path)}">
-          <span class="file-caret">dir</span>
-          <span class="file-label">${escapeHtml(entry.name)}</span>
-        </button>
-      `,
-    )
-    .join("");
+  return `
+    <div class="file-node folder-picker-node">
+      <button
+        class="file-row file-row-button folder-picker-tree-row folder-picker-root-row ${rootSelected ? "is-active" : ""}"
+        type="button"
+        data-folder-picker-select=""
+        data-folder-picker-path="${escapeHtml(rootPath)}"
+        style="--depth:0"
+      >
+        <span class="file-caret">▾</span>
+        <span class="file-icon file-icon-folder is-open" aria-hidden="true"></span>
+        <span class="file-label">${escapeHtml(getWorkspacePathLeafName(rootPath))}</span>
+      </button>
+      <div class="file-children" style="--depth:0">${rootChildren}</div>
+    </div>
+  `;
 }
 
 function renderFolderPickerModal() {
@@ -4162,20 +4303,22 @@ function bindShellEvents() {
     });
   });
 
-  document.querySelectorAll("[data-folder-picker-open]").forEach((button) => {
+  document.querySelectorAll("[data-folder-picker-select]").forEach((button) => {
     button.addEventListener("click", async () => {
-      await loadFolderPicker(button.getAttribute("data-folder-picker-open") || state.defaultCwd, {
-        target: state.folderPicker.target,
-      });
+      await selectFolderPickerPath(
+        button.getAttribute("data-folder-picker-select") || "",
+        button.getAttribute("data-folder-picker-path") || "",
+      );
     });
   });
 
   document.querySelector("#folder-picker-up")?.addEventListener("click", async () => {
-    if (!state.folderPicker.parentPath) {
+    const parentPath = getWorkspaceParentPath(getFolderPickerCurrentPath());
+    if (!parentPath) {
       return;
     }
 
-    await loadFolderPicker(state.folderPicker.parentPath, {
+    await loadFolderPicker(parentPath, {
       target: state.folderPicker.target,
     });
   });
@@ -4962,6 +5105,7 @@ async function loadUpdateStatus({ force = false } = {}) {
 
 async function loadFolderPicker(root, { target = state.folderPicker.target } = {}) {
   const nextRoot = normalizeWorkspaceRoot(root || state.defaultCwd || "/");
+  const requestId = state.folderPicker.requestId + 1;
   state.folderPicker = {
     ...state.folderPicker,
     currentPath: nextRoot,
@@ -4969,43 +5113,114 @@ async function loadFolderPicker(root, { target = state.folderPicker.target } = {
     error: "",
     loading: true,
     open: true,
-    parentPath: "",
+    parentPath: getWorkspaceParentPath(nextRoot),
     path: "",
     root: nextRoot,
     target,
+    treeEntries: {},
+    treeExpanded: new Set([""]),
+    treeLoading: new Set(),
+    treeErrors: {},
+    requestId,
   };
+  renderShell();
+
+  await loadFolderPickerTreePath("");
+}
+
+async function selectFolderPickerPath(relativePath = "", absolutePath = "") {
+  const pathKey = normalizeFileTreePath(relativePath);
+  const nextPath = normalizeWorkspaceRoot(absolutePath || getFolderPickerAbsolutePath(pathKey));
+
+  state.folderPicker.currentPath = nextPath || state.folderPicker.root;
+  state.folderPicker.path = pathKey;
+  state.folderPicker.parentPath = getWorkspaceParentPath(state.folderPicker.currentPath);
+  state.folderPicker.treeExpanded.add(pathKey);
+  renderShell();
+
+  await loadFolderPickerTreePath(pathKey);
+}
+
+async function loadFolderPickerTreePath(relativePath = "", { force = false } = {}) {
+  const pathKey = normalizeFileTreePath(relativePath);
+  const requestRoot = state.folderPicker.root;
+  const requestId = state.folderPicker.requestId;
+
+  if (!requestRoot || !state.folderPicker.open) {
+    return;
+  }
+
+  if (!force && (state.folderPicker.treeLoading.has(pathKey) || state.folderPicker.treeEntries[pathKey])) {
+    return;
+  }
+
+  state.folderPicker.treeLoading.add(pathKey);
+  delete state.folderPicker.treeErrors[pathKey];
+  if (pathKey === "") {
+    state.folderPicker.loading = true;
+    state.folderPicker.error = "";
+  }
   renderShell();
 
   try {
     const params = new URLSearchParams();
-    params.set("root", nextRoot);
+    params.set("root", requestRoot);
+    if (pathKey) {
+      params.set("path", pathKey);
+    }
     const payload = await fetchJson(`/api/folders?${params.toString()}`);
 
-    if (!state.folderPicker.open || state.folderPicker.root !== nextRoot) {
+    if (!state.folderPicker.open || state.folderPicker.requestId !== requestId) {
       return;
     }
 
+    const normalizedPayloadPath = normalizeFileTreePath(payload.relativePath || pathKey);
     state.folderPicker = {
       ...state.folderPicker,
-      currentPath: payload.currentPath || nextRoot,
+      currentPath:
+        normalizedPayloadPath === state.folderPicker.path
+          ? payload.currentPath || state.folderPicker.currentPath
+          : state.folderPicker.currentPath,
       entries: Array.isArray(payload.entries) ? payload.entries : [],
       error: "",
       loading: false,
-      parentPath: payload.parentPath || "",
-      path: payload.relativePath || "",
-      root: payload.root || nextRoot,
+      parentPath:
+        normalizedPayloadPath === state.folderPicker.path
+          ? payload.parentPath || getWorkspaceParentPath(state.folderPicker.currentPath)
+          : state.folderPicker.parentPath,
+      path:
+        normalizedPayloadPath === state.folderPicker.path
+          ? normalizedPayloadPath
+          : state.folderPicker.path,
+      root: payload.root || requestRoot,
+      treeEntries: {
+        ...state.folderPicker.treeEntries,
+        [normalizedPayloadPath]: Array.isArray(payload.entries) ? payload.entries : [],
+      },
     };
   } catch (error) {
-    if (!state.folderPicker.open || state.folderPicker.root !== nextRoot) {
+    if (!state.folderPicker.open || state.folderPicker.requestId !== requestId) {
       return;
     }
 
+    const treeErrors = {
+      ...state.folderPicker.treeErrors,
+      [pathKey]: error.message,
+    };
     state.folderPicker = {
       ...state.folderPicker,
-      entries: [],
-      error: error.message,
-      loading: false,
+      entries: pathKey ? state.folderPicker.entries : [],
+      error: pathKey ? state.folderPicker.error : error.message,
+      loading: pathKey ? state.folderPicker.loading : false,
+      treeErrors,
     };
+  } finally {
+    if (state.folderPicker.open && state.folderPicker.requestId === requestId) {
+      state.folderPicker.treeLoading.delete(pathKey);
+      if (pathKey === "") {
+        state.folderPicker.loading = false;
+      }
+    }
   }
 
   renderShell();
