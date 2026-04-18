@@ -2232,6 +2232,17 @@ function getAbsolutePathAliases(value) {
   return Array.from(aliases);
 }
 
+function isAbsolutePathSameOrNested(candidatePath, rootPath) {
+  const candidateAliases = getAbsolutePathAliases(candidatePath);
+  const rootAliases = getAbsolutePathAliases(rootPath);
+
+  return candidateAliases.some((candidate) =>
+    rootAliases.some(
+      (root) => candidate === root || (root === "/" ? candidate.startsWith(root) : candidate.startsWith(`${root}/`)),
+    ),
+  );
+}
+
 function joinWorkspacePath(root, relativePath) {
   const normalizedRoot = normalizeAbsolutePathForCompare(root);
   const normalizedRelative = normalizeFileTreePath(relativePath);
@@ -5379,21 +5390,42 @@ function renderSystemStorageCard(system) {
   const wiki = system?.wikiStorage;
   const wikiBytes = wiki?.exists ? Number(wiki.bytes || 0) : 0;
   const wikiPercent = totalBytes > 0 ? clamp((wikiBytes / totalBytes) * 100, 0, usedPercent) : 0;
-  const otherUsedPercent = clamp(usedPercent - wikiPercent, 0, 100);
-  const wikiPercentLabel =
-    wikiPercent > 0 && wikiPercent < 0.01
+  const project = system?.projectStorage;
+  const projectRawBytes = project?.exists ? Number(project.bytes || 0) : 0;
+  const projectPaths = Array.isArray(project?.paths) ? project.paths : [];
+  const projectContainsWiki =
+    wiki?.path && projectPaths.some((projectPath) => isAbsolutePathSameOrNested(wiki.path, projectPath));
+  const projectBytes = Math.max(0, projectRawBytes - (projectContainsWiki ? wikiBytes : 0));
+  const projectPercent =
+    totalBytes > 0 ? clamp((projectBytes / totalBytes) * 100, 0, clamp(usedPercent - wikiPercent, 0, 100)) : 0;
+  const otherUsedPercent = clamp(usedPercent - wikiPercent - projectPercent, 0, 100);
+  const formatStoragePercentLabel = (percent) =>
+    percent > 0 && percent < 0.01
       ? "<0.01%"
-      : `${wikiPercent.toFixed(wikiPercent < 1 ? 2 : 1)}%`;
+      : `${percent.toFixed(percent < 1 ? 2 : 1)}%`;
+  const wikiPercentLabel = formatStoragePercentLabel(wikiPercent);
+  const projectPercentLabel = formatStoragePercentLabel(projectPercent);
   const wikiLegend = wiki
     ? wiki.exists
       ? `${formatBytes(wikiBytes)} Knowledge Base (${wikiPercentLabel})`
       : "Knowledge Base folder missing"
+    : "";
+  const projectLegend = project
+    ? project.exists
+      ? `${formatBytes(projectBytes)} Project folders (${projectPercentLabel})`
+      : "Project folders unavailable"
     : "";
   const wikiDetailParts = [
     wiki?.path || "",
     wiki?.source ? `measured by ${wiki.source}` : "",
     wiki?.warning || "",
     wiki?.error || "",
+  ].filter(Boolean);
+  const projectDetailParts = [
+    project?.rootCount ? `${project.rootCount} folders measured` : "",
+    project?.truncated ? `${project.measuredRootCount} of ${project.totalRootCount} folders included` : "",
+    projectContainsWiki ? "Knowledge Base shown separately" : "",
+    ...(Array.isArray(project?.warnings) ? project.warnings : []),
   ].filter(Boolean);
 
   return `
@@ -5402,13 +5434,15 @@ function renderSystemStorageCard(system) {
         <strong>${escapeHtml(primary.name || primary.mountPoint || "Storage")}</strong>
         <span>${escapeHtml(`${formatBytes(usedBytes)} of ${formatBytes(totalBytes)} used`)}</span>
       </div>
-      <div class="system-storage-bar" style="--storage-used: ${otherUsedPercent}%; --storage-wiki: ${wikiPercent}%; --storage-wiki-min: ${wikiBytes > 0 ? "4px" : "0px"}">
+      <div class="system-storage-bar" style="--storage-used: ${otherUsedPercent}%; --storage-project: ${projectPercent}%; --storage-project-min: ${projectBytes > 0 ? "4px" : "0px"}; --storage-wiki: ${wikiPercent}%; --storage-wiki-min: ${wikiBytes > 0 ? "4px" : "0px"}">
         <span class="system-storage-used" title="Other used storage"></span>
+        ${projectLegend ? `<span class="system-storage-project" title="${escapeHtml(projectLegend)}"></span>` : ""}
         ${wiki ? `<span class="system-storage-wiki" title="${escapeHtml(wikiLegend)}"></span>` : ""}
         <span class="system-storage-free"></span>
       </div>
       <div class="system-storage-legend">
         <span><i class="legend-dot is-used"></i>${escapeHtml(`${formatPercent(otherUsedPercent)} other used`)}</span>
+        ${projectLegend ? `<span title="${escapeHtml(projectDetailParts.join(" · "))}"><i class="legend-dot is-project"></i>${escapeHtml(projectLegend)}</span>` : ""}
         ${wikiLegend ? `<span title="${escapeHtml(wikiDetailParts.join(" · "))}"><i class="legend-dot is-wiki"></i>${escapeHtml(wikiLegend)}</span>` : ""}
         <span><i class="legend-dot is-free"></i>${escapeHtml(`${formatBytes(freeBytes)} free`)}</span>
         <span>${escapeHtml(primary.mountPoint || "")}</span>

@@ -1210,6 +1210,19 @@ export class SessionManager {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
+  listProjectPaths() {
+    const projectPaths = new Set();
+
+    for (const session of this.sessions.values()) {
+      const sessionCwd = resolveCwd(session.cwd, this.cwd);
+      if (sessionCwd) {
+        projectPaths.add(sessionCwd);
+      }
+    }
+
+    return Array.from(projectPaths).sort((left, right) => left.localeCompare(right));
+  }
+
   async getSessionSwarmGraph(sessionId) {
     this.consumePendingRenameRequests();
     const focusSession = this.sessions.get(sessionId);

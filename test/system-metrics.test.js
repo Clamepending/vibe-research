@@ -46,6 +46,8 @@ test("collectSystemMetrics reports storage, wiki usage, per-core CPU, memory, an
     cwd: "/workspace/project",
     platform: "linux",
     sampleMs: 1,
+    projectPaths: ["/workspace/project", "/workspace/project/subdir"],
+    projectStorageCache: new Map(),
     wikiPath: "/workspace/wiki",
     wikiStorageCache: new Map(),
     cpus: createCpuSequence(),
@@ -64,6 +66,10 @@ test("collectSystemMetrics reports storage, wiki usage, per-core CPU, memory, an
 
       if (command === "du" && args.join(" ") === "-sk /workspace/wiki") {
         return { stdout: "12\t/workspace/wiki\n", stderr: "" };
+      }
+
+      if (command === "du" && args.join(" ") === "-sk /workspace/project") {
+        return { stdout: "80\t/workspace/project\n", stderr: "" };
       }
 
       if (command === "nvidia-smi") {
@@ -88,6 +94,10 @@ test("collectSystemMetrics reports storage, wiki usage, per-core CPU, memory, an
   assert.equal(system.wikiStorage.exists, true);
   assert.equal(system.wikiStorage.bytes, 12 * 1024);
   assert.equal(system.wikiStorage.source, "du");
+  assert.equal(system.projectStorage.exists, true);
+  assert.equal(system.projectStorage.bytes, 80 * 1024);
+  assert.equal(system.projectStorage.rootCount, 1);
+  assert.equal(system.projectStorage.totalRootCount, 1);
   assert.equal(system.cpu.coreCount, 2);
   assert.equal(Math.round(system.cpu.cores[0].utilizationPercent), 50);
   assert.equal(Math.round(system.cpu.cores[1].utilizationPercent), 100);
@@ -96,6 +106,14 @@ test("collectSystemMetrics reports storage, wiki usage, per-core CPU, memory, an
   assert.equal(system.gpus[0].name, "NVIDIA RTX 6000");
   assert.equal(system.gpus[0].utilizationPercent, 42);
   assert.equal(system.gpus[0].memoryTotalBytes, 49152 * 1024 * 1024);
+});
+
+test("project storage roots are deduped before measurement", () => {
+  assert.deepEqual(testInternals.dedupeNestedStorageRoots(["/workspace/project/a", "/workspace/project", "/tmp/x"]), [
+    "/tmp/x",
+    "/workspace/project",
+  ]);
+  assert.deepEqual(testInternals.dedupeNestedStorageRoots(["/", "/tmp/x"]), ["/"]);
 });
 
 test("macOS ioreg parsers detect Apple GPU utilization and Neural Engine inventory", () => {

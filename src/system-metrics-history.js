@@ -59,6 +59,21 @@ function compactWikiStorage(wikiStorage) {
   };
 }
 
+function compactProjectStorage(projectStorage) {
+  if (!projectStorage) {
+    return null;
+  }
+
+  return {
+    exists: projectStorage.exists !== false,
+    bytes: finiteNumber(projectStorage.bytes),
+    rootCount: finiteNumber(projectStorage.rootCount),
+    measuredRootCount: finiteNumber(projectStorage.measuredRootCount),
+    totalRootCount: finiteNumber(projectStorage.totalRootCount),
+    truncated: Boolean(projectStorage.truncated),
+  };
+}
+
 function compactCpu(cpu) {
   return {
     utilizationPercent: finitePercent(cpu?.utilizationPercent),
@@ -118,6 +133,7 @@ export function createSystemMetricsHistorySample(system, { now = Date.now() } = 
       primary: compactStoragePrimary(system.storage?.primary),
     },
     wikiStorage: compactWikiStorage(system.wikiStorage),
+    projectStorage: compactProjectStorage(system.projectStorage),
     cpu: compactCpu(system.cpu),
     memory: compactMemory(system.memory),
     gpus: (Array.isArray(system.gpus) ? system.gpus : []).map((gpu, index) => compactGpu(gpu, index)),
@@ -138,6 +154,7 @@ function normalizeSample(sample) {
       primary: compactStoragePrimary(sample?.storage?.primary),
     },
     wikiStorage: compactWikiStorage(sample?.wikiStorage),
+    projectStorage: compactProjectStorage(sample?.projectStorage),
     cpu: compactCpu(sample?.cpu),
     memory: compactMemory(sample?.memory),
     gpus: (Array.isArray(sample?.gpus) ? sample.gpus : []).map((gpu, index) => compactGpu(gpu, index)),

@@ -23,6 +23,14 @@ function createSystemSample(checkedAt, utilizationPercent) {
       exists: true,
       bytes: 1234,
     },
+    projectStorage: {
+      exists: true,
+      bytes: 4321,
+      rootCount: 2,
+      measuredRootCount: 2,
+      totalRootCount: 2,
+      truncated: false,
+    },
     cpu: {
       utilizationPercent,
       cores: [{ id: 0, label: "CPU 1", utilizationPercent }],
@@ -70,6 +78,7 @@ test("SystemMetricsHistoryStore records, persists, and filters hour/day/week ran
     assert.equal(hour.range, "1h");
     assert.equal(hour.rawSampleCount, 2);
     assert.equal(hour.samples.at(-1).memory.usedPercent, 30);
+    assert.equal(hour.samples.at(-1).projectStorage.bytes, 4321);
 
     now = Date.parse("2026-04-19T00:00:20.000Z");
     assert.equal(reloaded.getHistory("1h", { now }).rawSampleCount, 0);

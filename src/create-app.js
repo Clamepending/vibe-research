@@ -412,7 +412,11 @@ export async function createRemoteVibesApp({
   }
 
   async function collectAndRecordSystemMetrics({ forceHistory = false } = {}) {
-    const system = await systemMetricsProvider({ cwd, wikiPath: settingsStore.settings.wikiPath });
+    const system = await systemMetricsProvider({
+      cwd,
+      projectPaths: sessionManager.listProjectPaths(),
+      wikiPath: settingsStore.settings.wikiPath,
+    });
     await systemMetricsHistoryStore.record(system, { force: forceHistory });
     return system;
   }

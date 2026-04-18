@@ -1723,6 +1723,12 @@ input[readonly][data-folder-picker-target] {
   background: linear-gradient(90deg, #ff9f0a, #ffd60a);
 }
 
+.system-storage-project {
+  flex: 0 0 var(--storage-project, 0%);
+  min-width: var(--storage-project-min, 0);
+  background: linear-gradient(90deg, #30d158, #7ce5c4);
+}
+
 .system-storage-free {
   flex: 1 1 auto;
   background:
@@ -1767,6 +1773,10 @@ input[readonly][data-folder-picker-target] {
 
 .legend-dot.is-free {
   background: rgba(255, 255, 255, 0.38);
+}
+
+.legend-dot.is-project {
+  background: #58d68d;
 }
 
 .legend-dot.is-wiki {

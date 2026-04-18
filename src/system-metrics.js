@@ -13,9 +13,12 @@ const DEFAULT_TIMEOUT_MS = 2_500;
 const DEFAULT_CPU_SAMPLE_MS = 140;
 const DEFAULT_WIKI_STORAGE_CACHE_MS = 30_000;
 const DEFAULT_WIKI_STORAGE_MAX_ENTRIES = 75_000;
+const DEFAULT_PROJECT_STORAGE_CACHE_MS = 60_000;
+const DEFAULT_PROJECT_STORAGE_MAX_ROOTS = 32;
 const BYTES_PER_KIB = 1024;
 const MAX_VISIBLE_VOLUMES = 8;
 const wikiStorageCache = new Map();
+const projectStorageCache = new Map();
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -497,6 +500,49 @@ function getDirentName(entry) {
   return typeof entry === "string" ? entry : entry?.name;
 }
 
+function normalizeStorageRootPath(rootPath) {
+  const rawPath = String(rootPath || "").trim();
+  if (!rawPath) {
+    return "";
+  }
+
+  const resolvedPath = path.resolve(rawPath);
+  const root = path.parse(resolvedPath).root;
+  const trimmed = resolvedPath.replace(/[\\/]+$/, "");
+  return trimmed || root;
+}
+
+function isSameOrNestedStoragePath(candidatePath, rootPath) {
+  const candidate = normalizeStorageRootPath(candidatePath);
+  const root = normalizeStorageRootPath(rootPath);
+
+  if (!candidate || !root) {
+    return false;
+  }
+
+  if (candidate === root) {
+    return true;
+  }
+
+  const rootPrefix = path.parse(root).root;
+  return root === rootPrefix ? candidate.startsWith(root) : candidate.startsWith(`${root}${path.sep}`);
+}
+
+function dedupeNestedStorageRoots(rootPaths) {
+  const roots = Array.from(
+    new Set((Array.isArray(rootPaths) ? rootPaths : []).map(normalizeStorageRootPath).filter(Boolean)),
+  ).sort((left, right) => left.length - right.length || left.localeCompare(right));
+
+  const deduped = [];
+  for (const root of roots) {
+    if (!deduped.some((parent) => isSameOrNestedStoragePath(root, parent))) {
+      deduped.push(root);
+    }
+  }
+
+  return deduped;
+}
+
 async function readWikiStorageByWalking({
   lstat,
   maxEntries = DEFAULT_WIKI_STORAGE_MAX_ENTRIES,
@@ -631,6 +677,106 @@ async function readWikiStorage({
   return value;
 }
 
+async function readProjectRootStorage({
+  cache = projectStorageCache,
+  cacheMs = DEFAULT_PROJECT_STORAGE_CACHE_MS,
+  execFile,
+  rootPath,
+  timeoutMs,
+}) {
+  const resolvedPath = normalizeStorageRootPath(rootPath);
+  if (!resolvedPath) {
+    return null;
+  }
+
+  const now = Date.now();
+  const cached = cache?.get(resolvedPath);
+  if (cached && now - cached.cachedAt < cacheMs) {
+    return {
+      ...cached.value,
+      cacheAgeMs: now - cached.cachedAt,
+    };
+  }
+
+  let value;
+  try {
+    const { stdout } = await runCommand(execFile, "du", ["-sk", resolvedPath], { timeoutMs });
+    const bytes = parseDuOutput(stdout);
+    if (bytes === null) {
+      throw new Error("du did not return a byte count");
+    }
+    value = {
+      path: resolvedPath,
+      exists: true,
+      bytes,
+      source: "du",
+    };
+  } catch (error) {
+    value = {
+      path: resolvedPath,
+      exists: false,
+      bytes: 0,
+      source: "du",
+      error: error.message || "Could not measure project folder.",
+    };
+  }
+
+  value.checkedAt = new Date(now).toISOString();
+  cache?.set(resolvedPath, {
+    cachedAt: now,
+    value,
+  });
+
+  return value;
+}
+
+async function readProjectStorage({
+  cache = projectStorageCache,
+  cacheMs = DEFAULT_PROJECT_STORAGE_CACHE_MS,
+  execFile,
+  maxRoots = DEFAULT_PROJECT_STORAGE_MAX_ROOTS,
+  rootPaths = [],
+  timeoutMs,
+}) {
+  const roots = dedupeNestedStorageRoots(rootPaths);
+  if (!roots.length) {
+    return null;
+  }
+
+  const measuredRoots = roots.slice(0, Math.max(1, Number(maxRoots) || DEFAULT_PROJECT_STORAGE_MAX_ROOTS));
+  const entries = (
+    await Promise.all(
+      measuredRoots.map((rootPath) =>
+        readProjectRootStorage({
+          cache,
+          cacheMs,
+          execFile,
+          rootPath,
+          timeoutMs,
+        }),
+      ),
+    )
+  ).filter(Boolean);
+  const existingEntries = entries.filter((entry) => entry.exists);
+  const warnings = entries
+    .filter((entry) => entry.error)
+    .map((entry) => `${entry.path}: ${entry.error}`)
+    .slice(0, 4);
+
+  return {
+    exists: existingEntries.length > 0,
+    bytes: existingEntries.reduce((sum, entry) => sum + Number(entry.bytes || 0), 0),
+    paths: existingEntries.map((entry) => entry.path),
+    rootCount: existingEntries.length,
+    measuredRootCount: measuredRoots.length,
+    totalRootCount: roots.length,
+    truncated: roots.length > measuredRoots.length,
+    source: "du",
+    roots: entries,
+    warnings,
+  };
+}
+
 export async function collectSystemMetrics({
   cwd = process.cwd(),
   cpus = os.cpus,
@@ -643,13 +789,17 @@ export async function collectSystemMetrics({
   sampleMs = DEFAULT_CPU_SAMPLE_MS,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   totalmem = os.totalmem,
+  projectPaths = [],
+  projectStorageCache: projectStorageCacheOverride = projectStorageCache,
+  projectStorageCacheMs = DEFAULT_PROJECT_STORAGE_CACHE_MS,
+  projectStorageMaxRoots = DEFAULT_PROJECT_STORAGE_MAX_ROOTS,
   wikiPath = "",
   wikiStorageCache: wikiStorageCacheOverride = wikiStorageCache,
   wikiStorageCacheMs = DEFAULT_WIKI_STORAGE_CACHE_MS,
   wikiStorageMaxEntries = DEFAULT_WIKI_STORAGE_MAX_ENTRIES,
 } = {}) {
   const checkedAt = new Date().toISOString();
-  const [storage, cpu, memory, devices, wikiStorage] = await Promise.all([
+  const [storage, cpu, memory, devices, wikiStorage, projectStorage] = await Promise.all([
     readStorage({ cwd, execFile, platform, timeoutMs }),
     readCpu({ cpus, sampleMs }),
     Promise.resolve(readMemory({ totalmem, freemem })),
@@ -664,6 +814,14 @@ export async function collectSystemMetrics({
       rootPath: wikiPath,
       timeoutMs,
     }),
+    readProjectStorage({
+      cache: projectStorageCacheOverride,
+      cacheMs: projectStorageCacheMs,
+      execFile,
+      maxRoots: projectStorageMaxRoots,
+      rootPaths: projectPaths,
+      timeoutMs,
+    }),
   ]);
 
   return {
@@ -673,16 +831,21 @@ export async function collectSystemMetrics({
     uptimeSeconds: os.uptime(),
     storage,
     wikiStorage,
+    projectStorage,
     cpu,
     memory,
     gpus: devices.gpus,
     accelerators: devices.accelerators,
-    warnings: [...storage.warnings],
+    warnings: [
+      ...storage.warnings,
+      ...(projectStorage?.warnings || []).map((warning) => `Project storage: ${warning}`),
+    ],
   };
 }
 
 export const testInternals = {
   parseDfOutput,
+  dedupeNestedStorageRoots,
   parseMacAneIoreg,
   parseMacGpuIoreg,
   parseNvidiaCsv,
