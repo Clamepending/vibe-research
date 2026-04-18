@@ -928,6 +928,7 @@ input[readonly][data-folder-picker-target] {
 
 .dashboard-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
@@ -3631,6 +3632,7 @@ input[readonly][data-folder-picker-target] {
 
 .terminal-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
@@ -4152,6 +4154,206 @@ select:disabled {
 }
 
 @media (max-width: 560px) {
+  .hover-tooltip {
+    display: none;
+  }
+
+  .dashboard-panel {
+    gap: 10px;
+    padding: 12px;
+    padding-top: max(12px, calc(var(--safe-top) + 8px));
+    padding-right: max(12px, calc(var(--safe-right) + 8px));
+    padding-bottom: max(12px, calc(var(--safe-bottom) + 8px));
+    padding-left: max(12px, calc(var(--safe-left) + 8px));
+  }
+
+  .dashboard-toolbar {
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    border-radius: 18px;
+  }
+
+  .dashboard-toolbar > .icon-button {
+    min-height: 42px;
+    min-width: 42px;
+    padding: 0;
+  }
+
+  .dashboard-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    margin-left: 0;
+    gap: 8px;
+    overflow-x: auto;
+    padding-top: 2px;
+    scrollbar-width: none;
+  }
+
+  .dashboard-actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  .dashboard-actions > * {
+    flex: 0 0 auto;
+  }
+
+  .dashboard-copy strong,
+  .terminal-copy strong {
+    font-size: 0.96rem;
+  }
+
+  .terminal-meta,
+  .dashboard-updated,
+  .knowledge-base-panel-meta {
+    font-size: 0.72rem;
+  }
+
+  .terminal-toolbar {
+    grid-template-columns: 42px minmax(0, 1fr);
+    min-height: 0;
+    padding: 8px;
+    border-radius: 18px;
+  }
+
+  .terminal-toolbar .toolbar-actions {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-content: flex-start;
+    padding-top: 2px;
+  }
+
+  .terminal-toolbar .toolbar-actions > .icon-button,
+  .terminal-toolbar .toolbar-actions > .ghost-button {
+    min-height: 38px;
+    min-width: 38px;
+    padding: 0 10px;
+  }
+
+  .main-results-grid,
+  .plugins-layout,
+  .system-dashboard,
+  .dashboard-grid {
+    padding-right: 0;
+  }
+
+  .plugins-layout {
+    display: block;
+  }
+
+  .plugin-grid {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    min-height: auto;
+    margin-bottom: 12px;
+  }
+
+  .plugin-card {
+    min-height: 0;
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .plugin-copy span {
+    display: -webkit-box;
+    overflow: hidden;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .plugin-status {
+    grid-column: 1 / -1;
+  }
+
+  .mcp-import-card,
+  .automation-card {
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .system-storage-card {
+    gap: 12px;
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .system-storage-head,
+  .system-section-head,
+  .system-device-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .system-storage-head strong,
+  .system-section-head strong,
+  .system-device-head strong {
+    white-space: normal;
+  }
+
+  .system-storage-head span,
+  .system-section-head span,
+  .system-device-head span {
+    flex: 1 1 auto;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .system-storage-path {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .system-storage-bar {
+    height: 34px;
+  }
+
+  .system-storage-legend {
+    gap: 8px;
+    font-size: 0.76rem;
+  }
+
+  .system-summary-grid,
+  .swarm-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .system-chart-card,
+  .system-section {
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .system-line-chart {
+    height: 126px;
+  }
+
+  .knowledge-base-grid {
+    grid-auto-rows: auto;
+    gap: 10px;
+    padding-right: 0;
+  }
+
+  .knowledge-base-column-list {
+    max-height: 310px;
+    min-height: 248px;
+  }
+
+  .knowledge-base-column-note,
+  .knowledge-base-column-graph {
+    min-height: 260px;
+  }
+
+  .knowledge-base-column,
+  .knowledge-base-graph-card {
+    border-radius: 18px;
+  }
+
   .knowledge-base-app-toolbar {
     align-items: flex-start;
     flex-direction: column;
@@ -4245,12 +4447,6 @@ select:disabled {
 
   .knowledge-settings-head {
     width: 100%;
-  }
-
-  .terminal-toolbar {
-    grid-template-columns: 42px minmax(0, 1fr) auto;
-    min-height: 54px;
-    padding: 8px;
   }
 
   .terminal-mount {
