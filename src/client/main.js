@@ -5371,48 +5371,228 @@ function getSwarmNodeTypeOrder(type) {
   if (type === "session") {
     return 2;
   }
-  if (type === "subagent") {
+  if (type === "subagent" || type === "subagent-summary") {
     return 3;
   }
   return 4;
 }
 
 function getSwarmNodeSize(type) {
-  if (type === "path" || type === "path-summary") {
-    return { width: 178, height: 48 };
+  if (type === "path-bucket" || type === "path-summary") {
+    return { width: 226, height: 58 };
   }
-  if (type === "subagent") {
-    return { width: 178, height: 54 };
+  if (type === "path") {
+    return { width: 206, height: 50 };
+  }
+  if (type === "subagent" || type === "subagent-summary") {
+    return { width: 248, height: 62 };
   }
   if (type === "session") {
-    return { width: 168, height: 54 };
+    return { width: 224, height: 58 };
   }
   if (type === "worktree") {
-    return { width: 166, height: 50 };
+    return { width: 204, height: 54 };
   }
-  return { width: 166, height: 50 };
+  return { width: 196, height: 54 };
 }
 
 function getSwarmNodeColumnX(order) {
-  return [54, 222, 396, 586, 776][order] ?? 776;
+  return [48, 286, 536, 824, 1116][order] ?? 1116;
 }
 
-function rankSwarmPathNodes(pathNodes, edges) {
-  const touchCounts = new Map();
-  const originalIndexes = new Map(pathNodes.map((node, index) => [node.id, index]));
-  for (const edge of edges) {
-    if (edge?.type === "touch" && edge?.to) {
-      touchCounts.set(edge.to, (touchCounts.get(edge.to) || 0) + 1);
+function normalizeSwarmPath(value) {
+  return String(value || "")
+    .trim()
+    .replaceAll("\\", "/")
+    .replace(/\/+$/, "");
+}
+
+function isAbsoluteSwarmPath(value) {
+  return /^\/|^[a-z]:\//i.test(normalizeSwarmPath(value));
+}
+
+function isSwarmPathInside(child, parent) {
+  const normalizedChild = normalizeSwarmPath(child);
+  const normalizedParent = normalizeSwarmPath(parent);
+  return (
+    Boolean(normalizedChild && normalizedParent) &&
+    (normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`))
+  );
+}
+
+function getSwarmRelativePath(child, parent) {
+  const normalizedChild = normalizeSwarmPath(child);
+  const normalizedParent = normalizeSwarmPath(parent);
+  if (!isSwarmPathInside(normalizedChild, normalizedParent)) {
+    return normalizedChild;
+  }
+  return normalizedChild.slice(normalizedParent.length).replace(/^\/+/, "") || ".";
+}
+
+function getSwarmPathBucketFallback(pathValue) {
+  const normalized = normalizeSwarmPath(pathValue);
+  const parts = normalized.split("/").filter(Boolean);
+
+  if (!normalized || normalized === ".") {
+    return { key: "paths:unknown", label: "unknown files", meta: "paths", sample: "" };
+  }
+
+  if (!isAbsoluteSwarmPath(normalized)) {
+    const [first] = parts;
+    return {
+      key: `relative:${first || "repo"}`,
+      label: first ? `${first}/` : "repo files",
+      meta: "relative paths",
+      sample: normalized,
+    };
+  }
+
+  const macBrainIndex = parts.indexOf("mac-brain");
+  if (macBrainIndex >= 0) {
+    return {
+      key: "absolute:mac-brain",
+      label: "mac-brain",
+      meta: "knowledge base",
+      sample: parts.slice(macBrainIndex + 1).join("/") || ".",
+    };
+  }
+
+  if (parts[0] === "tmp" || parts[0] === "var") {
+    return {
+      key: `absolute:${parts[0]}`,
+      label: `/${parts[0]}`,
+      meta: "system paths",
+      sample: parts.slice(1).join("/") || ".",
+    };
+  }
+
+  if (parts[0] === "Users" && parts.length >= 3) {
+    const labelParts = parts.slice(2, Math.min(parts.length, 5));
+    return {
+      key: `absolute:user:${labelParts.join("/") || parts[1]}`,
+      label: `~/${labelParts.join("/") || parts[1]}`,
+      meta: "user paths",
+      sample: parts.slice(Math.min(parts.length, 5)).join("/") || ".",
+    };
+  }
+
+  return {
+    key: `absolute:${parts.slice(0, 3).join("/")}`,
+    label: `/${parts.slice(0, Math.min(parts.length, 3)).join("/")}`,
+    meta: "absolute paths",
+    sample: parts.slice(3).join("/") || ".",
+  };
+}
+
+function getSwarmPathBucket(pathNode, graph) {
+  const rawPath = normalizeSwarmPath(pathNode?.path || pathNode?.label || "");
+  const gitRoot = normalizeSwarmPath(graph?.git?.root || "");
+  const cwd = normalizeSwarmPath(graph?.cwd || "");
+  const roots = [];
+
+  for (const worktree of graph?.git?.worktrees || []) {
+    if (worktree?.path) {
+      roots.push({
+        key: `worktree:${normalizeSwarmPath(worktree.path)}`,
+        path: worktree.path,
+        label: worktree.name || getWorkspacePathLeafName(worktree.path),
+        meta: worktree.branch ? `${worktree.branch} worktree` : "git worktree",
+      });
     }
   }
 
-  return [...pathNodes].sort((left, right) => {
-    const countDelta = (touchCounts.get(right.id) || 0) - (touchCounts.get(left.id) || 0);
+  if (gitRoot) {
+    roots.push({
+      key: `repo:${gitRoot}`,
+      path: gitRoot,
+      label: getWorkspacePathLeafName(gitRoot),
+      meta: "repo files",
+    });
+  }
+
+  if (cwd) {
+    roots.push({
+      key: `cwd:${cwd}`,
+      path: cwd,
+      label: getWorkspacePathLeafName(cwd),
+      meta: "session folder",
+    });
+  }
+
+  const normalizedRoots = roots
+    .map((root) => ({ ...root, path: normalizeSwarmPath(root.path) }))
+    .filter((root) => root.path)
+    .sort((left, right) => right.path.length - left.path.length);
+
+  if (!isAbsoluteSwarmPath(rawPath)) {
+    const root = normalizedRoots[0];
+    if (root) {
+      return {
+        key: root.key,
+        label: root.label,
+        meta: root.meta,
+        sample: rawPath,
+      };
+    }
+    return getSwarmPathBucketFallback(rawPath);
+  }
+
+  const matchingRoot = normalizedRoots.find((root) => isSwarmPathInside(rawPath, root.path));
+  if (matchingRoot) {
+    return {
+      key: matchingRoot.key,
+      label: matchingRoot.label,
+      meta: matchingRoot.meta,
+      sample: getSwarmRelativePath(rawPath, matchingRoot.path),
+    };
+  }
+
+  return getSwarmPathBucketFallback(rawPath);
+}
+
+function collectSwarmPathBuckets(graph) {
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const pathNodes = nodes.filter((node) => node.type === "path");
+  const buckets = new Map();
+
+  for (const pathNode of pathNodes) {
+    const bucketInfo = getSwarmPathBucket(pathNode, graph);
+    const bucket = buckets.get(bucketInfo.key) || {
+      id: `path-bucket:${bucketInfo.key}`,
+      type: "path-bucket",
+      key: bucketInfo.key,
+      label: bucketInfo.label,
+      meta: bucketInfo.meta,
+      status: "path",
+      count: 0,
+      samples: [],
+      pathNodeIds: new Set(),
+    };
+    bucket.count += 1;
+    bucket.pathNodeIds.add(pathNode.id);
+    if (bucketInfo.sample && bucket.samples.length < 4 && !bucket.samples.includes(bucketInfo.sample)) {
+      bucket.samples.push(bucketInfo.sample);
+    }
+    buckets.set(bucketInfo.key, bucket);
+  }
+
+  return [...buckets.values()].sort((left, right) => {
+    const countDelta = right.count - left.count;
     if (countDelta) {
       return countDelta;
     }
+    return left.label.localeCompare(right.label);
+  });
+}
 
-    return (originalIndexes.get(left.id) || 0) - (originalIndexes.get(right.id) || 0);
+function rankSwarmSubagentNodes(subagentNodes) {
+  return [...subagentNodes].sort((left, right) => {
+    const statusDelta = (right.status === "working" ? 1 : 0) - (left.status === "working" ? 1 : 0);
+    if (statusDelta) {
+      return statusDelta;
+    }
+
+    return String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
   });
 }
 
@@ -5420,41 +5600,120 @@ function prepareSwarmGraphForDisplay(graph) {
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const edges = Array.isArray(graph?.edges) ? graph.edges : [];
   const pathNodes = nodes.filter((node) => node.type === "path");
-  const visiblePathLimit = 18;
+  const subagentNodes = nodes.filter((node) => node.type === "subagent");
+  const visibleSubagentLimit = 8;
+  const visibleSubagentNodes = rankSwarmSubagentNodes(subagentNodes).slice(0, visibleSubagentLimit);
+  const visibleSubagentIds = new Set(visibleSubagentNodes.map((node) => node.id));
+  const hiddenSubagentNodes = subagentNodes.filter((node) => !visibleSubagentIds.has(node.id));
+  const subagentSummaryNode = hiddenSubagentNodes.length
+    ? {
+        id: "subagent-summary:hidden",
+        type: "subagent-summary",
+        label: `${hiddenSubagentNodes.length} more agents`,
+        meta: "open the side panel",
+        status: hiddenSubagentNodes.some((node) => node.status === "working") ? "working" : "done",
+      }
+    : null;
+  const baseNodes = nodes.filter((node) => node.type !== "path" && node.type !== "subagent");
+  const displayBaseNodes = [...baseNodes, ...visibleSubagentNodes, ...(subagentSummaryNode ? [subagentSummaryNode] : [])];
+  const baseIds = new Set(baseNodes.map((node) => node.id));
+  for (const node of visibleSubagentNodes) {
+    baseIds.add(node.id);
+  }
+  if (subagentSummaryNode) {
+    baseIds.add(subagentSummaryNode.id);
+  }
+  const subagentDisplayIds = new Map();
+  for (const node of subagentNodes) {
+    subagentDisplayIds.set(node.id, visibleSubagentIds.has(node.id) ? node.id : subagentSummaryNode?.id);
+  }
+  const pathBuckets = collectSwarmPathBuckets(graph);
+  const visibleBucketLimit = 10;
+  const visibleBuckets = pathBuckets.slice(0, visibleBucketLimit);
+  const hiddenBuckets = pathBuckets.slice(visibleBucketLimit);
+  const pathNodeToBucket = new Map();
 
-  if (pathNodes.length <= visiblePathLimit) {
-    return { nodes, edges, hiddenPathCount: 0, visiblePathCount: pathNodes.length };
+  for (const bucket of visibleBuckets) {
+    for (const pathNodeId of bucket.pathNodeIds) {
+      pathNodeToBucket.set(pathNodeId, bucket.id);
+    }
   }
 
-  const visiblePathNodes = rankSwarmPathNodes(pathNodes, edges).slice(0, visiblePathLimit);
-  const visibleIds = new Set(nodes.filter((node) => node.type !== "path").map((node) => node.id));
-  visiblePathNodes.forEach((node) => visibleIds.add(node.id));
+  const hiddenPathNodeIds = new Set();
+  for (const bucket of hiddenBuckets) {
+    for (const pathNodeId of bucket.pathNodeIds) {
+      hiddenPathNodeIds.add(pathNodeId);
+    }
+  }
 
-  const hiddenPathCount = pathNodes.length - visiblePathNodes.length;
-  const summaryNode = {
-    id: "path-summary:hidden",
-    type: "path-summary",
-    label: `${hiddenPathCount} more paths`,
-    meta: "open the side panel",
-    status: "path",
-  };
-  visibleIds.add(summaryNode.id);
+  const bucketNodes = visibleBuckets.map((bucket) => ({
+    ...bucket,
+    pathNodeIds: undefined,
+    label: bucket.label,
+    meta: `${bucket.count} ${bucket.count === 1 ? "path" : "paths"} · ${bucket.meta}`,
+    detail: bucket.samples.join(" · "),
+  }));
 
-  const summarySources = new Set();
+  const hiddenPathCount = hiddenBuckets.reduce((total, bucket) => total + bucket.count, 0);
+  const summaryNode =
+    hiddenPathCount > 0
+      ? {
+          id: "path-summary:hidden",
+          type: "path-summary",
+          label: `${hiddenPathCount} more paths`,
+          meta: `${hiddenBuckets.length} hidden folders`,
+          status: "path",
+        }
+      : null;
+  const visibleIds = new Set([...baseIds, ...bucketNodes.map((node) => node.id)]);
+  if (summaryNode) {
+    visibleIds.add(summaryNode.id);
+  }
+
   const displayEdges = [];
+  const edgeKeys = new Set();
+  const summarySources = new Set();
+
+  const addDisplayEdge = (edge) => {
+    if (!edge?.from || !edge?.to || edge.from === edge.to) {
+      return;
+    }
+    const key = `${edge.from}->${edge.to}:${edge.type || "link"}`;
+    if (edgeKeys.has(key)) {
+      return;
+    }
+    edgeKeys.add(key);
+    displayEdges.push(edge);
+  };
+
   for (const edge of edges) {
-    if (visibleIds.has(edge?.from) && visibleIds.has(edge?.to)) {
-      displayEdges.push(edge);
+    if (edge?.type === "touch") {
+      const sourceId = subagentDisplayIds.get(edge.from) || edge.from;
+      if (!visibleIds.has(sourceId)) {
+        continue;
+      }
+
+      const bucketId = pathNodeToBucket.get(edge.to);
+      if (bucketId && visibleIds.has(bucketId)) {
+        addDisplayEdge({ from: sourceId, to: bucketId, type: "touch" });
+        continue;
+      }
+
+      if (summaryNode && hiddenPathNodeIds.has(edge.to)) {
+        summarySources.add(sourceId);
+      }
       continue;
     }
 
-    if (edge?.type === "touch" && visibleIds.has(edge.from) && !visibleIds.has(edge.to)) {
-      summarySources.add(edge.from);
+    const from = subagentDisplayIds.get(edge?.from) || edge?.from;
+    const to = subagentDisplayIds.get(edge?.to) || edge?.to;
+    if (visibleIds.has(from) && visibleIds.has(to)) {
+      addDisplayEdge({ ...edge, from, to });
     }
   }
 
   for (const sourceId of summarySources) {
-    displayEdges.push({
+    addDisplayEdge({
       from: sourceId,
       to: summaryNode.id,
       type: "touch",
@@ -5462,17 +5721,24 @@ function prepareSwarmGraphForDisplay(graph) {
   }
 
   return {
-    nodes: [...nodes.filter((node) => node.type !== "path"), ...visiblePathNodes, summaryNode],
+    nodes: [...displayBaseNodes, ...bucketNodes, ...(summaryNode ? [summaryNode] : [])],
     edges: displayEdges,
     hiddenPathCount,
-    visiblePathCount: visiblePathNodes.length,
+    visiblePathCount: pathNodes.length - hiddenPathCount,
+    originalPathCount: pathNodes.length,
+    bucketCount: pathBuckets.length,
+    hiddenSubagentCount: hiddenSubagentNodes.length,
   };
 }
 
 function layoutSwarmGraph(graph) {
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
-  const verticalGap = 22;
+  const edges = Array.isArray(graph?.edges) ? graph.edges : [];
+  const verticalGap = 28;
+  const topPadding = 94;
   const groups = new Map();
+  const originalIndexById = new Map(nodes.map((node, index) => [node.id, index]));
+  const orderedIndexById = new Map();
 
   for (const node of nodes) {
     const order = getSwarmNodeTypeOrder(node.type);
@@ -5482,19 +5748,78 @@ function layoutSwarmGraph(graph) {
     groups.get(order).push(node);
   }
 
+  const getSourceRank = (node) => {
+    const ranks = edges
+      .filter((edge) => edge?.to === node.id)
+      .map((edge) => orderedIndexById.get(edge.from))
+      .filter((rank) => Number.isFinite(rank));
+
+    if (!ranks.length) {
+      return originalIndexById.get(node.id) || 0;
+    }
+
+    return ranks.reduce((total, rank) => total + rank, 0) / ranks.length;
+  };
+
+  for (const order of [0, 1, 2, 3, 4]) {
+    const entries = groups.get(order);
+    if (!entries) {
+      continue;
+    }
+
+    entries.sort((left, right) => {
+      const sourceDelta = getSourceRank(left) - getSourceRank(right);
+      if (Math.abs(sourceDelta) > 0.001) {
+        return sourceDelta;
+      }
+
+      if (left.type === "worktree" || right.type === "worktree") {
+        const currentDelta = (right.status === "current" ? 1 : 0) - (left.status === "current" ? 1 : 0);
+        if (currentDelta) {
+          return currentDelta;
+        }
+      }
+
+      if (left.type === "session" || right.type === "session") {
+        const focusDelta = (right.focus ? 1 : 0) - (left.focus ? 1 : 0);
+        if (focusDelta) {
+          return focusDelta;
+        }
+      }
+
+      const countDelta = Number(right.count || 0) - Number(left.count || 0);
+      if (countDelta) {
+        return countDelta;
+      }
+
+      return (originalIndexById.get(left.id) || 0) - (originalIndexById.get(right.id) || 0);
+    });
+
+    entries.forEach((node, index) => {
+      orderedIndexById.set(node.id, index);
+    });
+  }
+
   const groupHeights = Array.from(groups.values()).map((entries) =>
     entries.reduce((total, node) => total + getSwarmNodeSize(node.type).height, 0) +
     Math.max(0, entries.length - 1) * verticalGap,
   );
   const maxGroupHeight = Math.max(1, ...groupHeights);
-  const height = Math.max(420, 96 + maxGroupHeight);
+  const height = Math.max(520, topPadding + 48 + maxGroupHeight);
   const positions = new Map();
+  const columns = [
+    { order: 0, label: "Repo", detail: "root" },
+    { order: 1, label: "Worktrees", detail: "checkouts" },
+    { order: 2, label: "Sessions", detail: "threads" },
+    { order: 3, label: "Agents", detail: "sidechains" },
+    { order: 4, label: "Files", detail: "grouped paths" },
+  ];
 
   for (const [order, entries] of groups.entries()) {
     const totalHeight =
       entries.reduce((total, node) => total + getSwarmNodeSize(node.type).height, 0) +
       Math.max(0, entries.length - 1) * verticalGap;
-    const startY = Math.max(42, Math.round((height - totalHeight) / 2));
+    const startY = topPadding;
     let y = startY;
     entries.forEach((node, index) => {
       const { width, height: nodeHeight } = getSwarmNodeSize(node.type);
@@ -5509,9 +5834,14 @@ function layoutSwarmGraph(graph) {
   }
 
   return {
-    width: 1010,
+    width: 1390,
     height,
     positions,
+    columns: columns.map((column) => ({
+      ...column,
+      x: getSwarmNodeColumnX(column.order),
+      count: groups.get(column.order)?.length || 0,
+    })),
   };
 }
 
@@ -5574,6 +5904,17 @@ function renderSwarmGraphSvg(graph) {
 
   const layout = layoutSwarmGraph(displayGraph);
   const edgePorts = getSwarmEdgePorts(edges, layout.positions);
+  const columnMarkup = layout.columns
+    .filter((column) => column.count > 0)
+    .map(
+      (column) => `
+        <g class="swarm-column-heading">
+          <text class="swarm-column-label" x="${column.x}" y="34">${escapeHtml(column.label)}</text>
+          <text class="swarm-column-meta" x="${column.x}" y="52">${escapeHtml(`${column.count} ${column.detail}`)}</text>
+        </g>
+      `,
+    )
+    .join("");
   const edgeMarkup = edges
     .map((edge, index) => {
       const from = layout.positions.get(edge.from);
@@ -5584,11 +5925,13 @@ function renderSwarmGraphSvg(graph) {
 
       const startX = from.x + from.width;
       const startY = from.y + from.height / 2 + (edgePorts.startOffsets.get(index) || 0);
-      const endX = to.x;
+      const sameColumn = to.x <= startX + 8;
+      const endX = sameColumn ? to.x + to.width : to.x;
       const endY = to.y + to.height / 2 + (edgePorts.endOffsets.get(index) || 0);
-      const midX = Math.round((startX + endX) / 2);
-      const laneOffset = ((index % 5) - 2) * 7;
-      return `<path class="swarm-edge swarm-edge-${escapeHtml(edge.type || "link")}" d="M ${startX} ${startY} C ${midX + laneOffset} ${startY}, ${midX + laneOffset} ${endY}, ${endX} ${endY}" marker-end="url(#swarm-arrow)" />`;
+      const controlDistance = sameColumn ? 58 + (index % 4) * 8 : Math.max(64, Math.round((endX - startX) * 0.42));
+      const controlX1 = sameColumn ? Math.max(startX, endX) + controlDistance : startX + controlDistance;
+      const controlX2 = sameColumn ? Math.max(startX, endX) + controlDistance : endX - controlDistance;
+      return `<path class="swarm-edge swarm-edge-${escapeHtml(edge.type || "link")}" d="M ${startX} ${startY} C ${controlX1} ${startY}, ${controlX2} ${endY}, ${endX} ${endY}" marker-end="url(#swarm-arrow)" />`;
     })
     .join("");
 
@@ -5611,21 +5954,31 @@ function renderSwarmGraphSvg(graph) {
       }
 
       const label = truncateSwarmLabel(node.label || node.id, node.type === "path" ? 23 : 22);
-      const meta = truncateSwarmLabel(node.meta || node.path || "", node.type === "path" ? 24 : 25);
+      const meta = truncateSwarmLabel(node.meta || node.path || "", node.type === "path-bucket" ? 31 : 25);
+      const titleParts = [node.label || node.id, node.meta, node.detail || node.path].filter(Boolean);
       return `
         <g class="swarm-node swarm-node-${escapeHtml(node.type || "unknown")} ${node.focus ? "is-focus" : ""} swarm-status-${escapeHtml(node.status || "idle")}">
+          <title>${escapeHtml(titleParts.join("\n"))}</title>
           <rect x="${position.x}" y="${position.y}" width="${position.width}" height="${position.height}" rx="15"></rect>
           <g clip-path="url(#swarm-node-clip-${index})">
             <text class="swarm-node-label" x="${position.x + 15}" y="${position.y + 22}">${escapeHtml(label)}</text>
-            <text class="swarm-node-meta" x="${position.x + 15}" y="${position.y + 39}">${escapeHtml(meta)}</text>
+            <text class="swarm-node-meta" x="${position.x + 15}" y="${position.y + 42}">${escapeHtml(meta)}</text>
           </g>
         </g>
       `;
     })
     .join("");
   const hiddenSummary =
-    displayGraph.hiddenPathCount > 0
-      ? `<div class="swarm-graph-note">showing ${displayGraph.visiblePathCount} touched paths · ${displayGraph.hiddenPathCount} more in the side panel</div>`
+    displayGraph.originalPathCount > 0 || displayGraph.hiddenSubagentCount > 0
+      ? `<div class="swarm-graph-note">${[
+          displayGraph.originalPathCount > 0
+            ? `${displayGraph.originalPathCount} touched paths grouped into ${displayGraph.bucketCount} folders`
+            : "",
+          displayGraph.hiddenSubagentCount > 0 ? `${displayGraph.hiddenSubagentCount} more agents in the side panel` : "",
+          displayGraph.hiddenPathCount > 0 ? `${displayGraph.hiddenPathCount} more paths in the side panel` : "",
+        ]
+          .filter(Boolean)
+          .join(" · ")}</div>`
       : "";
 
   return `
@@ -5637,6 +5990,7 @@ function renderSwarmGraphSvg(graph) {
         </marker>
           ${clipMarkup}
         </defs>
+        ${columnMarkup}
         ${edgeMarkup}
         ${nodeMarkup}
       </svg>
@@ -5677,6 +6031,7 @@ function renderSwarmSummary(graph) {
 
 function renderSwarmDetails(graph) {
   const sessions = Array.isArray(graph?.sessions) ? graph.sessions : [];
+  const pathBuckets = collectSwarmPathBuckets(graph);
   const subagents = sessions.flatMap((session) =>
     (Array.isArray(session.subagents) ? session.subagents : []).map((subagent) => ({
       ...subagent,
@@ -5687,7 +6042,7 @@ function renderSwarmDetails(graph) {
   if (!subagents.length) {
     return `
       <aside class="swarm-details">
-        <strong>Subagent paths</strong>
+        <strong>Agents and files</strong>
         <div class="blank-state">No Claude subagent transcripts were found for this session yet.</div>
       </aside>
     `;
@@ -5695,7 +6050,38 @@ function renderSwarmDetails(graph) {
 
   return `
     <aside class="swarm-details">
-      <strong>Subagent paths</strong>
+      <strong>Agents and files</strong>
+      ${
+        pathBuckets.length
+          ? `
+            <div class="swarm-detail-section">
+              <span>Grouped touched folders</span>
+              <div class="swarm-path-group-list">
+                ${pathBuckets
+                  .slice(0, 8)
+                  .map(
+                    (bucket) => `
+                      <article class="swarm-path-group-card">
+                        <div>
+                          <strong>${escapeHtml(bucket.label)}</strong>
+                          <em>${escapeHtml(`${bucket.count} ${bucket.count === 1 ? "path" : "paths"} · ${bucket.meta}`)}</em>
+                        </div>
+                        ${
+                          bucket.samples.length
+                            ? `<div class="swarm-pill-row">${bucket.samples.slice(0, 3).map((entry) => `<span>${escapeHtml(truncateSwarmLabel(entry, 34))}</span>`).join("")}</div>`
+                            : ""
+                        }
+                      </article>
+                    `,
+                  )
+                  .join("")}
+              </div>
+            </div>
+          `
+          : ""
+      }
+      <div class="swarm-detail-section">
+        <span>Claude subagents</span>
       <div class="swarm-subagent-list">
         ${subagents
           .map((subagent) => {
@@ -5718,6 +6104,7 @@ function renderSwarmDetails(graph) {
             `;
           })
           .join("")}
+      </div>
       </div>
     </aside>
   `;
