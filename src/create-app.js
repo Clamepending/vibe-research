@@ -912,6 +912,21 @@ export async function createRemoteVibesApp({
     }
   });
 
+  app.get("/api/sessions/:sessionId/swarm", async (request, response) => {
+    try {
+      const graph = await sessionManager.getSessionSwarmGraph(request.params.sessionId);
+
+      if (!graph) {
+        response.status(404).json({ error: "Session not found." });
+        return;
+      }
+
+      response.json({ graph });
+    } catch (error) {
+      response.status(400).json({ error: error.message });
+    }
+  });
+
   app.delete("/api/sessions/:sessionId", (request, response) => {
     const deleted = sessionManager.deleteSession(request.params.sessionId);
 

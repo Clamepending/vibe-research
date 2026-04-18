@@ -12,7 +12,7 @@ const KNOWLEDGE_BASE_GRAPH_FIT_PADDING = 72;
 const KNOWLEDGE_BASE_GRAPH_FOCUS_SCALE = 1.65;
 const KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX = 6;
 const PORT_PREVIEW_TAB_PREFIX = "port:";
-const ROUTED_MAIN_VIEWS = new Set(["search", "plugins", "automations", "system"]);
+const ROUTED_MAIN_VIEWS = new Set(["search", "plugins", "automations", "system", "swarm"]);
 const SESSION_WORKING_SPINNER_MS = 900;
 const SYSTEM_HISTORY_LIMIT = 48;
 const SYSTEM_CHART_COLORS = [
@@ -219,6 +219,7 @@ const state = {
   providers: [],
   sessions: [],
   sessionReadAt: loadSessionReadState(),
+  sessionsRefreshDeferred: false,
   ports: [],
   currentView: "shell",
   globalSearchQuery: "",
@@ -227,6 +228,12 @@ const state = {
   agentPromptPath: "",
   agentPromptWikiRoot: ".remote-vibes/wiki",
   agentPromptTargets: [],
+  swarmGraph: {
+    sessionId: null,
+    loading: false,
+    error: "",
+    data: null,
+  },
   settings: {
     agentMailApiKeyConfigured: false,
     agentMailClientId: "",
@@ -4135,6 +4142,15 @@ function renderSessionCard(session) {
       </div>
       <span class="session-time">${relativeTime(session.lastOutputAt)}</span>
       <div class="session-actions">
+        <button class="session-action-button session-graph-button" type="button" aria-label="Open swarm graph" ${tooltipAttributes("Swarm graph")} data-open-swarm-graph="${session.id}">
+          <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+            <path d="M5 5.5h3.5a4 4 0 0 1 4 4v3" />
+            <path d="M5 12.5h3.5a4 4 0 0 0 4-4v-3" />
+            <path d="M3.5 4.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6Z" />
+            <path d="M14.5 3.8a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6Z" />
+            <path d="M14.5 10.6a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6Z" />
+          </svg>
+        </button>
         <button class="session-action-button session-fork-button" type="button" aria-label="Fork session" ${tooltipAttributes("Fork session")} data-fork-session="${session.id}">
           <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
             <path d="M5 3.5v2.2a4.8 4.8 0 0 0 4.8 4.8H13" />
@@ -4207,6 +4223,7 @@ function renderSessionCards() {
     .map((group) => {
       const expanded = state.sessionProjectExpanded.has(group.key);
       const active = group.sessions.some((session) => session.id === state.activeSessionId);
+      const graphSessionId = group.sessions[0]?.id || "";
 
       return `
         <section class="session-project ${expanded ? "is-expanded" : ""} ${active ? "has-active-session" : ""}" data-session-project="${escapeHtml(group.key)}">
@@ -4224,6 +4241,13 @@ function renderSessionCards() {
                 <span class="session-project-name">${escapeHtml(group.name)}</span>
               </span>
             </button>
+            <button
+              class="session-project-graph"
+              type="button"
+              data-open-swarm-graph="${escapeHtml(graphSessionId)}"
+              aria-label="Open swarm graph for ${escapeHtml(group.name)}"
+              ${tooltipAttributes("Swarm graph")}
+            >⌁</button>
             <button
               class="session-project-new"
               type="button"
@@ -5202,6 +5226,253 @@ function renderSystemView() {
   `;
 }
 
+function truncateSwarmLabel(value, maxLength = 26) {
+  const text = String(value || "").trim();
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(1, maxLength - 1))}…`;
+}
+
+function getSwarmNodeTypeOrder(type) {
+  if (type === "repo" || type === "folder") {
+    return 0;
+  }
+  if (type === "worktree") {
+    return 1;
+  }
+  if (type === "session") {
+    return 2;
+  }
+  if (type === "subagent") {
+    return 3;
+  }
+  return 4;
+}
+
+function layoutSwarmGraph(graph) {
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const columns = [80, 250, 430, 625, 805];
+  const nodeWidth = 150;
+  const nodeHeight = 54;
+  const verticalGap = 22;
+  const groups = new Map();
+
+  for (const node of nodes) {
+    const order = getSwarmNodeTypeOrder(node.type);
+    if (!groups.has(order)) {
+      groups.set(order, []);
+    }
+    groups.get(order).push(node);
+  }
+
+  const maxGroupSize = Math.max(1, ...Array.from(groups.values()).map((entries) => entries.length));
+  const height = Math.max(420, 120 + maxGroupSize * (nodeHeight + verticalGap));
+  const positions = new Map();
+
+  for (const [order, entries] of groups.entries()) {
+    const totalHeight = entries.length * nodeHeight + Math.max(0, entries.length - 1) * verticalGap;
+    const startY = Math.max(42, Math.round((height - totalHeight) / 2));
+    entries.forEach((node, index) => {
+      positions.set(node.id, {
+        x: columns[order] || columns.at(-1),
+        y: startY + index * (nodeHeight + verticalGap),
+        width: nodeWidth,
+        height: nodeHeight,
+      });
+    });
+  }
+
+  return {
+    width: 980,
+    height,
+    positions,
+  };
+}
+
+function renderSwarmGraphSvg(graph) {
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph?.edges) ? graph.edges : [];
+  if (!nodes.length) {
+    return `<div class="blank-state">no graph data yet</div>`;
+  }
+
+  const layout = layoutSwarmGraph(graph);
+  const edgeMarkup = edges
+    .map((edge) => {
+      const from = layout.positions.get(edge.from);
+      const to = layout.positions.get(edge.to);
+      if (!from || !to) {
+        return "";
+      }
+
+      const startX = from.x + from.width;
+      const startY = from.y + from.height / 2;
+      const endX = to.x;
+      const endY = to.y + to.height / 2;
+      const midX = Math.round((startX + endX) / 2);
+      return `<path class="swarm-edge swarm-edge-${escapeHtml(edge.type || "link")}" d="M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}" marker-end="url(#swarm-arrow)" />`;
+    })
+    .join("");
+
+  const nodeMarkup = nodes
+    .map((node) => {
+      const position = layout.positions.get(node.id);
+      if (!position) {
+        return "";
+      }
+
+      const label = truncateSwarmLabel(node.label || node.id, node.type === "path" ? 24 : 22);
+      const meta = truncateSwarmLabel(node.meta || node.path || "", 26);
+      return `
+        <g class="swarm-node swarm-node-${escapeHtml(node.type || "unknown")} ${node.focus ? "is-focus" : ""} swarm-status-${escapeHtml(node.status || "idle")}">
+          <rect x="${position.x}" y="${position.y}" width="${position.width}" height="${position.height}" rx="15"></rect>
+          <text class="swarm-node-label" x="${position.x + 15}" y="${position.y + 23}">${escapeHtml(label)}</text>
+          <text class="swarm-node-meta" x="${position.x + 15}" y="${position.y + 41}">${escapeHtml(meta)}</text>
+        </g>
+      `;
+    })
+    .join("");
+
+  return `
+    <svg class="swarm-graph-svg" viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-label="Agent swarm graph">
+      <defs>
+        <marker id="swarm-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M 0 0 L 8 4 L 0 8 z"></path>
+        </marker>
+      </defs>
+      ${edgeMarkup}
+      ${nodeMarkup}
+    </svg>
+  `;
+}
+
+function renderSwarmSummary(graph) {
+  const git = graph?.git || {};
+  const sessions = Array.isArray(graph?.sessions) ? graph.sessions : [];
+  const subagentCount = sessions.reduce((count, session) => count + (Array.isArray(session.subagents) ? session.subagents.length : 0), 0);
+  const worktreeCount = Array.isArray(git.worktrees) ? git.worktrees.length : 0;
+  const dirtyLabel = git.dirtyCount == null ? "unknown changes" : git.dirtyCount ? `${git.dirtyCount} changed` : "clean";
+  const cards = [
+    { label: "repo", value: git.isRepository ? getWorkspacePathLeafName(git.root) : "not git", meta: git.branch || git.head || "" },
+    { label: "worktrees", value: String(worktreeCount), meta: git.isRepository ? dirtyLabel : "folder only" },
+    { label: "sessions", value: String(sessions.length), meta: "related threads" },
+    { label: "subagents", value: String(subagentCount), meta: "Claude sidechains" },
+  ];
+
+  return `
+    <div class="swarm-summary-grid">
+      ${cards
+        .map(
+          (card) => `
+            <div class="swarm-summary-card">
+              <span>${escapeHtml(card.label)}</span>
+              <strong>${escapeHtml(card.value)}</strong>
+              <em>${escapeHtml(card.meta)}</em>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderSwarmDetails(graph) {
+  const sessions = Array.isArray(graph?.sessions) ? graph.sessions : [];
+  const subagents = sessions.flatMap((session) =>
+    (Array.isArray(session.subagents) ? session.subagents : []).map((subagent) => ({
+      ...subagent,
+      sessionName: session.name,
+    })),
+  );
+
+  if (!subagents.length) {
+    return `
+      <aside class="swarm-details">
+        <strong>Subagent paths</strong>
+        <div class="blank-state">No Claude subagent transcripts were found for this session yet.</div>
+      </aside>
+    `;
+  }
+
+  return `
+    <aside class="swarm-details">
+      <strong>Subagent paths</strong>
+      <div class="swarm-subagent-list">
+        ${subagents
+          .map((subagent) => {
+            const paths = Array.isArray(subagent.paths) ? subagent.paths : [];
+            const commands = Array.isArray(subagent.commands) ? subagent.commands : [];
+            return `
+              <article class="swarm-subagent-card swarm-status-${escapeHtml(subagent.status || "done")}">
+                <div>
+                  <span class="swarm-subagent-name">${escapeHtml(subagent.name || "Claude subagent")}</span>
+                  <span class="swarm-subagent-meta">${escapeHtml([subagent.sessionName, subagent.agentType, subagent.status].filter(Boolean).join(" · "))}</span>
+                </div>
+                ${
+                  paths.length
+                    ? `<div class="swarm-pill-row">${paths.slice(0, 4).map((entry) => `<span>${escapeHtml(truncateSwarmLabel(entry, 28))}</span>`).join("")}</div>`
+                    : commands.length
+                      ? `<div class="swarm-command-preview">${escapeHtml(truncateSwarmLabel(commands[0], 60))}</div>`
+                      : `<div class="swarm-command-preview">no file paths recorded</div>`
+                }
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
+    </aside>
+  `;
+}
+
+function renderSwarmGraphView() {
+  const graph = state.swarmGraph.data;
+  const selectedSession = state.sessions.find((session) => session.id === state.swarmGraph.sessionId) || null;
+  const title = selectedSession?.name || graph?.sessions?.[0]?.name || "Swarm graph";
+  const meta = graph
+    ? `${graph.git?.isRepository ? "git" : "folder"} · ${graph.cwd || selectedSession?.cwd || state.defaultCwd}`
+    : selectedSession
+      ? `${selectedSession.providerLabel} · ${selectedSession.cwd}`
+      : "choose a session to inspect its agent swarm";
+
+  return `
+    <section class="dashboard-panel main-view swarm-view">
+      <div class="dashboard-toolbar">
+        <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>≡</button>
+        <div class="dashboard-copy">
+          <strong>${escapeHtml(title)}</strong>
+          <div class="terminal-meta">swarm graph · ${escapeHtml(meta)}</div>
+        </div>
+        <div class="dashboard-actions">
+          <button class="ghost-button toolbar-control" type="button" id="swarm-back-to-session">terminal</button>
+          <button class="ghost-button toolbar-control" type="button" id="refresh-swarm-graph" ${state.swarmGraph.loading || !state.swarmGraph.sessionId ? "disabled" : ""}>
+            ${state.swarmGraph.loading ? "mapping..." : "refresh"}
+          </button>
+        </div>
+      </div>
+      ${
+        state.swarmGraph.error
+          ? `<div class="system-error-card">${escapeHtml(state.swarmGraph.error)}</div>`
+          : ""
+      }
+      ${
+        state.swarmGraph.loading && !graph
+          ? `<div class="blank-state">mapping sessions, git worktrees, and Claude sidechains...</div>`
+          : graph
+            ? `
+              ${renderSwarmSummary(graph)}
+              <div class="swarm-layout">
+                <div class="swarm-canvas">${renderSwarmGraphSvg(graph)}</div>
+                ${renderSwarmDetails(graph)}
+              </div>
+            `
+            : `<div class="blank-state">hover a session and click the swarm icon to map it.</div>`
+      }
+    </section>
+  `;
+}
+
 function formatUptime(seconds) {
   const totalSeconds = Math.max(0, Number(seconds || 0));
   const days = Math.floor(totalSeconds / 86_400);
@@ -5242,6 +5513,10 @@ function renderTerminalPanel(activeSession) {
 
   if (state.currentView === "system") {
     return renderSystemView();
+  }
+
+  if (state.currentView === "swarm") {
+    return renderSwarmGraphView();
   }
 
   return `
@@ -5606,6 +5881,7 @@ function renderShell() {
     plugins: "Plugins · Remote Vibes",
     automations: "Automations · Remote Vibes",
     system: "System · Remote Vibes",
+    swarm: "Swarm Graph · Remote Vibes",
   };
   document.title = viewTitles[state.currentView] || "Remote Vibes";
 
@@ -5705,7 +5981,35 @@ function renderShell() {
   void refreshOpenFileTree();
 }
 
+function isSessionListInteractionActive() {
+  const sessionsList = document.querySelector("#sessions-list");
+  return Boolean(
+    sessionsList
+    && (sessionsList.matches(":hover") || (document.activeElement instanceof HTMLElement && sessionsList.contains(document.activeElement))),
+  );
+}
+
+function flushDeferredSessionRefresh() {
+  if (!state.sessionsRefreshDeferred || isSessionListInteractionActive()) {
+    return;
+  }
+
+  state.sessionsRefreshDeferred = false;
+  refreshSessionsList({ force: true });
+}
+
 function bindSessionEvents() {
+  const sessionsList = document.querySelector("#sessions-list");
+  if (sessionsList && !sessionsList.dataset.sessionRefreshBound) {
+    sessionsList.dataset.sessionRefreshBound = "true";
+    sessionsList.addEventListener("pointerleave", () => {
+      window.setTimeout(flushDeferredSessionRefresh, 80);
+    });
+    sessionsList.addEventListener("focusout", () => {
+      window.setTimeout(flushDeferredSessionRefresh, 80);
+    });
+  }
+
   document.querySelectorAll("[data-session-project-toggle]").forEach((button) => {
     button.addEventListener("click", () => {
       const projectKey = button.getAttribute("data-session-project-toggle");
@@ -5737,6 +6041,15 @@ function bindSessionEvents() {
       } catch (error) {
         window.alert(error.message);
       }
+    });
+  });
+
+  document.querySelectorAll("[data-open-swarm-graph]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const sessionId = button.getAttribute("data-open-swarm-graph") || "";
+      void openSwarmGraph(sessionId);
     });
   });
 
@@ -5868,12 +6181,18 @@ function bindSessionEvents() {
   });
 }
 
-function refreshSessionsList() {
+function refreshSessionsList({ force = false } = {}) {
   const sessionsList = document.querySelector("#sessions-list");
   if (!sessionsList) {
     return;
   }
 
+  if (!force && isSessionListInteractionActive()) {
+    state.sessionsRefreshDeferred = true;
+    return;
+  }
+
+  state.sessionsRefreshDeferred = false;
   sessionsList.innerHTML = renderSessionCards();
   bindSessionEvents();
 }
@@ -7370,6 +7689,44 @@ async function openMainView(nextView) {
   }
 }
 
+async function openSwarmGraph(sessionId, { refresh = false } = {}) {
+  const selectedSession = state.sessions.find((session) => session.id === sessionId);
+  if (!sessionId || !selectedSession) {
+    return;
+  }
+
+  state.swarmGraph = {
+    sessionId,
+    loading: true,
+    error: "",
+    data: refresh && state.swarmGraph.sessionId === sessionId ? state.swarmGraph.data : null,
+  };
+  setCurrentView("swarm");
+  closeMobileSidebar();
+  renderShell();
+
+  try {
+    const payload = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/swarm`, {
+      cache: "no-store",
+    });
+    state.swarmGraph = {
+      sessionId,
+      loading: false,
+      error: "",
+      data: payload.graph,
+    };
+  } catch (error) {
+    state.swarmGraph = {
+      sessionId,
+      loading: false,
+      error: error.message,
+      data: state.swarmGraph.data,
+    };
+  }
+
+  renderShell();
+}
+
 function bindShellEvents() {
   bindLineNumberEditors();
 
@@ -7497,6 +7854,19 @@ function bindShellEvents() {
       scrollTerminalToBottom();
     });
   }
+
+  document.querySelector("#refresh-swarm-graph")?.addEventListener("click", () => {
+    if (state.swarmGraph.sessionId) {
+      void openSwarmGraph(state.swarmGraph.sessionId, { refresh: true });
+    }
+  });
+  document.querySelector("#swarm-back-to-session")?.addEventListener("click", () => {
+    setCurrentView("shell");
+    renderShell();
+    if (state.activeSessionId) {
+      connectToSession(state.activeSessionId);
+    }
+  });
 
   document.querySelector("#refresh-sessions")?.addEventListener("click", () => loadSessions());
   document.querySelector("#agent-prompt-form")?.addEventListener("submit", async (event) => {

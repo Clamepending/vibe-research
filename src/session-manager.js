@@ -30,6 +30,9 @@ const CODEX_SESSION_INDEX_LIMIT = 100;
 const CODEX_SESSION_META_READ_LIMIT = 8192;
 const CLAUDE_SUBAGENT_TRANSCRIPT_READ_LIMIT = 1_000_000;
 const CLAUDE_SKIP_PERMISSIONS_ARG = "--dangerously-skip-permissions";
+const SWARM_GRAPH_MAX_RELATED_SESSIONS = 16;
+const SWARM_GRAPH_MAX_PATHS = 18;
+const SWARM_GRAPH_GIT_TIMEOUT_MS = 2_500;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRootDir = path.resolve(__dirname, "..");
 const helperBinDir = path.join(appRootDir, "bin");
@@ -462,6 +465,69 @@ function readClaudeSubagentMeta(filePath) {
   }
 }
 
+function truncateSwarmText(value, maxLength = 96) {
+  const text = String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(1, maxLength - 1)).trim()}…`;
+}
+
+function normalizeToolPathCandidate(value) {
+  const text = String(value ?? "").trim();
+  if (!text || text.length > 240 || /[\n\r]/.test(text)) {
+    return "";
+  }
+
+  return text.replace(/^file:\/\//i, "");
+}
+
+function collectClaudeToolReferences(content) {
+  const paths = [];
+  const commands = [];
+
+  if (!Array.isArray(content)) {
+    return { paths, commands };
+  }
+
+  const pathKeys = new Set(["file_path", "filepath", "path", "relative_path", "relativePath", "cwd", "root"]);
+
+  for (const entry of content) {
+    if (entry?.type !== "tool_use" || !entry.input || typeof entry.input !== "object") {
+      continue;
+    }
+
+    for (const [key, value] of Object.entries(entry.input)) {
+      if (key === "command" && typeof value === "string") {
+        const command = truncateSwarmText(value);
+        if (command) {
+          commands.push(command);
+        }
+        continue;
+      }
+
+      if (!pathKeys.has(key) || typeof value !== "string") {
+        continue;
+      }
+
+      const pathCandidate = normalizeToolPathCandidate(value);
+      if (pathCandidate) {
+        paths.push(pathCandidate);
+      }
+    }
+  }
+
+  return {
+    paths: Array.from(new Set(paths)),
+    commands: Array.from(new Set(commands)),
+  };
+}
+
 function summarizeClaudeSubagentTranscript(filePath, fallbackAgentId) {
   let stats;
   try {
@@ -495,6 +561,8 @@ function summarizeClaudeSubagentTranscript(filePath, fallbackAgentId) {
   let agentId = fallbackAgentId;
   let promptId = null;
   let toolUseCount = 0;
+  const touchedPaths = [];
+  const commands = [];
 
   for (const line of lines) {
     const payload = parseClaudeSubagentJsonLine(line);
@@ -516,6 +584,9 @@ function summarizeClaudeSubagentTranscript(filePath, fallbackAgentId) {
     const content = payload.message?.content;
     if (Array.isArray(content)) {
       toolUseCount += content.filter((entry) => entry?.type === "tool_use").length;
+      const references = collectClaudeToolReferences(content);
+      touchedPaths.push(...references.paths);
+      commands.push(...references.commands);
     }
 
     lastPayload = payload;
@@ -534,6 +605,8 @@ function summarizeClaudeSubagentTranscript(filePath, fallbackAgentId) {
     messageCount: lines.length,
     toolUseCount,
     promptId,
+    paths: Array.from(new Set(touchedPaths)).slice(0, SWARM_GRAPH_MAX_PATHS),
+    commands: Array.from(new Set(commands)).slice(0, 8),
   };
 }
 
@@ -612,6 +685,8 @@ function listClaudeSubagentsForSession(session, homeDirOrEnv = process.env) {
         promptId: summary.promptId,
         messageCount: summary.messageCount,
         toolUseCount: summary.toolUseCount,
+        paths: summary.paths || [],
+        commands: summary.commands || [],
       });
     }
   }
@@ -619,6 +694,120 @@ function listClaudeSubagentsForSession(session, homeDirOrEnv = process.env) {
   return subagents
     .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")))
     .slice(0, 12);
+}
+
+function parseGitWorktreePorcelain(output) {
+  const worktrees = [];
+  let current = null;
+
+  const pushCurrent = () => {
+    if (current?.path) {
+      worktrees.push(current);
+    }
+    current = null;
+  };
+
+  for (const rawLine of String(output || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      pushCurrent();
+      continue;
+    }
+
+    const [key, ...rest] = line.split(" ");
+    const value = rest.join(" ").trim();
+    if (key === "worktree") {
+      pushCurrent();
+      current = { path: value, head: "", branch: "", detached: false, bare: false };
+    } else if (current && key === "HEAD") {
+      current.head = value;
+    } else if (current && key === "branch") {
+      current.branch = value.replace(/^refs\/heads\//, "");
+    } else if (current && key === "detached") {
+      current.detached = true;
+    } else if (current && key === "bare") {
+      current.bare = true;
+    }
+  }
+
+  pushCurrent();
+  return worktrees;
+}
+
+async function runGit(cwd, args) {
+  return execFileAsync("git", ["-C", cwd, ...args], {
+    encoding: "utf8",
+    timeout: SWARM_GRAPH_GIT_TIMEOUT_MS,
+    maxBuffer: 512 * 1024,
+  });
+}
+
+async function collectGitSwarmInfo(cwd) {
+  const normalizedCwd = resolveCwd(cwd, process.cwd());
+
+  try {
+    const { stdout: rootStdout } = await runGit(normalizedCwd, ["rev-parse", "--show-toplevel"]);
+    const root = rootStdout.trim();
+    const [
+      branchResult,
+      headResult,
+      statusResult,
+      worktreeResult,
+      remoteResult,
+    ] = await Promise.allSettled([
+      runGit(root, ["branch", "--show-current"]),
+      runGit(root, ["rev-parse", "--short", "HEAD"]),
+      runGit(root, ["status", "--porcelain"]),
+      runGit(root, ["worktree", "list", "--porcelain"]),
+      runGit(root, ["remote", "get-url", "origin"]),
+    ]);
+    const branch = branchResult.status === "fulfilled" ? branchResult.value.stdout.trim() : "";
+    const head = headResult.status === "fulfilled" ? headResult.value.stdout.trim() : "";
+    const statusLines = statusResult.status === "fulfilled"
+      ? statusResult.value.stdout.split(/\r?\n/).filter(Boolean)
+      : [];
+    const parsedWorktrees = worktreeResult.status === "fulfilled"
+      ? parseGitWorktreePorcelain(worktreeResult.value.stdout)
+      : [];
+    const worktrees = parsedWorktrees.length
+      ? parsedWorktrees
+      : [{ path: root, head, branch, detached: !branch, bare: false }];
+
+    return {
+      isRepository: true,
+      root,
+      branch,
+      head,
+      dirtyCount: statusLines.length,
+      remote: remoteResult.status === "fulfilled" ? remoteResult.value.stdout.trim() : "",
+      worktrees: worktrees.map((worktree) => ({
+        ...worktree,
+        name: path.basename(worktree.path) || worktree.path,
+        current: normalizedCwd === worktree.path || normalizedCwd.startsWith(`${worktree.path}${path.sep}`),
+        headShort: String(worktree.head || "").slice(0, 7),
+      })),
+    };
+  } catch {
+    return {
+      isRepository: false,
+      root: normalizedCwd,
+      branch: "",
+      head: "",
+      dirtyCount: null,
+      remote: "",
+      worktrees: [{ path: normalizedCwd, name: path.basename(normalizedCwd) || normalizedCwd, current: true }],
+    };
+  }
+}
+
+function isPathInside(parentPath, childPath) {
+  const normalizedParent = path.resolve(parentPath);
+  const normalizedChild = path.resolve(childPath);
+  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}${path.sep}`);
+}
+
+function getWorktreeForCwd(gitInfo, cwd) {
+  return (gitInfo.worktrees || []).find((worktree) => isPathInside(worktree.path, cwd)) || gitInfo.worktrees?.[0] || null;
 }
 
 async function readFirstLine(filePath, byteLimit = CODEX_SESSION_META_READ_LIMIT) {
@@ -1019,6 +1208,145 @@ export class SessionManager {
     return Array.from(this.sessions.values())
       .map((session) => this.serializeSession(session))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  async getSessionSwarmGraph(sessionId) {
+    this.consumePendingRenameRequests();
+    const focusSession = this.sessions.get(sessionId);
+
+    if (!focusSession) {
+      return null;
+    }
+
+    const git = await collectGitSwarmInfo(focusSession.cwd);
+    const focusCwd = resolveCwd(focusSession.cwd, this.cwd);
+    const focusForkParentId = focusSession.providerState?.forkedFromSessionId || null;
+    const relatedSessions = Array.from(this.sessions.values())
+      .filter((session) => {
+        const sessionCwd = resolveCwd(session.cwd, this.cwd);
+        return (
+          session.id === focusSession.id
+          || sessionCwd === focusCwd
+          || session.providerState?.forkedFromSessionId === focusSession.id
+          || session.id === focusForkParentId
+        );
+      })
+      .sort((left, right) => {
+        if (left.id === focusSession.id) {
+          return -1;
+        }
+        if (right.id === focusSession.id) {
+          return 1;
+        }
+        return String(right.createdAt || "").localeCompare(String(left.createdAt || ""));
+      })
+      .slice(0, SWARM_GRAPH_MAX_RELATED_SESSIONS);
+    const seenSubagents = new Set();
+    const serializedSessions = relatedSessions.map((session) => {
+      const serialized = this.serializeSession(session);
+      serialized.subagents = (serialized.subagents || []).filter((subagent) => {
+        const key = `${subagent.parentProviderSessionId || ""}:${subagent.agentId || subagent.id || ""}`;
+        if (seenSubagents.has(key)) {
+          return false;
+        }
+        seenSubagents.add(key);
+        return true;
+      });
+      return serialized;
+    });
+    const nodes = [];
+    const edges = [];
+    const pathNodes = new Map();
+    const rootNodeId = git.isRepository ? "repo" : "folder-root";
+
+    nodes.push({
+      id: rootNodeId,
+      type: git.isRepository ? "repo" : "folder",
+      label: path.basename(git.root) || git.root,
+      meta: git.isRepository
+        ? [git.branch || "detached", git.head, git.dirtyCount ? `${git.dirtyCount} changed` : "clean"].filter(Boolean).join(" · ")
+        : "not a git checkout",
+      path: git.root,
+      status: git.dirtyCount ? "dirty" : "clean",
+    });
+
+    for (const worktree of git.worktrees || []) {
+      const nodeId = `worktree:${worktree.path}`;
+      nodes.push({
+        id: nodeId,
+        type: "worktree",
+        label: worktree.name || path.basename(worktree.path) || "worktree",
+        meta: [worktree.branch || (worktree.detached ? "detached" : ""), worktree.headShort].filter(Boolean).join(" · "),
+        path: worktree.path,
+        status: worktree.current ? "current" : "idle",
+      });
+      edges.push({ from: rootNodeId, to: nodeId, type: "worktree" });
+    }
+
+    for (const [index, session] of serializedSessions.entries()) {
+      const sessionRecord = relatedSessions[index];
+      const worktree = getWorktreeForCwd(git, session.cwd);
+      const sessionNodeId = `session:${session.id}`;
+      const forkParentId = sessionRecord?.providerState?.forkedFromSessionId || null;
+      nodes.push({
+        id: sessionNodeId,
+        type: "session",
+        label: session.name || session.providerLabel || "session",
+        meta: [session.providerLabel, path.basename(session.cwd || "")].filter(Boolean).join(" · "),
+        path: session.cwd,
+        status: session.activityStatus || session.status,
+        focus: session.id === focusSession.id,
+      });
+
+      const forkParentInGraph = forkParentId && serializedSessions.some((entry) => entry.id === forkParentId);
+      edges.push({
+        from: forkParentInGraph ? `session:${forkParentId}` : worktree ? `worktree:${worktree.path}` : rootNodeId,
+        to: sessionNodeId,
+        type: forkParentInGraph ? "fork" : "session",
+      });
+
+      for (const subagent of session.subagents || []) {
+        const subagentNodeId = `subagent:${session.id}:${subagent.id}`;
+        nodes.push({
+          id: subagentNodeId,
+          type: "subagent",
+          label: subagent.name || "Claude subagent",
+          meta: [subagent.agentType, subagent.status, subagent.toolUseCount != null ? `${subagent.toolUseCount} tools` : ""]
+            .filter(Boolean)
+            .join(" · "),
+          status: subagent.status,
+          updatedAt: subagent.updatedAt,
+        });
+        edges.push({ from: sessionNodeId, to: subagentNodeId, type: "subagent" });
+
+        for (const touchedPath of subagent.paths || []) {
+          const label = truncateSwarmText(touchedPath, 42);
+          const pathNodeId = `path:${touchedPath}`;
+          if (!pathNodes.has(pathNodeId)) {
+            pathNodes.set(pathNodeId, true);
+            nodes.push({
+              id: pathNodeId,
+              type: "path",
+              label,
+              meta: "touched path",
+              path: touchedPath,
+              status: "path",
+            });
+          }
+          edges.push({ from: subagentNodeId, to: pathNodeId, type: "touch" });
+        }
+      }
+    }
+
+    return {
+      generatedAt: new Date().toISOString(),
+      sessionId: focusSession.id,
+      cwd: focusSession.cwd,
+      git,
+      sessions: serializedSessions,
+      nodes,
+      edges,
+    };
   }
 
   getSession(sessionId) {

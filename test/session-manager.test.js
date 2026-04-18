@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { SessionManager } from "../src/session-manager.js";
+
+const execFileAsync = promisify(execFile);
 
 const fakeAgentProviders = [
   {
@@ -443,6 +447,66 @@ test("Claude sessions expose active subagents when the session id is the provide
     assert.equal(serialized.subagents[0].messageCount, 2);
     assert.equal(serialized.subagents[0].toolUseCount, 1);
     assert.equal(serialized.subagents[0].parentProviderSessionId, claudeSessionId);
+  } finally {
+    await cleanupManager(manager, workspaceDir, userHomeDir);
+  }
+});
+
+test("session swarm graph includes git worktree, fork, subagent, and touched paths", async () => {
+  const { manager, workspaceDir, userHomeDir } = await createManager();
+
+  try {
+    await execFileAsync("git", ["init", "-b", "main"], { cwd: workspaceDir });
+    await execFileAsync("git", ["config", "user.name", "Remote Vibes Test"], { cwd: workspaceDir });
+    await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: workspaceDir });
+    await writeFile(path.join(workspaceDir, "README.md"), "# Swarm\n", "utf8");
+    await execFileAsync("git", ["add", "README.md"], { cwd: workspaceDir });
+    await execFileAsync("git", ["commit", "-m", "Initial"], { cwd: workspaceDir });
+
+    const claudeSessionId = "33333333-4444-4555-8666-777777777777";
+    await writeClaudeSubagent(userHomeDir, workspaceDir, claudeSessionId, {
+      agentId: "fed456fed456",
+      description: "Trace README path",
+      agentType: "explorer",
+      timestamps: [new Date(Date.now() - 1_000).toISOString(), new Date().toISOString()],
+      complete: false,
+    });
+
+    const parentSession = manager.buildSessionRecord({
+      id: "11111111-2222-4333-8444-555555555555",
+      providerId: "claude",
+      providerLabel: "Claude Code",
+      name: "Parent swarm",
+      cwd: workspaceDir,
+      providerState: { sessionId: claudeSessionId },
+    });
+    const forkSession = manager.buildSessionRecord({
+      id: "22222222-3333-4444-8555-666666666666",
+      providerId: "claude",
+      providerLabel: "Claude Code",
+      name: "Fork swarm",
+      cwd: workspaceDir,
+      providerState: {
+        sessionId: claudeSessionId,
+        forkedFromSessionId: parentSession.id,
+      },
+    });
+    manager.sessions.set(parentSession.id, parentSession);
+    manager.sessions.set(forkSession.id, forkSession);
+
+    const graph = await manager.getSessionSwarmGraph(parentSession.id);
+    assert.equal(graph.git.isRepository, true);
+    assert.equal(graph.git.branch, "main");
+    assert.ok(graph.nodes.some((node) => node.type === "repo"));
+    assert.ok(graph.nodes.some((node) => node.id === `session:${parentSession.id}`));
+    assert.ok(graph.nodes.some((node) => node.id === `session:${forkSession.id}`));
+    assert.ok(graph.nodes.some((node) => node.type === "subagent" && node.label === "Trace README path"));
+    assert.ok(graph.nodes.some((node) => node.id === "path:README.md"));
+    assert.ok(
+      graph.edges.some(
+        (edge) => edge.type === "fork" && edge.from === `session:${parentSession.id}` && edge.to === `session:${forkSession.id}`,
+      ),
+    );
   } finally {
     await cleanupManager(manager, workspaceDir, userHomeDir);
   }
