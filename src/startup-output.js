@@ -51,13 +51,14 @@ export function buildStartupOutput(config) {
   lines.push("- all-interface ports open directly at http://<tailscale-ip>:<port>/");
   lines.push("- localhost-only ports can be exposed with Tailscale Serve from the ports panel");
   lines.push("- proxy fallback: /proxy/<port>/");
-  lines.push("Agent browser helper:");
-  lines.push("- rv-browser screenshot 4173");
-  lines.push("- rv-browser run 4173 --steps-file eval-steps.json --output final.png");
-  lines.push("- recommended run actions: type, click, select, wait, screenshot");
-  lines.push("- rv-browser describe 4173 --prompt \"What visual issues stand out in the rendered UI?\"");
+  lines.push("Agent browser skill:");
+  lines.push("- export PWCLI=\"${PWCLI:-rv-playwright}\"");
+  lines.push("- \"$PWCLI\" open http://127.0.0.1:4173");
+  lines.push("- \"$PWCLI\" snapshot");
+  lines.push("- interact with fresh refs: \"$PWCLI\" click e3, fill e5, type text, press Enter");
+  lines.push("- \"$PWCLI\" screenshot --filename output/playwright/current.png");
   lines.push(
-    "- rv-browser describe-file results/chart.png --prompt \"What does this output show and what should improve?\"",
+    "- visual fallback: rv-browser describe-file results/chart.png --prompt \"What does this output show and what should improve?\"",
   );
   lines.push("");
   lines.push(`${ANSI_GREEN}running${ANSI_RESET}`);

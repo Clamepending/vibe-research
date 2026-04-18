@@ -2,5 +2,5 @@
 set -euo pipefail
 
 tool_name="$(basename "$0")"
-printf '[remote-vibes] %s is blocked for localhost UI work. Use rv-browser screenshot <port-or-url>, rv-browser run ... with type/click/select/wait/screenshot, rv-browser describe ..., or rv-browser describe-file <image-path> instead.\n' "$tool_name" >&2
+printf '[remote-vibes] %s is blocked for localhost UI work. Use rv-playwright open <port-or-url>, rv-playwright snapshot, explicit click/fill/type/press commands, and rv-playwright screenshot instead. If rv-playwright fails for a concrete reason, fall back to rv-browser.\n' "$tool_name" >&2
 exit 64

@@ -5,7 +5,7 @@ REAL_OSASCRIPT="/usr/bin/osascript"
 ARGS="$*"
 
 if printf '%s' "$ARGS" | /usr/bin/grep -Eqi 'Safari|Chrome|Brave|Arc|open location|do JavaScript'; then
-  printf '[remote-vibes] Use rv-browser screenshot, rv-browser run with type/click/select/wait/screenshot, or rv-browser describe instead of osascript browser automation for localhost UI work.\n' >&2
+  printf '[remote-vibes] Use rv-playwright open/snapshot/click/fill/type/press/screenshot instead of osascript browser automation for localhost UI work. Fall back to rv-browser only if rv-playwright fails for a concrete reason.\n' >&2
   exit 64
 fi
 

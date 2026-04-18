@@ -970,15 +970,19 @@ test("login shells inherit mailbox helpers and agent inbox env vars", async () =
       "-i",
       "-l",
       "-c",
-      "printf 'INBOX=%s\\n' \"$REMOTE_VIBES_AGENT_INBOX\"; printf 'WATCHER=%s\\n' \"$REMOTE_VIBES_MAIL_WATCHER\"; command -v rv-mailwatch; command -v rv-session-name",
+      "printf 'INBOX=%s\\n' \"$REMOTE_VIBES_AGENT_INBOX\"; printf 'WATCHER=%s\\n' \"$REMOTE_VIBES_MAIL_WATCHER\"; printf 'PWCLI=%s\\n' \"$PWCLI\"; printf 'PWSKILL=%s\\n' \"$REMOTE_VIBES_PLAYWRIGHT_SKILL\"; command -v rv-mailwatch; command -v rv-session-name; command -v rv-playwright; command -v playwright-cli",
     ],
     { env },
   );
 
   assert.match(stdout, new RegExp(`INBOX=.*${sessionId}.*/inbox`));
   assert.match(stdout, /WATCHER=rv-mailwatch/);
+  assert.match(stdout, /PWCLI=rv-playwright/);
+  assert.match(stdout, /PWSKILL=.*skills\/playwright\/SKILL\.md/);
   assert.match(stdout, /rv-mailwatch/);
   assert.match(stdout, /rv-session-name/);
+  assert.match(stdout, /rv-playwright/);
+  assert.match(stdout, /playwright-cli/);
 });
 
 test("session names can be updated after creation", async () => {

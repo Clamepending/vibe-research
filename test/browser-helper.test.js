@@ -16,6 +16,7 @@ const execFile = promisify(execFileCallback);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const browserHelperPath = path.join(rootDir, "bin", "rv-browser");
+const playwrightHelperPath = path.join(rootDir, "bin", "rv-playwright");
 const browserTestEnv = {
   ...process.env,
   PATH: ["/opt/homebrew/bin", "/usr/local/bin", process.env.PATH].filter(Boolean).join(path.delimiter),
@@ -245,6 +246,50 @@ test("rv-browser doctor ignores detour wrappers when repo bin is first on PATH",
   assert.notEqual(payload.browser.executablePath, path.join(rootDir, "bin", "google-chrome"));
 });
 
+test("rv-playwright wraps playwright-cli through npx with per-session isolation", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-playwright-wrapper-"));
+
+  try {
+    const fakeBinDir = await mkdtemp(path.join(workspaceDir, "bin-"));
+    const fakeNpxPath = path.join(fakeBinDir, "npx");
+    const capturedArgsPath = path.join(workspaceDir, "npx-args.txt");
+
+    await writeFile(
+      fakeNpxPath,
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$@" > "$CAPTURED_ARGS_PATH"
+printf 'fake playwright cli\\n'
+`,
+      "utf8",
+    );
+    await chmod(fakeNpxPath, 0o755);
+
+    const result = await execFile(playwrightHelperPath, ["snapshot"], {
+      cwd: workspaceDir,
+      env: {
+        ...browserTestEnv,
+        CAPTURED_ARGS_PATH: capturedArgsPath,
+        PATH: [fakeBinDir, "/usr/bin", "/bin"].join(path.delimiter),
+        REMOTE_VIBES_SESSION_ID: "session:abc",
+      },
+    });
+    const capturedArgs = (await readFile(capturedArgsPath, "utf8")).trim().split("\n");
+
+    assert.match(result.stdout, /fake playwright cli/);
+    assert.deepEqual(capturedArgs, [
+      "--yes",
+      "--package",
+      "@playwright/cli",
+      "playwright-cli",
+      "-s=rv-476412420-sessio",
+      "snapshot",
+    ]);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("rv-browser run can drive a localhost app, upload files, and save screenshots", async () => {
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-browser-"));
   const demoServer = await startDemoServer();
@@ -393,7 +438,7 @@ test("rv-browser describe-file can use a claude-style vision provider", async ()
   }
 });
 
-test("browser detour wrappers redirect back to rv-browser", async () => {
+test("browser detour wrappers redirect agents toward the Playwright skill", async () => {
   await assert.rejects(
     execFile(path.join(rootDir, "bin", "google-chrome"), ["--headless=new", "http://127.0.0.1:4173"], {
       cwd: rootDir,
@@ -401,8 +446,8 @@ test("browser detour wrappers redirect back to rv-browser", async () => {
     }),
     (error) => {
       assert.equal(error.code, 64);
-      assert.match(error.stderr, /Use rv-browser screenshot <port-or-url>/);
-      assert.match(error.stderr, /describe-file <image-path>/);
+      assert.match(error.stderr, /Use rv-playwright open <port-or-url>/);
+      assert.match(error.stderr, /click\/fill\/type\/press/);
       return true;
     },
   );
@@ -414,7 +459,7 @@ test("browser detour wrappers redirect back to rv-browser", async () => {
     }),
     (error) => {
       assert.equal(error.code, 64);
-      assert.match(error.stderr, /Use rv-browser screenshot <port-or-url>/);
+      assert.match(error.stderr, /Use rv-playwright open <port-or-url>/);
       return true;
     },
   );
@@ -529,7 +574,7 @@ test("shell sessions can invoke rv-browser against localhost apps", async () => 
   }
 });
 
-test("agent wrappers inject rv-browser guidance and the managed agent prompt for Codex and Claude", async () => {
+test("agent wrappers inject Playwright skill guidance and the managed agent prompt for Codex and Claude", async () => {
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-agent-wrapper-"));
 
   try {
@@ -572,8 +617,12 @@ printf '%s\n' "$@" > "$CAPTURED_ARGS_PATH"
     const codexArgs = await readFile(capturedArgsPath, "utf8");
     const codexProvider = await readFile(capturedProviderPath, "utf8");
     assert.match(codexArgs, /developer_instructions=/);
-    assert.match(codexArgs, /rv-browser run <port-or-url> --steps/);
-    assert.match(codexArgs, /type, click, select, wait, screenshot/);
+    assert.match(codexArgs, /Playwright CLI browser skill/);
+    assert.match(codexArgs, /skills\/playwright\/SKILL\.md/);
+    assert.match(codexArgs, /rv-playwright/);
+    assert.match(codexArgs, /snapshot/);
+    assert.match(codexArgs, /click\/fill\/type\/press/);
+    assert.match(codexArgs, /rv-browser describe-file/);
     assert.match(codexArgs, /--provider codex/);
     assert.match(codexArgs, /rv-session-name/);
     assert.equal(codexProvider.trim(), "codex");
@@ -591,8 +640,12 @@ printf '%s\n' "$@" > "$CAPTURED_ARGS_PATH"
     const claudeArgs = await readFile(capturedArgsPath, "utf8");
     const claudeProvider = await readFile(capturedProviderPath, "utf8");
     assert.match(claudeArgs, /--append-system-prompt/);
-    assert.match(claudeArgs, /rv-browser run <port-or-url> --steps/);
-    assert.match(claudeArgs, /type, click, select, wait, screenshot/);
+    assert.match(claudeArgs, /Playwright CLI browser skill/);
+    assert.match(claudeArgs, /skills\/playwright\/SKILL\.md/);
+    assert.match(claudeArgs, /rv-playwright/);
+    assert.match(claudeArgs, /snapshot/);
+    assert.match(claudeArgs, /click\/fill\/type\/press/);
+    assert.match(claudeArgs, /rv-browser describe-file/);
     assert.match(claudeArgs, /--provider claude/);
     assert.match(claudeArgs, /rv-session-name/);
     assert.equal(claudeProvider.trim(), "claude");

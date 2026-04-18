@@ -5,7 +5,9 @@
   "private": true,
   "type": "module",
   "bin": {
-    "rv-browser": "./bin/rv-browser"
+    "rv-browser": "./bin/rv-browser",
+    "rv-playwright": "./bin/rv-playwright",
+    "playwright-cli": "./bin/playwright-cli"
   },
   "engines": {
     "node": ">=20"

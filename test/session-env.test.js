@@ -34,6 +34,11 @@ test("buildSessionEnv exposes helper and common CLI directories on PATH", () => 
     assert.ok(entries.includes("/bin"));
     assert.equal(env.REMOTE_VIBES_ROOT, stateDir);
     assert.equal(env.REMOTE_VIBES_AGENT_PROMPT_PATH, path.join(stateDir, "agent-prompt.md"));
+    assert.equal(env.PWCLI, "rv-playwright");
+    assert.equal(env.REMOTE_VIBES_BROWSER_COMMAND, "rv-playwright");
+    assert.equal(env.REMOTE_VIBES_BROWSER_FALLBACK_COMMAND, "rv-browser");
+    assert.equal(env.REMOTE_VIBES_PLAYWRIGHT_COMMAND, "rv-playwright");
+    assert.equal(env.REMOTE_VIBES_PLAYWRIGHT_SKILL, path.join(rootDir, "skills", "playwright", "SKILL.md"));
     assert.equal(env.REMOTE_VIBES_WIKI_DIR, wikiRoot);
     assert.equal(env.REMOTE_VIBES_COMMS_DIR, path.join(wikiRoot, "comms"));
     assert.equal(

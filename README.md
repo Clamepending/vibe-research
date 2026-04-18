@@ -74,21 +74,30 @@ Serve, and keeps `/proxy/<port>/` as the fallback.
 
 Example thing I did was text my agent to fix and [pretrain GPT2-small on a 4090!](https://x.com/clamepending/status/2039185482639462763?s=20)
 
-Agents inside Remote Vibes also get an `rv-browser` command on `PATH`, so they can inspect localhost apps with a real browser. A few examples:
+Agents inside Remote Vibes get a Playwright CLI browser skill on `PATH` via `rv-playwright`, `playwright-cli`, and `PWCLI`. This is the preferred way for agents to inspect localhost apps with a real browser:
 
 ```bash
-rv-browser doctor
-rv-browser screenshot 4173
-rv-browser run 4173 --steps-file eval-steps.json --output final.png
-rv-browser run 4173 --steps '[{"action":"type","selector":"textarea","text":"make it cinematic"},{"action":"click","selector":"text=Generate"},{"action":"wait","text":"Done"},{"action":"screenshot","path":"final.png"}]'
+command -v npx >/dev/null 2>&1
+export PWCLI="${PWCLI:-rv-playwright}"
+"$PWCLI" open http://127.0.0.1:4173
+"$PWCLI" snapshot
+"$PWCLI" click e15
+"$PWCLI" fill e2 "make it cinematic"
+"$PWCLI" press Enter
+"$PWCLI" screenshot --filename output/playwright/final.png
+```
+
+The key loop is: open the page, snapshot to get stable element refs, interact with refs from the newest snapshot, snapshot again after UI changes, and save artifacts under `output/playwright/`. `rv-playwright` runs `npx --package @playwright/cli playwright-cli`, so agents do not need a global `playwright-cli` install as long as Node/npm provide `npx`.
+
+`rv-browser` is still available as a fallback for qualitative visual feedback from Codex or Claude:
+
+```bash
 rv-browser describe 4173 --prompt "What visual issues stand out in the rendered UI?"
 rv-browser describe-file results/chart.png --prompt "Critique this chart's readability."
 ```
 
-`rv-browser` is meant for arbitrary local UIs, not just Gradio. It works with anything the agent serves on `localhost` or `127.0.0.1`, captures screenshots, can click and type through a simple JSON step plan, and can ask Codex or Claude to turn a screenshot or local image into plain-text qualitative feedback. The recommended `run` actions are `type`, `click`, `select`, `wait`, and `screenshot`, with lower-level actions still available when needed.
-
 For model training or experiment loops, the lightweight pattern is:
-- serve the demo or chart on localhost and inspect it with `rv-browser screenshot`, `run`, or `describe`
+- serve the demo or chart on localhost and inspect it with `rv-playwright open`, `snapshot`, interactions, and `screenshot`
 - save generated images or plots to disk and use `rv-browser describe-file` for a qualitative read
 - ask the agent to write a short keep-training / stop-training note grounded in those rendered artifacts
 

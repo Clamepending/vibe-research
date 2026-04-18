@@ -256,15 +256,19 @@ export function buildSessionEnv(
     LANG: "en_US.UTF-8",
     LC_ALL: "en_US.UTF-8",
     PATH: prependPathEntries(env.PATH, preferredCliBinDirs),
+    PWCLI: "rv-playwright",
     REMOTE_VIBES_APP_ROOT: appRootDir,
-    REMOTE_VIBES_BROWSER_COMMAND: "rv-browser",
+    REMOTE_VIBES_BROWSER_COMMAND: "rv-playwright",
+    REMOTE_VIBES_BROWSER_FALLBACK_COMMAND: "rv-browser",
     REMOTE_VIBES_BROWSER_DESCRIBE:
       "rv-browser describe 4173 --prompt \"What visual issues stand out in the rendered UI?\"",
-    REMOTE_VIBES_BROWSER_HELP: "rv-browser screenshot 4173",
+    REMOTE_VIBES_BROWSER_HELP: "rv-playwright open http://127.0.0.1:4173 && rv-playwright snapshot",
     REMOTE_VIBES_BROWSER_RUN_HELP:
-      "rv-browser run 4173 --steps '[{\"action\":\"type\",\"selector\":\"textarea\",\"text\":\"hello\"},{\"action\":\"click\",\"selector\":\"text=Generate\"},{\"action\":\"wait\",\"text\":\"Done\"},{\"action\":\"screenshot\",\"path\":\"final.png\"}]'",
+      "rv-playwright open http://127.0.0.1:4173 && rv-playwright snapshot && rv-playwright click eX",
     REMOTE_VIBES_BROWSER_IMAGE_HELP:
       "rv-browser describe-file results/chart.png --prompt \"What does this output show and what should improve?\"",
+    REMOTE_VIBES_PLAYWRIGHT_COMMAND: "rv-playwright",
+    REMOTE_VIBES_PLAYWRIGHT_SKILL: path.join(appRootDir, "skills", "playwright", "SKILL.md"),
     REMOTE_VIBES_REAL_CLAUDE_COMMAND: getResolvedProviderCommand(providers, "claude") || "",
     REMOTE_VIBES_REAL_CODEX_COMMAND: getResolvedProviderCommand(providers, "codex") || "",
     REMOTE_VIBES_ROOT: resolvedStateDir,
@@ -2125,11 +2129,10 @@ export class SessionManager {
       : [
           `\u001b[1;36m[remote-vibes]\u001b[0m ${provider.label} session ready`,
           `\u001b[1;36m[remote-vibes]\u001b[0m cwd: ${sessionCwd}`,
-          "\u001b[1;36m[remote-vibes]\u001b[0m localhost browser helper: rv-browser screenshot 4173",
-          "\u001b[1;36m[remote-vibes]\u001b[0m simple click/type flow: rv-browser run 4173 --steps-file eval-steps.json --output final.png",
-          "\u001b[1;36m[remote-vibes]\u001b[0m recommended run actions: type, click, select, wait, screenshot",
-          '\u001b[1;36m[remote-vibes]\u001b[0m qualitative UI feedback: rv-browser describe 4173 --prompt "What visual issues stand out in the rendered UI?"',
-          '\u001b[1;36m[remote-vibes]\u001b[0m image and chart feedback: rv-browser describe-file results/chart.png --prompt "What does this output show and what should improve?"',
+          '\u001b[1;36m[remote-vibes]\u001b[0m browser skill: export PWCLI="${PWCLI:-rv-playwright}"; "$PWCLI" open http://127.0.0.1:4173',
+          '\u001b[1;36m[remote-vibes]\u001b[0m inspect UI: "$PWCLI" snapshot; use fresh refs with click/fill/type/press',
+          '\u001b[1;36m[remote-vibes]\u001b[0m save artifacts: "$PWCLI" screenshot --filename output/playwright/current.png',
+          '\u001b[1;36m[remote-vibes]\u001b[0m visual fallback: rv-browser describe-file results/chart.png --prompt "What should improve?"',
           provider.launchCommand
             ? `\u001b[1;36m[remote-vibes]\u001b[0m launching: ${provider.launchCommand}`
             : `\u001b[1;36m[remote-vibes]\u001b[0m vanilla shell active`,

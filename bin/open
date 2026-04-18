@@ -5,7 +5,7 @@ REAL_OPEN="/usr/bin/open"
 ARGS="$*"
 
 if printf '%s' "$ARGS" | /usr/bin/grep -Eqi 'https?://(127\.0\.0\.1|localhost|0\.0\.0\.0)'; then
-  printf '[remote-vibes] Use rv-browser screenshot <port-or-url>, rv-browser run ... with type/click/select/wait/screenshot, or rv-browser describe ... instead of open for localhost UI inspection.\n' >&2
+  printf '[remote-vibes] Use rv-playwright open <port-or-url>, rv-playwright snapshot, and rv-playwright screenshot instead of open for localhost UI inspection. Fall back to rv-browser only if rv-playwright fails for a concrete reason.\n' >&2
   exit 64
 fi
 
