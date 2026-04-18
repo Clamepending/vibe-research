@@ -2108,9 +2108,10 @@ input[readonly][data-folder-picker-target] {
 
 .jump-bottom-button {
   position: absolute;
-  right: 16px;
+  left: 16px;
+  right: auto;
   bottom: 16px;
-  z-index: 2;
+  z-index: 30;
   min-height: 40px;
   padding: 0 14px;
   border: 1px solid rgba(106, 227, 198, 0.34);
@@ -2124,6 +2125,7 @@ input[readonly][data-folder-picker-target] {
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.34);
   opacity: 0;
   pointer-events: none;
+  touch-action: manipulation;
   transform: translateY(10px);
   transition:
     opacity 140ms ease,
@@ -2315,7 +2317,8 @@ select:disabled {
   }
 
   .jump-bottom-button {
-    right: 12px;
+    left: 12px;
+    right: auto;
     bottom: 12px;
     min-height: 38px;
     padding: 0 12px;
@@ -2427,7 +2430,8 @@ select:disabled {
   }
 
   .jump-bottom-button {
-    right: 10px;
+    left: 10px;
+    right: auto;
     bottom: 10px;
   }
 

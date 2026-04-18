@@ -530,6 +530,11 @@ function applyTerminalDisplayProfile(mount) {
 }
 
 function isTerminalAtBottom() {
+  const viewport = document.querySelector("#terminal-mount .xterm-viewport");
+  if (viewport instanceof HTMLElement && viewport.scrollHeight > viewport.clientHeight) {
+    return viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 2;
+  }
+
   const buffer = state.terminal?.buffer?.active;
   if (!buffer) {
     return true;
@@ -559,6 +564,22 @@ function syncTerminalScrollState() {
 
   state.terminalShowJumpToBottom = nextShowJumpToBottom;
   refreshTerminalJumpUi();
+}
+
+function scrollTerminalToBottom() {
+  state.terminal?.scrollToBottom();
+
+  const viewport = document.querySelector("#terminal-mount .xterm-viewport");
+  if (viewport instanceof HTMLElement) {
+    viewport.scrollTop = viewport.scrollHeight;
+  }
+
+  state.terminalShowJumpToBottom = false;
+  refreshTerminalJumpUi();
+  state.terminal?.focus();
+  window.requestAnimationFrame(() => {
+    syncTerminalScrollState();
+  });
 }
 
 function buildTerminalLinkHandler() {
@@ -5031,9 +5052,7 @@ function bindShellEvents() {
     document.querySelector("#ctrl-t-button")?.addEventListener("click", () => sendTerminalInput("\u0014"));
     document.querySelector("#ctrl-c-button")?.addEventListener("click", () => sendTerminalInput("\u0003"));
     document.querySelector("#jump-to-bottom")?.addEventListener("click", () => {
-      state.terminal?.scrollToBottom();
-      state.terminal?.focus();
-      syncTerminalScrollState();
+      scrollTerminalToBottom();
     });
   }
 
@@ -5406,6 +5425,12 @@ function setupTerminalInteractions(mount) {
     touchState.maxDistance = 0;
   };
 
+  const handleViewportScroll = () => {
+    window.requestAnimationFrame(() => {
+      syncTerminalScrollState();
+    });
+  };
+
   const handleBeforeInput = (event) => {
     const currentValue = helperTextarea?.value || "";
 
@@ -5466,6 +5491,7 @@ function setupTerminalInteractions(mount) {
   };
 
   mount.addEventListener("pointerdown", handlePointerDown);
+  viewport.addEventListener("scroll", handleViewportScroll, { passive: true });
   viewport.addEventListener("touchstart", handleTouchStart, { capture: true, passive: true });
   viewport.addEventListener("touchmove", handleTouchMove, { capture: true, passive: true });
   viewport.addEventListener("touchend", handleTouchEnd, { capture: true, passive: true });
@@ -5478,6 +5504,7 @@ function setupTerminalInteractions(mount) {
 
   state.terminalInteractionCleanup = () => {
     mount.removeEventListener("pointerdown", handlePointerDown);
+    viewport.removeEventListener("scroll", handleViewportScroll);
     viewport.removeEventListener("touchstart", handleTouchStart, true);
     viewport.removeEventListener("touchmove", handleTouchMove, true);
     viewport.removeEventListener("touchend", handleTouchEnd, true);
