@@ -5433,10 +5433,13 @@ function restoreScrollSnapshot(selector, snapshot) {
 }
 
 function captureExplorerScrollSnapshots() {
+  const sidebarBody = document.querySelector('[data-sidebar-panel="left"] .sidebar-body');
   const filesTree = document.querySelector("#files-tree");
   const folderPickerList = document.querySelector(".folder-picker-list");
 
   return {
+    sidebarBody: captureScrollSnapshot('[data-sidebar-panel="left"] .sidebar-body'),
+    sidebarBodyPresent: sidebarBody instanceof HTMLElement,
     filesTree: captureScrollSnapshot("#files-tree"),
     filesRoot: filesTree instanceof HTMLElement ? filesTree.dataset.filesRoot || "" : "",
     folderPickerList: captureScrollSnapshot(".folder-picker-list"),
@@ -5445,6 +5448,10 @@ function captureExplorerScrollSnapshots() {
 }
 
 function restoreExplorerScrollSnapshots(snapshot) {
+  if (snapshot?.sidebarBodyPresent) {
+    restoreScrollSnapshot('[data-sidebar-panel="left"] .sidebar-body', snapshot.sidebarBody);
+  }
+
   const filesTree = document.querySelector("#files-tree");
   if (filesTree instanceof HTMLElement && filesTree.dataset.filesRoot === snapshot?.filesRoot) {
     restoreScrollSnapshot("#files-tree", snapshot.filesTree);
