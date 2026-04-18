@@ -4307,12 +4307,6 @@ function renderShell() {
         <div class="sidebar-body">
           <div class="update-slot" id="update-banner">${renderUpdateBanner()}</div>
 
-          <div class="sidebar-chrome" aria-hidden="true">
-            <span class="sidebar-window-dot is-red"></span>
-            <span class="sidebar-window-dot is-yellow"></span>
-            <span class="sidebar-window-dot is-green"></span>
-          </div>
-
           ${renderSidebarNav(providerOptions)}
 
           <section class="sidebar-section sessions-section">

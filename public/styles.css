@@ -370,33 +370,6 @@ textarea {
   font-size: 0.68rem;
 }
 
-.sidebar-chrome {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 18px;
-  padding: 0 4px 4px;
-}
-
-.sidebar-window-dot {
-  width: 11px;
-  height: 11px;
-  border-radius: 999px;
-  opacity: 0.95;
-}
-
-.sidebar-window-dot.is-red {
-  background: #ff6b61;
-}
-
-.sidebar-window-dot.is-yellow {
-  background: #f2c94c;
-}
-
-.sidebar-window-dot.is-green {
-  background: #64c466;
-}
-
 .sidebar-head-button {
   min-width: 25px;
   min-height: 25px;
