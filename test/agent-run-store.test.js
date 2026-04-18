@@ -62,3 +62,67 @@ test("agent run store records, persists, and summarizes duration buckets", async
     await rm(stateDir, { recursive: true, force: true });
   }
 });
+
+test("agent run store summarizes local provider usage windows", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-agent-usage-"));
+  const store = new AgentRunStore({ stateDir });
+  const now = Date.parse("2026-04-18T20:00:00.000Z");
+
+  try {
+    await store.initialize();
+    await store.recordRun({
+      sessionId: "codex-a",
+      sessionName: "codex one",
+      providerId: "codex",
+      providerLabel: "Codex",
+      startedAt: now - 90 * 60 * 1000,
+      endedAt: now - 60 * 60 * 1000,
+      durationMs: 30 * 60 * 1000,
+      completionReason: "idle",
+    });
+    await store.recordRun({
+      sessionId: "codex-b",
+      sessionName: "codex two",
+      providerId: "codex",
+      providerLabel: "Codex",
+      startedAt: now - 7 * 60 * 60 * 1000,
+      endedAt: now - 6 * 60 * 60 * 1000,
+      durationMs: 60 * 60 * 1000,
+      completionReason: "idle",
+    });
+
+    const usage = store.getProviderUsage({
+      now,
+      providers: [
+        { id: "claude", label: "Claude Code", available: true },
+        { id: "codex", label: "Codex", available: true },
+      ],
+      sessions: [
+        {
+          id: "codex-a",
+          providerId: "codex",
+          providerLabel: "Codex",
+          status: "running",
+          activityStatus: "working",
+          activityStartedAt: new Date(now - 10 * 60 * 1000).toISOString(),
+        },
+      ],
+    });
+
+    const codex = usage.providers.find((provider) => provider.id === "codex");
+    assert.ok(codex);
+    assert.equal(codex.runningSessionCount, 1);
+    assert.equal(codex.workingSessionCount, 1);
+    assert.equal(codex.quotaAvailable, false);
+    assert.equal(codex.windows.find((window) => window.id === "5h")?.totalRunMs, 40 * 60 * 1000);
+    assert.equal(codex.windows.find((window) => window.id === "5h")?.activeRunCount, 1);
+    assert.equal(Math.round(codex.windows.find((window) => window.id === "5h")?.remainingPercent), 87);
+    assert.equal(codex.windows.find((window) => window.id === "7d")?.totalRunMs, 100 * 60 * 1000);
+
+    const claude = usage.providers.find((provider) => provider.id === "claude");
+    assert.ok(claude);
+    assert.equal(claude.windows.find((window) => window.id === "5h")?.remainingPercent, 100);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});

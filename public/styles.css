@@ -2045,11 +2045,89 @@ input[readonly][data-folder-picker-target] {
   background: linear-gradient(90deg, #c2c4ca, #f4f4f5);
 }
 
+.metric-bar.is-agent-usage span {
+  background: linear-gradient(90deg, #42d77d, #9af0b3);
+}
+
 .system-section {
   display: grid;
   gap: 12px;
   padding: 16px;
   border-radius: 18px;
+}
+
+.agent-usage-note {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.system-agent-usage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.agent-usage-card {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 10% 0%, rgba(100, 240, 154, 0.08), transparent 34%),
+    rgba(255, 255, 255, 0.035);
+}
+
+.agent-usage-card-head,
+.agent-usage-window-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.agent-usage-card-head > div,
+.agent-usage-window {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.agent-usage-card-head strong {
+  color: var(--text);
+  font-size: 0.98rem;
+}
+
+.agent-usage-card-head span,
+.agent-usage-window-head span,
+.agent-usage-card-head em,
+.agent-usage-window p {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.7rem;
+  font-style: normal;
+}
+
+.agent-usage-card-head em {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.055);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.agent-usage-window-head strong {
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.agent-usage-window-list {
+  display: grid;
+  gap: 13px;
 }
 
 .cpu-core-grid {
@@ -4703,6 +4781,7 @@ select:disabled {
   }
 
   .system-summary-grid,
+  .system-agent-usage-grid,
   .swarm-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -4861,6 +4940,11 @@ select:disabled {
 }
 
 @media (max-width: 420px) {
+  .system-agent-usage-grid,
+  .system-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
   .terminal-panel {
     padding-top: max(8px, calc(var(--safe-top) + 6px));
     padding-right: max(8px, calc(var(--safe-right) + 8px));

@@ -627,9 +627,45 @@ function formatPercent(value) {
   return `${Math.round(clamp(number, 0, 100))}%`;
 }
 
+function formatCompactPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "not exposed";
+  }
+
+  const percent = clamp(number, 0, 100);
+  if (percent > 0 && percent < 1) {
+    return "<1%";
+  }
+
+  return `${Math.round(percent)}%`;
+}
+
 function getMetricPercent(value) {
   const number = Number(value);
   return Number.isFinite(number) ? clamp(number, 0, 100) : 0;
+}
+
+function formatDurationMs(milliseconds) {
+  const totalSeconds = Math.max(0, Math.round(Number(milliseconds || 0) / 1000));
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+
+  return `${seconds}s`;
 }
 
 function getSessionLabel(session) {
@@ -5596,6 +5632,87 @@ function renderDeviceSection(title, devices, emptyMessage) {
   `;
 }
 
+function renderAgentUsageWindow(window) {
+  const remainingPercent = getMetricPercent(window?.remainingPercent);
+  const usedPercent = getMetricPercent(window?.usedPercent);
+  const runCount = Number(window?.runCount || 0);
+  const activeRunCount = Number(window?.activeRunCount || 0);
+  const sessionCount = Number(window?.sessionCount || 0);
+  const targetText = formatDurationMs(window?.targetRunMs);
+  const usedText = formatDurationMs(window?.totalRunMs);
+  const detailParts = runCount
+    ? [
+        `${usedText} used`,
+        activeRunCount ? `${activeRunCount} active` : "",
+        `${runCount} ${runCount === 1 ? "activity" : "activities"}`,
+        sessionCount ? `${sessionCount} ${sessionCount === 1 ? "session" : "sessions"}` : "",
+        `${formatCompactPercent(usedPercent)} of ${targetText} local target`,
+      ].filter(Boolean)
+    : [`no completed runs in this window`, `${targetText} local target`];
+
+  return `
+    <div class="agent-usage-window">
+      <div class="agent-usage-window-head">
+        <span>${escapeHtml(window?.label || "Local usage")}</span>
+        <strong>${escapeHtml(`${formatCompactPercent(remainingPercent)} headroom`)}</strong>
+      </div>
+      ${renderMetricBar(remainingPercent, "is-agent-usage")}
+      <p>${escapeHtml(detailParts.join(" · "))}</p>
+    </div>
+  `;
+}
+
+function renderAgentUsageSection(system) {
+  const usage = system?.agentUsage;
+  const providers = Array.isArray(usage?.providers) ? usage.providers : [];
+
+  if (!providers.length) {
+    return "";
+  }
+
+  return `
+    <section class="system-section system-agent-usage-section">
+      <div class="system-section-head">
+        <strong>Agent usage</strong>
+        <span>${escapeHtml(usage.sourceLabel || "Remote Vibes local activity")}</span>
+      </div>
+      <div class="agent-usage-note">${escapeHtml(
+        usage.quotaReason || "Provider quota is not exposed locally; these bars show Remote Vibes activity.",
+      )}</div>
+      <div class="system-agent-usage-grid">
+        ${providers
+          .map((provider) => {
+            const runningText = provider.workingSessionCount
+              ? `${provider.workingSessionCount} working`
+              : provider.runningSessionCount
+                ? `${provider.runningSessionCount} live`
+                : provider.sessionCount
+                  ? `${provider.sessionCount} sessions`
+                  : provider.available
+                    ? "available"
+                    : "missing";
+
+            return `
+              <article class="agent-usage-card">
+                <div class="agent-usage-card-head">
+                  <div>
+                    <strong>${escapeHtml(provider.label || provider.id || "Agent")}</strong>
+                    <span>${escapeHtml(runningText)}</span>
+                  </div>
+                  <em>${escapeHtml(provider.quotaAvailable ? "quota" : "local")}</em>
+                </div>
+                <div class="agent-usage-window-list">
+                  ${(Array.isArray(provider.windows) ? provider.windows : []).map(renderAgentUsageWindow).join("")}
+                </div>
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderSystemWarnings(system) {
   const warnings = Array.isArray(system?.warnings) ? system.warnings.filter(Boolean) : [];
 
@@ -5644,6 +5761,7 @@ function renderSystemView() {
         }
         ${renderSystemStorageCard(system)}
         ${renderSystemSummaryCards(system)}
+        ${renderAgentUsageSection(system)}
         ${renderSystemUtilizationCharts(system)}
         <section class="system-section">
           <div class="system-section-head">

@@ -258,6 +258,7 @@ test("system endpoint reports host storage and utilization metrics", async () =>
   let calls = 0;
   const { app, baseUrl } = await startApp({
     cwd: workspaceDir,
+    providers: [{ id: "codex", label: "Codex", available: true, command: "true" }],
     systemMetricsProvider: async ({ cwd }) => {
       calls += 1;
       assert.equal(cwd, workspaceDir);
@@ -268,7 +269,10 @@ test("system endpoint reports host storage and utilization metrics", async () =>
   try {
     const response = await fetch(`${baseUrl}/api/system`);
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { system: systemPayload });
+    const systemResponse = await response.json();
+    assert.deepEqual(systemResponse, { system: systemPayload });
+    assert.equal(systemResponse.system.agentUsage.source, "remote-vibes-local");
+    assert.equal(systemResponse.system.agentUsage.providers[0].id, "codex");
     const historyResponse = await fetch(`${baseUrl}/api/system/history?range=1h`);
     assert.equal(historyResponse.status, 200);
     const history = (await historyResponse.json()).history;

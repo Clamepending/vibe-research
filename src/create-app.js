@@ -417,6 +417,10 @@ export async function createRemoteVibesApp({
       projectPaths: sessionManager.listProjectPaths(),
       wikiPath: settingsStore.settings.wikiPath,
     });
+    system.agentUsage = agentRunStore.getProviderUsage({
+      providers,
+      sessions: sessionManager.listUsageSessions(),
+    });
     await systemMetricsHistoryStore.record(system, { force: forceHistory });
     return system;
   }

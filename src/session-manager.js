@@ -1223,6 +1223,21 @@ export class SessionManager {
     return Array.from(projectPaths).sort((left, right) => left.localeCompare(right));
   }
 
+  listUsageSessions() {
+    this.consumePendingRenameRequests();
+    return Array.from(this.sessions.values()).map((session) => ({
+      id: session.id,
+      name: session.name,
+      providerId: session.providerId,
+      providerLabel: session.providerLabel,
+      status: session.status,
+      activityStatus: session.activityStatus,
+      activityStartedAt: session.activityStartedAt,
+      lastPromptAt: session.lastPromptAt,
+      updatedAt: session.updatedAt,
+    }));
+  }
+
   async getSessionSwarmGraph(sessionId) {
     this.consumePendingRenameRequests();
     const focusSession = this.sessions.get(sessionId);
