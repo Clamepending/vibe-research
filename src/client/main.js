@@ -1695,11 +1695,6 @@ async function createFolderFromPicker(folderName) {
     throw new Error("Folder was created, but Remote Vibes could not resolve its path.");
   }
 
-  if (state.folderPicker.target === "session") {
-    await createSessionInFolder(createdPath);
-    return;
-  }
-
   const createdRelativePath = getFolderPickerChildRelativePath(parentPath, payload.folder.name);
   const createdEntry = {
     ...payload.folder,
@@ -5398,26 +5393,28 @@ function renderFolderPickerModal() {
           <span>${escapeHtml(getFolderPickerTitle())}</span>
           <button class="icon-button" type="button" aria-label="Close folder picker" ${tooltipAttributes("Close folder picker")} data-close-folder-picker>×</button>
         </div>
-        <div class="folder-picker-path" title="${escapeHtml(currentPath)}">${escapeHtml(currentPath)}</div>
-        <div class="folder-picker-actions">
+        <div class="folder-picker-path-row">
           <button class="ghost-button folder-picker-button" type="button" id="folder-picker-up" ${state.folderPicker.parentPath ? "" : "disabled"}>up</button>
-          <button class="primary-button folder-picker-button" type="button" id="folder-picker-select" ${currentPath ? "" : "disabled"}>${isSessionTarget ? "start session here" : "choose this folder"}</button>
+          <div class="folder-picker-path" title="${escapeHtml(currentPath)}">${escapeHtml(currentPath)}</div>
         </div>
-        <form class="folder-create-form" id="folder-create-form">
-          <input
-            class="file-root-input"
-            id="folder-picker-new-folder"
-            name="folderName"
-            type="text"
-            placeholder="new folder name"
-            autocomplete="off"
-            autocorrect="off"
-            autocapitalize="none"
-            spellcheck="false"
-          />
-          <button class="ghost-button folder-picker-button" type="submit">${isSessionTarget ? "create + start" : "create folder"}</button>
-        </form>
         <div class="folder-picker-list" data-folder-picker-root="${escapeHtml(state.folderPicker.root || "")}">${renderFolderPickerEntries()}</div>
+        <div class="folder-picker-footer">
+          <form class="folder-create-form" id="folder-create-form">
+            <input
+              class="file-root-input"
+              id="folder-picker-new-folder"
+              name="folderName"
+              type="text"
+              placeholder="new folder name"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="none"
+              spellcheck="false"
+            />
+            <button class="ghost-button folder-picker-button" type="submit">create folder</button>
+          </form>
+          <button class="primary-button folder-picker-button folder-picker-choose-button" type="button" id="folder-picker-select" ${currentPath ? "" : "disabled"}>${isSessionTarget ? "choose folder" : "choose this folder"}</button>
+        </div>
       </section>
     </div>
   `;

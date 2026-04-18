@@ -530,7 +530,21 @@ input[readonly][data-folder-picker-target] {
 }
 
 .folder-picker-modal {
+  display: grid;
+  grid-template-rows: auto auto minmax(180px, 1fr) auto;
+  gap: 12px;
   max-height: min(82vh, 760px);
+}
+
+.folder-picker-path-row,
+.folder-picker-footer {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+}
+
+.folder-picker-path-row {
+  grid-template-columns: auto minmax(0, 1fr);
 }
 
 .folder-picker-path {
@@ -543,16 +557,22 @@ input[readonly][data-folder-picker-target] {
   white-space: nowrap;
 }
 
-.folder-picker-actions {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px;
+.folder-picker-footer {
+  grid-template-columns: minmax(0, 520px) auto;
+  justify-content: space-between;
 }
 
 .folder-create-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+  justify-self: start;
+  width: min(100%, 520px);
+}
+
+.folder-picker-choose-button {
+  justify-self: end;
+  min-width: min(260px, 100%);
 }
 
 .folder-picker-list {
@@ -580,6 +600,18 @@ input[readonly][data-folder-picker-target] {
 
 .folder-picker-tree-status {
   min-height: 27px;
+}
+
+@media (max-width: 720px) {
+  .folder-picker-footer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .folder-create-form,
+  .folder-picker-choose-button {
+    justify-self: stretch;
+    width: 100%;
+  }
 }
 
 .section-head {
