@@ -13,6 +13,7 @@ const KNOWLEDGE_BASE_GRAPH_FOCUS_SCALE = 1.65;
 const KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX = 6;
 const PORT_PREVIEW_TAB_PREFIX = "port:";
 const ROUTED_MAIN_VIEWS = new Set(["search", "plugins", "automations", "system"]);
+const SESSION_WORKING_SPINNER_MS = 900;
 const SYSTEM_HISTORY_LIMIT = 48;
 const SYSTEM_CHART_COLORS = [
   "#f4f4f5",
@@ -600,6 +601,15 @@ function getSessionLabel(session) {
   }
 
   return { text: "read", className: "read", title: "read" };
+}
+
+function getSessionActivityStyle(status) {
+  if (status?.className !== "working") {
+    return "";
+  }
+
+  const delay = Date.now() % SESSION_WORKING_SPINNER_MS;
+  return ` style="--session-spinner-delay: -${delay}ms"`;
 }
 
 function getPortDisplayName(port) {
@@ -4056,14 +4066,14 @@ function renderSessionCard(session) {
 
   return `
     <article class="session-card ${session.id === state.activeSessionId ? "is-active" : ""}" data-session-id="${session.id}">
-      <span class="session-activity-dot ${status.className}" role="img" aria-label="${escapeHtml(status.title)}" title="${escapeHtml(status.title)}"></span>
+      <span class="session-activity-dot ${status.className}" role="img" aria-label="${escapeHtml(status.title)}" title="${escapeHtml(status.title)}"${getSessionActivityStyle(status)}></span>
       <div class="session-main">
         <div class="session-name">${escapeHtml(session.name)}</div>
         <div class="session-subtitle">${escapeHtml(session.providerLabel)}</div>
       </div>
       <span class="session-time">${relativeTime(session.lastOutputAt)}</span>
       <div class="session-actions">
-        <button class="session-action-button" type="button" aria-label="Fork session" ${tooltipAttributes("Fork session")} data-fork-session="${session.id}">
+        <button class="session-action-button session-fork-button" type="button" aria-label="Fork session" ${tooltipAttributes("Fork session")} data-fork-session="${session.id}">
           <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
             <path d="M5 3.5v2.2a4.8 4.8 0 0 0 4.8 4.8H13" />
             <path d="M5 14.5v-2.2a4.8 4.8 0 0 1 4.8-4.8H13" />
@@ -4113,7 +4123,7 @@ function renderSessionSubagentCard(subagent) {
 
   return `
     <div class="session-subagent-card" title="${escapeHtml(subagent.description || subagent.name || "Claude subagent")}">
-      <span class="session-activity-dot ${status.className}" role="img" aria-label="${escapeHtml(status.title)}" title="${escapeHtml(status.title)}"></span>
+      <span class="session-activity-dot ${status.className}" role="img" aria-label="${escapeHtml(status.title)}" title="${escapeHtml(status.title)}"${getSessionActivityStyle(status)}></span>
       <div class="session-main">
         <div class="session-name">${escapeHtml(subagent.name || "Claude subagent")}</div>
         <div class="session-subtitle">${escapeHtml(metaParts.join(" · "))}</div>

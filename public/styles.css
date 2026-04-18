@@ -2376,14 +2376,16 @@ input[readonly][data-folder-picker-target] {
 .session-actions {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   position: absolute;
   right: 4px;
   top: 50%;
   z-index: 2;
   padding: 2px;
-  border-radius: 9px;
-  background: linear-gradient(90deg, rgba(38, 36, 43, 0), rgba(38, 36, 43, 0.96) 18%);
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 10px;
+  background: rgba(28, 27, 32, 0.94);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.22);
   opacity: 0;
   pointer-events: none;
   transform: translate(4px, -50%);
@@ -2412,7 +2414,7 @@ input[readonly][data-folder-picker-target] {
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: rgba(222, 228, 235, 0.74);
+  color: rgba(236, 240, 245, 0.84);
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.62rem;
   letter-spacing: 0.03em;
@@ -2426,8 +2428,8 @@ input[readonly][data-folder-picker-target] {
 }
 
 .session-action-button svg {
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
 }
 
 .session-action-button svg path {
@@ -2435,7 +2437,17 @@ input[readonly][data-folder-picker-target] {
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 1.6;
+  stroke-width: 1.75;
+}
+
+.session-fork-button {
+  background: rgba(242, 138, 104, 0.11);
+  color: #ffd2c2;
+}
+
+.session-fork-button:hover {
+  background: rgba(242, 138, 104, 0.2);
+  color: #fff1eb;
 }
 
 .session-delete-button:hover {
@@ -2459,25 +2471,14 @@ input[readonly][data-folder-picker-target] {
 }
 
 .session-activity-dot.working {
-  width: 17px;
-  height: 8px;
-  overflow: hidden;
-  background: rgba(125, 189, 255, 0.14);
-  box-shadow: inset 0 0 0 1px rgba(125, 189, 255, 0.18);
-}
-
-.session-activity-dot.working::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 2px;
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: #7dbdff;
-  box-shadow: 0 0 10px rgba(125, 189, 255, 0.52);
-  transform: translateY(-50%);
-  animation: session-working-slide 820ms ease-in-out infinite alternate;
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(125, 189, 255, 0.2);
+  border-top-color: #8fc7ff;
+  background: transparent;
+  box-shadow: 0 0 0 3px rgba(125, 189, 255, 0.08);
+  animation: session-working-spin 900ms linear infinite;
+  animation-delay: var(--session-spinner-delay, 0ms);
 }
 
 .session-activity-dot.read {
@@ -2488,20 +2489,20 @@ input[readonly][data-folder-picker-target] {
   background: #ff8d86;
 }
 
-@keyframes session-working-slide {
+@keyframes session-working-spin {
   from {
-    transform: translate(0, -50%);
+    transform: rotate(0deg);
   }
 
   to {
-    transform: translate(8px, -50%);
+    transform: rotate(360deg);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .session-activity-dot.working::after {
+  .session-activity-dot.working {
     animation: none;
-    transform: translate(4px, -50%);
+    border-top-color: rgba(125, 189, 255, 0.78);
   }
 }
 
