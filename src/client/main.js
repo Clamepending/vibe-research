@@ -7657,15 +7657,6 @@ function bindUpdateEvents() {
       return;
     }
 
-    const targetLabel =
-      state.update?.targetType === "release" && state.update?.latestVersion
-        ? state.update.latestVersion
-        : "the latest GitHub version";
-
-    if (!window.confirm(`Update Remote Vibes to ${targetLabel} and restart it?`)) {
-      return;
-    }
-
     state.updateApplying = true;
     refreshUpdateUi();
 
