@@ -267,6 +267,14 @@ textarea {
   align-items: center;
 }
 
+.session-folder-button {
+  position: relative;
+  min-width: 42px;
+  padding: 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 1.1rem;
+}
+
 .inline-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 56px;
@@ -1149,6 +1157,111 @@ input[readonly][data-folder-picker-target] {
 
 .prompt-textarea {
   min-height: min(54vh, 560px);
+}
+
+.session-project {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.session-project-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  border-radius: 12px;
+}
+
+.session-project.has-active-session .session-project-head {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.session-project-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 4px 6px;
+  border-radius: 12px;
+  background: transparent;
+  color: rgba(222, 228, 235, 0.82);
+  text-align: left;
+}
+
+.session-project-toggle:hover {
+  background: rgba(112, 124, 140, 0.16);
+  transform: none;
+}
+
+.session-project.has-active-session .session-project-toggle {
+  color: var(--text);
+}
+
+.session-project-copy {
+  display: grid;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.session-project-name,
+.session-project-path {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.session-project-name {
+  font-weight: 700;
+}
+
+.session-project-path,
+.session-project-count {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.66rem;
+}
+
+.session-project-count {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.session-project-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(222, 228, 235, 0.72);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.86rem;
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.session-project:hover .session-project-new,
+.session-project:focus-within .session-project-new {
+  opacity: 1;
+}
+
+.session-project-new:hover {
+  background: rgba(106, 227, 198, 0.16);
+  color: var(--accent);
+  transform: none;
+}
+
+.session-project-sessions {
+  display: grid;
+  gap: 8px;
+  padding-left: 20px;
+  border-left: 1px solid rgba(147, 161, 178, 0.2);
 }
 
 .session-card,
@@ -2195,6 +2308,10 @@ select:disabled {
 
   .session-card {
     grid-template-columns: 1fr;
+  }
+
+  .session-project-new {
+    opacity: 1;
   }
 
   .session-side {

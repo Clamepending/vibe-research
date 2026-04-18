@@ -144,6 +144,8 @@ const state = {
     loading: false,
     error: "",
   },
+  sessionProjectExpanded: new Set(),
+  sessionProjectInteractionSeen: false,
   filesRootOverride: null,
   filesRoot: "",
   fileTreeEntries: {},
@@ -880,6 +882,38 @@ function getWikiBackupStatusText() {
   return backup.lastMessage || backup.lastStatus;
 }
 
+function getSessionProjectKey(cwd) {
+  return normalizeWorkspaceRoot(cwd || state.defaultCwd || "") || "__unknown__";
+}
+
+function getSessionProjectName(cwd) {
+  const normalizedCwd = normalizeWorkspaceRoot(cwd || "");
+  if (!normalizedCwd) {
+    return "unknown project";
+  }
+
+  const parts = normalizedCwd.replaceAll("\\", "/").split("/").filter(Boolean);
+  return parts.at(-1) || normalizedCwd;
+}
+
+function getSessionProjectMeta(cwd) {
+  const normalizedCwd = normalizeWorkspaceRoot(cwd || "");
+  return {
+    cwd: normalizedCwd,
+    key: getSessionProjectKey(normalizedCwd),
+    name: getSessionProjectName(normalizedCwd),
+  };
+}
+
+function expandSessionProject(cwd) {
+  const key = getSessionProjectKey(cwd);
+  if (!key) {
+    return;
+  }
+
+  state.sessionProjectExpanded.add(key);
+}
+
 async function createSessionInFolder(cwd) {
   const selectedCwd = normalizeWorkspaceRoot(cwd);
 
@@ -898,6 +932,7 @@ async function createSessionInFolder(cwd) {
   state.folderPicker.open = false;
   state.sessions = [payload.session, ...state.sessions];
   state.activeSessionId = payload.session.id;
+  expandSessionProject(payload.session.cwd);
   renderShell();
   connectToSession(payload.session.id);
   closeMobileSidebar();
@@ -2795,31 +2830,119 @@ function renderFileTree() {
   return renderFileTreeNodes("");
 }
 
-function renderSessionCards() {
+function getSessionProjectGroups() {
   if (!state.sessions.length) {
+    return [];
+  }
+
+  const groupsByKey = new Map();
+
+  for (const session of state.sessions) {
+    const project = getSessionProjectMeta(session.cwd);
+    if (!groupsByKey.has(project.key)) {
+      groupsByKey.set(project.key, {
+        ...project,
+        sessions: [],
+      });
+    }
+
+    groupsByKey.get(project.key).sessions.push(session);
+  }
+
+  return Array.from(groupsByKey.values());
+}
+
+function ensureSessionProjectDefaults(groups) {
+  const knownKeys = new Set(groups.map((group) => group.key));
+  for (const key of Array.from(state.sessionProjectExpanded)) {
+    if (!knownKeys.has(key)) {
+      state.sessionProjectExpanded.delete(key);
+    }
+  }
+
+  if (state.sessionProjectInteractionSeen || state.sessionProjectExpanded.size > 0) {
+    return;
+  }
+
+  const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) || state.sessions[0];
+  if (activeSession) {
+    expandSessionProject(activeSession.cwd);
+    return;
+  }
+
+  if (groups[0]) {
+    expandSessionProject(groups[0].cwd);
+  }
+}
+
+function renderSessionCard(session) {
+  const status = getSessionLabel(session);
+
+  return `
+    <article class="session-card ${session.id === state.activeSessionId ? "is-active" : ""}" data-session-id="${session.id}">
+      <div class="session-main">
+        <div class="session-name">${escapeHtml(session.name)}</div>
+        <div class="session-subtitle">${escapeHtml(session.providerLabel)}</div>
+      </div>
+      <div class="session-side">
+        <span class="session-status ${status.className}">${status.text}</span>
+        <div class="session-actions">
+          <button class="ghost-button session-action-button" type="button" aria-label="Fork session" data-fork-session="${session.id}">fork</button>
+          <button class="ghost-button session-action-button" type="button" aria-label="Rename session" data-rename-session="${session.id}">edit</button>
+          <button class="danger-button" type="button" aria-label="Delete session" data-delete-session="${session.id}">x</button>
+        </div>
+      </div>
+      <div class="session-time">${relativeTime(session.lastOutputAt)}</div>
+    </article>
+  `;
+}
+
+function renderSessionCards() {
+  const groups = getSessionProjectGroups();
+  if (!groups.length) {
     return `<div class="blank-state">no sessions</div>`;
   }
 
-  return state.sessions
-    .map((session) => {
-      const status = getSessionLabel(session);
+  ensureSessionProjectDefaults(groups);
+
+  return groups
+    .map((group) => {
+      const expanded = state.sessionProjectExpanded.has(group.key);
+      const active = group.sessions.some((session) => session.id === state.activeSessionId);
+      const countLabel = `${group.sessions.length} ${group.sessions.length === 1 ? "session" : "sessions"}`;
 
       return `
-        <article class="session-card ${session.id === state.activeSessionId ? "is-active" : ""}" data-session-id="${session.id}">
-          <div class="session-main">
-            <div class="session-name">${escapeHtml(session.name)}</div>
-            <div class="session-subtitle">${escapeHtml(session.providerLabel)}</div>
+        <section class="session-project ${expanded ? "is-expanded" : ""} ${active ? "has-active-session" : ""}" data-session-project="${escapeHtml(group.key)}">
+          <div class="session-project-head">
+            <button
+              class="session-project-toggle"
+              type="button"
+              data-session-project-toggle="${escapeHtml(group.key)}"
+              aria-expanded="${expanded ? "true" : "false"}"
+              title="${escapeHtml(group.cwd || group.name)}"
+            >
+              <span class="file-caret">${expanded ? "▾" : "▸"}</span>
+              <span class="file-icon file-icon-folder ${expanded ? "is-open" : ""}" aria-hidden="true"></span>
+              <span class="session-project-copy">
+                <span class="session-project-name">${escapeHtml(group.name)}</span>
+                <span class="session-project-path">${escapeHtml(group.cwd || "unknown folder")}</span>
+              </span>
+              <span class="session-project-count">${escapeHtml(countLabel)}</span>
+            </button>
+            <button
+              class="session-project-new"
+              type="button"
+              data-create-session-in-cwd="${escapeHtml(group.cwd)}"
+              aria-label="Create a new session in ${escapeHtml(group.name)}"
+              title="New session in this folder"
+            >✎</button>
           </div>
-          <div class="session-side">
-            <span class="session-status ${status.className}">${status.text}</span>
-            <div class="session-actions">
-              <button class="ghost-button session-action-button" type="button" aria-label="Fork session" data-fork-session="${session.id}">fork</button>
-              <button class="ghost-button session-action-button" type="button" aria-label="Rename session" data-rename-session="${session.id}">edit</button>
-              <button class="danger-button" type="button" aria-label="Delete session" data-delete-session="${session.id}">x</button>
-            </div>
-          </div>
-          <div class="session-time">${relativeTime(session.lastOutputAt)}</div>
-        </article>
+          ${
+            expanded
+              ? `<div class="session-project-sessions">${group.sessions.map((session) => renderSessionCard(session)).join("")}</div>`
+              : ""
+          }
+        </section>
       `;
     })
     .join("");
@@ -3160,8 +3283,8 @@ function renderShell() {
               class="primary-button session-folder-button"
               type="button"
               data-folder-picker-target="session"
-              aria-label="Create session from folder"
-              title="Create session from folder"
+              aria-label="Add new project"
+              title="Add new project"
             >+</button>
           </form>
 
@@ -3333,6 +3456,40 @@ function renderShell() {
 }
 
 function bindSessionEvents() {
+  document.querySelectorAll("[data-session-project-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const projectKey = button.getAttribute("data-session-project-toggle");
+      if (!projectKey) {
+        return;
+      }
+
+      state.sessionProjectInteractionSeen = true;
+      if (state.sessionProjectExpanded.has(projectKey)) {
+        state.sessionProjectExpanded.delete(projectKey);
+      } else {
+        state.sessionProjectExpanded.add(projectKey);
+      }
+
+      refreshSessionsList();
+    });
+  });
+
+  document.querySelectorAll("[data-create-session-in-cwd]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const cwd = button.getAttribute("data-create-session-in-cwd") || "";
+      if (!cwd) {
+        return;
+      }
+
+      try {
+        await createSessionInFolder(cwd);
+      } catch (error) {
+        window.alert(error.message);
+      }
+    });
+  });
+
   document.querySelectorAll("[data-session-id]").forEach((element) => {
     element.addEventListener("click", (event) => {
       if (event.target.closest("[data-delete-session]")) {
@@ -3357,6 +3514,10 @@ function bindSessionEvents() {
       }
 
       state.activeSessionId = nextSessionId;
+      const nextSession = state.sessions.find((session) => session.id === nextSessionId);
+      if (nextSession) {
+        expandSessionProject(nextSession.cwd);
+      }
       renderShell();
       connectToSession(state.activeSessionId);
       closeMobileSidebar();
@@ -3412,6 +3573,7 @@ function bindSessionEvents() {
 
         state.sessions = [payload.session, ...state.sessions.filter((session) => session.id !== payload.session.id)];
         state.activeSessionId = payload.session.id;
+        expandSessionProject(payload.session.cwd);
         renderShell();
         connectToSession(payload.session.id);
         closeMobileSidebar();
@@ -3433,6 +3595,10 @@ function bindSessionEvents() {
         if (state.activeSessionId === sessionId) {
           closeWebsocket();
           state.activeSessionId = state.sessions[0]?.id ?? null;
+          const nextSession = state.sessions.find((session) => session.id === state.activeSessionId);
+          if (nextSession) {
+            expandSessionProject(nextSession.cwd);
+          }
           renderShell();
 
           if (state.activeSessionId) {
