@@ -4918,10 +4918,63 @@ function renderFolderPickerModal() {
           />
           <button class="ghost-button folder-picker-button" type="submit">${isSessionTarget ? "create + start" : "create folder"}</button>
         </form>
-        <div class="folder-picker-list">${renderFolderPickerEntries()}</div>
+        <div class="folder-picker-list" data-folder-picker-root="${escapeHtml(state.folderPicker.root || "")}">${renderFolderPickerEntries()}</div>
       </section>
     </div>
   `;
+}
+
+function captureScrollSnapshot(selector) {
+  const element = document.querySelector(selector);
+  if (!(element instanceof HTMLElement)) {
+    return null;
+  }
+
+  return {
+    left: element.scrollLeft,
+    top: element.scrollTop,
+  };
+}
+
+function restoreScrollSnapshot(selector, snapshot) {
+  if (!snapshot) {
+    return;
+  }
+
+  const element = document.querySelector(selector);
+  if (!(element instanceof HTMLElement)) {
+    return;
+  }
+
+  element.scrollLeft = snapshot.left;
+  element.scrollTop = snapshot.top;
+}
+
+function captureExplorerScrollSnapshots() {
+  const filesTree = document.querySelector("#files-tree");
+  const folderPickerList = document.querySelector(".folder-picker-list");
+
+  return {
+    filesTree: captureScrollSnapshot("#files-tree"),
+    filesRoot: filesTree instanceof HTMLElement ? filesTree.dataset.filesRoot || "" : "",
+    folderPickerList: captureScrollSnapshot(".folder-picker-list"),
+    folderPickerRoot: folderPickerList instanceof HTMLElement ? folderPickerList.dataset.folderPickerRoot || "" : "",
+  };
+}
+
+function restoreExplorerScrollSnapshots(snapshot) {
+  const filesTree = document.querySelector("#files-tree");
+  if (filesTree instanceof HTMLElement && filesTree.dataset.filesRoot === snapshot?.filesRoot) {
+    restoreScrollSnapshot("#files-tree", snapshot.filesTree);
+  }
+
+  const folderPickerList = document.querySelector(".folder-picker-list");
+  if (
+    folderPickerList instanceof HTMLElement &&
+    folderPickerList.dataset.folderPickerRoot === snapshot?.folderPickerRoot
+  ) {
+    restoreScrollSnapshot(".folder-picker-list", snapshot.folderPickerList);
+  }
 }
 
 function renderUpdateBanner() {
@@ -4972,6 +5025,7 @@ function renderUpdateBanner() {
 }
 
 function renderShell() {
+  const explorerScrollSnapshot = captureExplorerScrollSnapshots();
   teardownKnowledgeBaseGraphInteractions();
   syncFilesRoot();
   const viewTitles = {
@@ -5036,7 +5090,7 @@ function renderShell() {
               />
               <button class="ghost-button file-root-submit" type="button" data-folder-picker-target="files">choose</button>
             </form>
-            <div class="file-tree" id="files-tree">${renderFileTree()}</div>
+            <div class="file-tree" id="files-tree" data-files-root="${escapeHtml(state.filesRoot || "")}">${renderFileTree()}</div>
           </section>
 
           <section class="sidebar-section">
@@ -5065,6 +5119,7 @@ function renderShell() {
       ${renderSystemToasts()}
     </main>
   `;
+  restoreExplorerScrollSnapshots(explorerScrollSnapshot);
 
   bindShellEvents();
 
@@ -5902,6 +5957,7 @@ function refreshFileTreeUi() {
   const filesTree = document.querySelector("#files-tree");
   const autoFilesRootButton = document.querySelector("#auto-files-root");
   const nextRoot = state.filesRoot || state.defaultCwd || "";
+  const filesTreeScrollSnapshot = captureScrollSnapshot("#files-tree");
 
   if (filesRootInput instanceof HTMLInputElement) {
     if (document.activeElement !== filesRootInput) {
@@ -5920,7 +5976,14 @@ function refreshFileTreeUi() {
     return;
   }
 
+  const previousRenderedRoot = filesTree instanceof HTMLElement ? filesTree.dataset.filesRoot || "" : "";
   filesTree.innerHTML = renderFileTree();
+  if (filesTree instanceof HTMLElement) {
+    filesTree.dataset.filesRoot = state.filesRoot || "";
+  }
+  if (previousRenderedRoot === (state.filesRoot || "")) {
+    restoreScrollSnapshot("#files-tree", filesTreeScrollSnapshot);
+  }
   bindFileTreeEvents();
 }
 
