@@ -1946,3 +1946,31 @@ test("workspace file api rejects traversal and invalid entry types", async () =>
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });
+
+test("workspace file api serves content from hidden install roots", async () => {
+  const parentDir = await createTempWorkspace("remote-vibes-hidden-root-");
+  const workspaceDir = path.join(parentDir, ".remote-vibes", "app");
+  const imagePath = path.join(workspaceDir, "shell.jpg");
+
+  await mkdir(workspaceDir, { recursive: true });
+  await writeFile(imagePath, PNG_FIXTURE);
+
+  const { app, baseUrl } = await startApp({
+    cwd: workspaceDir,
+    stateDir: path.join(parentDir, "state"),
+  });
+
+  try {
+    const imageResponse = await fetch(
+      `${baseUrl}/api/files/content?root=${encodeURIComponent(workspaceDir)}&path=${encodeURIComponent("shell.jpg")}`,
+    );
+    assert.equal(imageResponse.status, 200);
+    assert.match(imageResponse.headers.get("content-type") || "", /image\/jpeg/);
+
+    const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+    assert.equal(imageBuffer.compare(PNG_FIXTURE), 0);
+  } finally {
+    await app.close();
+    await rm(parentDir, { recursive: true, force: true });
+  }
+});

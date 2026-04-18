@@ -655,7 +655,20 @@ export async function createRemoteVibesApp({
 
       response.setHeader("Cache-Control", "no-store");
       response.setHeader("X-Content-Type-Options", "nosniff");
-      response.sendFile(entry.targetPath);
+      response.sendFile(entry.targetPath, { dotfiles: "allow" }, (error) => {
+        if (!error) {
+          return;
+        }
+
+        if (response.headersSent) {
+          response.destroy(error);
+          return;
+        }
+
+        response.status(error.statusCode || error.status || 500).json({
+          error: error.message || "Unable to read requested file.",
+        });
+      });
     } catch (error) {
       response.status(error.statusCode || 400).json({ error: error.message });
     }
