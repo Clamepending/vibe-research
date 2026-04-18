@@ -323,6 +323,7 @@ const state = {
     searchQuery: "",
     noteCache: {},
     pendingGraphFocusPath: "",
+    replayGraphOnNextBind: false,
     graphLayout: {
       width: KNOWLEDGE_BASE_GRAPH_WIDTH,
       height: KNOWLEDGE_BASE_GRAPH_HEIGHT,
@@ -3001,6 +3002,48 @@ function applyPendingKnowledgeBaseGraphFocus() {
   }
 
   state.knowledgeBase.pendingGraphFocusPath = "";
+  return true;
+}
+
+function requestKnowledgeBaseGraphReplay() {
+  state.knowledgeBase.replayGraphOnNextBind = true;
+}
+
+function replayKnowledgeBaseGraphUnfold() {
+  const layout = state.knowledgeBase.graphLayout;
+
+  if (!layout.nodes.length) {
+    return false;
+  }
+
+  const centerX = layout.width / 2;
+  const centerY = layout.height / 2;
+  const spreadRadius = Math.min(layout.width, layout.height) * 0.055;
+  const velocityBase = Math.min(layout.width, layout.height) * 0.0032;
+
+  layout.scale = 1;
+  layout.offsetX = 0;
+  layout.offsetY = 0;
+  layout.cameraInitialized = true;
+
+  layout.nodes.forEach((node, index) => {
+    const currentAngle = Math.atan2(node.y - centerY, node.x - centerX);
+    const angle = Number.isFinite(currentAngle)
+      ? currentAngle
+      : (Math.PI * 2 * index) / Math.max(layout.nodes.length, 1);
+    const radius = 8 + (index % 5) * (spreadRadius / 5);
+    const velocity = velocityBase + (index % 4) * 0.18;
+
+    node.x = centerX + Math.cos(angle) * radius;
+    node.y = centerY + Math.sin(angle) * radius;
+    node.vx = Math.cos(angle) * velocity;
+    node.vy = Math.sin(angle) * velocity;
+    node.fx = 0;
+    node.fy = 0;
+  });
+
+  syncKnowledgeBaseGraphDom();
+  startKnowledgeBaseGraphSimulation(0.42);
   return true;
 }
 
@@ -8017,8 +8060,15 @@ function bindKnowledgeBaseGraphInteractions() {
   }
 
   const focusedPendingNode = applyPendingKnowledgeBaseGraphFocus();
+  const replayedGraph = !focusedPendingNode && state.knowledgeBase.replayGraphOnNextBind
+    ? replayKnowledgeBaseGraphUnfold()
+    : false;
 
-  if (!focusedPendingNode) {
+  if (focusedPendingNode || replayedGraph) {
+    state.knowledgeBase.replayGraphOnNextBind = false;
+  }
+
+  if (!focusedPendingNode && !replayedGraph) {
     startKnowledgeBaseGraphSimulation(0.22);
   }
 }
@@ -9064,16 +9114,25 @@ function applySettingsState(payload) {
 
 function syncViewFromLocation() {
   const route = getRouteState();
+  const previousView = state.currentView;
   state.currentView = route.view;
 
   if (route.view === "knowledge-base") {
+    if (previousView !== "knowledge-base") {
+      requestKnowledgeBaseGraphReplay();
+    }
     state.knowledgeBase.selectedNotePath = route.notePath;
   }
 }
 
 function setCurrentView(nextView, { notePath = state.knowledgeBase.selectedNotePath } = {}) {
+  const previousView = state.currentView;
+
   if (nextView === "knowledge-base") {
     state.currentView = "knowledge-base";
+    if (previousView !== "knowledge-base") {
+      requestKnowledgeBaseGraphReplay();
+    }
     updateRoute({ view: "knowledge-base", notePath });
     return;
   }
