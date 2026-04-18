@@ -2126,11 +2126,6 @@ input[readonly][data-folder-picker-target] {
   grid-template-rows: auto auto minmax(0, 1fr);
 }
 
-.agent-prompt-toolbar-actions {
-  display: inline-flex;
-  gap: 8px;
-}
-
 .agent-prompt-summary {
   justify-content: space-between;
 }
@@ -3774,13 +3769,8 @@ select:disabled {
     max-height: none;
   }
 
-  .agent-prompt-toolbar-actions,
   .knowledge-settings-head {
     width: 100%;
-  }
-
-  .agent-prompt-toolbar-actions > * {
-    flex: 1 1 0;
   }
 
   .terminal-toolbar {

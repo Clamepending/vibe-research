@@ -5262,9 +5262,6 @@ function renderAgentPromptView() {
           <strong>Agent Prompt</strong>
           <div class="terminal-meta">shared instructions injected into Codex, Claude, Gemini, and OpenCode sessions</div>
         </div>
-        <div class="dashboard-actions agent-prompt-toolbar-actions">
-          <a class="ghost-button toolbar-control" href="${escapeHtml(getAgentPromptUrl())}" target="_blank" rel="noreferrer">open tab</a>
-        </div>
       </div>
       <div class="dashboard-range agent-prompt-summary">
         <span class="dashboard-range-label">source</span>
