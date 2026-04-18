@@ -280,6 +280,7 @@ export function buildSessionEnv(
     REMOTE_VIBES_AGENT_DIR: agentDir,
     REMOTE_VIBES_AGENT_INBOX: path.join(agentDir, "inbox"),
     REMOTE_VIBES_AGENT_PROCESSED_DIR: path.join(agentDir, "processed"),
+    REMOTE_VIBES_AGENTMAIL_REPLY_COMMAND: "rv-agentmail-reply",
     REMOTE_VIBES_MAIL_WATCHER: "rv-mailwatch",
     TERM: "xterm-256color",
   };

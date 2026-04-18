@@ -58,6 +58,13 @@ const PLUGIN_CATALOG = [
     source: "plugin",
   },
   {
+    name: "AgentMail",
+    category: "Communication",
+    description: "Give Remote Vibes an email inbox and wake a Claude session when mail arrives.",
+    status: "setup available",
+    source: "remote-vibes",
+  },
+  {
     name: "Slack",
     category: "Team",
     description: "A placeholder for chat-driven workflows once Remote Vibes exposes imported MCPs directly.",
@@ -220,6 +227,16 @@ const state = {
   agentPromptWikiRoot: ".remote-vibes/wiki",
   agentPromptTargets: [],
   settings: {
+    agentMailApiKeyConfigured: false,
+    agentMailClientId: "",
+    agentMailDisplayName: "Remote Vibes",
+    agentMailDomain: "",
+    agentMailEnabled: false,
+    agentMailInboxId: "",
+    agentMailMode: "websocket",
+    agentMailProviderId: "claude",
+    agentMailStatus: null,
+    agentMailUsername: "",
     preventSleepEnabled: true,
     sleepPrevention: null,
     wikiPath: "",
@@ -1388,6 +1405,41 @@ function formatWikiBackupIntervalLabel() {
   const intervalMs = Number(state.settings.wikiBackupIntervalMs) || 5 * 60 * 1000;
   const minutes = Math.max(1, Math.round(intervalMs / 60_000));
   return `git backup every ${minutes} min`;
+}
+
+function getAgentMailStatusText() {
+  const status = state.settings.agentMailStatus;
+  if (!state.settings.agentMailEnabled) {
+    return state.settings.agentMailApiKeyConfigured || state.settings.agentMailInboxId
+      ? "configured but disabled"
+      : "not configured";
+  }
+
+  if (!state.settings.agentMailApiKeyConfigured) {
+    return "add an AgentMail API key";
+  }
+
+  if (!state.settings.agentMailInboxId) {
+    return "create or enter an inbox";
+  }
+
+  if (status?.connected) {
+    return `listening on ${state.settings.agentMailInboxId}`;
+  }
+
+  if (status?.lastStatus === "queued") {
+    return "email queued for Claude";
+  }
+
+  if (status?.lastStatus === "replied") {
+    return "last email replied";
+  }
+
+  if (status?.lastStatus === "error") {
+    return status.lastError || "AgentMail listener error";
+  }
+
+  return status?.lastStatus || "connecting";
 }
 
 function getWikiBackupFailureMessage(backup) {
@@ -4377,6 +4429,102 @@ function renderPluginCards() {
     .join("");
 }
 
+function renderAgentMailPluginPanel() {
+  const status = state.settings.agentMailStatus || {};
+  const providerOptions = renderProviderOptions(state.settings.agentMailProviderId || state.defaultProviderId || "claude");
+  const lastEvent = status.lastEventAt ? relativeTime(status.lastEventAt) : "";
+
+  return `
+    <aside class="mcp-import-card agentmail-plugin-card">
+      <span class="main-search-kind">email agent</span>
+      <strong>AgentMail inbox</strong>
+      <p>Remote Vibes can create or attach an AgentMail inbox, keep an outbound WebSocket listener open, and launch a Claude session when new mail arrives.</p>
+      <form class="settings-form agentmail-form" id="agentmail-form">
+        <label class="checkbox-row">
+          <input type="checkbox" name="agentMailEnabled" ${state.settings.agentMailEnabled ? "checked" : ""} />
+          <span>listen for incoming AgentMail messages</span>
+        </label>
+        <label class="field-label" for="agentmail-api-key">AgentMail API key</label>
+        <input
+          class="file-root-input"
+          id="agentmail-api-key"
+          name="agentMailApiKey"
+          type="password"
+          placeholder="${escapeHtml(state.settings.agentMailApiKeyConfigured ? "saved; leave blank to keep" : "am_...")}"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <div class="knowledge-settings-remote-grid">
+          <label class="field-label" for="agentmail-inbox-id">inbox email</label>
+          <input
+            class="file-root-input"
+            id="agentmail-inbox-id"
+            name="agentMailInboxId"
+            type="text"
+            value="${escapeHtml(state.settings.agentMailInboxId || "")}"
+            placeholder="leave blank to create one"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="none"
+            spellcheck="false"
+          />
+          <label class="field-label" for="agentmail-provider">reply agent</label>
+          <select class="file-root-input" id="agentmail-provider" name="agentMailProviderId">${providerOptions}</select>
+          <label class="field-label" for="agentmail-username">new inbox username</label>
+          <input
+            class="file-root-input"
+            id="agentmail-username"
+            name="agentMailUsername"
+            type="text"
+            value="${escapeHtml(state.settings.agentMailUsername || "")}"
+            placeholder="optional"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="none"
+            spellcheck="false"
+          />
+          <label class="field-label" for="agentmail-domain">domain</label>
+          <input
+            class="file-root-input"
+            id="agentmail-domain"
+            name="agentMailDomain"
+            type="text"
+            value="${escapeHtml(state.settings.agentMailDomain || "")}"
+            placeholder="agentmail.to"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="none"
+            spellcheck="false"
+          />
+        </div>
+        <label class="field-label" for="agentmail-display-name">display name</label>
+        <input
+          class="file-root-input"
+          id="agentmail-display-name"
+          name="agentMailDisplayName"
+          type="text"
+          value="${escapeHtml(state.settings.agentMailDisplayName || "Remote Vibes")}"
+          placeholder="Remote Vibes"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <div class="knowledge-settings-actions">
+          <button class="primary-button settings-save-button" type="submit" data-agentmail-action="setup">
+            ${state.settings.agentMailInboxId ? "save + reconnect" : "create inbox"}
+          </button>
+          <div class="settings-status" id="agentmail-settings-status">${escapeHtml(getAgentMailStatusText())}</div>
+        </div>
+      </form>
+      <p class="mcp-import-paths">Mode: <code>WebSocket</code> ${lastEvent ? `· last email ${escapeHtml(lastEvent)} ago` : ""} · processed ${escapeHtml(String(status.processedCount || 0))}</p>
+      <p class="mcp-import-paths">The reply agent uses <code>rv-agentmail-reply</code>; the API key stays server-side.</p>
+    </aside>
+  `;
+}
+
 function renderPluginsView() {
   return `
     <section class="dashboard-panel main-view plugins-view">
@@ -4404,12 +4552,15 @@ function renderPluginsView() {
       </div>
       <div class="plugins-layout">
         <section class="plugin-grid" id="plugin-results">${renderPluginCards()}</section>
-        <aside class="mcp-import-card">
-          <span class="main-search-kind">MCP bridge</span>
-          <strong>Port the MCPs your agents already use</strong>
-          <p>Remote Vibes launches the real Codex, Claude, Gemini, and OpenCode CLIs, so their existing MCP/plugin configs still matter inside each session. This page is the first shared surface for making those tools visible from Remote Vibes itself.</p>
-          <p class="mcp-import-paths">Common places to import from next: <code>~/.codex</code>, <code>~/.claude</code>, project MCP files, and agent-specific config folders.</p>
-        </aside>
+        <div class="plugins-side-stack">
+          ${renderAgentMailPluginPanel()}
+          <aside class="mcp-import-card">
+            <span class="main-search-kind">MCP bridge</span>
+            <strong>Port the MCPs your agents already use</strong>
+            <p>Remote Vibes launches the real Codex, Claude, Gemini, and OpenCode CLIs, so their existing MCP/plugin configs still matter inside each session. This page is the first shared surface for making those tools visible from Remote Vibes itself.</p>
+            <p class="mcp-import-paths">Common places to import from next: <code>~/.codex</code>, <code>~/.claude</code>, project MCP files, and agent-specific config folders.</p>
+          </aside>
+        </div>
       </div>
     </section>
   `;
@@ -5651,6 +5802,49 @@ function refreshPluginSearchUi() {
   results.innerHTML = renderPluginCards();
 }
 
+function refreshAgentMailPluginUi() {
+  const card = document.querySelector(".agentmail-plugin-card");
+  if (!card) {
+    return;
+  }
+
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLElement && activeElement.closest("#agentmail-form")) {
+    return;
+  }
+
+  card.outerHTML = renderAgentMailPluginPanel();
+  bindAgentMailForm();
+}
+
+function bindAgentMailForm() {
+  document.querySelector("#agentmail-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+
+    const button = form.querySelector("[data-agentmail-action]");
+    if (button instanceof HTMLButtonElement) {
+      button.disabled = true;
+      button.textContent = "connecting...";
+    }
+
+    try {
+      await setupAgentMailFromForm(form);
+      renderShell();
+    } catch (error) {
+      window.alert(error.message);
+      if (button instanceof HTMLButtonElement) {
+        button.disabled = false;
+        button.textContent = state.settings.agentMailInboxId ? "save + reconnect" : "create inbox";
+      }
+    }
+  });
+}
+
 function refreshUpdateUi() {
   const updateBanner = document.querySelector("#update-banner");
   if (!updateBanner) {
@@ -6861,8 +7055,28 @@ function applySettingsState(payload) {
   const settings = payload?.settings || payload || {};
   const backup = settings.wikiBackup || settings.backup || state.settings.wikiBackup;
   const sleepPrevention = settings.sleepPrevention || settings.sleep || state.settings.sleepPrevention;
+  const agentMailStatus = settings.agentMailStatus || settings.agentMail || state.settings.agentMailStatus;
 
   state.settings = {
+    agentMailApiKeyConfigured:
+      settings.agentMailApiKeyConfigured === undefined
+        ? state.settings.agentMailApiKeyConfigured
+        : Boolean(settings.agentMailApiKeyConfigured),
+    agentMailClientId: settings.agentMailClientId || state.settings.agentMailClientId || "",
+    agentMailDisplayName: settings.agentMailDisplayName || state.settings.agentMailDisplayName || "Remote Vibes",
+    agentMailDomain:
+      settings.agentMailDomain === undefined ? state.settings.agentMailDomain || "" : String(settings.agentMailDomain || ""),
+    agentMailEnabled:
+      settings.agentMailEnabled === undefined
+        ? state.settings.agentMailEnabled
+        : Boolean(settings.agentMailEnabled),
+    agentMailInboxId:
+      settings.agentMailInboxId === undefined ? state.settings.agentMailInboxId || "" : String(settings.agentMailInboxId || ""),
+    agentMailMode: settings.agentMailMode || state.settings.agentMailMode || "websocket",
+    agentMailProviderId: settings.agentMailProviderId || state.settings.agentMailProviderId || "claude",
+    agentMailStatus: agentMailStatus || null,
+    agentMailUsername:
+      settings.agentMailUsername === undefined ? state.settings.agentMailUsername || "" : String(settings.agentMailUsername || ""),
     preventSleepEnabled:
       settings.preventSleepEnabled === undefined
         ? state.settings.preventSleepEnabled
@@ -7137,6 +7351,7 @@ function bindShellEvents() {
       window.alert(error.message);
     }
   });
+  bindAgentMailForm();
   document.querySelector("#backup-wiki-now")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     if (button instanceof HTMLButtonElement) {
@@ -7902,6 +8117,9 @@ async function loadSettingsStatus() {
     });
     applySettingsState(payload.settings);
     refreshKnowledgeSettingsUi();
+    if (state.currentView === "plugins") {
+      refreshAgentMailPluginUi();
+    }
     refreshSystemToastsUi();
   } catch (error) {
     console.error(error);
@@ -8091,6 +8309,42 @@ async function saveSettingsFromForm(form) {
     await loadKnowledgeBaseIndex();
     await ensureKnowledgeBaseSelectionLoaded({ force: true });
   }
+}
+
+async function setupAgentMailFromForm(form) {
+  const formData = new FormData(form);
+  const apiKey = String(formData.get("agentMailApiKey") || "").trim();
+  const body = {
+    agentMailProviderId: String(formData.get("agentMailProviderId") || "claude"),
+    apiKey: apiKey || undefined,
+    displayName: String(formData.get("agentMailDisplayName") || "Remote Vibes"),
+    domain: String(formData.get("agentMailDomain") || ""),
+    inboxId: String(formData.get("agentMailInboxId") || ""),
+    username: String(formData.get("agentMailUsername") || ""),
+  };
+
+  if (formData.get("agentMailEnabled") !== "on") {
+    const payload = await fetchJson("/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify({
+        agentMailDisplayName: body.displayName,
+        agentMailDomain: body.domain,
+        agentMailEnabled: false,
+        agentMailInboxId: body.inboxId,
+        agentMailProviderId: body.agentMailProviderId,
+        agentMailUsername: body.username,
+        ...(apiKey ? { agentMailApiKey: apiKey } : {}),
+      }),
+    });
+    applySettingsState(payload.settings);
+    return;
+  }
+
+  const payload = await fetchJson("/api/agentmail/setup", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  applySettingsState(payload.settings);
 }
 
 async function backupWikiNow() {

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import httpProxy from "http-proxy";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
@@ -8,6 +9,7 @@ import { promisify } from "node:util";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { buildPortUrlFromBase, getTailscaleUrl, pickPreferredUrl } from "./access-url.js";
+import { AgentMailService } from "./agentmail-service.js";
 import { AgentPromptStore } from "./agent-prompt-store.js";
 import { AgentRunStore } from "./agent-run-store.js";
 import { createFolderEntry, listFolderEntries } from "./folder-browser.js";
@@ -250,6 +252,7 @@ export async function createRemoteVibesApp({
       enabled: settings.preventSleepEnabled,
     }),
   onTerminate = null,
+  agentMailServiceFactory = null,
   systemMetricsProvider = collectSystemMetrics,
   updateManager = new UpdateManager({ cwd, stateDir, port }),
 } = {}) {
@@ -283,11 +286,20 @@ export async function createRemoteVibesApp({
     stateDir,
     wikiRootPath: settingsStore.settings.wikiPath,
   });
+  const agentMailService =
+    typeof agentMailServiceFactory === "function"
+      ? agentMailServiceFactory(settingsStore.settings, { cwd, sessionManager, stateDir })
+      : new AgentMailService({
+          cwd,
+          sessionManager,
+          settings: settingsStore.settings,
+        });
   await agentRunStore.initialize();
   await portAliasStore.initialize();
   await sessionManager.initialize();
   await agentPromptStore.initialize();
   wikiBackupService.start();
+  agentMailService.start();
   if (settingsStore.settings.wikiGitRemoteEnabled && settingsStore.settings.wikiGitRemoteUrl) {
     void wikiBackupService.runBackup({ reason: "startup" });
   }
@@ -387,6 +399,7 @@ export async function createRemoteVibesApp({
 
   function getSettingsState() {
     return settingsStore.getState({
+      agentMailStatus: agentMailService.getStatus(),
       backupStatus: wikiBackupService.getStatus(),
       sleepStatus: sleepPreventionService.getStatus(),
     });
@@ -566,6 +579,15 @@ export async function createRemoteVibesApp({
     try {
       const settings = await settingsStore.update({
         preventSleepEnabled: request.body?.preventSleepEnabled,
+        agentMailApiKey: request.body?.agentMailApiKey,
+        agentMailClientId: request.body?.agentMailClientId,
+        agentMailDisplayName: request.body?.agentMailDisplayName,
+        agentMailDomain: request.body?.agentMailDomain,
+        agentMailEnabled: request.body?.agentMailEnabled,
+        agentMailInboxId: request.body?.agentMailInboxId,
+        agentMailMode: request.body?.agentMailMode,
+        agentMailProviderId: request.body?.agentMailProviderId,
+        agentMailUsername: request.body?.agentMailUsername,
         wikiGitBackupEnabled: request.body?.wikiGitBackupEnabled,
         wikiGitRemoteBranch: request.body?.wikiGitRemoteBranch,
         wikiGitRemoteEnabled: request.body?.wikiGitRemoteEnabled,
@@ -590,6 +612,7 @@ export async function createRemoteVibesApp({
       sleepPreventionService.setConfig({
         enabled: settings.preventSleepEnabled,
       });
+      agentMailService.restart(settingsStore.settings);
       void wikiBackupService.runBackup({ reason: "settings" });
 
       response.json({
@@ -607,6 +630,90 @@ export async function createRemoteVibesApp({
       backup: status,
       settings: getSettingsState(),
     });
+  });
+
+  app.get("/api/agentmail/status", (_request, response) => {
+    response.json({ agentMail: agentMailService.getStatus() });
+  });
+
+  app.post("/api/agentmail/setup", async (request, response) => {
+    try {
+      const apiKey = String(request.body?.apiKey || settingsStore.settings.agentMailApiKey || "").trim();
+      const clientId =
+        String(request.body?.clientId || settingsStore.settings.agentMailClientId || "").trim() ||
+        `remote-vibes-${randomUUID()}`;
+      let inboxId = String(request.body?.inboxId || settingsStore.settings.agentMailInboxId || "").trim();
+      const displayName = String(
+        request.body?.displayName || request.body?.agentMailDisplayName || settingsStore.settings.agentMailDisplayName || "",
+      ).trim();
+      const domain = String(
+        request.body?.domain || request.body?.agentMailDomain || settingsStore.settings.agentMailDomain || "",
+      ).trim();
+      const username = String(
+        request.body?.username || request.body?.agentMailUsername || settingsStore.settings.agentMailUsername || "",
+      ).trim();
+
+      if (!apiKey) {
+        throw new Error("AgentMail API key is required.");
+      }
+
+      let inbox = null;
+      if (!inboxId) {
+        inbox = await agentMailService.createInbox({
+          apiKey,
+          clientId,
+          displayName,
+          domain,
+          username,
+        });
+        inboxId = inbox.inbox_id || inbox.inboxId || inbox.email || "";
+      }
+
+      if (!inboxId) {
+        throw new Error("AgentMail did not return an inbox id.");
+      }
+
+      const settings = await settingsStore.update({
+        agentMailApiKey: request.body?.apiKey === undefined ? undefined : apiKey,
+        agentMailClientId: clientId,
+        agentMailDisplayName: displayName || settingsStore.settings.agentMailDisplayName,
+        agentMailDomain: domain,
+        agentMailEnabled: true,
+        agentMailInboxId: inboxId,
+        agentMailMode: "websocket",
+        agentMailProviderId: request.body?.agentMailProviderId || request.body?.providerId,
+        agentMailUsername: username,
+      });
+      agentMailService.restart(settingsStore.settings);
+
+      response.json({
+        agentMail: agentMailService.getStatus(),
+        inbox,
+        settings: getSettingsState(),
+      });
+    } catch (error) {
+      response.status(400).json({ error: error.message || "Could not set up AgentMail." });
+    }
+  });
+
+  app.post("/api/agentmail/reply", async (request, response) => {
+    try {
+      const token = String(request.headers["x-remote-vibes-agentmail-token"] || request.body?.token || "").trim();
+      if (!token || token !== agentMailService.replyToken) {
+        response.status(403).json({ error: "Invalid AgentMail reply token." });
+        return;
+      }
+
+      const reply = await agentMailService.replyToMessage({
+        html: request.body?.html,
+        inboxId: request.body?.inboxId,
+        messageId: request.body?.messageId,
+        text: request.body?.text,
+      });
+      response.json({ ok: true, reply });
+    } catch (error) {
+      response.status(400).json({ error: error.message || "Could not send AgentMail reply." });
+    }
   });
 
   app.get("/api/folders", async (request, response) => {
@@ -869,6 +976,7 @@ export async function createRemoteVibesApp({
   urls = await accessUrlsProvider(host, resolvedPort);
   preferredUrl = pickPreferredUrl(urls)?.url ?? urls[0]?.url ?? null;
   await writeServerInfo(stateDir, {
+    agentMailReplyToken: agentMailService.replyToken,
     pid: process.pid,
     host,
     port: resolvedPort,
@@ -952,6 +1060,7 @@ export async function createRemoteVibesApp({
     closePromise = (async () => {
       await sessionManager.shutdown({ preserveSessions: persistSessions });
       await removeServerInfo(stateDir);
+      agentMailService.stop();
       wikiBackupService.stop();
       sleepPreventionService.stop();
       proxyServer.close();

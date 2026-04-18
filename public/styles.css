@@ -971,6 +971,13 @@ input[readonly][data-folder-picker-target] {
   gap: 12px;
 }
 
+.plugins-side-stack {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+
 .plugin-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1017,6 +1024,18 @@ input[readonly][data-folder-picker-target] {
   align-content: start;
   position: sticky;
   top: 0;
+}
+
+.plugins-side-stack .mcp-import-card {
+  position: static;
+}
+
+.agentmail-form {
+  gap: 9px;
+}
+
+.agentmail-plugin-card .knowledge-settings-remote-grid {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .mcp-import-card code {

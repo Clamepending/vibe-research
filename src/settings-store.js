@@ -70,6 +70,15 @@ function normalizeGitBranchName(value) {
   return branchName;
 }
 
+function normalizeAgentMailMode(value) {
+  return String(value || "websocket").trim() === "webhook" ? "webhook" : "websocket";
+}
+
+function normalizeAgentProviderId(value) {
+  const providerId = String(value || "claude").trim().toLowerCase();
+  return /^[a-z0-9_-]+$/.test(providerId) ? providerId : "claude";
+}
+
 async function writeAtomic(filePath, payload) {
   const tempPath = `${filePath}.${randomUUID()}.tmp`;
   await mkdir(path.dirname(filePath), { recursive: true });
@@ -110,6 +119,15 @@ export class SettingsStore {
 
   buildDefaults() {
     return {
+      agentMailApiKey: String(this.env.AGENTMAIL_API_KEY || "").trim(),
+      agentMailClientId: "",
+      agentMailDisplayName: "Remote Vibes",
+      agentMailDomain: "",
+      agentMailEnabled: false,
+      agentMailInboxId: "",
+      agentMailMode: "websocket",
+      agentMailProviderId: "claude",
+      agentMailUsername: "",
       preventSleepEnabled: true,
       wikiGitBackupEnabled: true,
       wikiGitRemoteBranch: "main",
@@ -132,6 +150,18 @@ export class SettingsStore {
     const defaults = this.buildDefaults();
 
     return {
+      agentMailApiKey:
+        payload.agentMailApiKey === undefined
+          ? defaults.agentMailApiKey
+          : String(payload.agentMailApiKey || "").trim(),
+      agentMailClientId: String(payload.agentMailClientId || defaults.agentMailClientId || "").trim(),
+      agentMailDisplayName: String(payload.agentMailDisplayName || defaults.agentMailDisplayName || "").trim(),
+      agentMailDomain: String(payload.agentMailDomain || defaults.agentMailDomain || "").trim(),
+      agentMailEnabled: normalizeBoolean(payload.agentMailEnabled, defaults.agentMailEnabled),
+      agentMailInboxId: String(payload.agentMailInboxId || defaults.agentMailInboxId || "").trim(),
+      agentMailMode: normalizeAgentMailMode(payload.agentMailMode || defaults.agentMailMode),
+      agentMailProviderId: normalizeAgentProviderId(payload.agentMailProviderId || defaults.agentMailProviderId),
+      agentMailUsername: String(payload.agentMailUsername || defaults.agentMailUsername || "").trim(),
       preventSleepEnabled: normalizeBoolean(
         payload.preventSleepEnabled,
         defaults.preventSleepEnabled,
@@ -290,9 +320,12 @@ export class SettingsStore {
     return this.getState();
   }
 
-  getState({ backupStatus = null, sleepStatus = null } = {}) {
+  getState({ agentMailStatus = null, backupStatus = null, sleepStatus = null } = {}) {
     return {
       ...this.settings,
+      agentMailApiKey: "",
+      agentMailApiKeyConfigured: Boolean(this.settings.agentMailApiKey),
+      agentMailStatus,
       wikiRelativePath: formatRelativePath(this.cwd, this.settings.wikiPath),
       wikiRelativeRoot: formatRelativePath(this.cwd, this.settings.wikiPath),
       wikiBackup: backupStatus,
