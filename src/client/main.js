@@ -13,6 +13,21 @@ const KNOWLEDGE_BASE_GRAPH_FOCUS_SCALE = 1.65;
 const KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX = 6;
 const PORT_PREVIEW_TAB_PREFIX = "port:";
 const ROUTED_MAIN_VIEWS = new Set(["search", "plugins", "automations", "system"]);
+const SYSTEM_HISTORY_LIMIT = 48;
+const SYSTEM_CHART_COLORS = [
+  "#f4f4f5",
+  "#c7c9d1",
+  "#9da1ad",
+  "#d8d9de",
+  "#aeb4c0",
+  "#e6e1d8",
+  "#b9c3cc",
+  "#f0f0f2",
+  "#a8adb7",
+  "#d1d3da",
+  "#bfc7d0",
+  "#ececef",
+];
 const PLUGIN_CATALOG = [
   {
     name: "GitHub",
@@ -307,6 +322,7 @@ const state = {
   updateApplying: false,
   lastUpdateError: null,
   systemMetrics: null,
+  systemMetricHistory: [],
   systemMetricsLoading: false,
   systemMetricsError: "",
   systemMetricsRequestId: 0,
@@ -4440,6 +4456,232 @@ function renderMetricBar(value, className = "") {
   `;
 }
 
+function getFiniteMetricPercent(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? clamp(number, 0, 100) : null;
+}
+
+function createSystemMetricHistorySample(system) {
+  if (!system) {
+    return null;
+  }
+
+  const checkedAt = system.checkedAt || new Date().toISOString();
+
+  return {
+    checkedAt,
+    cpu: {
+      utilizationPercent: getFiniteMetricPercent(system.cpu?.utilizationPercent),
+      cores: (Array.isArray(system.cpu?.cores) ? system.cpu.cores : []).map((core, index) => ({
+        id: String(core?.id ?? index),
+        label: core?.label || `CPU ${index + 1}`,
+        utilizationPercent: getFiniteMetricPercent(core?.utilizationPercent),
+      })),
+    },
+    gpus: (Array.isArray(system.gpus) ? system.gpus : []).map((gpu, index) => ({
+      id: String(gpu?.id || `gpu-${index}`),
+      name: gpu?.name || `GPU ${index + 1}`,
+      utilizationPercent: getFiniteMetricPercent(gpu?.utilizationPercent),
+    })),
+  };
+}
+
+function appendSystemMetricHistory(system) {
+  const sample = createSystemMetricHistorySample(system);
+  if (!sample) {
+    return;
+  }
+
+  const lastSample = state.systemMetricHistory.at(-1);
+  if (lastSample?.checkedAt === sample.checkedAt) {
+    state.systemMetricHistory[state.systemMetricHistory.length - 1] = sample;
+  } else {
+    state.systemMetricHistory.push(sample);
+  }
+
+  if (state.systemMetricHistory.length > SYSTEM_HISTORY_LIMIT) {
+    state.systemMetricHistory.splice(0, state.systemMetricHistory.length - SYSTEM_HISTORY_LIMIT);
+  }
+}
+
+function getSystemChartHistory(system) {
+  if (state.systemMetricHistory.length) {
+    return state.systemMetricHistory;
+  }
+
+  const sample = createSystemMetricHistorySample(system);
+  return sample ? [sample] : [];
+}
+
+function buildCpuCoreChartSeries(history) {
+  const labels = new Map();
+  const order = [];
+
+  for (const sample of history) {
+    for (const core of sample.cpu?.cores || []) {
+      if (!labels.has(core.id)) {
+        labels.set(core.id, core.label);
+        order.push(core.id);
+      }
+    }
+  }
+
+  return order.map((id) => ({
+    id,
+    label: labels.get(id) || id,
+    values: history.map((sample) => {
+      const core = (sample.cpu?.cores || []).find((entry) => entry.id === id);
+      return getFiniteMetricPercent(core?.utilizationPercent);
+    }),
+  }));
+}
+
+function buildGpuChartSeries(history) {
+  const labels = new Map();
+  const order = [];
+
+  for (const sample of history) {
+    for (const gpu of sample.gpus || []) {
+      if (!labels.has(gpu.id)) {
+        labels.set(gpu.id, gpu.name);
+        order.push(gpu.id);
+      }
+    }
+  }
+
+  return order.map((id) => ({
+    id,
+    label: labels.get(id) || id,
+    values: history.map((sample) => {
+      const gpu = (sample.gpus || []).find((entry) => entry.id === id);
+      return getFiniteMetricPercent(gpu?.utilizationPercent);
+    }),
+  }));
+}
+
+function getLatestSeriesValue(series) {
+  for (let index = series.values.length - 1; index >= 0; index -= 1) {
+    const value = getFiniteMetricPercent(series.values[index]);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function getChartPoint(value, index, totalPoints, width, height) {
+  const x = totalPoints <= 1 ? width / 2 : (index / (totalPoints - 1)) * width;
+  const y = height - (getMetricPercent(value) / 100) * height;
+  return {
+    x: Number(x.toFixed(2)),
+    y: Number(y.toFixed(2)),
+  };
+}
+
+function renderChartSeries(series, seriesIndex, totalPoints) {
+  const width = 560;
+  const height = 150;
+  const color = SYSTEM_CHART_COLORS[seriesIndex % SYSTEM_CHART_COLORS.length];
+  const points = series.values
+    .map((value, index) => (getFiniteMetricPercent(value) === null ? null : getChartPoint(value, index, totalPoints, width, height)))
+    .filter(Boolean);
+
+  if (!points.length) {
+    return "";
+  }
+
+  let pathData = "";
+  let openSegment = false;
+  series.values.forEach((value, index) => {
+    const percent = getFiniteMetricPercent(value);
+    if (percent === null) {
+      openSegment = false;
+      return;
+    }
+
+    const point = getChartPoint(percent, index, totalPoints, width, height);
+    pathData += `${openSegment ? "L" : "M"} ${point.x} ${point.y} `;
+    openSegment = true;
+  });
+
+  const latestPoint = points.at(-1);
+  return `
+    <path class="system-line-chart-path" d="${pathData.trim()}" style="--chart-color: ${escapeHtml(color)}"></path>
+    <circle class="system-line-chart-dot" cx="${latestPoint.x}" cy="${latestPoint.y}" r="3.4" style="--chart-color: ${escapeHtml(color)}"></circle>
+  `;
+}
+
+function renderUtilizationLineChart({ emptyMessage, series, subtitle, title }) {
+  const activeSeries = series.filter((entry) => entry.values.some((value) => getFiniteMetricPercent(value) !== null));
+  const totalPoints = Math.max(1, ...activeSeries.map((entry) => entry.values.length));
+  const visibleLegend = activeSeries.slice(0, 16);
+  const hiddenLegendCount = Math.max(0, activeSeries.length - visibleLegend.length);
+
+  return `
+    <article class="system-chart-card">
+      <div class="system-section-head">
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(subtitle)}</span>
+      </div>
+      ${
+        activeSeries.length
+          ? `
+            <div class="system-line-chart-wrap">
+              <svg class="system-line-chart" viewBox="0 0 560 150" role="img" aria-label="${escapeHtml(title)} utilization history">
+                <line class="system-line-chart-grid" x1="0" y1="0" x2="560" y2="0"></line>
+                <line class="system-line-chart-grid" x1="0" y1="75" x2="560" y2="75"></line>
+                <line class="system-line-chart-grid" x1="0" y1="150" x2="560" y2="150"></line>
+                ${activeSeries.map((entry, index) => renderChartSeries(entry, index, totalPoints)).join("")}
+              </svg>
+              <div class="system-line-chart-axis" aria-hidden="true">
+                <span>100%</span>
+                <span>50%</span>
+                <span>0%</span>
+              </div>
+            </div>
+            <div class="system-chart-legend">
+              ${visibleLegend
+                .map((entry, index) => {
+                  const color = SYSTEM_CHART_COLORS[index % SYSTEM_CHART_COLORS.length];
+                  const latestValue = getLatestSeriesValue(entry);
+                  return `
+                    <span class="system-chart-chip" style="--chart-color: ${escapeHtml(color)}">
+                      <i></i>${escapeHtml(entry.label)} <strong>${escapeHtml(formatPercent(latestValue))}</strong>
+                    </span>
+                  `;
+                })
+                .join("")}
+              ${hiddenLegendCount ? `<span class="system-chart-chip is-muted">${escapeHtml(`+${hiddenLegendCount} more`)}</span>` : ""}
+            </div>
+          `
+          : `<div class="blank-state">${escapeHtml(emptyMessage)}</div>`
+      }
+    </article>
+  `;
+}
+
+function renderSystemUtilizationCharts(system) {
+  const history = getSystemChartHistory(system);
+  const sampleText = history.length === 1 ? "1 sample" : `${history.length} samples`;
+
+  return `
+    <div class="system-chart-grid">
+      ${renderUtilizationLineChart({
+        title: "CPU core history",
+        subtitle: sampleText,
+        series: buildCpuCoreChartSeries(history),
+        emptyMessage: "CPU core history starts after the first sample.",
+      })}
+      ${renderUtilizationLineChart({
+        title: "GPU history",
+        subtitle: sampleText,
+        series: buildGpuChartSeries(history),
+        emptyMessage: "GPU utilization is not exposed by this host.",
+      })}
+    </div>
+  `;
+}
+
 function renderSystemStorageCard(system) {
   const primary = system?.storage?.primary;
 
@@ -4470,6 +4712,49 @@ function renderSystemStorageCard(system) {
         <span><i class="legend-dot is-used"></i>${escapeHtml(`${formatPercent(usedPercent)} used`)}</span>
         <span><i class="legend-dot is-free"></i>${escapeHtml(`${formatBytes(freeBytes)} free`)}</span>
         <span>${escapeHtml(primary.mountPoint || "")}</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderWikiStorageCard(system) {
+  const wiki = system?.wikiStorage;
+  if (!wiki) {
+    return "";
+  }
+
+  const primary = system?.storage?.primary;
+  const wikiBytes = Number(wiki.bytes || 0);
+  const volumeBytes = Number(primary?.totalBytes || 0);
+  const rawPercent = volumeBytes > 0 ? clamp((wikiBytes / volumeBytes) * 100, 0, 100) : null;
+  const visiblePercent = rawPercent && rawPercent > 0 ? Math.max(rawPercent, 1) : 0;
+  const countParts = [
+    Number.isFinite(Number(wiki.fileCount)) ? `${wiki.fileCount} files` : "",
+    Number.isFinite(Number(wiki.directoryCount)) ? `${wiki.directoryCount} folders` : "",
+    wiki.truncated ? "partial count" : "",
+  ].filter(Boolean);
+  const detailParts = [
+    wiki.exists ? `${formatBytes(wikiBytes)} in wiki folder` : "folder not found",
+    rawPercent === null ? "" : `${rawPercent < 0.01 && rawPercent > 0 ? "<0.01" : rawPercent.toFixed(rawPercent < 1 ? 2 : 1)}% of ${primary?.name || "disk"}`,
+    wiki.source ? `measured by ${wiki.source}` : "",
+    countParts.join(" · "),
+  ].filter(Boolean);
+
+  return `
+    <article class="system-storage-card system-wiki-storage-card">
+      <div class="system-storage-head">
+        <strong>Knowledge base storage</strong>
+        <span>${escapeHtml(wiki.exists ? formatBytes(wikiBytes) : "missing")}</span>
+      </div>
+      <div class="system-storage-path" title="${escapeHtml(wiki.path || "")}">${escapeHtml(wiki.path || "no wiki folder configured")}</div>
+      <div class="system-storage-bar" style="--storage-used: ${visiblePercent}%">
+        <span class="system-storage-used"></span>
+        <span class="system-storage-free"></span>
+      </div>
+      <div class="system-storage-legend">
+        <span><i class="legend-dot is-wiki"></i>${escapeHtml(detailParts.join(" · "))}</span>
+        ${wiki.warning ? `<span>${escapeHtml(wiki.warning)}</span>` : ""}
+        ${wiki.error ? `<span>${escapeHtml(wiki.error)}</span>` : ""}
       </div>
     </article>
   `;
@@ -4622,7 +4907,9 @@ function renderSystemView() {
             : ""
         }
         ${renderSystemStorageCard(system)}
+        ${renderWikiStorageCard(system)}
         ${renderSystemSummaryCards(system)}
+        ${renderSystemUtilizationCharts(system)}
         <section class="system-section">
           <div class="system-section-head">
             <strong>CPU cores</strong>
@@ -7640,6 +7927,7 @@ async function loadSystemMetrics({ forceRender = false } = {}) {
     }
 
     state.systemMetrics = payload.system || null;
+    appendSystemMetricHistory(state.systemMetrics);
     state.systemMetricsError = "";
   } catch (error) {
     if (state.systemMetricsRequestId !== requestId) {

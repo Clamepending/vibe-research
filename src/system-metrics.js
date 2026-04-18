@@ -1,5 +1,9 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { readdir as readdirCallback, readFile as readFileCallback } from "node:fs/promises";
+import {
+  lstat as lstatCallback,
+  readdir as readdirCallback,
+  readFile as readFileCallback,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -7,8 +11,11 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFileCallback);
 const DEFAULT_TIMEOUT_MS = 2_500;
 const DEFAULT_CPU_SAMPLE_MS = 140;
+const DEFAULT_WIKI_STORAGE_CACHE_MS = 30_000;
+const DEFAULT_WIKI_STORAGE_MAX_ENTRIES = 75_000;
 const BYTES_PER_KIB = 1024;
 const MAX_VISIBLE_VOLUMES = 8;
+const wikiStorageCache = new Map();
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -477,24 +484,186 @@ async function readDevices({ execFile, platform, readFile, readdir, timeoutMs })
   };
 }
 
+function parseDuOutput(stdout) {
+  const firstColumn = String(stdout ?? "").trim().split(/\s+/)[0];
+  if (!/\d/.test(firstColumn || "")) {
+    return null;
+  }
+  const kib = normalizeNumber(firstColumn);
+  return kib === null ? null : kib * BYTES_PER_KIB;
+}
+
+function getDirentName(entry) {
+  return typeof entry === "string" ? entry : entry?.name;
+}
+
+async function readWikiStorageByWalking({
+  lstat,
+  maxEntries = DEFAULT_WIKI_STORAGE_MAX_ENTRIES,
+  readdir,
+  rootPath,
+}) {
+  const stack = [rootPath];
+  let bytes = 0;
+  let directoryCount = 0;
+  let entryCount = 0;
+  let fileCount = 0;
+  let skippedEntries = 0;
+  let truncated = false;
+
+  while (stack.length) {
+    if (entryCount >= maxEntries) {
+      truncated = true;
+      break;
+    }
+
+    const currentPath = stack.pop();
+    let stats;
+    try {
+      stats = await lstat(currentPath);
+    } catch (error) {
+      if (currentPath === rootPath) {
+        return {
+          path: rootPath,
+          exists: false,
+          bytes: 0,
+          fileCount: 0,
+          directoryCount: 0,
+          entryCount: 0,
+          skippedEntries: 0,
+          truncated: false,
+          source: "walk",
+          error: error.message || "Could not read knowledge base folder.",
+        };
+      }
+      skippedEntries += 1;
+      continue;
+    }
+
+    entryCount += 1;
+    bytes += Math.max(0, Number(stats.size || 0));
+
+    if (typeof stats.isDirectory === "function" && stats.isDirectory()) {
+      directoryCount += 1;
+      let entries = [];
+      try {
+        entries = await readdir(currentPath, { withFileTypes: true });
+      } catch {
+        skippedEntries += 1;
+        continue;
+      }
+
+      for (const entry of entries) {
+        const name = getDirentName(entry);
+        if (!name) {
+          continue;
+        }
+        stack.push(path.join(currentPath, name));
+      }
+    } else {
+      fileCount += 1;
+    }
+  }
+
+  return {
+    path: rootPath,
+    exists: true,
+    bytes,
+    fileCount,
+    directoryCount,
+    entryCount,
+    skippedEntries,
+    truncated,
+    source: "walk",
+  };
+}
+
+async function readWikiStorage({
+  cache = wikiStorageCache,
+  cacheMs = DEFAULT_WIKI_STORAGE_CACHE_MS,
+  execFile,
+  lstat,
+  maxEntries = DEFAULT_WIKI_STORAGE_MAX_ENTRIES,
+  readdir,
+  rootPath,
+  timeoutMs,
+}) {
+  if (!rootPath) {
+    return null;
+  }
+
+  const resolvedPath = path.resolve(rootPath);
+  const now = Date.now();
+  const cached = cache?.get(resolvedPath);
+  if (cached && now - cached.cachedAt < cacheMs) {
+    return {
+      ...cached.value,
+      cacheAgeMs: now - cached.cachedAt,
+    };
+  }
+
+  let value;
+  try {
+    const { stdout } = await runCommand(execFile, "du", ["-sk", resolvedPath], { timeoutMs });
+    const bytes = parseDuOutput(stdout);
+    if (bytes === null) {
+      throw new Error("du did not return a byte count");
+    }
+    value = {
+      path: resolvedPath,
+      exists: true,
+      bytes,
+      source: "du",
+    };
+  } catch (duError) {
+    value = await readWikiStorageByWalking({ lstat, maxEntries, readdir, rootPath: resolvedPath });
+    if (value.exists && duError?.message) {
+      value.warning = `du unavailable; used file walk (${duError.message})`;
+    }
+  }
+
+  value.checkedAt = new Date(now).toISOString();
+  cache?.set(resolvedPath, {
+    cachedAt: now,
+    value,
+  });
+
+  return value;
+}
+
 export async function collectSystemMetrics({
   cwd = process.cwd(),
   cpus = os.cpus,
   execFile = execFileAsync,
   freemem = os.freemem,
+  lstat = lstatCallback,
   platform = process.platform,
   readFile = readFileCallback,
   readdir = readdirCallback,
   sampleMs = DEFAULT_CPU_SAMPLE_MS,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   totalmem = os.totalmem,
+  wikiPath = "",
+  wikiStorageCache: wikiStorageCacheOverride = wikiStorageCache,
+  wikiStorageCacheMs = DEFAULT_WIKI_STORAGE_CACHE_MS,
+  wikiStorageMaxEntries = DEFAULT_WIKI_STORAGE_MAX_ENTRIES,
 } = {}) {
   const checkedAt = new Date().toISOString();
-  const [storage, cpu, memory, devices] = await Promise.all([
+  const [storage, cpu, memory, devices, wikiStorage] = await Promise.all([
     readStorage({ cwd, execFile, platform, timeoutMs }),
     readCpu({ cpus, sampleMs }),
     Promise.resolve(readMemory({ totalmem, freemem })),
     readDevices({ execFile, platform, readFile, readdir, timeoutMs }),
+    readWikiStorage({
+      cache: wikiStorageCacheOverride,
+      cacheMs: wikiStorageCacheMs,
+      execFile,
+      lstat,
+      maxEntries: wikiStorageMaxEntries,
+      readdir,
+      rootPath: wikiPath,
+      timeoutMs,
+    }),
   ]);
 
   return {
@@ -503,6 +672,7 @@ export async function collectSystemMetrics({
     platform,
     uptimeSeconds: os.uptime(),
     storage,
+    wikiStorage,
     cpu,
     memory,
     gpus: devices.gpus,

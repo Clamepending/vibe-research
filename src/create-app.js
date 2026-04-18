@@ -435,7 +435,7 @@ export async function createRemoteVibesApp({
   app.get("/api/system", async (_request, response) => {
     try {
       response.json({
-        system: await systemMetricsProvider({ cwd }),
+        system: await systemMetricsProvider({ cwd, wikiPath: settingsStore.settings.wikiPath }),
       });
     } catch (error) {
       response.status(500).json({ error: error.message || "Could not read system metrics." });

@@ -1123,6 +1123,16 @@ input[readonly][data-folder-picker-target] {
   gap: 7px;
 }
 
+.system-storage-path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.76rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .legend-dot {
   width: 9px;
   height: 9px;
@@ -1138,11 +1148,124 @@ input[readonly][data-folder-picker-target] {
   background: rgba(255, 255, 255, 0.38);
 }
 
+.legend-dot.is-wiki {
+  background: #d8d9de;
+}
+
+.system-wiki-storage-card .system-storage-used {
+  background: linear-gradient(90deg, #aeb4c0, #f4f4f5);
+}
+
 .system-summary-grid,
 .system-device-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
+}
+
+.system-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.system-chart-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 18px;
+  background: var(--surface);
+}
+
+.system-line-chart-wrap {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(255, 255, 255, 0.07), transparent 34%),
+    rgba(255, 255, 255, 0.025);
+}
+
+.system-line-chart {
+  display: block;
+  width: 100%;
+  height: 150px;
+  padding: 12px 36px 12px 12px;
+  overflow: visible;
+}
+
+.system-line-chart-grid {
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 1;
+}
+
+.system-line-chart-path {
+  fill: none;
+  stroke: var(--chart-color, #f4f4f5);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2;
+  vector-effect: non-scaling-stroke;
+}
+
+.system-line-chart-dot {
+  fill: var(--chart-color, #f4f4f5);
+  stroke: rgba(12, 12, 15, 0.86);
+  stroke-width: 1.5;
+}
+
+.system-line-chart-axis {
+  position: absolute;
+  top: 7px;
+  right: 9px;
+  bottom: 9px;
+  display: grid;
+  align-content: space-between;
+  color: rgba(232, 236, 240, 0.48);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.64rem;
+  pointer-events: none;
+}
+
+.system-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.system-chart-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: rgba(232, 236, 240, 0.76);
+  background: rgba(255, 255, 255, 0.045);
+  font-size: 0.74rem;
+}
+
+.system-chart-chip i {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--chart-color, #f4f4f5);
+}
+
+.system-chart-chip strong {
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.7rem;
+}
+
+.system-chart-chip.is-muted {
+  color: var(--muted);
 }
 
 .system-summary-card {
@@ -3423,6 +3546,7 @@ select:disabled {
   .plugins-layout,
   .plugin-grid,
   .automation-grid,
+  .system-chart-grid,
   .system-summary-grid,
   .system-device-grid {
     grid-template-columns: minmax(0, 1fr);

@@ -40,12 +40,14 @@ function createCpuSequence() {
   return () => snapshots[Math.min(index++, snapshots.length - 1)];
 }
 
-test("collectSystemMetrics reports storage, per-core CPU, memory, and NVIDIA GPU utilization", async () => {
+test("collectSystemMetrics reports storage, wiki usage, per-core CPU, memory, and NVIDIA GPU utilization", async () => {
   const commands = [];
   const system = await collectSystemMetrics({
     cwd: "/workspace/project",
     platform: "linux",
     sampleMs: 1,
+    wikiPath: "/workspace/wiki",
+    wikiStorageCache: new Map(),
     cpus: createCpuSequence(),
     totalmem: () => 16_000,
     freemem: () => 4_000,
@@ -58,6 +60,10 @@ test("collectSystemMetrics reports storage, per-core CPU, memory, and NVIDIA GPU
 
       if (command === "df") {
         return { stdout: DF_ALL, stderr: "" };
+      }
+
+      if (command === "du" && args.join(" ") === "-sk /workspace/wiki") {
+        return { stdout: "12\t/workspace/wiki\n", stderr: "" };
       }
 
       if (command === "nvidia-smi") {
@@ -78,6 +84,10 @@ test("collectSystemMetrics reports storage, per-core CPU, memory, and NVIDIA GPU
   assert.equal(system.storage.primary.name, "Root");
   assert.equal(system.storage.primary.usedBytes, 900 * 1024);
   assert.equal(system.storage.primary.availableBytes, 100 * 1024);
+  assert.equal(system.wikiStorage.path, "/workspace/wiki");
+  assert.equal(system.wikiStorage.exists, true);
+  assert.equal(system.wikiStorage.bytes, 12 * 1024);
+  assert.equal(system.wikiStorage.source, "du");
   assert.equal(system.cpu.coreCount, 2);
   assert.equal(Math.round(system.cpu.cores[0].utilizationPercent), 50);
   assert.equal(Math.round(system.cpu.cores[1].utilizationPercent), 100);
