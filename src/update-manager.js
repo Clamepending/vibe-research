@@ -10,6 +10,7 @@ const DEFAULT_UPDATE_CHANNEL = "release";
 const MANAGED_PROMPT_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
 const MANAGED_PROMPT_FILES = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
 const MANAGED_PROMPT_FILE_SET = new Set(MANAGED_PROMPT_FILES);
+const GENERATED_DIRTY_PATHS = new Set([".playwright-cli", ".playwright-cli/"]);
 const NON_GIT_CHECKOUT_REASON =
   "Automatic updates are unavailable because Remote Vibes is not running from a git checkout.";
 
@@ -127,6 +128,11 @@ function parseGitStatusPorcelain(stdout) {
       path: parseStatusPath(line),
     }))
     .filter((entry) => entry.path);
+}
+
+function isGeneratedDirtyPath(filePath) {
+  const normalized = String(filePath ?? "").replaceAll("\\", "/");
+  return GENERATED_DIRTY_PATHS.has(normalized) || normalized.startsWith(".playwright-cli/");
 }
 
 function parseGitHubRepo(remoteUrl) {
@@ -403,6 +409,11 @@ export class UpdateManager {
     const ignoredDirtyFiles = [];
 
     for (const entry of entries) {
+      if (isGeneratedDirtyPath(entry.path)) {
+        ignoredDirtyFiles.push(entry.path);
+        continue;
+      }
+
       if (MANAGED_PROMPT_FILE_SET.has(entry.path) && (await this.hasManagedPromptMarker(entry.path))) {
         ignoredDirtyFiles.push(entry.path);
         continue;

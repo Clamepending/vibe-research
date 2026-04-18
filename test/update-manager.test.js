@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { getGitHubHttpsRemoteUrl, UpdateManager } from "../src/update-manager.js";
 
@@ -188,6 +188,32 @@ test("UpdateManager does not block updates for managed prompt file churn", async
     assert.equal(status.blockingDirty, false);
     assert.deepEqual(status.dirtyFiles, []);
     assert.deepEqual(status.ignoredDirtyFiles, ["AGENTS.md"]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("UpdateManager does not block updates for generated Playwright smoke artifacts", async () => {
+  const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
+  await commitSourceVersion(sourceDir, "v2");
+  await mkdir(path.join(checkoutDir, ".playwright-cli"), { recursive: true });
+  await writeFile(path.join(checkoutDir, ".playwright-cli", "snapshot.yml"), "generated\n", "utf8");
+
+  try {
+    const manager = new UpdateManager({
+      cwd: checkoutDir,
+      stateDir: path.join(tempRoot, "state"),
+      cacheMs: 0,
+    });
+    const status = await manager.getStatus({ force: true });
+
+    assert.equal(status.status, "available");
+    assert.equal(status.updateAvailable, true);
+    assert.equal(status.canUpdate, true);
+    assert.equal(status.dirty, true);
+    assert.equal(status.blockingDirty, false);
+    assert.deepEqual(status.dirtyFiles, []);
+    assert.deepEqual(status.ignoredDirtyFiles, [".playwright-cli/"]);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

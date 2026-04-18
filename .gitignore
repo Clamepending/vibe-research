@@ -4,3 +4,4 @@ public/vendor
 .DS_Store
 .remote-vibes
 .claude/
+.playwright-cli/
