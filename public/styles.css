@@ -130,8 +130,8 @@ textarea {
   position: relative;
   padding: 14px 12px;
   background:
-    radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.045), transparent 28%),
-    linear-gradient(180deg, rgba(43, 40, 47, 0.98), rgba(33, 31, 36, 0.96));
+    radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.035), transparent 30%),
+    linear-gradient(180deg, rgba(39, 38, 43, 0.98), rgba(29, 29, 33, 0.97));
   backdrop-filter: blur(22px);
   max-width: 100%;
   min-height: 0;
@@ -294,10 +294,10 @@ textarea {
 
 .session-form,
 .sidebar-section {
-  padding: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.055);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.025);
+  padding: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.045);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.018);
 }
 
 .session-form,
@@ -757,6 +757,28 @@ input[readonly][data-folder-picker-target] {
   font-size: 0.76rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.sidebar-section .section-head > .icon-button,
+.sidebar-section .section-actions > .icon-button {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: rgba(232, 236, 240, 0.58);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.sidebar-section .section-head > .icon-button:hover,
+.sidebar-section .section-actions > .icon-button:hover {
+  border-color: rgba(255, 255, 255, 0.055);
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(244, 247, 251, 0.9);
+  transform: none;
 }
 
 .list-shell {
@@ -3070,10 +3092,13 @@ input[readonly][data-folder-picker-target] {
   align-items: stretch;
   position: relative;
   overflow: hidden;
-  border-color: rgba(242, 138, 104, 0.11);
+  gap: 10px;
+  padding: 11px;
+  border-color: rgba(255, 255, 255, 0.055);
+  border-radius: 14px;
   background:
-    radial-gradient(circle at 100% 0%, rgba(242, 138, 104, 0.11), transparent 48%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.048), rgba(255, 255, 255, 0.025));
+    radial-gradient(circle at 100% 0%, rgba(242, 138, 104, 0.055), transparent 46%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.018));
   text-decoration: none;
   color: inherit;
 }
@@ -3081,18 +3106,18 @@ input[readonly][data-folder-picker-target] {
 .port-card::before {
   content: "";
   position: absolute;
-  inset: 10px auto 10px 0;
+  inset: 12px auto 12px 0;
   width: 2px;
   border-radius: 999px;
-  background: linear-gradient(180deg, var(--accent), rgba(242, 138, 104, 0.18));
-  opacity: 0.72;
+  background: linear-gradient(180deg, rgba(242, 138, 104, 0.82), rgba(242, 138, 104, 0.16));
+  opacity: 0.58;
 }
 
 .port-card:hover {
-  border-color: rgba(242, 138, 104, 0.24);
+  border-color: rgba(242, 138, 104, 0.18);
   background:
-    radial-gradient(circle at 100% 0%, rgba(242, 138, 104, 0.16), transparent 50%),
-    var(--surface-hover);
+    radial-gradient(circle at 100% 0%, rgba(242, 138, 104, 0.075), transparent 48%),
+    rgba(255, 255, 255, 0.045);
 }
 
 .port-link {
@@ -3115,18 +3140,18 @@ input[readonly][data-folder-picker-target] {
 
 .port-preview-trigger:hover .port-number,
 .port-preview-trigger:focus-visible .port-number {
-  color: #ffd2c2;
+  color: #fff3ee;
 }
 
 .port-access-pill {
   justify-self: start;
-  padding: 3px 8px;
-  border: 1px solid rgba(242, 138, 104, 0.18);
+  padding: 2px 7px;
+  border: 1px solid rgba(242, 138, 104, 0.16);
   border-radius: 999px;
-  background: var(--accent-soft);
-  color: #ffc5b4;
+  background: rgba(242, 138, 104, 0.075);
+  color: #eeb39f;
   font-family: "IBM Plex Mono", monospace;
-  font-size: 0.66rem;
+  font-size: 0.62rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -3134,29 +3159,33 @@ input[readonly][data-folder-picker-target] {
 .port-action-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .port-action-button {
-  min-height: 32px;
-  padding: 0 10px;
-  border-radius: 10px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.035);
   font-family: "IBM Plex Mono", monospace;
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   letter-spacing: 0.03em;
   text-decoration: none;
   text-transform: uppercase;
 }
 
 .port-action-button:hover {
-  background: rgba(242, 138, 104, 0.12);
-  color: #ffd2c2;
+  border-color: rgba(242, 138, 104, 0.14);
+  background: rgba(242, 138, 104, 0.075);
+  color: #ffd8ca;
 }
 
 .port-primary-button {
-  background: linear-gradient(180deg, #ffa27d, #e95f4d);
-  color: #18120f;
-  box-shadow: 0 8px 20px rgba(242, 138, 104, 0.16);
+  border-color: rgba(242, 138, 104, 0.2);
+  background: rgba(242, 138, 104, 0.11);
+  color: #ffe3d8;
+  box-shadow: none;
 }
 
 .file-root-form {

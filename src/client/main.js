@@ -5998,7 +5998,7 @@ function renderShell() {
             <div class="file-tree" id="files-tree" data-files-root="${escapeHtml(state.filesRoot || "")}">${renderFileTree()}</div>
           </section>
 
-          <section class="sidebar-section">
+          <section class="sidebar-section ports-section">
             <div class="section-head">
               <span>ports</span>
               <button class="icon-button" type="button" id="refresh-ports" aria-label="Refresh ports" ${tooltipAttributes("Refresh ports")}>↻</button>
