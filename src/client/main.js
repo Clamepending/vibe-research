@@ -10,6 +10,7 @@ const KNOWLEDGE_BASE_GRAPH_MIN_SCALE = 0.35;
 const KNOWLEDGE_BASE_GRAPH_MAX_SCALE = 2.8;
 const KNOWLEDGE_BASE_GRAPH_FIT_PADDING = 72;
 const KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX = 6;
+const PORT_PREVIEW_TAB_PREFIX = "port:";
 const KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE = [
   {
     fill: "rgba(104, 227, 199, 0.28)",
@@ -344,6 +345,11 @@ function getPortMeta(port) {
 function getPortProxyUrl(port) {
   const proxyPath = port?.proxyPath || `/proxy/${port?.port}/`;
   return `${getAppBaseUrl()}${proxyPath}`;
+}
+
+function getPortPreviewTabId(port) {
+  const portNumber = Number(port?.port ?? port);
+  return Number.isInteger(portNumber) && portNumber > 0 ? `${PORT_PREVIEW_TAB_PREFIX}${portNumber}` : "";
 }
 
 function getPortPrimaryUrl(port) {
@@ -1373,7 +1379,7 @@ function syncOpenFileStateFromTab(tab = getActiveOpenFileTab()) {
   state.openFileSaving = tab.saving;
 }
 
-function ensureOpenFileTab(relativePath, { mode = "text" } = {}) {
+function ensureOpenFileTab(relativePath, { mode = "text", name = "", url, externalUrl, port } = {}) {
   const normalizedPath = normalizeFileTreePath(relativePath);
   if (!normalizedPath) {
     return null;
@@ -1383,7 +1389,7 @@ function ensureOpenFileTab(relativePath, { mode = "text" } = {}) {
   if (!tab) {
     tab = {
       relativePath: normalizedPath,
-      name: getFileDisplayName(normalizedPath),
+      name: name || getFileDisplayName(normalizedPath),
       mode,
       status: "loading",
       content: "",
@@ -1391,10 +1397,25 @@ function ensureOpenFileTab(relativePath, { mode = "text" } = {}) {
       message: "",
       saving: false,
       requestId: 0,
+      url: url || "",
+      externalUrl: externalUrl || "",
+      port: port ?? null,
     };
     state.openFileTabs.push(tab);
   } else {
     tab.mode = mode || tab.mode;
+    if (name) {
+      tab.name = name;
+    }
+    if (url !== undefined) {
+      tab.url = url || "";
+    }
+    if (externalUrl !== undefined) {
+      tab.externalUrl = externalUrl || "";
+    }
+    if (port !== undefined) {
+      tab.port = port;
+    }
   }
 
   state.openFileRelativePath = normalizedPath;
@@ -2898,9 +2919,41 @@ function renderOpenFilePanel() {
     return `<div class="blank-state">no file selected</div>`;
   }
 
-  const rawHref = getFileContentUrl(state.openFileRelativePath);
   const activeTab = getActiveOpenFileTab();
+  const rawHref = getFileContentUrl(state.openFileRelativePath);
   const dirty = isOpenFileDirty(activeTab);
+
+  if (state.openFileStatus === "web") {
+    const previewUrl = activeTab?.url || "";
+    const externalUrl = activeTab?.externalUrl || previewUrl;
+    const portMeta = activeTab?.port ? `:${activeTab.port}` : previewUrl;
+
+    return `
+      <div class="file-editor-card file-web-card">
+        <div class="file-editor-head">
+          <div class="file-editor-copy">
+            <div class="file-editor-name">${escapeHtml(state.openFileName || "web preview")}</div>
+            <div class="file-editor-path" title="${escapeHtml(externalUrl)}">${escapeHtml(portMeta)}</div>
+          </div>
+          <div class="file-editor-actions">
+            <button class="ghost-button file-editor-button" type="button" id="reload-open-file">reload</button>
+            ${
+              externalUrl
+                ? `<a class="ghost-button file-editor-open" href="${escapeHtml(externalUrl)}" target="_blank" rel="noreferrer">open</a>`
+                : ""
+            }
+          </div>
+        </div>
+        ${
+          previewUrl
+            ? `<div class="web-preview-frame-shell">
+                <iframe class="web-preview-frame" src="${escapeHtml(previewUrl)}" title="${escapeHtml(state.openFileName || "web preview")}"></iframe>
+              </div>`
+            : `<div class="blank-state">this port no longer has a preview URL</div>`
+        }
+      </div>
+    `;
+  }
 
   if (state.openFileStatus === "loading") {
     return `
@@ -3006,8 +3059,9 @@ function renderOpenFileTabs() {
     .map((tab) => {
       const active = tab.relativePath === state.openFileRelativePath;
       const dirty = isOpenFileDirty(tab);
+      const tabTitle = tab.externalUrl || tab.url || tab.relativePath;
       return `
-        <div class="file-preview-tab ${active ? "is-active" : ""}" title="${escapeHtml(tab.relativePath)}">
+        <div class="file-preview-tab ${active ? "is-active" : ""}" title="${escapeHtml(tabTitle)}">
           <button class="file-preview-tab-label" type="button" data-file-tab="${escapeHtml(tab.relativePath)}">
             <span class="file-preview-tab-name">${escapeHtml(tab.name)}${dirty ? " *" : ""}</span>
           </button>
@@ -3257,22 +3311,24 @@ function renderPortCards() {
       const primaryUrl = getPortPrimaryUrl(port);
       const proxyUrl = getPortProxyUrl(port);
       const showProxyLink = port.preferredAccess && port.preferredAccess !== "proxy";
+      const portNumber = escapeHtml(port.port);
       const exposeButton = port.canExposeWithTailscale
-        ? `<button class="ghost-button port-action-button" type="button" data-expose-tailscale-port="${escapeHtml(port.port)}">expose</button>`
+        ? `<button class="ghost-button port-action-button" type="button" data-expose-tailscale-port="${portNumber}">expose</button>`
         : "";
 
       return `
         <article class="port-card">
-          <div class="port-link">
+          <button class="port-link port-preview-trigger" type="button" data-open-port-preview="${portNumber}" aria-label="Preview ${escapeHtml(getPortDisplayName(port))}">
             <span class="port-number">${escapeHtml(getPortDisplayName(port))}</span>
             <span class="port-meta">${escapeHtml(getPortMeta(port))}</span>
             <span class="port-access-pill">${escapeHtml(getPortAccessHint(port))}</span>
-          </div>
+          </button>
           <div class="port-action-row">
-            <a class="ghost-button port-action-button port-primary-button" href="${escapeHtml(primaryUrl)}" target="_blank" rel="noreferrer">${escapeHtml(getPortAccessLabel(port))}</a>
+            <button class="ghost-button port-action-button port-primary-button" type="button" data-open-port-preview="${portNumber}">preview</button>
+            <a class="ghost-button port-action-button" href="${escapeHtml(primaryUrl)}" target="_blank" rel="noreferrer">${escapeHtml(getPortAccessLabel(port))}</a>
             ${showProxyLink ? `<a class="ghost-button port-action-button" href="${escapeHtml(proxyUrl)}" target="_blank" rel="noreferrer">proxy</a>` : ""}
             ${exposeButton}
-            <button class="ghost-button port-action-button port-rename-button" type="button" data-rename-port="${escapeHtml(port.port)}">edit</button>
+            <button class="ghost-button port-action-button port-rename-button" type="button" data-rename-port="${portNumber}">edit</button>
           </div>
         </article>
       `;
@@ -3981,6 +4037,14 @@ function bindSystemToastEvents() {
 }
 
 function bindPortEvents() {
+  document.querySelectorAll("[data-open-port-preview]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const portNumber = Number(button.getAttribute("data-open-port-preview"));
+      openPortPreview(portNumber);
+    });
+  });
+
   document.querySelectorAll("[data-expose-tailscale-port]").forEach((button) => {
     button.addEventListener("click", async (event) => {
       event.preventDefault();
@@ -3999,6 +4063,7 @@ function bindPortEvents() {
         }
 
         refreshShellUi({ sessions: false, ports: true, files: false });
+        refreshOpenFileUi();
 
         const nextUrl = payload.port?.preferredUrl || payload.port?.tailscaleUrl;
         if (nextUrl) {
@@ -4038,6 +4103,7 @@ function bindPortEvents() {
         });
         updatePort(payload.port);
         refreshShellUi({ sessions: false, ports: true, files: false });
+        refreshOpenFileUi();
       } catch (error) {
         window.alert(error.message);
       }
@@ -4696,6 +4762,34 @@ async function openWorkspaceFilePreview(relativePath, { mode = "text", force = f
   await openWorkspaceFile(normalizedPath, { force });
 }
 
+function openPortPreview(portNumber) {
+  const port = state.ports.find((entry) => entry.port === Number(portNumber));
+  if (!port) {
+    return;
+  }
+
+  const tab = ensureOpenFileTab(getPortPreviewTabId(port), {
+    mode: "web",
+    name: getPortDisplayName(port),
+    url: getPortProxyUrl(port),
+    externalUrl: getPortPrimaryUrl(port),
+    port: port.port,
+  });
+
+  if (!tab) {
+    return;
+  }
+
+  tab.status = "web";
+  tab.content = "";
+  tab.draft = "";
+  tab.message = "";
+  tab.saving = false;
+  syncOpenFileStateFromTab(tab);
+  refreshFileTreeUi();
+  refreshOpenFileUi();
+}
+
 function activateOpenFileTab(relativePath) {
   const normalizedPath = normalizeFileTreePath(relativePath);
   const tab = state.openFileTabs.find((entry) => entry.relativePath === normalizedPath);
@@ -4747,7 +4841,7 @@ async function reloadOpenFile() {
     return;
   }
 
-  if (activeTab?.status === "image") {
+  if (activeTab?.status === "image" || activeTab?.status === "web") {
     refreshOpenFileUi();
     return;
   }
@@ -5833,10 +5927,40 @@ function updatePort(port) {
   const index = state.ports.findIndex((entry) => entry.port === port.port);
   if (index === -1) {
     state.ports = [...state.ports, port].sort((left, right) => left.port - right.port);
-    return;
+  } else {
+    state.ports[index] = port;
   }
 
-  state.ports[index] = port;
+  const previewTab = state.openFileTabs.find((entry) => entry.relativePath === getPortPreviewTabId(port));
+  if (previewTab) {
+    previewTab.name = getPortDisplayName(port);
+    previewTab.url = getPortProxyUrl(port);
+    previewTab.externalUrl = getPortPrimaryUrl(port);
+    previewTab.port = port.port;
+    if (state.openFileRelativePath === previewTab.relativePath) {
+      syncOpenFileStateFromTab(previewTab);
+    }
+  }
+}
+
+function syncOpenPortPreviewTabs() {
+  for (const tab of state.openFileTabs) {
+    if (tab.mode !== "web" || !tab.port) {
+      continue;
+    }
+
+    const port = state.ports.find((entry) => entry.port === tab.port);
+    if (!port) {
+      continue;
+    }
+
+    tab.name = getPortDisplayName(port);
+    tab.url = getPortProxyUrl(port);
+    tab.externalUrl = getPortPrimaryUrl(port);
+    if (state.openFileRelativePath === tab.relativePath) {
+      syncOpenFileStateFromTab(tab);
+    }
+  }
 }
 
 async function loadSessions() {
@@ -5887,6 +6011,7 @@ async function loadPorts() {
   try {
     const payload = await fetchJson("/api/ports");
     state.ports = payload.ports;
+    syncOpenPortPreviewTabs();
     refreshShellUi({ sessions: false, ports: true, files: false });
   } catch (error) {
     console.error(error);
