@@ -1328,13 +1328,34 @@ input[readonly][data-folder-picker-target] {
 
 .knowledge-base-view {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
   overflow: hidden;
 }
 
-.knowledge-settings-card {
+.knowledge-settings-popover {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.knowledge-settings-trigger {
+  min-width: 48px;
+  padding: 0;
+  list-style: none;
+}
+
+.knowledge-settings-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.knowledge-settings-popover[open] .knowledge-settings-trigger {
+  background: var(--surface-active);
+}
+
+.knowledge-settings-card,
+.knowledge-settings-popover-panel {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -1342,50 +1363,45 @@ input[readonly][data-folder-picker-target] {
   overflow: hidden;
 }
 
-.knowledge-settings-card summary {
+.knowledge-settings-popover-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 80;
+  width: min(620px, calc(100vw - 36px));
+  max-height: min(72vh, 720px);
+  overflow: auto;
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(18px);
+}
+
+.knowledge-settings-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   min-height: 44px;
   padding: 0 14px;
+  border-bottom: 1px solid var(--line);
   color: rgba(232, 236, 240, 0.9);
-  cursor: pointer;
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.76rem;
   letter-spacing: 0.04em;
-  list-style: none;
   text-transform: uppercase;
 }
 
-.knowledge-settings-card summary::-webkit-details-marker {
-  display: none;
-}
-
-.knowledge-settings-card summary::before {
-  content: "▸";
-  color: var(--muted);
-  margin-right: 2px;
-}
-
-.knowledge-settings-card[open] summary {
-  border-bottom: 1px solid var(--line);
-}
-
-.knowledge-settings-card[open] summary::before {
-  content: "▾";
-}
-
-.knowledge-settings-card summary span:first-child {
+.knowledge-settings-head strong {
   min-width: 0;
   overflow: hidden;
+  font-size: 0.76rem;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.knowledge-settings-card #wiki-backup-status {
+.knowledge-settings-head #wiki-backup-status {
   color: var(--muted);
   font-size: 0.7rem;
+  font-weight: 400;
   text-transform: none;
 }
 
@@ -1428,7 +1444,7 @@ input[readonly][data-folder-picker-target] {
 
 .knowledge-base-app-shell {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
   min-height: 100%;
@@ -1436,8 +1452,7 @@ input[readonly][data-folder-picker-target] {
   overflow: hidden;
 }
 
-.knowledge-base-app-toolbar,
-.knowledge-base-app-summary {
+.knowledge-base-app-toolbar {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1484,23 +1499,9 @@ input[readonly][data-folder-picker-target] {
   margin-left: auto;
 }
 
-.knowledge-base-summary {
-  justify-content: space-between;
-}
-
-.knowledge-base-root {
-  min-width: 0;
-  width: 100%;
-  overflow: hidden;
-  color: var(--text);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 0.78rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .knowledge-base-toolbar-actions {
   display: inline-flex;
+  align-items: center;
   gap: 8px;
 }
 
@@ -3479,14 +3480,9 @@ select:disabled {
 }
 
 @media (max-width: 560px) {
-  .knowledge-base-app-toolbar,
-  .knowledge-base-app-summary {
+  .knowledge-base-app-toolbar {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .knowledge-base-app-summary .dashboard-updated {
-    margin-left: 0;
   }
 
   .knowledge-base-app-actions {
@@ -3555,8 +3551,27 @@ select:disabled {
     flex: 1 1 0;
   }
 
+  .knowledge-settings-popover {
+    position: static;
+  }
+
+  .knowledge-settings-trigger {
+    width: 100%;
+  }
+
+  .knowledge-settings-popover-panel {
+    position: fixed;
+    inset:
+      max(12px, calc(var(--safe-top) + 8px))
+      max(12px, calc(var(--safe-right) + 8px))
+      max(12px, calc(var(--safe-bottom) + 8px))
+      max(12px, calc(var(--safe-left) + 8px));
+    width: auto;
+    max-height: none;
+  }
+
   .agent-prompt-toolbar-actions,
-  .knowledge-settings-card summary {
+  .knowledge-settings-head {
     width: 100%;
   }
 

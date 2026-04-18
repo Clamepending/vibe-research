@@ -3389,13 +3389,8 @@ function renderKnowledgeBaseNoteActions(rawHref) {
   `;
 }
 
-function renderKnowledgeSettingsForm() {
-  return `
-    <details class="knowledge-settings-card">
-      <summary>
-        <span>Knowledge and backup settings</span>
-        <span id="wiki-backup-status">${escapeHtml(getWikiBackupStatusText())}</span>
-      </summary>
+function renderKnowledgeSettingsForm({ popover = false } = {}) {
+  const form = `
       <form class="settings-form knowledge-settings-form" id="settings-form">
         <label class="field-label" for="wiki-path-input">wiki folder</label>
         <div class="folder-input-row">
@@ -3464,6 +3459,36 @@ function renderKnowledgeSettingsForm() {
           <div class="settings-status" id="wiki-backup-settings-status">${escapeHtml(getWikiBackupStatusText())}</div>
         </div>
       </form>
+  `;
+
+  if (!popover) {
+    return `
+      <section class="knowledge-settings-card">
+        <div class="knowledge-settings-head">
+          <strong>Knowledge settings</strong>
+          <span id="wiki-backup-status">${escapeHtml(getWikiBackupStatusText())}</span>
+        </div>
+        ${form}
+      </section>
+    `;
+  }
+
+  return `
+    <details class="knowledge-settings-popover">
+      <summary
+        class="icon-button knowledge-settings-trigger"
+        aria-label="Knowledge settings"
+        ${tooltipAttributes("Knowledge settings")}
+      >
+        <span aria-hidden="true">⚙</span>
+      </summary>
+      <div class="knowledge-settings-popover-panel">
+        <div class="knowledge-settings-head">
+          <strong>Knowledge settings</strong>
+          <span id="wiki-backup-status">${escapeHtml(getWikiBackupStatusText())}</span>
+        </div>
+        ${form}
+      </div>
     </details>
   `;
 }
@@ -3483,6 +3508,7 @@ function renderKnowledgeBaseView() {
           <div class="terminal-meta">obsidian-style markdown viewer for ${escapeHtml(state.knowledgeBase.relativeRoot)}</div>
         </div>
         <div class="dashboard-actions knowledge-base-toolbar-actions">
+          ${renderKnowledgeSettingsForm({ popover: true })}
           ${
             backupRepoUrl
               ? `<a class="ghost-button toolbar-control" href="${escapeHtml(backupRepoUrl)}" target="_blank" rel="noreferrer">view backup</a>`
@@ -3492,14 +3518,6 @@ function renderKnowledgeBaseView() {
           <button class="ghost-button toolbar-control" type="button" id="refresh-knowledge-base">refresh</button>
         </div>
       </div>
-      <div class="dashboard-range knowledge-base-summary">
-        <span class="dashboard-range-label">root</span>
-        <span class="knowledge-base-root">${escapeHtml(state.knowledgeBase.relativeRoot)}</span>
-        <span class="dashboard-updated">${escapeHtml(
-          `${state.knowledgeBase.notes.length} notes`,
-        )}</span>
-      </div>
-      ${renderKnowledgeSettingsForm()}
       <div class="knowledge-base-grid">
         <aside class="knowledge-base-column knowledge-base-column-list">
           <div class="knowledge-base-panel-head">
@@ -3558,6 +3576,7 @@ function renderKnowledgeBaseApp() {
             )}</div>
           </div>
           <div class="knowledge-base-app-actions">
+            ${renderKnowledgeSettingsForm({ popover: true })}
             ${backupRepoUrl
               ? `<a class="ghost-button toolbar-control" href="${escapeHtml(backupRepoUrl)}" target="_blank" rel="noreferrer">view backup</a>`
               : ""}
@@ -3568,14 +3587,6 @@ function renderKnowledgeBaseApp() {
             <a class="ghost-button toolbar-control" href="${escapeHtml(getAppBaseUrl())}/">remote vibes</a>
           </div>
         </header>
-
-        <div class="knowledge-base-app-summary">
-          <span class="dashboard-range-label">root</span>
-          <span class="knowledge-base-root">${escapeHtml(state.knowledgeBase.relativeRoot)}</span>
-          <span class="dashboard-updated">${escapeHtml(
-            `${state.knowledgeBase.notes.length} notes`,
-          )}</span>
-        </div>
 
         <div class="knowledge-base-grid">
           <aside class="knowledge-base-column knowledge-base-column-list">
