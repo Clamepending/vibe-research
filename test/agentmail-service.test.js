@@ -53,6 +53,11 @@ function flushAsyncHandlers() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+async function flushAgentMailBackgroundWork() {
+  await flushAsyncHandlers();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
 test("AgentMail WebSocket listener subscribes and queues incoming email into an agent session", async () => {
   FakeSocket.instances = [];
   const createdSessions = [];
@@ -119,11 +124,12 @@ test("AgentMail WebSocket listener subscribes and queues incoming email into an 
   assert.equal(createdSessions[0].providerId, "claude");
   assert.equal(createdSessions[0].cwd, "/tmp/wiki");
   assert.match(createdSessions[0].name, /^email: Can you help/);
-  assert.equal(writes.length, 1);
+  assert.equal(writes.length, 2);
   assert.equal(writes[0].sessionId, "session-1");
   assert.match(writes[0].input, /bin\/rv-agentmail-reply' --inbox-id 'agent@example.com'/);
   assert.match(writes[0].input, /Hello from email/);
-  assert.ok(writes[0].input.endsWith("\r\r"), "Claude prompts need a second Enter after pasted blocks");
+  assert.doesNotMatch(writes[0].input, /\r$/);
+  assert.deepEqual(writes[1], { input: "\r", sessionId: "session-1" });
 
   socket.emit(
     "message",
@@ -140,6 +146,27 @@ test("AgentMail WebSocket listener subscribes and queues incoming email into an 
   );
   await flushAsyncHandlers();
   assert.equal(createdSessions.length, 1, "duplicate event ids should be ignored");
+
+  socket.emit(
+    "message",
+    JSON.stringify({
+      type: "event",
+      event_type: "message.received",
+      event_id: "evt-other-inbox",
+      message: {
+        from: "Remote Vibes <agent@example.com>",
+        inbox_id: "sender@example.com",
+        labels: ["received", "unread"],
+        message_id: "<other-inbox-message@example.com>",
+        subject: "Reply landed in sender inbox",
+        text: "This should not trigger another reply agent.",
+        to: ["sender@example.com"],
+      },
+    }),
+  );
+  await flushAsyncHandlers();
+  assert.equal(createdSessions.length, 1, "messages for other AgentMail inboxes should be ignored");
+  assert.equal(service.getStatus().lastIgnoredEventType, "message.outside-configured-inbox");
 
   socket.emit(
     "message",
@@ -228,14 +255,16 @@ test("AgentMail polling backfills unread inbox messages and persists processed i
     });
 
     const firstPoll = await service.pollInboxOnce({ reason: "startup" });
+    await flushAgentMailBackgroundWork();
     assert.equal(firstPoll.length, 1);
     assert.equal(createdSessions.length, 1);
     assert.equal(createdSessions[0].cwd, "/tmp/wiki");
     assert.equal(createdSessions[0].name, "email: Missed while offline");
-    assert.equal(writes.length, 1);
+    assert.equal(writes.length, 2);
     assert.match(writes[0].input, /simple greeting or test email/);
     assert.match(writes[0].input, /Missed while offline/);
-    assert.ok(writes[0].input.endsWith("\r\r"));
+    assert.doesNotMatch(writes[0].input, /\r$/);
+    assert.deepEqual(writes[1], { input: "\r", sessionId: "session-1" });
     assert.equal(service.getStatus().lastStatus, "prompt-sent-startup");
     assert.ok(service.getStatus().lastPromptSentAt);
     assert.equal(service.getStatus().lastPollSeen, 1);
@@ -267,10 +296,84 @@ test("AgentMail polling backfills unread inbox messages and persists processed i
     });
 
     const secondPoll = await secondService.pollInboxOnce({ reason: "restart" });
+    await flushAgentMailBackgroundWork();
     assert.equal(secondPoll.length, 0);
     assert.equal(createdSessions.length, 1, "processed messages should not relaunch after restart");
-    assert.equal(writes.length, 1, "processed messages should not be re-prompted after restart");
+    assert.equal(writes.length, 2, "processed messages should not be re-prompted after restart");
   } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("AgentMail retries a message when the agent prompt could not be delivered", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-agentmail-retry-"));
+  const message = {
+    from: "person@example.com",
+    inbox_id: "agent@example.com",
+    labels: ["received", "unread"],
+    message_id: "<retry-message@example.com>",
+    subject: "Please retry",
+    text: "The first prompt write will fail.",
+    timestamp: "2026-04-18T20:00:00.000Z",
+    to: ["agent@example.com"],
+  };
+  const createdSessions = [];
+  const writes = [];
+  const fetchImpl = createFetch([
+    { body: { count: 1, messages: [message] } },
+    { body: { count: 1, messages: [message] } },
+  ]);
+
+  try {
+    const service = new AgentMailService({
+      fetchImpl,
+      pollIntervalMs: 0,
+      promptDelayMs: 0,
+      sessionManager: {
+        createSession(input) {
+          const session = { id: `session-${createdSessions.length + 1}`, ...input };
+          createdSessions.push(session);
+          return session;
+        },
+        write(sessionId, input) {
+          writes.push({ input, sessionId });
+          return writes.length > 1;
+        },
+      },
+      setTimeoutImpl(callback) {
+        callback();
+        return 1;
+      },
+      settings: {
+        agentMailApiKey: "am_test",
+        agentMailEnabled: true,
+        agentMailInboxId: "agent@example.com",
+        agentMailProviderId: "claude",
+      },
+      stateDir,
+    });
+
+    const firstPoll = await service.pollInboxOnce({ reason: "startup" });
+    await flushAgentMailBackgroundWork();
+    assert.equal(firstPoll.length, 1);
+    assert.equal(createdSessions.length, 1);
+    assert.equal(writes.length, 1);
+    assert.equal(service.getStatus().lastStatus, "error");
+
+    await assert.rejects(readFile(path.join(stateDir, "agentmail-processed.json"), "utf8"), /ENOENT/);
+
+    const secondPoll = await service.pollInboxOnce({ reason: "retry" });
+    await flushAgentMailBackgroundWork();
+    assert.equal(secondPoll.length, 1);
+    assert.equal(createdSessions.length, 2, "failed prompt delivery should not permanently consume the email");
+    assert.equal(writes.length, 3);
+    assert.equal(service.getStatus().lastStatus, "prompt-sent-retry");
+    assert.deepEqual(writes[2], { input: "\r", sessionId: "session-2" });
+
+    const processed = JSON.parse(await readFile(path.join(stateDir, "agentmail-processed.json"), "utf8"));
+    assert.deepEqual(processed.messageIds, ["<retry-message@example.com>"]);
+  } finally {
+    await flushAgentMailBackgroundWork();
     await rm(stateDir, { recursive: true, force: true });
   }
 });
@@ -338,9 +441,10 @@ test("AgentMail reconnect reloads processed message ids from disk", async () => 
     service.restart(service.settings);
 
     const secondPoll = await service.pollInboxOnce({ reason: "second" });
+    await flushAgentMailBackgroundWork();
     assert.equal(secondPoll.length, 1);
     assert.equal(createdSessions.length, 1);
-    assert.equal(writes.length, 1);
+    assert.equal(writes.length, 2);
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }
@@ -427,7 +531,102 @@ test("AgentMail waits for the agent UI to settle before injecting the email prom
   assert.equal(writes.length, 1);
   assert.equal(writes[0].sessionId, "session-ready-test");
   assert.match(writes[0].input, /Wait for Claude/);
-  assert.ok(writes[0].input.endsWith("\r\r"));
+  assert.doesNotMatch(writes[0].input, /\r$/);
+  assert.equal(service.getStatus().lastStatus, "submitting-prompt-startup");
+
+  timers.shift()();
+  assert.equal(writes.length, 2);
+  assert.deepEqual(writes[1], { input: "\r", sessionId: "session-ready-test" });
+  assert.equal(service.getStatus().lastStatus, "prompt-sent-startup");
+});
+
+test("AgentMail confirms Claude workspace trust before injecting the email prompt", async () => {
+  const timers = [];
+  const writes = [];
+  const sessions = new Map();
+  let now = 0;
+
+  const service = new AgentMailService({
+    nowImpl() {
+      return now;
+    },
+    pollIntervalMs: 0,
+    promptDelayMs: 1_000,
+    promptReadyIdleMs: 500,
+    promptReadyTimeoutMs: 10_000,
+    promptRetryMs: 100,
+    sessionManager: {
+      createSession(input) {
+        const session = {
+          id: "session-trust-test",
+          ...input,
+          buffer:
+            "\u001b[38;2;255;204;0mAccessing workspace:\u001b[39m\r\n" +
+            "Quick\u001b[1Csafety\u001b[1Ccheck:\u001b[1CIs\u001b[1Cthis\u001b[1Ca\u001b[1Cproject\u001b[1Cyou\u001b[1Ccreated\u001b[1Cor\u001b[1Cone\u001b[1Cyou\u001b[1Ctrust?\r\n" +
+            "\u001b[38;2;153;204;255m❯\u001b[1C\u001b[38;2;153;153;153m1.\u001b[1C\u001b[38;2;153;204;255mYes,\u001b[1CI\u001b[1Ctrust\u001b[1Cthis\u001b[1Cfolder\u001b[39m",
+          createdAt: new Date(0).toISOString(),
+          lastOutputAt: new Date(900).toISOString(),
+          status: "running",
+          updatedAt: new Date(900).toISOString(),
+        };
+        sessions.set(session.id, session);
+        return session;
+      },
+      getSession(sessionId) {
+        return sessions.get(sessionId) || null;
+      },
+      write(sessionId, input) {
+        writes.push({ input, sessionId });
+        return true;
+      },
+    },
+    setTimeoutImpl(callback) {
+      timers.push(callback);
+      return timers.length;
+    },
+    settings: {
+      agentMailApiKey: "am_test",
+      agentMailEnabled: true,
+      agentMailInboxId: "agent@example.com",
+      agentMailProviderId: "claude",
+      wikiPath: "/tmp/wiki",
+    },
+  });
+
+  await service.handleIncomingMessage(
+    {
+      eventId: "evt-trust",
+      message: {
+        from: "person@example.com",
+        inboxId: "agent@example.com",
+        messageId: "<trust-message@example.com>",
+        subject: "Trust then reply",
+        text: "Please reply after the trust gate clears.",
+        to: ["agent@example.com"],
+      },
+    },
+    { source: "startup" },
+  );
+
+  now = 1_200;
+  timers.shift()();
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0], { input: "1\r", sessionId: "session-trust-test" });
+  assert.equal(service.getStatus().lastStatus, "confirming-workspace-trust-startup");
+
+  now = 2_500;
+  sessions.get("session-trust-test").buffer = "Claude Code\n❯ ";
+  sessions.get("session-trust-test").lastOutputAt = new Date(1_000).toISOString();
+  timers.shift()();
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1].sessionId, "session-trust-test");
+  assert.match(writes[1].input, /Trust then reply/);
+  assert.doesNotMatch(writes[1].input, /\r$/);
+  assert.equal(service.getStatus().lastStatus, "submitting-prompt-startup");
+
+  timers.shift()();
+  assert.equal(writes.length, 3);
+  assert.deepEqual(writes[2], { input: "\r", sessionId: "session-trust-test" });
   assert.equal(service.getStatus().lastStatus, "prompt-sent-startup");
 });
 
@@ -496,6 +695,8 @@ test("AgentMail REST helpers create inboxes and send replies without exposing th
   });
   assert.doesNotMatch(prompt, /am_test/);
   assert.match(prompt, /rv-agentmail-reply/);
+  assert.match(prompt, /wiki\/knowledge base/);
+  assert.match(prompt, /not just draft a response/i);
 });
 
 test("AgentMail API endpoints set up an inbox, hide secrets, and protect replies with a local token", async () => {
