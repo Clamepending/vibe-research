@@ -12,7 +12,8 @@ const DEFAULT_PROMPT_READY_IDLE_MS = 1_200;
 const DEFAULT_PROMPT_READY_TIMEOUT_MS = 45_000;
 const DEFAULT_PROMPT_RETRY_MS = 500;
 const DEFAULT_PROMPT_SUBMIT_DELAY_MS = 350;
-const DEFAULT_REMOTE_CLAIM_SETTLE_MS = 1_500;
+const DEFAULT_REMOTE_CLAIM_SETTLE_MS = 8_000;
+const DEFAULT_REMOTE_CLAIM_VERIFY_MS = 750;
 const MAX_SEEN_EVENTS = 250;
 const MAX_PROCESSED_MESSAGES = 1_000;
 const EMAIL_BODY_LIMIT = 12_000;
@@ -265,6 +266,7 @@ export class AgentMailService {
     promptSubmitDelayMs = DEFAULT_PROMPT_SUBMIT_DELAY_MS,
     remoteClaimEnabled = true,
     remoteClaimSettleMs = DEFAULT_REMOTE_CLAIM_SETTLE_MS,
+    remoteClaimVerifyMs = DEFAULT_REMOTE_CLAIM_VERIFY_MS,
     reconnectMs = DEFAULT_RECONNECT_MS,
     sessionManager,
     settings = {},
@@ -285,6 +287,7 @@ export class AgentMailService {
     this.promptSubmitDelayMs = promptSubmitDelayMs;
     this.remoteClaimEnabled = remoteClaimEnabled;
     this.remoteClaimSettleMs = remoteClaimSettleMs;
+    this.remoteClaimVerifyMs = remoteClaimVerifyMs;
     this.remoteClaimLabel = `${REMOTE_VIBES_CLAIM_LABEL_PREFIX}${randomUUID().replaceAll("-", "").slice(0, 16)}`;
     this.reconnectMs = reconnectMs;
     this.replyToken = randomUUID();
@@ -837,14 +840,27 @@ export class AgentMailService {
 
     await this.wait(this.remoteClaimSettleMs);
 
-    try {
-      claimedMessage = await this.getAgentMailMessage({
-        apiKey: config.apiKey,
-        inboxId,
-        messageId,
-      });
-    } catch {
-      // The update response is enough to continue if a follow-up read is flaky.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        claimedMessage = await this.getAgentMailMessage({
+          apiKey: config.apiKey,
+          inboxId,
+          messageId,
+        });
+      } catch {
+        // The update response is enough to continue if a follow-up read is flaky.
+      }
+
+      const labels = getMessageLabels(claimedMessage);
+      if (
+        labels.map((label) => label.toLowerCase()).includes(REMOTE_VIBES_PROCESSED_LABEL) ||
+        getRemoteVibesClaimLabels(labels).length > 1 ||
+        attempt === 1
+      ) {
+        break;
+      }
+
+      await this.wait(this.remoteClaimVerifyMs);
     }
 
     const labels = getMessageLabels(claimedMessage);
