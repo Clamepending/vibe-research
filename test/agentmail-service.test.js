@@ -64,6 +64,7 @@ test("AgentMail WebSocket listener subscribes and queues incoming email into an 
   const writes = [];
   const service = new AgentMailService({
     promptDelayMs: 0,
+    remoteClaimEnabled: false,
     sessionManager: {
       createSession(input) {
         const session = { id: `session-${createdSessions.length + 1}`, ...input };
@@ -229,6 +230,7 @@ test("AgentMail polling backfills unread inbox messages and persists processed i
       fetchImpl,
       pollIntervalMs: 0,
       promptDelayMs: 0,
+      remoteClaimEnabled: false,
       sessionManager: {
         createSession(input) {
           const session = { id: `session-${createdSessions.length + 1}`, ...input };
@@ -276,6 +278,7 @@ test("AgentMail polling backfills unread inbox messages and persists processed i
       fetchImpl,
       pollIntervalMs: 0,
       promptDelayMs: 0,
+      remoteClaimEnabled: false,
       sessionManager: {
         createSession(input) {
           const session = { id: `session-${createdSessions.length + 1}`, ...input };
@@ -329,6 +332,7 @@ test("AgentMail retries a message when the agent prompt could not be delivered",
       fetchImpl,
       pollIntervalMs: 0,
       promptDelayMs: 0,
+      remoteClaimEnabled: false,
       sessionManager: {
         createSession(input) {
           const session = { id: `session-${createdSessions.length + 1}`, ...input };
@@ -408,6 +412,7 @@ test("AgentMail reconnect reloads processed message ids from disk", async () => 
       fetchImpl,
       pollIntervalMs: 0,
       promptDelayMs: 0,
+      remoteClaimEnabled: false,
       sessionManager: {
         createSession(input) {
           const session = { id: `session-${createdSessions.length + 1}`, ...input };
@@ -462,6 +467,7 @@ test("AgentMail waits for the agent UI to settle before injecting the email prom
     },
     pollIntervalMs: 0,
     promptDelayMs: 1_000,
+    remoteClaimEnabled: false,
     promptReadyIdleMs: 500,
     promptReadyTimeoutMs: 10_000,
     promptRetryMs: 100,
@@ -552,6 +558,7 @@ test("AgentMail confirms Claude workspace trust before injecting the email promp
     },
     pollIntervalMs: 0,
     promptDelayMs: 1_000,
+    remoteClaimEnabled: false,
     promptReadyIdleMs: 500,
     promptReadyTimeoutMs: 10_000,
     promptRetryMs: 100,
@@ -628,6 +635,205 @@ test("AgentMail confirms Claude workspace trust before injecting the email promp
   assert.equal(writes.length, 3);
   assert.deepEqual(writes[2], { input: "\r", sessionId: "session-trust-test" });
   assert.equal(service.getStatus().lastStatus, "prompt-sent-startup");
+});
+
+test("AgentMail uses shared labels so only one listener claims an incoming email", async () => {
+  const labels = new Set(["received", "unread"]);
+  const message = {
+    from: "person@example.com",
+    inbox_id: "agent@example.com",
+    labels: [...labels],
+    message_id: "<shared-message@example.com>",
+    subject: "Shared listener race",
+    text: "Only one Remote Vibes instance should answer this.",
+    thread_id: "thread-shared",
+    to: ["agent@example.com"],
+  };
+  const calls = [];
+  const createdSessions = [];
+  const writes = [];
+  const makeMessage = () => ({ ...message, labels: [...labels] });
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+    const method = options.method || "GET";
+    if (method === "PATCH") {
+      const body = JSON.parse(options.body || "{}");
+      for (const label of body.add_labels || []) {
+        labels.add(label);
+      }
+      for (const label of body.remove_labels || []) {
+        labels.delete(label);
+      }
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return makeMessage();
+        },
+        async text() {
+          return JSON.stringify(makeMessage());
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return makeMessage();
+      },
+      async text() {
+        return JSON.stringify(makeMessage());
+      },
+    };
+  };
+  const createService = (suffix) =>
+    new AgentMailService({
+      fetchImpl,
+      pollIntervalMs: 0,
+      promptDelayMs: 0,
+      remoteClaimSettleMs: 1,
+      sessionManager: {
+        createSession(input) {
+          const session = { id: `session-${suffix}`, ...input };
+          createdSessions.push(session);
+          return session;
+        },
+        write(sessionId, input) {
+          writes.push({ input, sessionId });
+          return true;
+        },
+      },
+      setTimeoutImpl(callback) {
+        callback();
+        return 1;
+      },
+      settings: {
+        agentMailApiKey: "am_test",
+        agentMailEnabled: true,
+        agentMailInboxId: "agent@example.com",
+        agentMailProviderId: "claude",
+      },
+    });
+  const event = {
+    event_id: "evt-shared",
+    message,
+  };
+
+  const [first, second] = await Promise.all([
+    createService("a").handleIncomingMessage(event, { source: "websocket" }),
+    createService("b").handleIncomingMessage(event, { source: "websocket" }),
+  ]);
+  await flushAgentMailBackgroundWork();
+
+  assert.equal([first, second].filter(Boolean).length, 1);
+  assert.equal(createdSessions.length, 1);
+  assert.equal(writes.length, 2);
+  assert.equal(labels.has("remote-vibes-processed"), true);
+  assert.equal(labels.has("unread"), false);
+  assert.equal(labels.has("remote-vibes-processing"), false);
+  assert.ok(calls.filter((call) => call.options.method === "PATCH").length >= 4);
+});
+
+test("AgentMail treats unavailable shared claims as ignored instead of fatal", async () => {
+  const createdSessions = [];
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 404,
+    async json() {
+      return { message: "Message not found" };
+    },
+    async text() {
+      return JSON.stringify({ message: "Message not found" });
+    },
+  });
+  const service = new AgentMailService({
+    fetchImpl,
+    pollIntervalMs: 0,
+    promptDelayMs: 0,
+    sessionManager: {
+      createSession(input) {
+        createdSessions.push(input);
+        return { id: "session-missing", ...input };
+      },
+      write() {
+        return true;
+      },
+    },
+    settings: {
+      agentMailApiKey: "am_test",
+      agentMailEnabled: true,
+      agentMailInboxId: "agent@example.com",
+      agentMailProviderId: "claude",
+    },
+  });
+
+  const session = await service.handleIncomingMessage({
+    event_id: "evt-missing",
+    message: {
+      from: "person@example.com",
+      inbox_id: "agent@example.com",
+      labels: ["received", "unread"],
+      message_id: "<missing-message@example.com>",
+      subject: "Already handled elsewhere",
+      text: "This event is no longer claimable.",
+      to: ["agent@example.com"],
+    },
+  });
+
+  assert.equal(session, null);
+  assert.equal(createdSessions.length, 0);
+  assert.equal(service.getStatus().lastError, "");
+  assert.equal(service.getStatus().lastIgnoredEventType, "message.claim-unavailable");
+});
+
+test("AgentMail defers rate-limited shared claims without surfacing an error", async () => {
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 429,
+    async json() {
+      return { message: "Rate limit exceeded" };
+    },
+    async text() {
+      return JSON.stringify({ message: "Rate limit exceeded" });
+    },
+  });
+  const service = new AgentMailService({
+    fetchImpl,
+    pollIntervalMs: 0,
+    promptDelayMs: 0,
+    sessionManager: {
+      createSession() {
+        throw new Error("claim should defer before launching a session");
+      },
+      write() {
+        return true;
+      },
+    },
+    settings: {
+      agentMailApiKey: "am_test",
+      agentMailEnabled: true,
+      agentMailInboxId: "agent@example.com",
+      agentMailProviderId: "claude",
+    },
+  });
+
+  const session = await service.handleIncomingMessage({
+    event_id: "evt-rate-limited",
+    message: {
+      from: "person@example.com",
+      inbox_id: "agent@example.com",
+      labels: ["received", "unread"],
+      message_id: "<rate-limited-message@example.com>",
+      subject: "Try later",
+      text: "This should be retried by a future poll.",
+      to: ["agent@example.com"],
+    },
+  });
+
+  assert.equal(session, null);
+  assert.equal(service.getStatus().lastError, "");
+  assert.equal(service.getStatus().lastIgnoredEventType, "message.claim-deferred");
 });
 
 test("AgentMail REST helpers create inboxes and send replies without exposing the API key to prompts", async () => {

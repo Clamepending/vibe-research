@@ -12,9 +12,13 @@ const DEFAULT_PROMPT_READY_IDLE_MS = 1_200;
 const DEFAULT_PROMPT_READY_TIMEOUT_MS = 45_000;
 const DEFAULT_PROMPT_RETRY_MS = 500;
 const DEFAULT_PROMPT_SUBMIT_DELAY_MS = 350;
+const DEFAULT_REMOTE_CLAIM_SETTLE_MS = 1_500;
 const MAX_SEEN_EVENTS = 250;
 const MAX_PROCESSED_MESSAGES = 1_000;
 const EMAIL_BODY_LIMIT = 12_000;
+const REMOTE_VIBES_CLAIM_LABEL_PREFIX = "remote-vibes-claim-";
+const REMOTE_VIBES_PROCESSED_LABEL = "remote-vibes-processed";
+const REMOTE_VIBES_PROCESSING_LABEL = "remote-vibes-processing";
 
 function normalizeBoolean(value, fallback = false) {
   return value === true || value === false ? value : fallback;
@@ -65,6 +69,30 @@ function getMessageId(message) {
   return String(message?.message_id || message?.messageId || "").trim();
 }
 
+function getMessageLabels(message) {
+  return Array.isArray(message?.labels)
+    ? message.labels.map((label) => String(label || "").trim()).filter(Boolean)
+    : [];
+}
+
+function getRemoteVibesClaimLabels(labels) {
+  return labels
+    .map((label) => String(label || "").trim())
+    .filter((label) => label.startsWith(REMOTE_VIBES_CLAIM_LABEL_PREFIX));
+}
+
+function messageHasLabel(message, label) {
+  return getMessageLabels(message).some((candidate) => candidate.toLowerCase() === label.toLowerCase());
+}
+
+function isAgentMailNotFoundError(error) {
+  return error?.status === 404 || /not\s*found/i.test(error?.message || "");
+}
+
+function isAgentMailRateLimitError(error) {
+  return error?.status === 429 || /rate\s*limit/i.test(error?.message || "");
+}
+
 function getMessageContent(message) {
   return truncateText(
     message?.extracted_text ||
@@ -95,10 +123,11 @@ function normalizeTerminalText(value) {
 }
 
 function isIncomingInboxMessage(message, inboxId) {
-  const labels = Array.isArray(message?.labels)
-    ? message.labels.map((label) => String(label || "").toLowerCase())
-    : [];
+  const labels = getMessageLabels(message).map((label) => label.toLowerCase());
   if (labels.some((label) => ["sent", "draft", "outbound"].includes(label))) {
+    return false;
+  }
+  if (labels.includes(REMOTE_VIBES_PROCESSED_LABEL)) {
     return false;
   }
 
@@ -234,6 +263,8 @@ export class AgentMailService {
     promptReadyTimeoutMs = DEFAULT_PROMPT_READY_TIMEOUT_MS,
     promptRetryMs = DEFAULT_PROMPT_RETRY_MS,
     promptSubmitDelayMs = DEFAULT_PROMPT_SUBMIT_DELAY_MS,
+    remoteClaimEnabled = true,
+    remoteClaimSettleMs = DEFAULT_REMOTE_CLAIM_SETTLE_MS,
     reconnectMs = DEFAULT_RECONNECT_MS,
     sessionManager,
     settings = {},
@@ -252,6 +283,9 @@ export class AgentMailService {
     this.promptReadyTimeoutMs = promptReadyTimeoutMs;
     this.promptRetryMs = promptRetryMs;
     this.promptSubmitDelayMs = promptSubmitDelayMs;
+    this.remoteClaimEnabled = remoteClaimEnabled;
+    this.remoteClaimSettleMs = remoteClaimSettleMs;
+    this.remoteClaimLabel = `${REMOTE_VIBES_CLAIM_LABEL_PREFIX}${randomUUID().replaceAll("-", "").slice(0, 16)}`;
     this.reconnectMs = reconnectMs;
     this.replyToken = randomUUID();
     this.sessionManager = sessionManager;
@@ -680,8 +714,23 @@ export class AgentMailService {
     const subject = compactWhitespace(message.subject || "new email");
     const sessionName = `email: ${subject || "new message"}`.slice(0, 64);
     const sessionCwd = this.settings.wikiPath || this.cwd;
+    let remoteClaim = null;
 
     try {
+      remoteClaim = await this.claimRemoteMessage({
+        config,
+        inboxId,
+        message,
+        messageId,
+      });
+      if (!remoteClaim.claimed) {
+        if (processedKey) {
+          this.pendingMessageSet.delete(processedKey);
+        }
+        return null;
+      }
+
+      const claimedMessage = remoteClaim.message || message;
       const session = this.sessionManager.createSession({
         providerId: config.providerId,
         name: sessionName,
@@ -693,9 +742,15 @@ export class AgentMailService {
       this.status.lastSessionId = session.id;
       this.status.lastStatus = source === "websocket" ? "queued" : `queued-${source}`;
 
-      const prompt = buildEmailPrompt({ message, replyCommand: this.getReplyCommand() });
+      const prompt = buildEmailPrompt({ message: claimedMessage, replyCommand: this.getReplyCommand() });
       this.queuePromptForSession(session.id, prompt, {
-        onPromptFailed: () => {
+        onPromptFailed: async () => {
+          await this.releaseRemoteMessageClaim({
+            claimLabels: remoteClaim?.claimLabels,
+            config,
+            inboxId,
+            messageId,
+          });
           if (processedKey) {
             this.pendingMessageSet.delete(processedKey);
           }
@@ -705,6 +760,12 @@ export class AgentMailService {
             if (processedKey) {
               await this.rememberProcessedMessage(processedKey);
             }
+            await this.markRemoteMessageProcessed({
+              claimLabels: remoteClaim?.claimLabels,
+              config,
+              inboxId,
+              messageId,
+            });
             this.status.processedCount += 1;
           } finally {
             if (processedKey) {
@@ -718,12 +779,152 @@ export class AgentMailService {
 
       return session;
     } catch (error) {
+      await this.releaseRemoteMessageClaim({
+        claimLabels: remoteClaim?.claimLabels,
+        config,
+        inboxId,
+        messageId,
+      });
       if (processedKey) {
         this.pendingMessageSet.delete(processedKey);
       }
       this.status.lastError = error.message || "Could not launch email agent session.";
       this.status.lastStatus = "error";
       return null;
+    }
+  }
+
+  wait(ms) {
+    if (!ms || ms <= 0) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      this.setTimeout(resolve, ms);
+    });
+  }
+
+  async claimRemoteMessage({ config, inboxId, message, messageId }) {
+    if (!this.remoteClaimEnabled || !config.apiKey || !inboxId || !messageId) {
+      return { claimed: true, claimLabels: [], message };
+    }
+
+    if (messageHasLabel(message, REMOTE_VIBES_PROCESSED_LABEL)) {
+      this.status.ignoredCount += 1;
+      this.status.lastIgnoredEventType = "message.already-processed";
+      return { claimed: false, claimLabels: [], message };
+    }
+
+    const claimLabel = this.remoteClaimLabel;
+    let claimedMessage;
+    try {
+      claimedMessage = await this.updateMessageLabels({
+        addLabels: [REMOTE_VIBES_PROCESSING_LABEL, claimLabel],
+        apiKey: config.apiKey,
+        inboxId,
+        messageId,
+      });
+    } catch (error) {
+      if (isAgentMailNotFoundError(error) || isAgentMailRateLimitError(error)) {
+        this.status.ignoredCount += 1;
+        this.status.lastIgnoredEventType = isAgentMailRateLimitError(error)
+          ? "message.claim-deferred"
+          : "message.claim-unavailable";
+        this.status.lastError = "";
+        return { claimed: false, claimLabels: [], message };
+      }
+      throw error;
+    }
+
+    await this.wait(this.remoteClaimSettleMs);
+
+    try {
+      claimedMessage = await this.getAgentMailMessage({
+        apiKey: config.apiKey,
+        inboxId,
+        messageId,
+      });
+    } catch {
+      // The update response is enough to continue if a follow-up read is flaky.
+    }
+
+    const labels = getMessageLabels(claimedMessage);
+    if (labels.map((label) => label.toLowerCase()).includes(REMOTE_VIBES_PROCESSED_LABEL)) {
+      await this.releaseOwnRemoteMessageClaim({ config, inboxId, messageId });
+      this.status.ignoredCount += 1;
+      this.status.lastIgnoredEventType = "message.already-processed";
+      return { claimed: false, claimLabels: [], message: claimedMessage };
+    }
+
+    const claimLabels = getRemoteVibesClaimLabels(labels);
+    const winningClaim = [...claimLabels].sort()[0] || claimLabel;
+    if (winningClaim !== claimLabel) {
+      await this.releaseOwnRemoteMessageClaim({ config, inboxId, messageId });
+      this.status.ignoredCount += 1;
+      this.status.lastIgnoredEventType = "message.claimed-by-peer";
+      return { claimed: false, claimLabels, message: claimedMessage };
+    }
+
+    return {
+      claimed: true,
+      claimLabels: claimLabels.length ? claimLabels : [claimLabel],
+      message: claimedMessage || message,
+    };
+  }
+
+  async releaseOwnRemoteMessageClaim({ config, inboxId, messageId }) {
+    if (!this.remoteClaimEnabled || !config?.apiKey || !inboxId || !messageId) {
+      return;
+    }
+
+    try {
+      await this.updateMessageLabels({
+        apiKey: config.apiKey,
+        inboxId,
+        messageId,
+        removeLabels: [this.remoteClaimLabel],
+      });
+    } catch {
+      // Best effort: losing a race should never turn into a user-visible failure.
+    }
+  }
+
+  async markRemoteMessageProcessed({ claimLabels = [], config, inboxId, messageId }) {
+    if (!this.remoteClaimEnabled || !config?.apiKey || !inboxId || !messageId) {
+      return;
+    }
+
+    await this.updateMessageLabels({
+      addLabels: [REMOTE_VIBES_PROCESSED_LABEL],
+      apiKey: config.apiKey,
+      inboxId,
+      messageId,
+      removeLabels: ["unread", REMOTE_VIBES_PROCESSING_LABEL, ...claimLabels],
+    });
+  }
+
+  async releaseRemoteMessageClaim({ claimLabels = [], config, inboxId, messageId }) {
+    if (!this.remoteClaimEnabled || !config?.apiKey || !inboxId || !messageId) {
+      return;
+    }
+
+    const labelsToRemove = [
+      REMOTE_VIBES_PROCESSING_LABEL,
+      this.remoteClaimLabel,
+      ...claimLabels,
+    ].filter(Boolean);
+    if (!labelsToRemove.length) {
+      return;
+    }
+
+    try {
+      await this.updateMessageLabels({
+        apiKey: config.apiKey,
+        inboxId,
+        messageId,
+        removeLabels: [...new Set(labelsToRemove)],
+      });
+    } catch {
+      // A failed release should not mask the original prompt/session error.
     }
   }
 
@@ -742,7 +943,9 @@ export class AgentMailService {
     const failPromptDelivery = (message) => {
       this.status.lastError = message;
       this.status.lastStatus = "error";
-      onPromptFailed?.();
+      void Promise.resolve(onPromptFailed?.()).catch((error) => {
+        this.status.lastError = error.message || "Could not release AgentMail message claim.";
+      });
       return false;
     };
     const markPromptSent = () => {
@@ -831,6 +1034,36 @@ export class AgentMailService {
     this.setTimeout(attempt, Math.min(this.promptRetryMs, this.promptDelayMs));
   }
 
+  async getAgentMailMessage({ apiKey, inboxId, messageId }) {
+    return this.requestAgentMail({
+      apiKey,
+      method: "GET",
+      path: `/v0/inboxes/${encodePathSegment(inboxId)}/messages/${encodePathSegment(messageId)}`,
+    });
+  }
+
+  async updateMessageLabels({ addLabels = [], apiKey, inboxId, messageId, removeLabels = [] }) {
+    const body = {};
+    const normalizedAddLabels = [...new Set(addLabels.map((label) => String(label || "").trim()).filter(Boolean))];
+    const normalizedRemoveLabels = [...new Set(removeLabels.map((label) => String(label || "").trim()).filter(Boolean))];
+    if (normalizedAddLabels.length) {
+      body.add_labels = normalizedAddLabels;
+    }
+    if (normalizedRemoveLabels.length) {
+      body.remove_labels = normalizedRemoveLabels;
+    }
+    if (!Object.keys(body).length) {
+      return null;
+    }
+
+    return this.requestAgentMail({
+      apiKey,
+      body,
+      method: "PATCH",
+      path: `/v0/inboxes/${encodePathSegment(inboxId)}/messages/${encodePathSegment(messageId)}`,
+    });
+  }
+
   async createInbox({ apiKey, clientId, displayName = "", domain = "", username = "" } = {}) {
     const key = String(apiKey || "").trim();
     if (!key) {
@@ -909,7 +1142,10 @@ export class AgentMailService {
 
     if (!response.ok) {
       const message = payload?.error || payload?.message || payload?.detail || `AgentMail request failed (${response.status})`;
-      throw new Error(message);
+      const error = new Error(message);
+      error.status = response.status;
+      error.payload = payload;
+      throw error;
     }
 
     return payload;
