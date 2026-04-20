@@ -36,7 +36,6 @@ Noise estimate comes from n=5 seeds per variant; "beats beyond noise" = `variant
 
 | move | result doc | branch | agent | started |
 |------|-----------|--------|-------|---------|
-| gbt-hparam-tune | [gbt-hparam-tune.md](results/gbt-hparam-tune.md) | [r/gbt-hparam-tune](https://github.com/Clamepending/adult-classifier/tree/r/gbt-hparam-tune) | 0 | 2026-04-20 |
 
 ## QUEUE
 
@@ -49,6 +48,7 @@ Noise estimate comes from n=5 seeds per variant; "beats beyond noise" = `variant
 
 | date | event | slug or ref | one-line summary | link |
 |------|-------|-------------|-------------------|------|
+| 2026-04-20 | resolved | gbt-hparam-tune | RandomizedSearchCV n_iter=12: val_auc=0.9293±0.00166, Δ vs rank 1 = +0.00023 — within-noise, does not admit | [gbt-hparam-tune.md](results/gbt-hparam-tune.md) |
 | 2026-04-20 | resolved | feature-engineering | 5 hand-crafted features on HistGBT: val_auc=0.9290±0.00171, Δ vs rank 1 = -0.00007 — within-noise, first non-admission | [feature-engineering.md](results/feature-engineering.md) |
 | 2026-04-20 | resolved | gradient-boosted-trees | HistGBT + native cats: val_auc=0.9290±0.00195 (+0.0218, 4.3× margin); admits rank 1 beyond noise | [gradient-boosted-trees.md](results/gradient-boosted-trees.md) |
 | 2026-04-20 | resolved | baseline | logreg + onehot + scaled numerics: val_auc=0.9072±0.00254 (n=5); noise floor set, admission threshold 0.9123 | [baseline.md](results/baseline.md) |
