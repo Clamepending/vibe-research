@@ -35,12 +35,12 @@ Noise estimate comes from n=5 seeds per variant; "beats beyond noise" = `variant
 
 | move | result doc | branch | agent | started |
 |------|-----------|--------|-------|---------|
+| baseline | [baseline.md](results/baseline.md) | [r/baseline](https://github.com/Clamepending/adult-classifier/tree/r/baseline) | 0 | 2026-04-20 |
 
 ## QUEUE
 
 | move | starting-point | why |
 |------|----------------|-----|
-| baseline | [main@1f69f2a](https://github.com/Clamepending/adult-classifier/tree/main) | Logistic regression with one-hot + scaled numerics at n=5 seeds. Establish baseline AUC and the seed-noise std that downstream "beats beyond noise" checks will use. |
 | gradient-boosted-trees | [main@1f69f2a](https://github.com/Clamepending/adult-classifier/tree/main) | Swap model family to HistGradientBoosting with the same raw features. Biggest expected gain; sets the real ceiling to beat. |
 | feature-engineering | *(rank 1 at time of move)* | Add interaction features + target encoding on top of the rank-1 pipeline. Likely noise-boundary result — good admission-rule stress test. |
 | gbt-hparam-tune | *(rank 1 at time of move)* | Small random search over GBT hyperparameters. Incremental; may be within noise. |
