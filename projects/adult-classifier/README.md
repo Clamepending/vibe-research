@@ -26,8 +26,9 @@ Noise estimate comes from n=5 seeds per variant; "beats beyond noise" = `variant
 | rank | result | branch | commit | score / verdict |
 |------|--------|--------|--------|-----------------|
 | 1 | [gradient-boosted-trees](results/gradient-boosted-trees.md) | [r/gradient-boosted-trees](https://github.com/Clamepending/adult-classifier/tree/r/gradient-boosted-trees) | [7250242](https://github.com/Clamepending/adult-classifier/commit/7250242) | val_auc = 0.9290 ± 0.00195 (n=5); admission threshold for challengers: AUC > 0.9329 |
-| 2 | [model-diversification](results/model-diversification.md) | [r/model-diversification](https://github.com/Clamepending/adult-classifier/tree/r/model-diversification) | [b264e2e](https://github.com/Clamepending/adult-classifier/commit/b264e2e) | val_auc = 0.9185 ± 0.00242 (n=5); RandomForest — beats baseline +0.0113 beyond-noise, trails rank 1 by 0.0105 |
-| 3 | [baseline](results/baseline.md) | [r/baseline](https://github.com/Clamepending/adult-classifier/tree/r/baseline) | [2d355fc](https://github.com/Clamepending/adult-classifier/commit/2d355fc) | val_auc = 0.9072 ± 0.00254 (n=5); noise floor |
+| 2 | [stack-rf-histgbt](results/stack-rf-histgbt.md) | [r/stack-rf-histgbt](https://github.com/Clamepending/adult-classifier/tree/r/stack-rf-histgbt) | [e106bb7](https://github.com/Clamepending/adult-classifier/commit/e106bb7) | val_auc = 0.9284 ± 0.00203 (n=5); within-noise of rank 1 (Δ=-0.00063), beats RF +0.0099 beyond-noise |
+| 3 | [model-diversification](results/model-diversification.md) | [r/model-diversification](https://github.com/Clamepending/adult-classifier/tree/r/model-diversification) | [b264e2e](https://github.com/Clamepending/adult-classifier/commit/b264e2e) | val_auc = 0.9185 ± 0.00242 (n=5); RandomForest — beats baseline +0.0113 beyond-noise, trails rank 1 by 0.0105 |
+| 4 | [baseline](results/baseline.md) | [r/baseline](https://github.com/Clamepending/adult-classifier/tree/r/baseline) | [2d355fc](https://github.com/Clamepending/adult-classifier/commit/2d355fc) | val_auc = 0.9072 ± 0.00254 (n=5); noise floor |
 
 ## INSIGHTS
 
@@ -37,18 +38,18 @@ Noise estimate comes from n=5 seeds per variant; "beats beyond noise" = `variant
 
 | move | result doc | branch | agent | started |
 |------|-----------|--------|-------|---------|
-| stack-rf-histgbt | [stack-rf-histgbt.md](results/stack-rf-histgbt.md) | [r/stack-rf-histgbt](https://github.com/Clamepending/adult-classifier/tree/r/stack-rf-histgbt) | 0 | 2026-04-20 |
 
 ## QUEUE
 
 | move | starting-point | why |
 |------|----------------|-----|
-| *(empty — review mode on completion)* | — | — |
+| *(empty — enter review mode)* | — | — |
 
 ## LOG
 
 | date | event | slug or ref | one-line summary | link |
 |------|-------|-------------|-------------------|------|
+| 2026-04-20 | falsified | stack-rf-histgbt | StackingClassifier(RF+HistGBT, LR meta): val_auc=0.9284±0.00203, Δ vs rank 1 = -0.00063 (within-noise, stacking-helps falsified); but +0.0099 vs rank 2 RF beyond-noise — admits rank 2, RF drops to rank 3, baseline to rank 4 | [stack-rf-histgbt.md](results/stack-rf-histgbt.md) |
 | 2026-04-20 | resolved | model-diversification | RandomForest n_estimators=500: val_auc=0.9185±0.00242, -0.0105 vs rank 1, +0.0113 vs baseline — admits rank 2, baseline evicted to rank 3 | [model-diversification.md](results/model-diversification.md) |
 | 2026-04-20 | resolved | gbt-fe-ablation | drop-one ablation 5 feats × 5 seeds: 3/5 drops bit-identical (tree ignored them); max |Δ|=0.00012; confirms FE null | [gbt-fe-ablation.md](results/gbt-fe-ablation.md) |
 | 2026-04-20 | resolved | gbt-hparam-tune | RandomizedSearchCV n_iter=12: val_auc=0.9293±0.00166, Δ vs rank 1 = +0.00023 — within-noise, does not admit | [gbt-hparam-tune.md](results/gbt-hparam-tune.md) |
