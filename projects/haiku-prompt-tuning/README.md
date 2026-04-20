@@ -33,12 +33,12 @@ https://github.com/Clamepending/haiku-prompt-tuning
 
 | move | result doc | branch | agent | started |
 |------|-----------|--------|-------|---------|
+| ban-only | [results/ban-only.md](results/ban-only.md) | [r/ban-only](https://github.com/Clamepending/haiku-prompt-tuning/tree/r/ban-only) | 0 | 2026-04-19 |
 
 ## QUEUE
 
 | move | starting-point | why |
 |------|----------------|-----|
-| ban-only | [main@42ba2d6](https://github.com/Clamepending/haiku-prompt-tuning/tree/main) | Explicit ban list of expected tropes, no positive anchor. Tests ban-only-collapse: does it route to a *different* stereotype? |
 | positive-only | [main@42ba2d6](https://github.com/Clamepending/haiku-prompt-tuning/tree/main) | "Concrete image, present tense, no sentiment" positive framing only, no bans. Tests positive-only-collapse. |
 | composite | [main@42ba2d6](https://github.com/Clamepending/haiku-prompt-tuning/tree/main) | Bans + positive + "output only three lines." Tests whether the compose-pattern reproduces. |
 
