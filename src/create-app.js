@@ -247,6 +247,7 @@ export async function createRemoteVibesApp({
   listPorts = listListeningPorts,
   accessUrlsProvider = getAccessUrls,
   providers: providerOverrides = null,
+  persistentTerminals = true,
   tailscaleServeManager = new TailscaleServeManager(),
   sleepPreventionFactory = (settings) =>
     new SleepPreventionService({
@@ -281,6 +282,7 @@ export async function createRemoteVibesApp({
     cwd,
     providers,
     persistSessions,
+    persistentTerminals,
     stateDir,
     agentRunStore,
     wikiRootPath: settingsStore.settings.wikiPath,
@@ -940,6 +942,14 @@ export async function createRemoteVibesApp({
     }
   });
 
+  app.post("/api/agent-prompt/reload", async (_request, response) => {
+    try {
+      response.json(await agentPromptStore.reload());
+    } catch (error) {
+      response.status(400).json({ error: error.message });
+    }
+  });
+
   app.post("/api/sessions/:sessionId/fork", (request, response) => {
     try {
       const session = sessionManager.forkSession(request.params.sessionId);
@@ -964,6 +974,22 @@ export async function createRemoteVibesApp({
         return;
       }
 
+      response.json({ graph });
+    } catch (error) {
+      response.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/projects/swarm", async (request, response) => {
+    try {
+      const cwd = String(request.query.cwd || "");
+
+      if (!cwd) {
+        response.status(400).json({ error: "Project folder is required." });
+        return;
+      }
+
+      const graph = await sessionManager.getProjectSwarmGraph(cwd);
       response.json({ graph });
     } catch (error) {
       response.status(400).json({ error: error.message });

@@ -252,6 +252,16 @@ export class AgentPromptStore {
     return this.getState();
   }
 
+  async reload() {
+    const prompt =
+      (await readTextIfExists(this.promptFilePath)) ??
+      getDefaultPrompt({ wikiRootLabel: this.getWikiRootLabel() });
+    await this.persistPrompt(prompt);
+    await this.ensureWikiScaffold();
+    this.targets = await this.syncManagedFiles();
+    return this.getState();
+  }
+
   async persistPrompt(prompt) {
     const options = { wikiRootLabel: this.getWikiRootLabel() };
     this.prompt = ensureBuiltInPromptSections(prompt, options) || getDefaultPrompt(options);

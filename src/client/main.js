@@ -248,6 +248,9 @@ const state = {
   agentPromptTargets: [],
   swarmGraph: {
     sessionId: null,
+    projectCwd: "",
+    projectFallbackSessionId: "",
+    projectName: "",
     loading: false,
     error: "",
     data: null,
@@ -4474,15 +4477,6 @@ function renderSessionCard(session) {
       </div>
       <span class="session-time">${relativeTime(session.lastOutputAt)}</span>
       <div class="session-actions">
-        <button class="session-action-button session-graph-button" type="button" aria-label="Open swarm graph" ${tooltipAttributes("Swarm graph")} data-open-swarm-graph="${session.id}">
-          <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
-            <path d="M5 5.5h3.5a4 4 0 0 1 4 4v3" />
-            <path d="M5 12.5h3.5a4 4 0 0 0 4-4v-3" />
-            <path d="M3.5 4.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6Z" />
-            <path d="M14.5 3.8a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6Z" />
-            <path d="M14.5 10.6a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6Z" />
-          </svg>
-        </button>
         <button class="session-action-button session-fork-button" type="button" aria-label="Fork session" ${tooltipAttributes("Fork session")} data-fork-session="${session.id}">
           <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
             <path d="M5 3.5v2.2a4.8 4.8 0 0 0 4.8 4.8H13" />
@@ -4556,7 +4550,6 @@ function renderSessionCards() {
       const expanded = state.sessionProjectExpanded.has(group.key);
       const active = group.sessions.some((session) => session.id === state.activeSessionId);
       const graphSessionId = group.sessions[0]?.id || "";
-
       return `
         <section class="session-project ${expanded ? "is-expanded" : ""} ${active ? "has-active-session" : ""}" data-session-project="${escapeHtml(group.key)}">
           <div class="session-project-head">
@@ -4580,10 +4573,20 @@ function renderSessionCards() {
             <button
               class="session-project-graph"
               type="button"
-              data-open-swarm-graph="${escapeHtml(graphSessionId)}"
-              aria-label="Open swarm graph for ${escapeHtml(group.name)}"
-              ${tooltipAttributes("Swarm graph")}
-            >⌁</button>
+              data-open-swarm-project="${escapeHtml(group.cwd)}"
+              data-swarm-project-fallback-session="${escapeHtml(graphSessionId)}"
+              data-swarm-project-name="${escapeHtml(group.name)}"
+              aria-label="Open repo graph for ${escapeHtml(group.name)}"
+              ${tooltipAttributes("Repo graph")}
+            >
+              <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+                <path d="M5 5.5h3.5a4 4 0 0 1 4 4v3" />
+                <path d="M5 12.5h3.5a4 4 0 0 0 4-4v-3" />
+                <path d="M3.5 4.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6Z" />
+                <path d="M14.5 3.8a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6Z" />
+                <path d="M14.5 10.6a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6Z" />
+              </svg>
+            </button>
             <button
               class="session-project-new"
               type="button"
@@ -6539,18 +6542,26 @@ function renderSwarmDetails(graph) {
 function renderSwarmGraphView() {
   const graph = state.swarmGraph.data;
   const selectedSession = state.sessions.find((session) => session.id === state.swarmGraph.sessionId) || null;
-  const title = selectedSession?.name || graph?.sessions?.[0]?.name || "Swarm graph";
+  const title =
+    state.swarmGraph.projectName
+    || (graph?.git?.root ? getWorkspacePathLeafName(graph.git.root) : "")
+    || selectedSession?.name
+    || graph?.sessions?.[0]?.name
+    || "Swarm graph";
   const refreshLabel = state.swarmGraph.loading ? "Mapping swarm graph" : "Refresh swarm graph";
   const meta = graph
     ? `${graph.git?.isRepository ? "git" : "folder"} · ${graph.cwd || selectedSession?.cwd || state.defaultCwd}`
     : selectedSession
       ? `${selectedSession.providerLabel} · ${selectedSession.cwd}`
-      : "choose a session to inspect its agent swarm";
+      : state.swarmGraph.projectCwd
+        ? `project folder · ${state.swarmGraph.projectCwd}`
+        : "choose a project folder to inspect its repo graph";
+  const canRefreshSwarm = Boolean(state.swarmGraph.projectCwd || state.swarmGraph.sessionId);
 
   return `
     <section class="dashboard-panel main-view swarm-view" ${renderMainViewAttributes(
       "swarm",
-      `swarm:${state.swarmGraph.sessionId || ""}`,
+      `swarm:${state.swarmGraph.projectCwd || state.swarmGraph.sessionId || ""}`,
     )}>
       <div class="dashboard-toolbar">
         <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>≡</button>
@@ -6560,7 +6571,7 @@ function renderSwarmGraphView() {
         </div>
         <div class="dashboard-actions">
           <button class="ghost-button toolbar-control" type="button" id="swarm-back-to-session">terminal</button>
-          <button class="icon-button toolbar-control refresh-icon-button ${state.swarmGraph.loading ? "is-loading" : ""}" type="button" id="refresh-swarm-graph" aria-label="${escapeHtml(refreshLabel)}" ${tooltipAttributes(refreshLabel)} ${state.swarmGraph.loading || !state.swarmGraph.sessionId ? "disabled" : ""}>↻</button>
+          <button class="icon-button toolbar-control refresh-icon-button ${state.swarmGraph.loading ? "is-loading" : ""}" type="button" id="refresh-swarm-graph" aria-label="${escapeHtml(refreshLabel)}" ${tooltipAttributes(refreshLabel)} ${state.swarmGraph.loading || !canRefreshSwarm ? "disabled" : ""}>↻</button>
         </div>
       </div>
       ${
@@ -6579,7 +6590,7 @@ function renderSwarmGraphView() {
                 ${renderSwarmDetails(graph)}
               </div>
             `
-            : `<div class="blank-state">hover a session and click the swarm icon to map it.</div>`
+            : `<div class="blank-state">hover a project folder and click the repo graph icon to map it.</div>`
       }
     </section>
   `;
@@ -6710,6 +6721,9 @@ function renderAgentPromptView() {
         <div class="dashboard-copy">
           <strong>Agent Prompt</strong>
           <div class="terminal-meta">shared instructions injected into Codex, Claude, Gemini, and OpenCode sessions</div>
+        </div>
+        <div class="dashboard-actions">
+          <button class="icon-button toolbar-control refresh-icon-button" type="button" id="refresh-agent-prompt" aria-label="Reload agent prompt from disk" ${tooltipAttributes("Reload agent prompt from disk")}>↻</button>
         </div>
       </div>
       <div class="dashboard-range agent-prompt-summary">
@@ -7114,10 +7128,6 @@ function renderShell() {
         </div>
 
         <div class="sidebar-footer">
-          <button class="sidebar-settings-link" type="button" data-open-main-view="knowledge-base">
-            <span aria-hidden="true">⚙</span>
-            <span>Settings</span>
-          </button>
           <div class="sidebar-footer-actions">
             <button class="ghost-button relaunch-button" type="button" id="relaunch-app">relaunch</button>
             <button class="danger-button terminate-button" type="button" id="terminate-app">terminate</button>
@@ -7439,6 +7449,17 @@ function bindSessionEvents() {
       event.stopPropagation();
       const sessionId = button.getAttribute("data-open-swarm-graph") || "";
       void openSwarmGraph(sessionId);
+    });
+  });
+
+  document.querySelectorAll("[data-open-swarm-project]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const projectCwd = button.getAttribute("data-open-swarm-project") || "";
+      const fallbackSessionId = button.getAttribute("data-swarm-project-fallback-session") || "";
+      const projectName = button.getAttribute("data-swarm-project-name") || "";
+      void openSwarmProjectGraph(projectCwd, { fallbackSessionId, projectName });
     });
   });
 
@@ -9328,6 +9349,9 @@ async function openSwarmGraph(sessionId, { refresh = false } = {}) {
 
   state.swarmGraph = {
     sessionId,
+    projectCwd: "",
+    projectFallbackSessionId: "",
+    projectName: "",
     loading: true,
     error: "",
     data: refresh && state.swarmGraph.sessionId === sessionId ? state.swarmGraph.data : null,
@@ -9342,6 +9366,9 @@ async function openSwarmGraph(sessionId, { refresh = false } = {}) {
     });
     state.swarmGraph = {
       sessionId,
+      projectCwd: "",
+      projectFallbackSessionId: "",
+      projectName: "",
       loading: false,
       error: "",
       data: payload.graph,
@@ -9349,6 +9376,69 @@ async function openSwarmGraph(sessionId, { refresh = false } = {}) {
   } catch (error) {
     state.swarmGraph = {
       sessionId,
+      projectCwd: "",
+      projectFallbackSessionId: "",
+      projectName: "",
+      loading: false,
+      error: error.message,
+      data: state.swarmGraph.data,
+    };
+  }
+
+  renderShell();
+}
+
+async function openSwarmProjectGraph(projectCwd, { fallbackSessionId = "", projectName = "", refresh = false } = {}) {
+  const normalizedCwd = normalizeWorkspaceRoot(projectCwd);
+  if (!normalizedCwd) {
+    return;
+  }
+
+  const cacheMatches = state.swarmGraph.projectCwd === normalizedCwd && !state.swarmGraph.sessionId;
+  state.swarmGraph = {
+    sessionId: null,
+    projectCwd: normalizedCwd,
+    projectFallbackSessionId: fallbackSessionId,
+    projectName,
+    loading: true,
+    error: "",
+    data: refresh && cacheMatches ? state.swarmGraph.data : null,
+  };
+  setCurrentView("swarm");
+  closeMobileSidebar();
+  renderShell();
+
+  try {
+    const params = new URLSearchParams({ cwd: normalizedCwd });
+    let payload;
+    try {
+      payload = await fetchJson(`/api/projects/swarm?${params.toString()}`, {
+        cache: "no-store",
+      });
+    } catch (error) {
+      if (error.status !== 404 || !fallbackSessionId) {
+        throw error;
+      }
+
+      payload = await fetchJson(`/api/sessions/${encodeURIComponent(fallbackSessionId)}/swarm`, {
+        cache: "no-store",
+      });
+    }
+    state.swarmGraph = {
+      sessionId: null,
+      projectCwd: normalizedCwd,
+      projectFallbackSessionId: fallbackSessionId,
+      projectName,
+      loading: false,
+      error: "",
+      data: payload.graph,
+    };
+  } catch (error) {
+    state.swarmGraph = {
+      sessionId: null,
+      projectCwd: normalizedCwd,
+      projectFallbackSessionId: fallbackSessionId,
+      projectName,
       loading: false,
       error: error.message,
       data: state.swarmGraph.data,
@@ -9548,7 +9638,13 @@ function bindShellEvents() {
   }
 
   document.querySelector("#refresh-swarm-graph")?.addEventListener("click", () => {
-    if (state.swarmGraph.sessionId) {
+    if (state.swarmGraph.projectCwd) {
+      void openSwarmProjectGraph(state.swarmGraph.projectCwd, {
+        fallbackSessionId: state.swarmGraph.projectFallbackSessionId || state.swarmGraph.data?.sessionId || "",
+        projectName: state.swarmGraph.projectName,
+        refresh: true,
+      });
+    } else if (state.swarmGraph.sessionId) {
       void openSwarmGraph(state.swarmGraph.sessionId, { refresh: true });
     }
   });
@@ -9561,6 +9657,22 @@ function bindShellEvents() {
   });
 
   document.querySelector("#refresh-sessions")?.addEventListener("click", () => loadSessions());
+  document.querySelector("#refresh-agent-prompt")?.addEventListener("click", async () => {
+    const textarea = document.querySelector("#agent-prompt-textarea");
+    const hasUnsavedChanges = textarea instanceof HTMLTextAreaElement && textarea.value !== state.agentPrompt;
+
+    if (hasUnsavedChanges && !window.confirm("You have unsaved edits in the prompt editor. Reload from disk and discard them?")) {
+      return;
+    }
+
+    try {
+      const payload = await fetchJson("/api/agent-prompt/reload", { method: "POST" });
+      applyAgentPromptState(payload);
+      renderShell();
+    } catch (error) {
+      window.alert(error.message);
+    }
+  });
   document.querySelector("#agent-prompt-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
