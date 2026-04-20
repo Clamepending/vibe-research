@@ -23,8 +23,7 @@ https://github.com/Clamepending/haiku-prompt-tuning
 
 | rank | result | branch | commit | score / verdict |
 |------|--------|--------|--------|-----------------|
-
-*(empty — project just seeded)*
+| 1 | [baseline](results/baseline.md) | [r/baseline](https://github.com/Clamepending/haiku-prompt-tuning/tree/r/baseline) | [12fd65e](https://github.com/Clamepending/haiku-prompt-tuning/commit/12fd65e) | 5/6 "Silent..." opener + 4/6 abstract closer + 1/6 meta-leak; Zen-pastiche attractor, hit rate ~1/6 |
 
 ## INSIGHTS
 
@@ -34,7 +33,6 @@ https://github.com/Clamepending/haiku-prompt-tuning
 
 | move | result doc | branch | agent | started |
 |------|-----------|--------|-------|---------|
-| baseline | [results/baseline.md](results/baseline.md) | [r/baseline](https://github.com/Clamepending/haiku-prompt-tuning/tree/r/baseline) | 0 | 2026-04-19 |
 
 ## QUEUE
 
@@ -48,4 +46,5 @@ https://github.com/Clamepending/haiku-prompt-tuning
 
 | date | event | slug or ref | one-line summary | link |
 |------|-------|-------------|-------------------|------|
+| 2026-04-19 | resolved | baseline | baseline collapses to Zen-pastiche attractor: 5/6 "Silent..." opener, 4/6 abstract closer, 1/6 meta-leak, hit rate ~1/6 | [baseline.md](results/baseline.md) |
 | 2026-04-19 | review | seed | project seeded to test attractor-naming generalization on haiku; 4 moves queued (baseline / ban-only / positive-only / composite) | [README](./README.md) |
