@@ -1119,10 +1119,14 @@ test("knowledge base markdown viewer renders image, GIF, and video media links",
   const workspaceDir = await createTempWorkspace("remote-vibes-markdown-media-");
   const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
   const assetsDir = path.join(wikiDir, "assets");
+  const absoluteAssetsDir = path.join(workspaceDir, "absolute-assets");
+  const absoluteImagePath = path.join(absoluteAssetsDir, "held-out-grid.png");
   await mkdir(assetsDir, { recursive: true });
+  await mkdir(absoluteAssetsDir, { recursive: true });
   await writeFile(path.join(assetsDir, "diagram.png"), PNG_FIXTURE);
   await writeFile(path.join(assetsDir, "flow.gif"), GIF_FIXTURE);
   await writeFile(path.join(assetsDir, "demo.mp4"), Buffer.from("not a real video, but enough for a DOM smoke\n"));
+  await writeFile(absoluteImagePath, PNG_FIXTURE);
   await writeFile(path.join(wikiDir, "index.md"), "# Wiki Index\n\nSee [[media]].\n", "utf8");
   await writeFile(
     path.join(wikiDir, "media.md"),
@@ -1131,6 +1135,7 @@ test("knowledge base markdown viewer renders image, GIF, and video media links",
       "",
       "![Diagram](assets/diagram.png)",
       "![Animated flow](assets/flow.gif)",
+      `![Absolute held-out grid](${absoluteImagePath})`,
       "[Demo clip](assets/demo.mp4)",
       "[External still](https://example.com/still.webp)",
       "[Plain docs](https://example.com/docs)",
@@ -1191,14 +1196,18 @@ test("knowledge base markdown viewer renders image, GIF, and video media links",
 
     assert.deepEqual(
       rendered.images.map((image) => image.alt),
-      ["Diagram", "Animated flow", "External still"],
+      ["Diagram", "Animated flow", "Absolute held-out grid", "External still"],
     );
     assert.deepEqual(
-      rendered.images.slice(0, 2).map((image) => image.path),
-      ["assets/diagram.png", "assets/flow.gif"],
+      rendered.images.slice(0, 3).map((image) => image.path),
+      ["assets/diagram.png", "assets/flow.gif", "held-out-grid.png"],
     );
-    assert.equal(rendered.images[2].src, "https://example.com/still.webp");
-    assert.ok(rendered.images.every((image) => image.loading === "lazy"));
+    assert.equal(new URL(rendered.images[2].src).searchParams.get("root"), absoluteAssetsDir);
+    assert.equal(rendered.images[3].src, "https://example.com/still.webp");
+    assert.deepEqual(
+      rendered.images.map((image) => image.loading),
+      ["eager", "eager", "eager", "lazy"],
+    );
     assert.ok(rendered.images.every((image) => image.decoding === "async"));
     assert.equal(rendered.videoPath, "assets/demo.mp4");
     assert.equal(rendered.videoControls, true);

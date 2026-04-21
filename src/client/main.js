@@ -4284,6 +4284,30 @@ function getKnowledgeBaseMediaKind(targetPath, { defaultToImage = false } = {}) 
   return defaultToImage ? "image" : "";
 }
 
+function splitKnowledgeBaseAbsoluteFilePath(filePath) {
+  const normalized = String(filePath || "").replaceAll("\\", "/").trim();
+
+  if (!normalized.startsWith("/") || normalized === "/") {
+    return null;
+  }
+
+  const segments = normalized.split("/").filter(Boolean);
+  const fileName = segments.pop();
+  if (!fileName) {
+    return null;
+  }
+
+  return {
+    root: `/${segments.join("/")}` || "/",
+    path: fileName,
+  };
+}
+
+function getKnowledgeBaseAbsoluteFileUrl(filePath) {
+  const absolutePath = splitKnowledgeBaseAbsoluteFilePath(filePath);
+  return absolutePath ? getFileContentUrlForRoot(absolutePath.root, absolutePath.path) : "";
+}
+
 function getKnowledgeBaseMediaResource(currentPath, targetPath, { defaultToImage = false } = {}) {
   const cleanedTarget = cleanMarkdownLinkTarget(targetPath);
 
@@ -4300,6 +4324,12 @@ function getKnowledgeBaseMediaResource(currentPath, targetPath, { defaultToImage
     return kind ? { kind, url: cleanedTarget } : null;
   }
 
+  const absoluteAssetUrl = getKnowledgeBaseAbsoluteFileUrl(cleanedTarget);
+  if (absoluteAssetUrl) {
+    const kind = getKnowledgeBaseMediaKind(cleanedTarget, { defaultToImage });
+    return kind ? { kind, url: absoluteAssetUrl, local: true } : null;
+  }
+
   const relativeAssetPath = resolveKnowledgeBaseRelativePath(currentPath, cleanedTarget);
   if (!relativeAssetPath) {
     return null;
@@ -4310,6 +4340,7 @@ function getKnowledgeBaseMediaResource(currentPath, targetPath, { defaultToImage
     ? {
         kind,
         url: getKnowledgeBaseNoteRawUrl(relativeAssetPath),
+        local: true,
       }
     : null;
 }
@@ -6042,10 +6073,11 @@ function renderKnowledgeBaseMedia(media, { altText = "", caption = "" } = {}) {
     `;
   }
 
+  const imageLoading = media.local ? "eager" : "lazy";
   return `
     <span class="knowledge-base-media knowledge-base-image-media">
       <a class="knowledge-base-media-open" href="${url}" target="_blank" rel="noreferrer">
-        <img class="knowledge-base-inline-image" src="${url}" alt="${escapeHtml(altText)}" loading="lazy" decoding="async" />
+        <img class="knowledge-base-inline-image" src="${url}" alt="${escapeHtml(altText)}" loading="${imageLoading}" decoding="async" />
       </a>
       ${captionHtml}
     </span>
@@ -6082,10 +6114,11 @@ function renderKnowledgeBaseInline(text, currentPath) {
       return createToken(renderKnowledgeBaseMedia(media, { altText: label, caption: label }));
     }
 
-    const relativeAssetPath = resolveKnowledgeBaseRelativePath(currentPath, cleanedTarget);
-    const externalHref = relativeAssetPath
+    const absoluteFileHref = getKnowledgeBaseAbsoluteFileUrl(cleanedTarget);
+    const relativeAssetPath = absoluteFileHref ? "" : resolveKnowledgeBaseRelativePath(currentPath, cleanedTarget);
+    const externalHref = absoluteFileHref || (relativeAssetPath
       ? getKnowledgeBaseNoteRawUrl(relativeAssetPath)
-      : cleanedTarget || String(target || "").trim();
+      : cleanedTarget || String(target || "").trim());
     return createToken(
       `<a class="knowledge-base-external-link" href="${escapeHtml(externalHref)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`,
     );
