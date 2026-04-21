@@ -106,7 +106,7 @@ const KNOWLEDGE_BASE_SEARCH_FIELD_WEIGHTS = [
   ["searchText", 1],
 ];
 const PORT_PREVIEW_TAB_PREFIX = "port:";
-const ROUTED_MAIN_VIEWS = new Set(["search", "plugins", "automations", "system", "swarm", "browser-use"]);
+const ROUTED_MAIN_VIEWS = new Set(["search", "plugins", "automations", "system", "visual-interface", "swarm", "browser-use"]);
 const SESSION_WORKING_SPINNER_MS = 900;
 const FILE_IMAGE_MIN_ZOOM = 1;
 const FILE_IMAGE_MAX_ZOOM = 8;
@@ -748,6 +748,15 @@ function getRouteState() {
   if (explicitView === "agent-prompt") {
     return {
       view: "agent-prompt",
+      root,
+      path: "",
+      notePath: "",
+    };
+  }
+
+  if (explicitView === "swarm") {
+    return {
+      view: "visual-interface",
       root,
       path: "",
       notePath: "",
@@ -7887,6 +7896,12 @@ function renderSidebarNav() {
   const wikiLabel = state.settings.wikiRelativeRoot || state.agentPromptWikiRoot || "wiki";
   const primaryItems = [
     {
+      view: "visual-interface",
+      icon: Waypoints,
+      label: "Visual Interface",
+      meta: "agent village",
+    },
+    {
       view: "plugins",
       icon: Plug,
       label: "Plugins",
@@ -10009,6 +10024,457 @@ function renderSwarmDetails(graph) {
   `;
 }
 
+function getVisualGraphSessions(graph) {
+  return Array.isArray(graph?.sessions) ? graph.sessions : [];
+}
+
+function getVisualStatusClass(status) {
+  const normalized = String(status || "idle").toLowerCase();
+  if (normalized.includes("work") || normalized === "running") {
+    return "working";
+  }
+  if (normalized.includes("fail") || normalized.includes("error")) {
+    return "failed";
+  }
+  if (normalized.includes("done") || normalized.includes("complete") || normalized.includes("read")) {
+    return "done";
+  }
+  if (normalized.includes("dirty")) {
+    return "dirty";
+  }
+  return "idle";
+}
+
+function getVisualInterfaceAgents(graph) {
+  const sessions = getVisualGraphSessions(graph);
+  const agents = [];
+
+  for (const session of sessions) {
+    agents.push({
+      kind: "chat",
+      name: session.name || session.providerLabel || "Agent",
+      subtitle: [session.providerLabel, getWorkspacePathLeafName(session.cwd || "")].filter(Boolean).join(" · "),
+      status: session.activityStatus || session.status || "idle",
+      meta: relativeTime(session.lastOutputAt || session.updatedAt || session.createdAt),
+      sessionId: session.id,
+    });
+
+    for (const subagent of Array.isArray(session.subagents) ? session.subagents : []) {
+      const toolUseCount = Number(subagent.toolUseCount);
+      const messageCount = Number(subagent.messageCount);
+      const detail = [
+        subagent.browserUseSessionId ? "browser lab" : subagent.source === "claude" ? "Claude helper" : subagent.agentType || "helper",
+        subagent.toolUseCount != null && Number.isFinite(toolUseCount) ? `${toolUseCount} tools` : "",
+        subagent.messageCount != null && Number.isFinite(messageCount) ? `${messageCount} msgs` : "",
+      ].filter(Boolean).join(" · ");
+
+      agents.push({
+        kind: subagent.browserUseSessionId ? "browser" : "helper",
+        name: subagent.name || subagent.description || "Helper agent",
+        subtitle: detail,
+        status: subagent.status || "idle",
+        meta: relativeTime(subagent.updatedAt),
+        browserUseSessionId: subagent.browserUseSessionId || "",
+      });
+    }
+  }
+
+  return agents
+    .sort((left, right) => {
+      const statusDelta = (getVisualStatusClass(right.status) === "working" ? 1 : 0) - (getVisualStatusClass(left.status) === "working" ? 1 : 0);
+      if (statusDelta) {
+        return statusDelta;
+      }
+      return String(right.meta || "").localeCompare(String(left.meta || ""));
+    })
+    .slice(0, 12);
+}
+
+function renderVisualAgentTile(agent, index) {
+  const statusClass = getVisualStatusClass(agent.status);
+  const icon = agent.kind === "browser" ? AppWindow : agent.kind === "helper" ? Zap : Bot;
+  const content = `
+    <span class="visual-agent-sprite visual-agent-sprite-${escapeHtml(statusClass)}" aria-hidden="true">
+      ${renderIcon(icon)}
+    </span>
+    <span class="visual-agent-copy">
+      <strong>${escapeHtml(agent.name)}</strong>
+      <span>${escapeHtml(agent.subtitle || "ready")}</span>
+      <em>${escapeHtml([statusClass, agent.meta].filter(Boolean).join(" · "))}</em>
+    </span>
+  `;
+  const attributes = `class="visual-agent-tile visual-status-${escapeHtml(statusClass)}" style="--agent-order:${index}"`;
+
+  if (agent.browserUseSessionId) {
+    return `
+      <button ${attributes} type="button" data-open-browser-use-session="${escapeHtml(agent.browserUseSessionId)}" aria-label="Open ${escapeHtml(agent.name)}">
+        ${content}
+      </button>
+    `;
+  }
+
+  if (agent.sessionId) {
+    return `
+      <button ${attributes} type="button" data-session-id="${escapeHtml(agent.sessionId)}" aria-label="Open ${escapeHtml(agent.name)}">
+        ${content}
+      </button>
+    `;
+  }
+
+  return `<article ${attributes}>${content}</article>`;
+}
+
+function renderVisualWorkshop(graph) {
+  const agents = getVisualInterfaceAgents(graph);
+
+  return `
+    <section class="visual-zone visual-zone-workshop">
+      <div class="visual-zone-head">
+        <span>Workshop</span>
+        <strong>${escapeHtml(`${agents.length} ${agents.length === 1 ? "agent" : "agents"}`)}</strong>
+      </div>
+      <div class="visual-agent-grid">
+        ${
+          agents.length
+            ? agents.map(renderVisualAgentTile).join("")
+            : `<div class="visual-empty-inline">No active agents in this project.</div>`
+        }
+      </div>
+    </section>
+  `;
+}
+
+function renderVisualMissionBoard() {
+  const missions = [
+    { label: "New run", meta: "choose project", icon: MessageSquarePlus, attrs: `data-folder-picker-target="session"` },
+    { label: "Findings", meta: "open wiki", icon: BookOpen, attrs: `data-open-main-view="knowledge-base"` },
+    { label: "Tools", meta: "plugins", icon: Plug, attrs: `data-open-main-view="plugins"` },
+    { label: "Schedule", meta: "automations", icon: CalendarClock, attrs: `data-open-main-view="automations"` },
+  ];
+
+  return `
+    <section class="visual-zone visual-zone-missions">
+      <div class="visual-zone-head">
+        <span>Mission Board</span>
+        <strong>orders</strong>
+      </div>
+      <div class="visual-mission-grid">
+        ${missions
+          .map(
+            (mission) => `
+              <button class="visual-mission-card" type="button" ${mission.attrs}>
+                <span aria-hidden="true">${renderIcon(mission.icon)}</span>
+                <strong>${escapeHtml(mission.label)}</strong>
+                <em>${escapeHtml(mission.meta)}</em>
+              </button>
+            `,
+          )
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderVisualStations(graph) {
+  const sessions = getVisualGraphSessions(graph);
+  const browserUseCount = sessions.reduce(
+    (count, session) =>
+      count + (Array.isArray(session.subagents) ? session.subagents.filter((subagent) => subagent.browserUseSessionId).length : 0),
+    0,
+  );
+  const installedPluginCount = Array.isArray(state.settings.installedPluginIds) ? state.settings.installedPluginIds.length : 0;
+  const pathBucketCount = collectSwarmPathBuckets(graph).length;
+  const stationCards = [
+    { label: "Agent Desk", meta: `${sessions.length} chats`, icon: Bot },
+    { label: "Tool Shed", meta: `${installedPluginCount} plugins`, icon: Plug },
+    { label: "Browser Lab", meta: browserUseCount ? `${browserUseCount} tasks` : state.settings.browserUseEnabled ? "ready" : "disabled", icon: AppWindow },
+    { label: "Evidence Wall", meta: `${pathBucketCount} file groups`, icon: FileText },
+    { label: "Port Dock", meta: isLocalhostAppsEnabled() ? `${state.ports.length} ports` : "off", icon: ServerCog },
+  ];
+
+  return `
+    <section class="visual-zone visual-zone-stations">
+      <div class="visual-zone-head">
+        <span>Town Stations</span>
+        <strong>tools</strong>
+      </div>
+      <div class="visual-station-grid">
+        ${stationCards
+          .map(
+            (station) => `
+              <article class="visual-station-card">
+                <span class="visual-station-roof" aria-hidden="true"></span>
+                <span class="visual-station-icon" aria-hidden="true">${renderIcon(station.icon)}</span>
+                <strong>${escapeHtml(station.label)}</strong>
+                <em>${escapeHtml(station.meta)}</em>
+              </article>
+            `,
+          )
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
+function getVisualQualitativeRead(graph, agents, pathBuckets) {
+  const workingCount = agents.filter((agent) => getVisualStatusClass(agent.status) === "working").length;
+  if (!agents.length) {
+    return "No agent activity has reached this project yet.";
+  }
+  if (workingCount > 0) {
+    const busiestFolder = pathBuckets[0]?.label;
+    const agentPhrase = workingCount === 1 ? "1 agent is" : `${workingCount} agents are`;
+    return busiestFolder
+      ? `${agentPhrase} in motion; busiest folder: ${busiestFolder}.`
+      : `${agentPhrase} in motion; touched-file evidence is still sparse.`;
+  }
+  if (graph?.git?.dirtyCount) {
+    return "Work is quiet now, but the repo has uncommitted changes waiting for review.";
+  }
+  return "The town is quiet; recent work is ready to inspect from the evidence cards.";
+}
+
+function renderVisualEvidenceWall(graph) {
+  const agents = getVisualInterfaceAgents(graph);
+  const sessions = getVisualGraphSessions(graph);
+  const pathBuckets = collectSwarmPathBuckets(graph);
+  const pathCount = pathBuckets.reduce((total, bucket) => total + Number(bucket.count || 0), 0);
+  const workingCount = agents.filter((agent) => getVisualStatusClass(agent.status) === "working").length;
+  const dirtyCount = Number(graph?.git?.dirtyCount || 0);
+  const quantitativeCards = [
+    { label: "Active agents", value: String(workingCount), meta: `${agents.length} visible` },
+    { label: "Project chats", value: String(sessions.length), meta: "related threads" },
+    { label: "Files touched", value: String(pathCount), meta: `${pathBuckets.length} groups` },
+    { label: "Repo changes", value: String(dirtyCount), meta: dirtyCount ? "needs review" : "clean" },
+  ];
+  const qualitativeRead = getVisualQualitativeRead(graph, agents, pathBuckets);
+
+  return `
+    <section class="visual-zone visual-zone-evidence">
+      <div class="visual-zone-head">
+        <span>Evidence Wall</span>
+        <strong>findings</strong>
+      </div>
+      <div class="visual-evidence-layout">
+        <div class="visual-evidence-lane">
+          <span class="visual-lane-label">Quantitative</span>
+          <div class="visual-evidence-grid">
+            ${quantitativeCards
+              .map(
+                (card) => `
+                  <article class="visual-evidence-card is-quant">
+                    <strong>${escapeHtml(card.value)}</strong>
+                    <span>${escapeHtml(card.label)}</span>
+                    <em>${escapeHtml(card.meta)}</em>
+                  </article>
+                `,
+              )
+              .join("")}
+          </div>
+        </div>
+        <div class="visual-evidence-lane">
+          <span class="visual-lane-label">Qualitative</span>
+          <article class="visual-evidence-card is-qual">
+            <strong>Readout</strong>
+            <span>${escapeHtml(qualitativeRead)}</span>
+            ${
+              pathBuckets.length
+                ? `<div class="visual-chip-row">${pathBuckets.slice(0, 5).map((bucket) => `<em>${escapeHtml(bucket.label)}</em>`).join("")}</div>`
+                : `<div class="visual-chip-row"><em>no artifacts yet</em></div>`
+            }
+          </article>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderVisualProjectPicker() {
+  const groups = getSessionProjectGroups();
+
+  if (!groups.length) {
+    return `
+      <div class="visual-project-empty">
+        <strong>No agent villages yet</strong>
+        <button class="primary-button" type="button" data-folder-picker-target="session">start a project</button>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="visual-project-picker">
+      ${groups
+        .map(
+          (group) => `
+            <button
+              class="visual-project-card"
+              type="button"
+              data-open-swarm-project="${escapeHtml(group.cwd)}"
+              data-swarm-project-fallback-session="${escapeHtml(group.sessions[0]?.id || "")}"
+              data-swarm-project-name="${escapeHtml(group.name)}"
+            >
+              <span aria-hidden="true">${renderIcon(FolderCog)}</span>
+              <strong>${escapeHtml(group.name)}</strong>
+              <em>${escapeHtml(`${group.sessions.length} ${group.sessions.length === 1 ? "chat" : "chats"}`)}</em>
+            </button>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function getVisualTownAgentPlacement(agent, index) {
+  const statusClass = getVisualStatusClass(agent.status);
+  const workingSpots = [
+    { x: 56, y: 32, walkX: 0, walkY: 0 },
+    { x: 66, y: 32, walkX: 0, walkY: 0 },
+    { x: 76, y: 32, walkX: 0, walkY: 0 },
+    { x: 56, y: 48, walkX: 0, walkY: 0 },
+    { x: 66, y: 48, walkX: 0, walkY: 0 },
+    { x: 76, y: 48, walkX: 0, walkY: 0 },
+  ];
+  const roamingSpots = [
+    { x: 31, y: 37, walkX: 18, walkY: -10 },
+    { x: 38, y: 60, walkX: -16, walkY: 13 },
+    { x: 18, y: 65, walkX: 14, walkY: -14 },
+    { x: 84, y: 67, walkX: -18, walkY: 10 },
+    { x: 48, y: 78, walkX: 22, walkY: 0 },
+    { x: 19, y: 33, walkX: 12, walkY: 12 },
+    { x: 89, y: 38, walkX: -12, walkY: -11 },
+    { x: 63, y: 78, walkX: -20, walkY: 8 },
+  ];
+  const spots = statusClass === "working" ? workingSpots : roamingSpots;
+  const spot = spots[index % spots.length];
+  return {
+    ...spot,
+    statusClass,
+    speed: `${4.8 + (index % 5) * 0.5}s`,
+  };
+}
+
+function renderVisualTownAgent(agent, index) {
+  const placement = getVisualTownAgentPlacement(agent, index);
+  const icon = agent.kind === "browser" ? AppWindow : agent.kind === "helper" ? Zap : Bot;
+  const isWorking = placement.statusClass === "working";
+  const label = truncateSwarmLabel(agent.name || "agent", isWorking ? 28 : 18);
+  const style = [
+    `--agent-x:${placement.x}%`,
+    `--agent-y:${placement.y}%`,
+    `--wander-x:${placement.walkX}px`,
+    `--wander-y:${placement.walkY}px`,
+    `--wander-speed:${placement.speed}`,
+  ].join(";");
+  const content = `
+    <span class="visual-town-agent-body" aria-hidden="true">${renderIcon(icon)}</span>
+    <span class="visual-town-agent-shadow" aria-hidden="true"></span>
+    <span class="visual-town-agent-label">
+      <strong>${escapeHtml(label)}</strong>
+      <em>${escapeHtml(isWorking ? "at computer" : "walking")}</em>
+    </span>
+  `;
+  const attributes = `class="visual-town-agent visual-status-${escapeHtml(placement.statusClass)} ${isWorking ? "is-working" : "is-roaming"}" style="${escapeHtml(style)}"`;
+
+  if (agent.browserUseSessionId) {
+    return `
+      <button ${attributes} type="button" data-open-browser-use-session="${escapeHtml(agent.browserUseSessionId)}" aria-label="Open ${escapeHtml(agent.name)}">
+        ${content}
+      </button>
+    `;
+  }
+
+  if (agent.sessionId) {
+    return `
+      <button ${attributes} type="button" data-session-id="${escapeHtml(agent.sessionId)}" aria-label="Open ${escapeHtml(agent.name)}">
+        ${content}
+      </button>
+    `;
+  }
+
+  return `<article ${attributes}>${content}</article>`;
+}
+
+function renderVisualTownComputers(agents) {
+  const workingAgents = agents.filter((agent) => getVisualStatusClass(agent.status) === "working");
+  return Array.from({ length: 6 }, (_, index) => {
+    const occupied = Boolean(workingAgents[index]);
+    return `
+      <span class="visual-town-computer ${occupied ? "is-occupied" : ""}" style="--computer-index:${index}" aria-label="${occupied ? "occupied computer" : "empty computer"}">
+        <span></span>
+      </span>
+    `;
+  }).join("");
+}
+
+function renderVisualTownWorld(graph) {
+  const agents = getVisualInterfaceAgents(graph);
+  const workingCount = agents.filter((agent) => getVisualStatusClass(agent.status) === "working").length;
+  const roamingCount = Math.max(0, agents.length - workingCount);
+  const pathBuckets = collectSwarmPathBuckets(graph);
+
+  return `
+    <section class="visual-town-world" aria-label="Agent village world">
+      <div class="visual-town-map">
+        <div class="visual-town-grid" aria-hidden="true"></div>
+        <div class="visual-town-path visual-town-path-main" aria-hidden="true"></div>
+        <div class="visual-town-path visual-town-path-cross" aria-hidden="true"></div>
+        <button class="visual-town-building visual-building-mission" type="button" data-folder-picker-target="session">
+          <span class="visual-building-roof" aria-hidden="true"></span>
+          <strong>Mission Board</strong>
+          <em>start work</em>
+        </button>
+        <button class="visual-town-building visual-building-tools" type="button" data-open-main-view="plugins">
+          <span class="visual-building-roof" aria-hidden="true"></span>
+          <strong>Tool Shed</strong>
+          <em>${escapeHtml(`${state.settings.installedPluginIds?.length || 0} plugins`)}</em>
+        </button>
+        <button class="visual-town-building visual-building-evidence" type="button" data-open-main-view="knowledge-base">
+          <span class="visual-building-roof" aria-hidden="true"></span>
+          <strong>Evidence Wall</strong>
+          <em>${escapeHtml(`${pathBuckets.length} groups`)}</em>
+        </button>
+        <button class="visual-town-building visual-building-schedule" type="button" data-open-main-view="automations">
+          <span class="visual-building-roof" aria-hidden="true"></span>
+          <strong>Schedule</strong>
+          <em>helpers</em>
+        </button>
+        <div class="visual-town-workshop" aria-label="Computer workshop">
+          <div class="visual-town-workshop-roof" aria-hidden="true"></div>
+          <strong>Workshop</strong>
+          <em>${escapeHtml(`${workingCount} at computers`)}</em>
+          <div class="visual-town-computers" aria-hidden="true">
+            ${renderVisualTownComputers(agents)}
+          </div>
+        </div>
+        <div class="visual-town-browser-lab" aria-hidden="true">
+          <span></span>
+          <strong>Browser Lab</strong>
+        </div>
+        <div class="visual-town-dock" aria-hidden="true">
+          <strong>Port Dock</strong>
+          <em>${escapeHtml(isLocalhostAppsEnabled() ? `${state.ports.length} ports` : "off")}</em>
+        </div>
+        <div class="visual-town-agents">
+          ${agents.length ? agents.map(renderVisualTownAgent).join("") : `<div class="visual-town-empty">Start a run to populate the village.</div>`}
+        </div>
+        <div class="visual-town-status">
+          <strong>${escapeHtml(`${workingCount} working`)}</strong>
+          <span>${escapeHtml(`${roamingCount} roaming`)}</span>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderVisualVillage(graph) {
+  return `
+    <div class="visual-game-layout">
+      ${renderVisualTownWorld(graph)}
+      ${renderVisualEvidenceWall(graph)}
+    </div>
+  `;
+}
+
 function renderSwarmGraphView() {
   const graph = state.swarmGraph.data;
   const selectedSession = state.sessions.find((session) => session.id === state.swarmGraph.sessionId) || null;
@@ -10017,27 +10483,27 @@ function renderSwarmGraphView() {
     || (graph?.git?.root ? getWorkspacePathLeafName(graph.git.root) : "")
     || selectedSession?.name
     || graph?.sessions?.[0]?.name
-    || "Swarm graph";
-  const refreshLabel = state.swarmGraph.loading ? "Mapping swarm graph" : "Refresh swarm graph";
+    || "Visual interface";
+  const refreshLabel = state.swarmGraph.loading ? "Mapping agent village" : "Refresh visual interface";
   const meta = graph
     ? `${graph.git?.isRepository ? "git" : "folder"} · ${graph.cwd || selectedSession?.cwd || state.defaultCwd}`
     : selectedSession
       ? `${selectedSession.providerLabel} · ${selectedSession.cwd}`
       : state.swarmGraph.projectCwd
         ? `project folder · ${state.swarmGraph.projectCwd}`
-        : "choose a project folder to inspect its repo graph";
+        : "choose a project to open its village";
   const canRefreshSwarm = Boolean(state.swarmGraph.projectCwd || state.swarmGraph.sessionId);
 
   return `
-    <section class="dashboard-panel main-view swarm-view" ${renderMainViewAttributes(
-      "swarm",
+    <section class="dashboard-panel main-view visual-interface-view" ${renderMainViewAttributes(
+      "visual-interface",
       `swarm:${state.swarmGraph.projectCwd || state.swarmGraph.sessionId || ""}`,
     )}>
       <div class="dashboard-toolbar">
         <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
         <div class="dashboard-copy">
           <strong>${escapeHtml(title)}</strong>
-          <div class="terminal-meta">swarm graph · ${escapeHtml(meta)}</div>
+          <div class="terminal-meta">visual interface · ${escapeHtml(meta)}</div>
         </div>
         <div class="dashboard-actions">
           <button class="ghost-button toolbar-control" type="button" id="swarm-back-to-session">terminal</button>
@@ -10051,16 +10517,10 @@ function renderSwarmGraphView() {
       }
       ${
         state.swarmGraph.loading && !graph
-          ? `<div class="blank-state">mapping sessions, git worktrees, and Claude sidechains...</div>`
+          ? `<div class="blank-state">mapping agents, tools, files, and evidence...</div>`
           : graph
-            ? `
-              ${renderSwarmSummary(graph)}
-              <div class="swarm-layout">
-                <div class="swarm-canvas">${renderSwarmGraphSvg(graph)}</div>
-                ${renderSwarmDetails(graph)}
-              </div>
-            `
-            : `<div class="blank-state">hover a project folder and click the repo graph icon to map it.</div>`
+            ? renderVisualVillage(graph)
+            : renderVisualProjectPicker()
       }
     </section>
   `;
@@ -10436,7 +10896,7 @@ function renderTerminalPanel(activeSession) {
     return renderSystemView();
   }
 
-  if (state.currentView === "swarm") {
+  if (isVisualInterfaceView()) {
     return renderSwarmGraphView();
   }
 
@@ -10981,7 +11441,8 @@ function renderShell() {
     plugins: "Plugins · Remote Vibes",
     automations: "Automations · Remote Vibes",
     system: "System · Remote Vibes",
-    swarm: "Swarm Graph · Remote Vibes",
+    "visual-interface": "Visual Interface · Remote Vibes",
+    swarm: "Visual Interface · Remote Vibes",
     "browser-use": "Browser Use · Remote Vibes",
   };
   document.title = viewTitles[state.currentView] || "Remote Vibes";
@@ -13542,7 +14003,15 @@ function syncViewFromLocation() {
   }
 }
 
+function isVisualInterfaceView(view = state.currentView) {
+  return view === "visual-interface" || view === "swarm";
+}
+
 function setCurrentView(nextView, { notePath = state.knowledgeBase.selectedNotePath } = {}) {
+  if (nextView === "swarm") {
+    nextView = "visual-interface";
+  }
+
   const previousView = state.currentView;
 
   if (nextView === "knowledge-base") {
@@ -13593,6 +14062,11 @@ async function openMainView(nextView) {
     return;
   }
 
+  if (nextView === "visual-interface" || nextView === "swarm") {
+    await openVisualInterface();
+    return;
+  }
+
   if (ROUTED_MAIN_VIEWS.has(nextView)) {
     setCurrentView(nextView);
     closeMobileSidebar();
@@ -13619,6 +14093,33 @@ async function openMainView(nextView) {
   }
 }
 
+async function openVisualInterface({ refresh = false } = {}) {
+  const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) || state.sessions[0] || null;
+
+  if (activeSession?.cwd) {
+    await openSwarmProjectGraph(activeSession.cwd, {
+      fallbackSessionId: activeSession.id,
+      projectName: getWorkspacePathLeafName(activeSession.cwd),
+      refresh,
+    });
+    return;
+  }
+
+  const projectGroup = getSessionProjectGroups()[0] || null;
+  if (projectGroup?.cwd) {
+    await openSwarmProjectGraph(projectGroup.cwd, {
+      fallbackSessionId: projectGroup.sessions[0]?.id || "",
+      projectName: projectGroup.name,
+      refresh,
+    });
+    return;
+  }
+
+  setCurrentView("visual-interface");
+  closeMobileSidebar();
+  renderShell();
+}
+
 async function openSwarmGraph(sessionId, { refresh = false } = {}) {
   const selectedSession = state.sessions.find((session) => session.id === sessionId);
   if (!sessionId || !selectedSession) {
@@ -13634,7 +14135,7 @@ async function openSwarmGraph(sessionId, { refresh = false } = {}) {
     error: "",
     data: refresh && state.swarmGraph.sessionId === sessionId ? state.swarmGraph.data : null,
   };
-  setCurrentView("swarm");
+  setCurrentView("visual-interface");
   closeMobileSidebar();
   renderShell();
 
@@ -13682,7 +14183,7 @@ async function openSwarmProjectGraph(projectCwd, { fallbackSessionId = "", proje
     error: "",
     data: refresh && cacheMatches ? state.swarmGraph.data : null,
   };
-  setCurrentView("swarm");
+  setCurrentView("visual-interface");
   closeMobileSidebar();
   renderShell();
 
@@ -15733,6 +16234,9 @@ async function bootstrapApp() {
   if (state.currentView === "system") {
     void loadSystemMetrics({ forceRender: true });
   }
+  if (isVisualInterfaceView()) {
+    void openVisualInterface({ refresh: true });
+  }
   void loadUpdateStatus();
 
   if (state.updateTimer) {
@@ -15759,6 +16263,10 @@ async function bootstrapApp() {
     syncViewFromLocation();
 
     renderShell();
+    if (isVisualInterfaceView()) {
+      void openVisualInterface();
+      return;
+    }
     if (state.currentView === "shell" && state.activeSessionId) {
       connectToSession(state.activeSessionId);
     }

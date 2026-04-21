@@ -2399,6 +2399,838 @@ input[readonly][data-folder-picker-target] {
   white-space: nowrap;
 }
 
+.visual-interface-view {
+  grid-template-rows: auto minmax(0, 1fr);
+  background:
+    linear-gradient(180deg, rgba(16, 21, 19, 0.98), rgba(12, 13, 15, 0.98));
+}
+
+.visual-village-layout,
+.visual-project-picker {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.visual-village-map {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(260px, 0.82fr) minmax(340px, 1.25fr) minmax(280px, 0.86fr);
+  grid-template-rows: auto minmax(210px, 0.9fr);
+  grid-template-areas:
+    "missions workshop stations"
+    "evidence evidence evidence";
+  gap: 12px;
+  min-width: min(100%, 980px);
+  height: 100%;
+  min-height: 100%;
+  padding: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(199, 214, 170, 0.13);
+  border-radius: 18px;
+  background:
+    linear-gradient(90deg, rgba(120, 162, 105, 0.055) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(120, 162, 105, 0.055) 1px, transparent 1px),
+    linear-gradient(135deg, rgba(44, 74, 58, 0.74), rgba(31, 44, 50, 0.74) 48%, rgba(61, 51, 59, 0.64));
+  background-size: 34px 34px, 34px 34px, auto;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+}
+
+.visual-map-ground {
+  position: absolute;
+  inset: 14px;
+  pointer-events: none;
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, transparent 0 46%, rgba(222, 205, 132, 0.08) 46% 54%, transparent 54%),
+    linear-gradient(45deg, transparent 0 46%, rgba(99, 171, 150, 0.09) 46% 54%, transparent 54%);
+  background-size: 76px 76px;
+  opacity: 0.58;
+}
+
+.visual-zone {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+  border: 1px solid rgba(244, 244, 242, 0.075);
+  border-radius: 12px;
+  background: rgba(17, 18, 20, 0.62);
+  backdrop-filter: blur(10px);
+}
+
+.visual-zone-missions {
+  grid-area: missions;
+}
+
+.visual-zone-workshop {
+  grid-area: workshop;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.visual-zone-stations {
+  grid-area: stations;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.visual-zone-evidence {
+  grid-area: evidence;
+  overflow: auto;
+}
+
+.visual-zone-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.visual-zone-head span,
+.visual-zone-head strong,
+.visual-lane-label {
+  overflow: hidden;
+  color: rgba(244, 244, 242, 0.72);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.visual-zone-head strong {
+  max-width: 42%;
+  color: rgba(183, 231, 191, 0.82);
+  text-align: right;
+}
+
+.visual-agent-grid,
+.visual-mission-grid,
+.visual-station-grid,
+.visual-evidence-grid {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.visual-agent-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  overflow: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+}
+
+.visual-agent-tile {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 74px;
+  padding: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  color: inherit;
+  text-align: left;
+}
+
+button.visual-agent-tile:hover,
+button.visual-agent-tile:focus-visible,
+.visual-mission-card:hover,
+.visual-mission-card:focus-visible,
+.visual-project-card:hover,
+.visual-project-card:focus-visible {
+  border-color: rgba(183, 231, 191, 0.26);
+  background: rgba(183, 231, 191, 0.075);
+}
+
+.visual-agent-sprite {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px 8px 10px 10px;
+  background: rgba(125, 189, 255, 0.14);
+  color: #dcefff;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.24);
+}
+
+.visual-agent-sprite .rv-icon {
+  width: 19px;
+  height: 19px;
+}
+
+.visual-agent-sprite-working {
+  border-color: rgba(125, 189, 255, 0.56);
+  animation: visual-agent-pulse 1.4s ease-in-out infinite;
+}
+
+.visual-agent-sprite-done {
+  background: rgba(154, 214, 127, 0.14);
+  color: #dffae8;
+}
+
+.visual-agent-sprite-failed {
+  background: rgba(255, 127, 121, 0.13);
+  color: #ffcac6;
+}
+
+.visual-agent-copy,
+.visual-agent-copy strong,
+.visual-agent-copy span,
+.visual-agent-copy em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visual-agent-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.visual-agent-copy strong {
+  color: var(--text);
+  font-size: 0.86rem;
+}
+
+.visual-agent-copy span,
+.visual-agent-copy em {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.66rem;
+  font-style: normal;
+}
+
+.visual-status-working {
+  border-color: rgba(125, 189, 255, 0.24);
+  background: rgba(125, 189, 255, 0.07);
+}
+
+.visual-mission-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.visual-mission-card,
+.visual-project-card {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  min-width: 0;
+  min-height: 88px;
+  padding: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  color: inherit;
+  text-align: left;
+}
+
+.visual-mission-card > span,
+.visual-project-card > span,
+.visual-station-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: rgba(242, 138, 104, 0.13);
+  color: #ffc6ad;
+}
+
+.visual-mission-card .rv-icon,
+.visual-project-card .rv-icon,
+.visual-station-icon .rv-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.visual-mission-card strong,
+.visual-mission-card em,
+.visual-project-card strong,
+.visual-project-card em,
+.visual-station-card strong,
+.visual-station-card em {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visual-mission-card strong,
+.visual-project-card strong,
+.visual-station-card strong {
+  color: var(--text);
+  font-size: 0.86rem;
+}
+
+.visual-mission-card em,
+.visual-project-card em,
+.visual-station-card em {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.66rem;
+  font-style: normal;
+}
+
+.visual-station-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  overflow: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+}
+
+.visual-station-card {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+  min-height: 104px;
+  padding: 14px 10px 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.03));
+}
+
+.visual-station-roof {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 8px;
+  background: linear-gradient(90deg, rgba(229, 205, 138, 0.24), rgba(99, 171, 150, 0.22), rgba(125, 189, 255, 0.18));
+}
+
+.visual-evidence-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.85fr) minmax(320px, 1.15fr);
+  gap: 10px;
+  min-width: 0;
+}
+
+.visual-evidence-lane {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.visual-evidence-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.visual-evidence-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.visual-evidence-card.is-quant strong {
+  color: #dffae8;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 1.35rem;
+}
+
+.visual-evidence-card.is-qual strong,
+.visual-evidence-card.is-quant span {
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.visual-evidence-card.is-qual span {
+  color: rgba(244, 244, 242, 0.76);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.visual-evidence-card em {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.64rem;
+  font-style: normal;
+}
+
+.visual-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 3px;
+}
+
+.visual-chip-row em {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 5px 7px;
+  border-radius: 999px;
+  background: rgba(154, 214, 127, 0.1);
+  color: rgba(223, 250, 232, 0.86);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visual-project-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-content: start;
+  gap: 10px;
+  padding-right: 2px;
+}
+
+.visual-project-empty {
+  display: grid;
+  justify-items: start;
+  gap: 14px;
+  align-content: center;
+  min-height: 320px;
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.visual-empty-inline {
+  grid-column: 1 / -1;
+  padding: 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+}
+
+.visual-game-layout {
+  display: grid;
+  grid-template-rows: minmax(430px, 1fr) auto;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.visual-town-world {
+  min-width: 0;
+  min-height: 430px;
+}
+
+.visual-town-map {
+  position: relative;
+  min-width: 820px;
+  height: 100%;
+  min-height: 430px;
+  overflow: hidden;
+  border: 1px solid rgba(199, 214, 170, 0.15);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(58, 95, 69, 0.72), rgba(42, 70, 68, 0.74) 46%, rgba(70, 67, 82, 0.66)),
+    #15221d;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+}
+
+.visual-town-grid {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(227, 217, 160, 0.045) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(227, 217, 160, 0.045) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.visual-town-path {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, rgba(196, 177, 118, 0.22), rgba(196, 177, 118, 0.12));
+  box-shadow: inset 0 0 0 1px rgba(255, 244, 192, 0.08);
+}
+
+.visual-town-path-main {
+  right: 9%;
+  bottom: 23%;
+  left: 8%;
+  height: 13%;
+  transform: rotate(-2deg);
+}
+
+.visual-town-path-cross {
+  top: 9%;
+  bottom: 14%;
+  left: 43%;
+  width: 9%;
+  transform: rotate(3deg);
+}
+
+.visual-town-building,
+.visual-town-workshop,
+.visual-town-browser-lab,
+.visual-town-dock,
+.visual-town-status {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 8px;
+  background: rgba(22, 25, 25, 0.9);
+  color: var(--text);
+  text-align: left;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.18);
+}
+
+.visual-town-building {
+  min-height: 72px;
+}
+
+button.visual-town-building:hover,
+button.visual-town-building:focus-visible {
+  border-color: rgba(183, 231, 191, 0.3);
+  background: rgba(38, 53, 42, 0.94);
+}
+
+.visual-building-roof,
+.visual-town-workshop-roof {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 9px;
+  border-radius: 8px 8px 0 0;
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(242, 138, 104, 0.38) 0 15px,
+    rgba(229, 205, 138, 0.32) 15px 30px
+  );
+}
+
+.visual-town-building strong,
+.visual-town-workshop strong,
+.visual-town-browser-lab strong,
+.visual-town-dock strong,
+.visual-town-status strong,
+.visual-town-building em,
+.visual-town-workshop em,
+.visual-town-dock em,
+.visual-town-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visual-town-building strong,
+.visual-town-workshop strong,
+.visual-town-browser-lab strong,
+.visual-town-dock strong,
+.visual-town-status strong {
+  padding-top: 10px;
+  font-size: 0.88rem;
+}
+
+.visual-town-building em,
+.visual-town-workshop em,
+.visual-town-dock em,
+.visual-town-status span {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.66rem;
+  font-style: normal;
+}
+
+.visual-building-mission {
+  top: 9%;
+  left: 7%;
+  width: 18%;
+}
+
+.visual-building-tools {
+  top: 37%;
+  left: 8%;
+  width: 17%;
+}
+
+.visual-building-evidence {
+  bottom: 8%;
+  left: 9%;
+  width: 20%;
+}
+
+.visual-building-schedule {
+  top: 8%;
+  left: 31%;
+  width: 17%;
+}
+
+.visual-town-workshop {
+  top: 10%;
+  left: 51%;
+  width: 35%;
+  height: 49%;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018)),
+    rgba(18, 22, 24, 0.93);
+}
+
+.visual-town-computers {
+  position: absolute;
+  right: 10%;
+  bottom: 12%;
+  left: 10%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.visual-town-computer {
+  position: relative;
+  display: block;
+  height: 42px;
+  border: 1px solid rgba(125, 189, 255, 0.18);
+  border-radius: 7px;
+  background:
+    linear-gradient(180deg, rgba(125, 189, 255, 0.12), rgba(125, 189, 255, 0.035)),
+    rgba(7, 10, 12, 0.72);
+}
+
+.visual-town-computer::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  right: 18%;
+  left: 18%;
+  height: 18px;
+  border-radius: 4px;
+  background: rgba(125, 189, 255, 0.22);
+  box-shadow: 0 0 12px rgba(125, 189, 255, 0.08);
+}
+
+.visual-town-computer span {
+  position: absolute;
+  right: 35%;
+  bottom: 6px;
+  left: 35%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(232, 236, 240, 0.28);
+}
+
+.visual-town-computer.is-occupied::before {
+  background: rgba(125, 189, 255, 0.48);
+  animation: visual-screen-glow 1.4s ease-in-out infinite;
+}
+
+.visual-town-browser-lab {
+  top: 16%;
+  right: 5%;
+  width: 12%;
+  min-height: 86px;
+  align-content: end;
+  background: rgba(35, 43, 44, 0.88);
+}
+
+.visual-town-browser-lab span {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  left: 18px;
+  height: 30px;
+  border: 1px solid rgba(154, 214, 127, 0.2);
+  border-radius: 16px 16px 8px 8px;
+  background: rgba(154, 214, 127, 0.12);
+}
+
+.visual-town-dock {
+  right: 6%;
+  bottom: 8%;
+  width: 14%;
+  min-height: 80px;
+  background: rgba(30, 35, 44, 0.9);
+}
+
+.visual-town-status {
+  right: 4%;
+  bottom: 32%;
+  width: 120px;
+  min-height: 62px;
+  border-color: rgba(183, 231, 191, 0.17);
+  background: rgba(13, 16, 18, 0.72);
+}
+
+.visual-town-agents {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.visual-town-agent {
+  position: absolute;
+  left: var(--agent-x);
+  top: var(--agent-y);
+  z-index: 5;
+  display: grid;
+  justify-items: center;
+  width: 104px;
+  min-height: 76px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+}
+
+.visual-town-agent.is-roaming {
+  animation: visual-town-wander var(--wander-speed) ease-in-out infinite alternate;
+}
+
+.visual-town-agent-body {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 38px;
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px 10px 12px 12px;
+  background: rgba(125, 189, 255, 0.18);
+  color: #dcefff;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.28);
+}
+
+.visual-town-agent-body .rv-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.visual-town-agent.visual-status-done .visual-town-agent-body {
+  background: rgba(154, 214, 127, 0.18);
+  color: #dffae8;
+}
+
+.visual-town-agent.visual-status-failed .visual-town-agent-body {
+  background: rgba(255, 127, 121, 0.16);
+  color: #ffd1cd;
+}
+
+.visual-town-agent.is-working .visual-town-agent-body {
+  border-color: rgba(125, 189, 255, 0.58);
+  animation: visual-agent-typing 1s steps(2, end) infinite;
+}
+
+.visual-town-agent-shadow {
+  width: 36px;
+  height: 7px;
+  margin-top: 3px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.24);
+}
+
+.visual-town-agent-label {
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  max-width: 104px;
+  margin-top: 4px;
+  padding: 5px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
+  background: rgba(10, 12, 14, 0.78);
+}
+
+.visual-town-agent-label strong,
+.visual-town-agent-label em {
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visual-town-agent-label strong {
+  font-size: 0.68rem;
+}
+
+.visual-town-agent-label em {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.58rem;
+  font-style: normal;
+}
+
+.visual-town-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  padding: 12px 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(10, 12, 14, 0.72);
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  transform: translate(-50%, -50%);
+}
+
+@keyframes visual-agent-pulse {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes visual-town-wander {
+  0% {
+    transform: translate(-50%, -50%);
+  }
+  100% {
+    transform: translate(calc(-50% + var(--wander-x)), calc(-50% + var(--wander-y)));
+  }
+}
+
+@keyframes visual-agent-typing {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(2px);
+  }
+}
+
+@keyframes visual-screen-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 12px rgba(125, 189, 255, 0.12);
+  }
+  50% {
+    box-shadow: 0 0 22px rgba(125, 189, 255, 0.28);
+  }
+}
+
 .system-storage-card,
 .system-summary-card,
 .system-section,
@@ -6345,6 +7177,84 @@ select:disabled {
 
   .file-editor-page-link {
     width: 100%;
+  }
+}
+
+@media (max-width: 1120px) {
+  .visual-village-map {
+    grid-template-columns: minmax(250px, 0.88fr) minmax(320px, 1.12fr);
+    grid-template-areas:
+      "missions workshop"
+      "stations workshop"
+      "evidence evidence";
+  }
+
+  .visual-agent-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .visual-interface-view {
+    padding: 10px;
+    padding-top: max(10px, calc(var(--safe-top) + 8px));
+    padding-right: max(10px, calc(var(--safe-right) + 8px));
+    padding-bottom: max(10px, calc(var(--safe-bottom) + 8px));
+    padding-left: max(10px, calc(var(--safe-left) + 8px));
+  }
+
+  .visual-village-map {
+    display: flex;
+    flex-direction: column;
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-template-areas:
+      "missions"
+      "workshop"
+      "stations"
+      "evidence";
+    height: auto;
+    min-height: 0;
+    min-width: 0;
+    overflow: visible;
+    padding: 10px;
+  }
+
+  .visual-zone,
+  .visual-agent-grid,
+  .visual-station-grid,
+  .visual-zone-evidence {
+    overflow: visible;
+  }
+
+  .visual-zone {
+    flex: 0 0 auto;
+  }
+
+  .visual-zone-workshop,
+  .visual-zone-stations {
+    grid-template-rows: auto;
+  }
+
+  .visual-evidence-layout,
+  .visual-project-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .visual-mission-grid,
+  .visual-station-grid,
+  .visual-evidence-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .visual-agent-tile {
+    min-height: 68px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .visual-agent-sprite-working {
+    animation: none;
   }
 }
 
