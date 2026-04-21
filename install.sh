@@ -20,6 +20,7 @@ TAILSCALE_COMMAND="${REMOTE_VIBES_TAILSCALE_COMMAND:-tailscale}"
 TAILSCALE_AUTHKEY="${REMOTE_VIBES_TAILSCALE_AUTHKEY:-}"
 TAILSCALE_USE_SUDO="${REMOTE_VIBES_TAILSCALE_USE_SUDO:-1}"
 TAILSCALE_DAEMON_WAIT_SECONDS="${REMOTE_VIBES_TAILSCALE_DAEMON_WAIT_SECONDS:-15}"
+TAILSCALED_LOG_FILE="${REMOTE_VIBES_TAILSCALED_LOG_FILE:-/tmp/remote-vibes-tailscaled.log}"
 SERVICE_NAME="${REMOTE_VIBES_SERVICE_NAME:-remote-vibes}"
 SYSTEMD_SERVICE_DIR="${REMOTE_VIBES_SYSTEMD_SERVICE_DIR:-/etc/systemd/system}"
 NODE_MAJOR="${REMOTE_VIBES_NODE_MAJOR:-22}"
@@ -427,6 +428,24 @@ wait_for_tailscale_daemon() {
   return 1
 }
 
+start_tailscaled_userspace() {
+  local tailscaled_command
+
+  if ! is_linux || [ "$TAILSCALE_USE_SUDO" = "0" ]; then
+    return 1
+  fi
+
+  if ! tailscaled_command="$(command -v tailscaled 2>/dev/null)" || [ -z "$tailscaled_command" ]; then
+    return 1
+  fi
+
+  log "Starting tailscaled directly in userspace networking mode"
+  try_run_as_root mkdir -p /run/tailscale /var/lib/tailscale /var/cache/tailscale || return 1
+  try_run_as_root rm -f /run/tailscale/tailscaled.sock || true
+  try_run_as_root sh -c 'nohup "$1" --tun=userspace-networking --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641 >"$2" 2>&1 &' sh "$tailscaled_command" "$TAILSCALED_LOG_FILE" || return 1
+  wait_for_tailscale_daemon
+}
+
 start_tailscale_daemon() {
   if ! is_linux || [ "$TAILSCALE_USE_SUDO" = "0" ]; then
     return
@@ -434,29 +453,35 @@ start_tailscale_daemon() {
 
   if has_command systemctl; then
     if systemctl is-active --quiet tailscaled >/dev/null 2>&1; then
-      wait_for_tailscale_daemon || true
-      return
+      if wait_for_tailscale_daemon; then
+        return
+      fi
     fi
 
     log "Starting tailscaled service"
     if try_run_as_root systemctl enable --now tailscaled >/dev/null 2>&1; then
-      wait_for_tailscale_daemon || true
-      return
+      if wait_for_tailscale_daemon; then
+        return
+      fi
     fi
 
     if try_run_as_root systemctl start tailscaled >/dev/null 2>&1; then
-      wait_for_tailscale_daemon || true
-      return
+      if wait_for_tailscale_daemon; then
+        return
+      fi
     fi
   fi
 
   if has_command service; then
     log "Starting tailscaled service"
     if try_run_as_root service tailscaled start >/dev/null 2>&1; then
-      wait_for_tailscale_daemon || true
-      return
+      if wait_for_tailscale_daemon; then
+        return
+      fi
     fi
   fi
+
+  start_tailscaled_userspace || true
 }
 
 ensure_tailscale() {

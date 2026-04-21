@@ -489,14 +489,130 @@ exit 0
     assert.deepEqual((await readFile(systemctlLog, "utf8")).trim().split("\n"), [
       "is-active --quiet tailscaled",
       "enable --now tailscaled",
+      "start tailscaled",
       "is-active --quiet tailscaled",
       "enable --now tailscaled",
     ]);
     assert.deepEqual((await readFile(tailscaleLog, "utf8")).trim().split("\n"), [
       "status --json",
+      "status --json",
       "ip -4",
       "up",
       "status --json",
+      "up",
+      "ip -4",
+      "ip -4",
+    ]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
+test("install.sh falls back to userspace tailscaled when service startup cannot reach the daemon", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-tailscaled-userspace-"));
+  const installDir = path.join(installRoot, "remote-vibes");
+  const fakeBin = path.join(installRoot, "bin");
+  const tailscaleLog = path.join(installRoot, "tailscale.log");
+  const tailscaledLog = path.join(installRoot, "tailscaled.log");
+  const systemctlLog = path.join(installRoot, "systemctl.log");
+  const tailscaleDaemonState = path.join(installRoot, "tailscaled-running");
+  const tailscaleConnectedState = path.join(installRoot, "tailscale-connected");
+
+  try {
+    await mkdir(fakeBin, { recursive: true });
+    await writeFile(path.join(fakeBin, "uname"), "#!/usr/bin/env sh\nprintf 'Linux\\n'\n");
+    await writeFile(
+      path.join(fakeBin, "sudo"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+  mkdir | rm)
+    exit 0
+    ;;
+esac
+exec "$@"
+`,
+    );
+    await writeFile(
+      path.join(fakeBin, "systemctl"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> ${JSON.stringify(systemctlLog)}
+exit 1
+`,
+    );
+    await writeFile(
+      path.join(fakeBin, "tailscaled"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> ${JSON.stringify(tailscaledLog)}
+case " $* " in
+  *" --tun=userspace-networking "*)
+    : > ${JSON.stringify(tailscaleDaemonState)}
+    exit 0
+    ;;
+esac
+exit 1
+`,
+    );
+    await writeFile(
+      path.join(fakeBin, "tailscale"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> ${JSON.stringify(tailscaleLog)}
+if [ "\${1:-}" = "status" ]; then
+  if [ -f ${JSON.stringify(tailscaleDaemonState)} ]; then
+    printf '{}\\n'
+    exit 0
+  fi
+  printf "failed to connect to local tailscaled; it doesn't appear to be running\\n" >&2
+  exit 1
+fi
+if [ "\${1:-}" = "ip" ]; then
+  if [ -f ${JSON.stringify(tailscaleDaemonState)} ] && [ -f ${JSON.stringify(tailscaleConnectedState)} ]; then
+    printf '100.64.0.11\\n'
+    exit 0
+  fi
+  exit 1
+fi
+if [ "\${1:-}" = "up" ]; then
+  if [ ! -f ${JSON.stringify(tailscaleDaemonState)} ]; then
+    printf "failed to connect to local tailscaled; it doesn't appear to be running\\n" >&2
+    exit 1
+  fi
+  : > ${JSON.stringify(tailscaleConnectedState)}
+  exit 0
+fi
+exit 0
+`,
+    );
+    await execFile("chmod", ["+x", ...["uname", "sudo", "systemctl", "tailscaled", "tailscale"].map((name) => path.join(fakeBin, name))]);
+
+    const result = await execFile("bash", [installScript], {
+      env: installTestEnv({
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+        REMOTE_VIBES_HOME: installDir,
+        REMOTE_VIBES_REPO_URL: repoDir,
+        REMOTE_VIBES_INSTALL_TAILSCALE: "1",
+        REMOTE_VIBES_TAILSCALE_DAEMON_WAIT_SECONDS: "2",
+        REMOTE_VIBES_SKIP_RUN: "1",
+      }),
+    });
+
+    assert.match(result.stdout, /Starting tailscaled directly in userspace networking mode/);
+    assert.match(result.stdout, /Tailscale connected at 100\.64\.0\.11/);
+    assert.ok(await stat(path.join(installDir, "start.sh")));
+    assert.deepEqual((await readFile(systemctlLog, "utf8")).trim().split("\n"), [
+      "is-active --quiet tailscaled",
+      "enable --now tailscaled",
+      "start tailscaled",
+    ]);
+    assert.match(await readFile(tailscaledLog, "utf8"), /--tun=userspace-networking/);
+    assert.deepEqual((await readFile(tailscaleLog, "utf8")).trim().split("\n"), [
+      "status --json",
+      "ip -4",
       "up",
       "ip -4",
       "ip -4",
