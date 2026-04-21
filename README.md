@@ -4,7 +4,7 @@
 
 Minimal browser terminal to vibe code on your server/cluster/Mac/Raspberry Pi via your phone/laptop on the go.
 
-1. On the machine you want to control, run `curl -fsSL https://gist.githubusercontent.com/Clamepending/b40db6fc8775b843e6fc06a2b5857604/raw/install.sh | bash`
+1. On the machine you want to control, run `curl -fsSL https://vibe-research.net/install.sh | bash`
 2. Install the [Tailscale app](https://tailscale.com/download) on your laptop/phone, sign into the same account, then open the Tailscale URL or scan the QR printed by step 1.
 
 ## Claude Code Install
@@ -20,7 +20,7 @@ npm uninstall -g @anthropic-ai/claude-code 2>/dev/null || true
 
 ## Details...
 
-Use that gist URL directly. The repo `raw.githubusercontent.com/.../install.sh` link can get rate-limited. If a very minimal machine does not have `curl` yet, install `curl` first and rerun the quickstart command.
+Use the `vibe-research.net` installer URL directly. It is a small stable wrapper around the canonical installer in this repo. If a very minimal machine does not have `curl` yet, install `curl` first and rerun the quickstart command.
 
 The installer handles Tailscale, git, build tools, Node.js 22.x, Remote Vibes, and startup on supported macOS/Linux/Raspberry Pi systems. Coding agents like Claude, Codex, Gemini, or OpenCode are still installed separately.
 
