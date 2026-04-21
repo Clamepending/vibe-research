@@ -1613,6 +1613,67 @@ test("brain setup can clone an existing git brain from the browser", async (t) =
   }
 });
 
+test("brain setup remains scrollable on short viewports", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for the brain setup scroll smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("remote-vibes-brain-scroll-ui-");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+  let browser = null;
+
+  try {
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage({ viewport: { width: 768, height: 640 } });
+    await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector(".brain-setup-screen", { timeout: 10_000 });
+
+    const before = await page.evaluate(() => {
+      const screen = document.querySelector(".brain-setup-screen");
+      const cloneButton = document.querySelector(".brain-setup-clone-button");
+      const screenBounds = screen.getBoundingClientRect();
+      const buttonBounds = cloneButton.getBoundingClientRect();
+
+      return {
+        screenBottom: screenBounds.bottom,
+        screenClientHeight: screen.clientHeight,
+        screenScrollHeight: screen.scrollHeight,
+        buttonBottom: buttonBounds.bottom,
+        viewportHeight: window.innerHeight,
+      };
+    });
+
+    assert.ok(before.screenScrollHeight > before.screenClientHeight, "setup screen should expose a scroll range");
+    assert.equal(before.screenBottom, before.viewportHeight);
+    assert.ok(before.buttonBottom > before.viewportHeight, "clone button should start below the short viewport");
+
+    await page.locator(".brain-setup-clone-button").scrollIntoViewIfNeeded();
+
+    const after = await page.evaluate(() => {
+      const screen = document.querySelector(".brain-setup-screen");
+      const cloneButton = document.querySelector(".brain-setup-clone-button");
+      const buttonBounds = cloneButton.getBoundingClientRect();
+
+      return {
+        screenScrollTop: screen.scrollTop,
+        buttonTop: buttonBounds.top,
+        buttonBottom: buttonBounds.bottom,
+        viewportHeight: window.innerHeight,
+      };
+    });
+
+    assert.ok(after.screenScrollTop > 0, "setup screen did not scroll");
+    assert.ok(after.buttonTop >= 0, "clone button scrolled above the viewport");
+    assert.ok(after.buttonBottom <= after.viewportHeight, "clone button is still below the viewport");
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("knowledge base markdown viewer renders GitHub-style tables", async (t) => {
   const executablePath = await resolveBrowserExecutablePath({ env: process.env });
   if (!executablePath) {
