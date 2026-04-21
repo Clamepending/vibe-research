@@ -137,12 +137,12 @@ The conversation is the deliverable. No separate review doc — the record lives
 
 ## Knowledge Model
 
-Use `/home/ogata/.remote-vibes/wiki` as the workspace memory system. Treat it as a living wiki that helps future agents avoid rediscovering the same things.
+Use `/home/ogata/mac-brain` as the workspace memory system. Treat it as a living wiki that helps future agents avoid rediscovering the same things.
 
-- `/home/ogata/.remote-vibes/wiki/` is the synthesized knowledge layer for durable notes.
-- `/home/ogata/.remote-vibes/wiki/index.md` is the entrypoint, not the entire knowledge system.
-- `/home/ogata/.remote-vibes/wiki/log.md` is chronological and append-only.
-- Use `/home/ogata/.remote-vibes/wiki/raw/sources/` for exact source manifests, commands, commits, paths, and artifact pointers when provenance matters.
+- `/home/ogata/mac-brain/` is the synthesized knowledge layer for durable notes.
+- `/home/ogata/mac-brain/index.md` is the entrypoint, not the entire knowledge system.
+- `/home/ogata/mac-brain/log.md` is chronological and append-only.
+- Use `/home/ogata/mac-brain/raw/sources/` for exact source manifests, commands, commits, paths, and artifact pointers when provenance matters.
 
 Prefer promoting useful findings into durable notes over leaving them trapped in terminal output.
 
@@ -153,7 +153,7 @@ Not all information is equally durable.
 - Keep immediate session findings lightweight at first.
 - Crystallize reusable conclusions into durable notes after meaningful work.
 - Prefer updating canonical notes over creating near-duplicates.
-- Preserve exact provenance in `/home/ogata/.remote-vibes/wiki/raw/sources/` when it matters.
+- Preserve exact provenance in `/home/ogata/mac-brain/raw/sources/` when it matters.
 - Keep session-local scratch local unless it becomes useful to other agents.
 
 ## Note Shapes
@@ -171,8 +171,8 @@ You do not need rigid schemas everywhere, but write notes intentionally.
 ## Writing Rules
 
 - Distinguish observation from interpretation.
-- Prefer one page per experiment family under `/home/ogata/.remote-vibes/wiki/experiments/`.
-- Use `/home/ogata/.remote-vibes/wiki/topics/` for cross-cutting knowledge.
+- Prefer one page per experiment family under `/home/ogata/mac-brain/experiments/`.
+- Use `/home/ogata/mac-brain/topics/` for cross-cutting knowledge.
 - Record relevant commits, branches, run ids, output directories, artifact paths, and commands when they matter.
 - Link graphs, images, logs, notebooks, and outputs instead of pasting bulky data.
 - Prefer fewer, better notes.
