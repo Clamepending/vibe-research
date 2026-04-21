@@ -376,6 +376,34 @@ run_tailscale_up() {
   fi
 }
 
+start_tailscale_daemon() {
+  if ! is_linux || [ "$TAILSCALE_USE_SUDO" = "0" ]; then
+    return
+  fi
+
+  if has_command systemctl; then
+    if systemctl is-active --quiet tailscaled >/dev/null 2>&1; then
+      return
+    fi
+
+    log "Starting tailscaled service"
+    if try_run_as_root systemctl enable --now tailscaled >/dev/null 2>&1; then
+      return
+    fi
+
+    if try_run_as_root systemctl start tailscaled >/dev/null 2>&1; then
+      return
+    fi
+  fi
+
+  if has_command service; then
+    log "Starting tailscaled service"
+    if try_run_as_root service tailscaled start >/dev/null 2>&1; then
+      return
+    fi
+  fi
+}
+
 ensure_tailscale() {
   local ip_address
 
@@ -392,6 +420,7 @@ ensure_tailscale() {
   fi
 
   log "Using Tailscale command: $TAILSCALE_COMMAND"
+  start_tailscale_daemon
 
   if "$TAILSCALE_COMMAND" ip -4 >/dev/null 2>&1; then
     ip_address="$("$TAILSCALE_COMMAND" ip -4 2>/dev/null | head -n 1 || true)"
@@ -405,7 +434,9 @@ ensure_tailscale() {
   fi
 
   log "Starting Tailscale. Follow the login URL printed below if prompted."
-  run_tailscale_up
+  if ! run_tailscale_up; then
+    fail "Tailscale login failed. If tailscaled is not running, run: sudo systemctl enable --now tailscaled, then rerun this installer."
+  fi
 
   if ! "$TAILSCALE_COMMAND" ip -4 >/dev/null 2>&1; then
     fail "Tailscale is installed but not connected yet. Finish Tailscale sign-in, then rerun this installer."
