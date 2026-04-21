@@ -19,6 +19,7 @@ TAILSCALE_UP="${REMOTE_VIBES_TAILSCALE_UP:-1}"
 TAILSCALE_COMMAND="${REMOTE_VIBES_TAILSCALE_COMMAND:-tailscale}"
 TAILSCALE_AUTHKEY="${REMOTE_VIBES_TAILSCALE_AUTHKEY:-}"
 TAILSCALE_USE_SUDO="${REMOTE_VIBES_TAILSCALE_USE_SUDO:-1}"
+TAILSCALE_DAEMON_WAIT_SECONDS="${REMOTE_VIBES_TAILSCALE_DAEMON_WAIT_SECONDS:-15}"
 SERVICE_NAME="${REMOTE_VIBES_SERVICE_NAME:-remote-vibes}"
 SYSTEMD_SERVICE_DIR="${REMOTE_VIBES_SYSTEMD_SERVICE_DIR:-/etc/systemd/system}"
 NODE_MAJOR="${REMOTE_VIBES_NODE_MAJOR:-22}"
@@ -376,6 +377,56 @@ run_tailscale_up() {
   fi
 }
 
+tailscale_daemon_ready() {
+  local output status
+
+  output="$("$TAILSCALE_COMMAND" status --json 2>&1)"
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    return 0
+  fi
+
+  case "$output" in
+    *tailscaled*running* | *tailscaled*Running* | *local\ tailscaled* | *connect*tailscaled*)
+      return 1
+      ;;
+  esac
+
+  # If the CLI reached tailscaled but reported "logged out" or another account
+  # state, the daemon is ready enough for `tailscale up` to handle onboarding.
+  return 0
+}
+
+wait_for_tailscale_daemon() {
+  local attempt max_wait
+
+  if ! is_linux || [ "$TAILSCALE_USE_SUDO" = "0" ]; then
+    return 0
+  fi
+
+  max_wait="$TAILSCALE_DAEMON_WAIT_SECONDS"
+  case "$max_wait" in
+    "" | *[!0-9]*)
+      max_wait=15
+      ;;
+  esac
+
+  if [ "$max_wait" -lt 1 ]; then
+    max_wait=1
+  fi
+
+  attempt=0
+  while [ "$attempt" -lt "$max_wait" ]; do
+    if tailscale_daemon_ready; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+
+  return 1
+}
+
 start_tailscale_daemon() {
   if ! is_linux || [ "$TAILSCALE_USE_SUDO" = "0" ]; then
     return
@@ -383,15 +434,18 @@ start_tailscale_daemon() {
 
   if has_command systemctl; then
     if systemctl is-active --quiet tailscaled >/dev/null 2>&1; then
+      wait_for_tailscale_daemon || true
       return
     fi
 
     log "Starting tailscaled service"
     if try_run_as_root systemctl enable --now tailscaled >/dev/null 2>&1; then
+      wait_for_tailscale_daemon || true
       return
     fi
 
     if try_run_as_root systemctl start tailscaled >/dev/null 2>&1; then
+      wait_for_tailscale_daemon || true
       return
     fi
   fi
@@ -399,6 +453,7 @@ start_tailscale_daemon() {
   if has_command service; then
     log "Starting tailscaled service"
     if try_run_as_root service tailscaled start >/dev/null 2>&1; then
+      wait_for_tailscale_daemon || true
       return
     fi
   fi
@@ -435,7 +490,17 @@ ensure_tailscale() {
 
   log "Starting Tailscale. Follow the login URL printed below if prompted."
   if ! run_tailscale_up; then
-    fail "Tailscale login failed. If tailscaled is not running, run: sudo systemctl enable --now tailscaled, then rerun this installer."
+    if is_linux && [ "$TAILSCALE_USE_SUDO" != "0" ]; then
+      log "Tailscale login could not reach tailscaled yet; restarting the daemon and retrying once."
+      start_tailscale_daemon
+      if run_tailscale_up; then
+        :
+      else
+        fail "Tailscale login failed. If tailscaled is not running, run: sudo systemctl enable --now tailscaled, then rerun this installer."
+      fi
+    else
+      fail "Tailscale login failed. If tailscaled is not running, run: sudo systemctl enable --now tailscaled, then rerun this installer."
+    fi
   fi
 
   if ! "$TAILSCALE_COMMAND" ip -4 >/dev/null 2>&1; then
