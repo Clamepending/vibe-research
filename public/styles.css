@@ -3695,6 +3695,8 @@ input[readonly][data-folder-picker-target] {
 }
 
 .knowledge-base-graph-frame {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   padding: 0 12px 12px;
   border-radius: 8px;
@@ -3706,9 +3708,9 @@ input[readonly][data-folder-picker-target] {
 
 .knowledge-base-graph {
   width: 100%;
-  height: auto;
+  height: 100%;
+  min-height: 0;
   display: block;
-  aspect-ratio: 920 / 680;
   overflow: hidden;
   touch-action: none;
   cursor: grab;

@@ -982,13 +982,58 @@ test("knowledge base graph keeps dense replay inside the viewport", async (t) =>
   const readGraphClipState = async (page) =>
     page.evaluate(() => {
       const svg = document.querySelector("#knowledge-base-graph");
+      const frame = document.querySelector(".knowledge-base-graph-frame");
       const viewport = document.querySelector("[data-kb-graph-viewport]");
       const svgBox = svg?.getBoundingClientRect();
-      if (!svg || !svgBox) {
-        return { clippedCircles: -1, scale: 0, transform: "" };
+      const frameBox = frame?.getBoundingClientRect();
+      if (!svg || !svgBox || !frameBox) {
+        return {
+          clippedCircles: -1,
+          clippedCirclesAgainstFrame: -1,
+          clippedVisibleLabelsAgainstFrame: -1,
+          minCircleFrameGutter: -1,
+          minVisibleLabelFrameGutter: -1,
+          scale: 0,
+          svgExtendsPastFrame: true,
+          transform: "",
+        };
       }
 
-      const clippedCircles = Array.from(document.querySelectorAll("[data-kb-graph-node] circle")).filter((circle) => {
+      const getMinimumFrameGutter = (elements) => {
+        if (!elements.length) {
+          return Infinity;
+        }
+
+        return Math.min(
+          ...elements.map((element) => {
+            const box = element.getBoundingClientRect();
+            return Math.min(
+              box.left - frameBox.left,
+              frameBox.right - box.right,
+              box.top - frameBox.top,
+              frameBox.bottom - box.bottom,
+            );
+          }),
+        );
+      };
+
+      const isOutsideBox = (element, box, tolerance = 1) => {
+        const elementBox = element.getBoundingClientRect();
+        return (
+          elementBox.left < box.left - tolerance ||
+          elementBox.right > box.right + tolerance ||
+          elementBox.top < box.top - tolerance ||
+          elementBox.bottom > box.bottom + tolerance
+        );
+      };
+
+      const circles = Array.from(document.querySelectorAll("[data-kb-graph-node] circle"));
+      const visibleLabels = Array.from(
+        document.querySelectorAll(
+          "[data-kb-graph-node].has-visible-label text, [data-kb-graph-node].is-connected text, [data-kb-graph-node].is-hovered text, [data-kb-graph-node].is-selected text",
+        ),
+      );
+      const clippedCircles = circles.filter((circle) => {
         const box = circle.getBoundingClientRect();
         return (
           box.left < svgBox.left - 1 ||
@@ -997,16 +1042,50 @@ test("knowledge base graph keeps dense replay inside the viewport", async (t) =>
           box.bottom > svgBox.bottom + 1
         );
       }).length;
+      const clippedCirclesAgainstFrame = circles.filter((circle) => isOutsideBox(circle, frameBox)).length;
+      const clippedVisibleLabelsAgainstFrame = visibleLabels.filter((label) => isOutsideBox(label, frameBox)).length;
 
       const transform = viewport?.getAttribute("transform") || "";
       const scaleMatch = transform.match(/scale\(([0-9.]+)\)/);
 
       return {
         clippedCircles,
+        clippedCirclesAgainstFrame,
+        clippedVisibleLabelsAgainstFrame,
+        minCircleFrameGutter: getMinimumFrameGutter(circles),
+        minVisibleLabelFrameGutter: getMinimumFrameGutter(visibleLabels),
         scale: Number.parseFloat(scaleMatch?.[1] || "0"),
+        svgExtendsPastFrame:
+          svgBox.left < frameBox.left - 1 ||
+          svgBox.right > frameBox.right + 1 ||
+          svgBox.top < frameBox.top - 1 ||
+          svgBox.bottom > frameBox.bottom + 1,
         transform,
       };
     });
+
+  const assertGraphHasFrameGutter = (graphState, phase) => {
+    assert.equal(graphState.svgExtendsPastFrame, false, `${phase}: graph SVG should fit inside the outer frame`);
+    assert.equal(graphState.clippedCircles, 0, `${phase}: circles should fit inside the SVG viewport`);
+    assert.equal(
+      graphState.clippedCirclesAgainstFrame,
+      0,
+      `${phase}: circles should not be clipped by the outer graph frame`,
+    );
+    assert.equal(
+      graphState.clippedVisibleLabelsAgainstFrame,
+      0,
+      `${phase}: visible labels should not be clipped by the outer graph frame`,
+    );
+    assert.ok(
+      graphState.minCircleFrameGutter >= 8,
+      `${phase}: expected at least 8px circle gutter, saw ${graphState.minCircleFrameGutter}`,
+    );
+    assert.ok(
+      graphState.minVisibleLabelFrameGutter >= 4,
+      `${phase}: expected at least 4px visible-label gutter, saw ${graphState.minVisibleLabelFrameGutter}`,
+    );
+  };
 
   const sampleReplayScales = async (page) => {
     const scales = [];
@@ -1029,6 +1108,7 @@ test("knowledge base graph keeps dense replay inside the viewport", async (t) =>
 
     browser = await chromium.launch({ executablePath, headless: true });
     const page = await browser.newPage();
+    await page.setViewportSize({ width: 1024, height: 720 });
     await page.goto(`${baseUrl}/?view=knowledge-base`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#knowledge-base-graph", { timeout: 10_000 });
     await page.waitForFunction(() => document.querySelectorAll("[data-kb-graph-node]").length >= 49, null, {
@@ -1044,7 +1124,7 @@ test("knowledge base graph keeps dense replay inside the viewport", async (t) =>
     await page.waitForTimeout(700);
 
     const initialClipState = await readGraphClipState(page);
-    assert.equal(initialClipState.clippedCircles, 0);
+    assertGraphHasFrameGutter(initialClipState, "initial dense replay");
     assert.match(initialClipState.transform, /scale\([0-9.]+\)/);
 
     await page.click("#pulse-knowledge-base-graph");
@@ -1057,7 +1137,15 @@ test("knowledge base graph keeps dense replay inside the viewport", async (t) =>
     await page.waitForTimeout(700);
 
     const replayClipState = await readGraphClipState(page);
-    assert.equal(replayClipState.clippedCircles, 0);
+    assertGraphHasFrameGutter(replayClipState, "pulse replay");
+
+    await page.setViewportSize({ width: 1024, height: 620 });
+    await page.waitForTimeout(200);
+    await page.click("#fit-knowledge-base-graph");
+    await page.waitForTimeout(700);
+
+    const shortViewportClipState = await readGraphClipState(page);
+    assertGraphHasFrameGutter(shortViewportClipState, "short viewport fit");
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
