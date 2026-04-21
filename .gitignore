@@ -2,3 +2,13 @@ node_modules
 public/app.js
 public/vendor
 .DS_Store
+app/
+state/
+server.pid
+server.log
+npm-install.stamp
+sessions.json
+sessions.json.tmp
+browser/
+session-name-requests/
+*.tmp
