@@ -985,7 +985,7 @@ test("knowledge base graph keeps dense replay inside the viewport", async (t) =>
       const viewport = document.querySelector("[data-kb-graph-viewport]");
       const svgBox = svg?.getBoundingClientRect();
       if (!svg || !svgBox) {
-        return { clippedCircles: -1, transform: "" };
+        return { clippedCircles: -1, scale: 0, transform: "" };
       }
 
       const clippedCircles = Array.from(document.querySelectorAll("[data-kb-graph-node] circle")).filter((circle) => {
@@ -998,11 +998,24 @@ test("knowledge base graph keeps dense replay inside the viewport", async (t) =>
         );
       }).length;
 
+      const transform = viewport?.getAttribute("transform") || "";
+      const scaleMatch = transform.match(/scale\(([0-9.]+)\)/);
+
       return {
         clippedCircles,
-        transform: viewport?.getAttribute("transform") || "",
+        scale: Number.parseFloat(scaleMatch?.[1] || "0"),
+        transform,
       };
     });
+
+  const sampleReplayScales = async (page) => {
+    const scales = [];
+    for (let index = 0; index < 5; index += 1) {
+      await page.waitForTimeout(120);
+      scales.push((await readGraphClipState(page)).scale);
+    }
+    return scales;
+  };
 
   try {
     const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
@@ -1021,14 +1034,27 @@ test("knowledge base graph keeps dense replay inside the viewport", async (t) =>
     await page.waitForFunction(() => document.querySelectorAll("[data-kb-graph-node]").length >= 49, null, {
       timeout: 10_000,
     });
-    await page.waitForTimeout(1_200);
+
+    const initialReplayScales = await sampleReplayScales(page);
+    const maxInitialReplayScale = Math.max(...initialReplayScales);
+    assert.ok(
+      maxInitialReplayScale > 0 && maxInitialReplayScale <= 1.16,
+      `dense graph replay should stay at overview scale, saw ${initialReplayScales.join(", ")}`,
+    );
+    await page.waitForTimeout(700);
 
     const initialClipState = await readGraphClipState(page);
     assert.equal(initialClipState.clippedCircles, 0);
     assert.match(initialClipState.transform, /scale\([0-9.]+\)/);
 
     await page.click("#pulse-knowledge-base-graph");
-    await page.waitForTimeout(1_200);
+    const pulseReplayScales = await sampleReplayScales(page);
+    const maxPulseReplayScale = Math.max(...pulseReplayScales);
+    assert.ok(
+      maxPulseReplayScale > 0 && maxPulseReplayScale <= 1.16,
+      `pulse replay should stay at overview scale, saw ${pulseReplayScales.join(", ")}`,
+    );
+    await page.waitForTimeout(700);
 
     const replayClipState = await readGraphClipState(page);
     assert.equal(replayClipState.clippedCircles, 0);

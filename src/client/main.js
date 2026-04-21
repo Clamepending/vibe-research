@@ -55,7 +55,8 @@ const KNOWLEDGE_BASE_GRAPH_WIDTH = 920;
 const KNOWLEDGE_BASE_GRAPH_HEIGHT = 680;
 const KNOWLEDGE_BASE_GRAPH_MIN_SCALE = 0.35;
 const KNOWLEDGE_BASE_GRAPH_MAX_SCALE = 2.8;
-const KNOWLEDGE_BASE_GRAPH_FIT_PADDING = 72;
+const KNOWLEDGE_BASE_GRAPH_FIT_PADDING = 104;
+const KNOWLEDGE_BASE_GRAPH_REPLAY_MAX_SCALE = 1.15;
 const KNOWLEDGE_BASE_GRAPH_FOCUS_SCALE = 1.65;
 const KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX = 6;
 const KNOWLEDGE_BASE_GRAPH_LABEL_CHAR_WIDTH = 6.2;
@@ -5364,6 +5365,7 @@ function createEmptyKnowledgeBaseGraphLayout(previousLayout = null) {
     cleanup: null,
     signature: "",
     autoFitDuringSimulation: false,
+    autoFitMaxScale: KNOWLEDGE_BASE_GRAPH_MAX_SCALE,
     cameraInitialized: previousLayout?.cameraInitialized ?? false,
   };
 }
@@ -5496,7 +5498,7 @@ function getKnowledgeBaseGraphNodeVisualBounds(node) {
   };
 }
 
-function fitKnowledgeBaseGraphCamera({ sync = true } = {}) {
+function fitKnowledgeBaseGraphCamera({ maxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE, sync = true } = {}) {
   const layout = state.knowledgeBase.graphLayout;
 
   if (!layout.nodes.length) {
@@ -5520,10 +5522,11 @@ function fitKnowledgeBaseGraphCamera({ sync = true } = {}) {
   const contentHeight = Math.max(180, maxY - minY);
   const availableWidth = Math.max(120, layout.width - KNOWLEDGE_BASE_GRAPH_FIT_PADDING);
   const availableHeight = Math.max(120, layout.height - KNOWLEDGE_BASE_GRAPH_FIT_PADDING);
+  const effectiveMaxScale = clamp(maxScale, KNOWLEDGE_BASE_GRAPH_MIN_SCALE, KNOWLEDGE_BASE_GRAPH_MAX_SCALE);
   const nextScale = clamp(
     Math.min(availableWidth / contentWidth, availableHeight / contentHeight),
     KNOWLEDGE_BASE_GRAPH_MIN_SCALE,
-    KNOWLEDGE_BASE_GRAPH_MAX_SCALE,
+    effectiveMaxScale,
   );
 
   layout.scale = nextScale;
@@ -5604,6 +5607,10 @@ function replayKnowledgeBaseGraphUnfold() {
 
   fitKnowledgeBaseGraphCamera({ sync: false });
   layout.autoFitDuringSimulation = true;
+  layout.autoFitMaxScale = Math.min(
+    layout.scale || KNOWLEDGE_BASE_GRAPH_REPLAY_MAX_SCALE,
+    KNOWLEDGE_BASE_GRAPH_REPLAY_MAX_SCALE,
+  );
 
   layout.nodes.forEach((node, index) => {
     const currentAngle = Math.atan2(node.y - centerY, node.x - centerX);
@@ -5748,7 +5755,7 @@ function scheduleKnowledgeBaseGraphFrame() {
 
     layout.alpha = Math.max(alphaTarget, alpha * physics.alphaDecay - physics.alphaCooling, 0);
     if (layout.autoFitDuringSimulation && !layout.dragState && !layout.panState) {
-      fitKnowledgeBaseGraphCamera({ sync: false });
+      fitKnowledgeBaseGraphCamera({ maxScale: layout.autoFitMaxScale, sync: false });
     }
     syncKnowledgeBaseGraphDom();
 
@@ -5757,6 +5764,7 @@ function scheduleKnowledgeBaseGraphFrame() {
     layout.running = shouldContinue;
     if (!shouldContinue) {
       layout.autoFitDuringSimulation = false;
+      layout.autoFitMaxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE;
     }
 
     if (shouldContinue) {
@@ -5914,6 +5922,7 @@ function createKnowledgeBaseGraphLayout(notes, edges) {
     cleanup: null,
     signature,
     autoFitDuringSimulation: false,
+    autoFitMaxScale: KNOWLEDGE_BASE_GRAPH_MAX_SCALE,
     cameraInitialized: canReuseCamera,
   };
 }
@@ -11831,6 +11840,7 @@ function bindKnowledgeBaseGraphInteractions() {
         }
 
         layout.autoFitDuringSimulation = false;
+        layout.autoFitMaxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE;
         layout.dragState = {
           pointerId: event.pointerId,
           node,
@@ -11855,6 +11865,7 @@ function bindKnowledgeBaseGraphInteractions() {
       }
 
       layout.autoFitDuringSimulation = false;
+      layout.autoFitMaxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE;
       layout.panState = {
         pointerId: event.pointerId,
         startClientX: event.clientX,
@@ -11944,6 +11955,7 @@ function bindKnowledgeBaseGraphInteractions() {
       }
 
       layout.autoFitDuringSimulation = false;
+      layout.autoFitMaxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE;
       layout.scale = nextScale;
       layout.offsetX = svgPoint.x - worldX * nextScale;
       layout.offsetY = svgPoint.y - worldY * nextScale;
@@ -11958,6 +11970,7 @@ function bindKnowledgeBaseGraphInteractions() {
     () => {
       fitKnowledgeBaseGraphCamera();
       layout.autoFitDuringSimulation = true;
+      layout.autoFitMaxScale = layout.scale;
       startKnowledgeBaseGraphSimulation(0.18);
     },
     { signal },
