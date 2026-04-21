@@ -3,13 +3,14 @@ export function looksLikeTailscaleUrl(entry) {
     return false;
   }
 
-  if (String(entry.label || "").toLowerCase().includes("tailscale")) {
+  const label = String(entry.label || "").toLowerCase();
+  if (label.includes("tailscale")) {
     return true;
   }
 
   try {
     const { hostname } = new URL(entry.url);
-    return hostname.startsWith("100.") || hostname.endsWith(".ts.net");
+    return hostname.endsWith(".ts.net") || (hostname.startsWith("100.") && /^u?tun\d*$/i.test(label));
   } catch {
     return false;
   }

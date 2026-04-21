@@ -313,10 +313,7 @@ async function getAccessUrls(host, port) {
       }
 
       seen.add(key);
-      const label =
-        name.toLowerCase().includes("tailscale") || address.address.startsWith("100.")
-          ? "Tailscale"
-          : name;
+      const label = name.toLowerCase().includes("tailscale") ? "Tailscale" : name;
       urls.push({ label, url: `http://${address.address}:${port}` });
     }
   }

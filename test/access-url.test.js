@@ -4,6 +4,7 @@ import {
   getTailscaleDnsNameFromStatus,
   getTailscaleHttpsUrlFromServeStatus,
   hasTailscaleHttpsRootServe,
+  looksLikeTailscaleUrl,
   pickPreferredUrl,
 } from "../src/access-url.js";
 
@@ -18,6 +19,25 @@ test("preferred access URL uses Tailscale HTTPS over raw tailnet HTTP", () => {
     label: "Tailscale HTTPS",
     url: "https://home-raspi.tail8dd042.ts.net/",
   });
+});
+
+test("preferred access URL ignores non-Tailscale carrier-grade NAT interfaces", () => {
+  const preferred = pickPreferredUrl([
+    { label: "Local", url: "http://localhost:4123" },
+    { label: "ibp134s0.8001", url: "http://100.64.10.154:4123" },
+    { label: "Tailscale", url: "http://100.89.173.62:4123" },
+  ]);
+
+  assert.deepEqual(preferred, {
+    label: "Tailscale",
+    url: "http://100.89.173.62:4123",
+  });
+});
+
+test("plain 100.x interface addresses are not enough to count as Tailscale", () => {
+  assert.equal(looksLikeTailscaleUrl({ label: "ibp134s0.8001", url: "http://100.64.10.154:4123" }), false);
+  assert.equal(looksLikeTailscaleUrl({ label: "utun8", url: "http://100.88.77.66:4123" }), true);
+  assert.equal(looksLikeTailscaleUrl({ label: "Tailscale", url: "http://100.89.173.62:4123" }), true);
 });
 
 test("extracts the current machine MagicDNS name from Tailscale status", () => {

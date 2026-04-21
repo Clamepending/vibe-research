@@ -4218,13 +4218,24 @@ function maybeRedirectToPreferredOrigin() {
   }
 
   let preferredOrigin = "";
+  let preferredUrl;
   try {
-    preferredOrigin = new URL(state.preferredBaseUrl).origin;
+    preferredUrl = new URL(state.preferredBaseUrl);
+    preferredOrigin = preferredUrl.origin;
   } catch {
     return false;
   }
 
   if (!preferredOrigin || preferredOrigin === window.location.origin) {
+    return false;
+  }
+
+  const currentHostname = window.location.hostname.toLowerCase();
+  if (
+    currentHostname.endsWith(".ts.net") &&
+    preferredUrl.protocol === "http:" &&
+    preferredUrl.hostname.startsWith("100.")
+  ) {
     return false;
   }
 
