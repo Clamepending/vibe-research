@@ -1064,6 +1064,39 @@ test("knowledge base graph keeps dense replay inside the viewport", async (t) =>
       };
     });
 
+  const readGraphRadialState = async (page) =>
+    page.evaluate(() => {
+      const svg = document.querySelector("#knowledge-base-graph");
+      const viewBox = svg?.viewBox?.baseVal;
+      const centerX = viewBox ? viewBox.x + viewBox.width / 2 : 460;
+      const centerY = viewBox ? viewBox.y + viewBox.height / 2 : 340;
+      const distances = Array.from(document.querySelectorAll("[data-kb-graph-node]"))
+        .map((node) => {
+          const transform = node.getAttribute("transform") || "";
+          const match = transform.match(/translate\((-?[0-9.]+)\s+(-?[0-9.]+)\)/);
+          if (!match) {
+            return null;
+          }
+
+          const x = Number.parseFloat(match[1]);
+          const y = Number.parseFloat(match[2]);
+          return Number.isFinite(x) && Number.isFinite(y) ? Math.hypot(x - centerX, y - centerY) : null;
+        })
+        .filter((distance) => Number.isFinite(distance));
+      const minRadius = distances.length ? Math.min(...distances) : 0;
+      const maxRadius = distances.length ? Math.max(...distances) : 0;
+
+      return {
+        closeToCenterShare: distances.length
+          ? distances.filter((distance) => distance < 56).length / distances.length
+          : 1,
+        count: distances.length,
+        maxRadius,
+        minRadius,
+        radiusRange: maxRadius - minRadius,
+      };
+    });
+
   const assertGraphHasFrameGutter = (graphState, phase) => {
     assert.equal(graphState.svgExtendsPastFrame, false, `${phase}: graph SVG should fit inside the outer frame`);
     assert.equal(graphState.clippedCircles, 0, `${phase}: circles should fit inside the SVG viewport`);
@@ -1128,6 +1161,20 @@ test("knowledge base graph keeps dense replay inside the viewport", async (t) =>
     assert.match(initialClipState.transform, /scale\([0-9.]+\)/);
 
     await page.click("#pulse-knowledge-base-graph");
+    const pulseStartShape = await readGraphRadialState(page);
+    assert.ok(pulseStartShape.count >= 49, `expected dense graph nodes, saw ${pulseStartShape.count}`);
+    assert.ok(
+      pulseStartShape.maxRadius >= 95,
+      `pulse replay should start from an irregular graph-shaped cloud, saw max radius ${pulseStartShape.maxRadius}`,
+    );
+    assert.ok(
+      pulseStartShape.radiusRange >= 70,
+      `pulse replay should avoid a uniform center bloom, saw radius range ${pulseStartShape.radiusRange}`,
+    );
+    assert.ok(
+      pulseStartShape.closeToCenterShare < 0.55,
+      `pulse replay should not collapse most nodes near center, saw share ${pulseStartShape.closeToCenterShare}`,
+    );
     const pulseReplayScales = await sampleReplayScales(page);
     const maxPulseReplayScale = Math.max(...pulseReplayScales);
     assert.ok(

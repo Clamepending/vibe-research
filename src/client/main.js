@@ -63,6 +63,7 @@ const KNOWLEDGE_BASE_GRAPH_LABEL_CHAR_WIDTH = 6.2;
 const KNOWLEDGE_BASE_GRAPH_LABEL_GAP = 10;
 const KNOWLEDGE_BASE_GRAPH_LABEL_HEIGHT = 14;
 const KNOWLEDGE_BASE_GRAPH_PROJECT_PREFIX = "project:";
+const KNOWLEDGE_BASE_GRAPH_GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const KNOWLEDGE_BASE_GRAPH_PHYSICS = Object.freeze({
   alphaDecay: 0.972,
   alphaCooling: 0.0018,
@@ -71,24 +72,24 @@ const KNOWLEDGE_BASE_GRAPH_PHYSICS = Object.freeze({
   damping: 0.9,
   dragDamping: 0.82,
   dragAlphaTarget: 0.32,
-  centerStrength: 0.0018,
-  groupAnchorStrength: 0.01,
-  projectAnchorStrength: 0.014,
-  sameGroupMinimumGap: 38,
-  otherGroupMinimumGap: 68,
-  sameGroupRepulsionBase: 3600,
-  otherGroupRepulsionBase: 7600,
-  sameGroupRepulsionRadius: 175,
-  otherGroupRepulsionRadius: 285,
+  centerStrength: 0.0024,
+  groupAnchorStrength: 0.0056,
+  projectAnchorStrength: 0.0072,
+  sameGroupMinimumGap: 34,
+  otherGroupMinimumGap: 58,
+  sameGroupRepulsionBase: 3400,
+  otherGroupRepulsionBase: 6200,
+  sameGroupRepulsionRadius: 165,
+  otherGroupRepulsionRadius: 252,
   sameGroupCollisionPush: 0.22,
-  otherGroupCollisionPush: 0.34,
-  sameGroupLinkDistance: 56,
-  otherGroupLinkDistance: 106,
-  sameGroupLinkRadius: 2.35,
-  otherGroupLinkRadius: 3.1,
-  sameGroupLinkStrength: 0.023,
-  otherGroupLinkStrength: 0.0125,
-  linkDegreeStrength: 0.00078,
+  otherGroupCollisionPush: 0.3,
+  sameGroupLinkDistance: 54,
+  otherGroupLinkDistance: 96,
+  sameGroupLinkRadius: 2.25,
+  otherGroupLinkRadius: 2.8,
+  sameGroupLinkStrength: 0.027,
+  otherGroupLinkStrength: 0.016,
+  linkDegreeStrength: 0.0009,
   maxVelocity: 15,
   maxDragVelocity: 24,
   boundaryMargin: 58,
@@ -5185,6 +5186,21 @@ function hashString(value) {
   return hash;
 }
 
+function getSeededKnowledgeBaseGraphUnit(seed) {
+  return (hashString(seed) % 10_000) / 10_000;
+}
+
+function getSeededKnowledgeBaseGraphVector(seed, radius) {
+  const angle = getSeededKnowledgeBaseGraphUnit(`${seed}:angle`) * Math.PI * 2;
+  const distance = Math.sqrt(getSeededKnowledgeBaseGraphUnit(`${seed}:distance`)) * radius;
+
+  return {
+    angle,
+    x: Math.cos(angle) * distance,
+    y: Math.sin(angle) * distance,
+  };
+}
+
 function isKnowledgeBaseProjectGroup(groupKey) {
   return String(groupKey || "").startsWith(KNOWLEDGE_BASE_GRAPH_PROJECT_PREFIX);
 }
@@ -5343,6 +5359,40 @@ function renderStyleVariables(variables) {
   return ` style="${entries
     .map(([name, value]) => `${name}:${String(value).replaceAll('"', "&quot;")}`)
     .join(";")}"`;
+}
+
+function getKnowledgeBaseGraphAnchorPoint(groupKey, index, total, { width, height, centerX, centerY }) {
+  const normalizedKey = String(groupKey || "root").toLowerCase();
+  const minDimension = Math.min(width, height);
+  const anchorSeed = `group:${normalizedKey}`;
+  const compactGroups = new Set(["index", "log", "root"]);
+  const isCompactGroup = compactGroups.has(normalizedKey);
+  const projectGroup = isKnowledgeBaseProjectGroup(normalizedKey);
+  const radiusJitter = (getSeededKnowledgeBaseGraphUnit(`${anchorSeed}:radius`) - 0.5) * minDimension * 0.08;
+  const angleJitter = (getSeededKnowledgeBaseGraphUnit(`${anchorSeed}:angle-jitter`) - 0.5) * 0.72;
+
+  if (isCompactGroup) {
+    const angle = -Math.PI / 2 + index * KNOWLEDGE_BASE_GRAPH_GOLDEN_ANGLE + angleJitter;
+    const radius = minDimension * (0.055 + index * 0.018) + radiusJitter * 0.35;
+    return {
+      x: centerX + Math.cos(angle) * radius,
+      y: centerY + Math.sin(angle) * radius * 0.82,
+    };
+  }
+
+  const orbitIndex = index;
+  const orbitTotal = Math.max(1, total);
+  const radialProgress = Math.sqrt((orbitIndex + 0.72) / orbitTotal);
+  const baseRadius = minDimension * (projectGroup ? 0.23 : 0.18);
+  const outerRadius = minDimension * (projectGroup ? 0.44 : 0.38);
+  const angle = -Math.PI / 2 + orbitIndex * KNOWLEDGE_BASE_GRAPH_GOLDEN_ANGLE + angleJitter;
+  const radius = baseRadius + (outerRadius - baseRadius) * radialProgress + radiusJitter;
+  const aspectPush = width > height ? 1.12 : 1;
+
+  return {
+    x: centerX + Math.cos(angle) * radius * aspectPush,
+    y: centerY + Math.sin(angle) * radius * 0.9,
+  };
 }
 
 function createEmptyKnowledgeBaseGraphLayout(previousLayout = null) {
@@ -5602,8 +5652,8 @@ function replayKnowledgeBaseGraphUnfold() {
 
   const centerX = layout.width / 2;
   const centerY = layout.height / 2;
-  const spreadRadius = Math.min(layout.width, layout.height) * 0.055;
-  const velocityBase = Math.min(layout.width, layout.height) * 0.0032;
+  const minDimension = Math.min(layout.width, layout.height);
+  const velocityBase = minDimension * 0.0016;
 
   fitKnowledgeBaseGraphCamera({ sync: false });
   layout.autoFitDuringSimulation = true;
@@ -5613,17 +5663,20 @@ function replayKnowledgeBaseGraphUnfold() {
   );
 
   layout.nodes.forEach((node, index) => {
-    const currentAngle = Math.atan2(node.y - centerY, node.x - centerX);
-    const angle = Number.isFinite(currentAngle)
-      ? currentAngle
-      : (Math.PI * 2 * index) / Math.max(layout.nodes.length, 1);
-    const radius = 8 + (index % 5) * (spreadRadius / 5);
-    const velocity = velocityBase + (index % 4) * 0.18;
+    const anchor = layout.groupAnchors?.[node.groupKey] || { x: centerX, y: centerY };
+    const groupSize = Math.max(1, node.groupSize || 1);
+    const replaySeed = getSeededKnowledgeBaseGraphVector(
+      `replay:${node.relativePath}:${index}`,
+      Math.min(132, 26 + Math.sqrt(groupSize) * 14),
+    );
+    const anchorBlend = 0.44 + getSeededKnowledgeBaseGraphUnit(`${node.relativePath}:replay-anchor`) * 0.12;
+    const tangentAngle = replaySeed.angle + Math.PI / 2;
+    const speed = velocityBase * (0.45 + getSeededKnowledgeBaseGraphUnit(`${node.relativePath}:replay-speed`) * 0.85);
 
-    node.x = centerX + Math.cos(angle) * radius;
-    node.y = centerY + Math.sin(angle) * radius;
-    node.vx = Math.cos(angle) * velocity;
-    node.vy = Math.sin(angle) * velocity;
+    node.x = centerX + (anchor.x - centerX) * anchorBlend + replaySeed.x * 0.58;
+    node.y = centerY + (anchor.y - centerY) * anchorBlend + replaySeed.y * 0.58;
+    node.vx = (anchor.x - node.x) * 0.004 + Math.cos(tangentAngle) * speed;
+    node.vy = (anchor.y - node.y) * 0.004 + Math.sin(tangentAngle) * speed;
     node.fx = 0;
     node.fy = 0;
   });
@@ -5811,42 +5864,60 @@ function createKnowledgeBaseGraphLayout(notes, edges) {
 
     return getKnowledgeBaseGraphGroupLabel(left).localeCompare(getKnowledgeBaseGraphGroupLabel(right));
   });
+  const groupCounts = new Map();
+  const notePaths = new Set(notes.map((note) => normalizeFileTreePath(note.relativePath)).filter(Boolean));
+  const degreeByPath = new Map();
+  for (const note of notes) {
+    const normalizedPath = normalizeFileTreePath(note.relativePath);
+    const groupKey = getKnowledgeBaseGraphGroupKey(normalizedPath);
+    groupCounts.set(groupKey, (groupCounts.get(groupKey) || 0) + 1);
+    degreeByPath.set(normalizedPath, 0);
+  }
+
+  for (const edge of edges) {
+    const sourcePath = normalizeFileTreePath(edge?.source);
+    const targetPath = normalizeFileTreePath(edge?.target);
+    if (!notePaths.has(sourcePath) || !notePaths.has(targetPath)) {
+      continue;
+    }
+
+    degreeByPath.set(sourcePath, (degreeByPath.get(sourcePath) || 0) + 1);
+    degreeByPath.set(targetPath, (degreeByPath.get(targetPath) || 0) + 1);
+  }
+
   const groupAnchors = {};
-  const projectGroupKeys = groupKeys.filter(isKnowledgeBaseProjectGroup);
-  const nonProjectGroupKeys = groupKeys.filter((groupKey) => !isKnowledgeBaseProjectGroup(groupKey));
-  const projectAnchorRadius = Math.min(width, height) * (projectGroupKeys.length > 3 ? 0.46 : 0.38);
-  const nonProjectAnchorRadius = Math.min(width, height) * 0.18;
-
-  projectGroupKeys.forEach((groupKey, index) => {
-    const angle = -Math.PI / 2 + (Math.PI * 2 * index) / Math.max(projectGroupKeys.length, 1);
-    groupAnchors[groupKey] = {
-      x: centerX + Math.cos(angle) * projectAnchorRadius,
-      y: centerY + Math.sin(angle) * projectAnchorRadius,
-    };
-  });
-
-  nonProjectGroupKeys.forEach((groupKey, index) => {
-    const angle = Math.PI / 2 + (Math.PI * 2 * index) / Math.max(nonProjectGroupKeys.length, 1);
-    groupAnchors[groupKey] = {
-      x: centerX + Math.cos(angle) * nonProjectAnchorRadius,
-      y: centerY + Math.sin(angle) * nonProjectAnchorRadius,
-    };
+  groupKeys.forEach((groupKey, index) => {
+    groupAnchors[groupKey] = getKnowledgeBaseGraphAnchorPoint(groupKey, index, groupKeys.length, {
+      width,
+      height,
+      centerX,
+      centerY,
+    });
   });
 
   const nodes = notes.map((note, index) => {
-    const angle = (Math.PI * 2 * index) / Math.max(notes.length, 1);
     const previousNode = previousNodes.get(note.relativePath);
     const groupKey = getKnowledgeBaseGraphGroupKey(note.relativePath);
     const anchor = groupAnchors[groupKey] || { x: centerX, y: centerY };
-    const localRadius = 26 + (index % 7) * 7;
+    const groupSize = Math.max(1, groupCounts.get(groupKey) || 1);
+    const estimatedDegree = degreeByPath.get(normalizeFileTreePath(note.relativePath)) || 0;
+    const scatterRadius = Math.min(156, 24 + Math.sqrt(groupSize) * 16);
+    const seedOffset = getSeededKnowledgeBaseGraphVector(
+      `node:${note.relativePath}:${index}`,
+      scatterRadius * (estimatedDegree > 2 ? 0.68 : 1),
+    );
+    const centerPull = groupKey === "index" || groupKey === "root" ? 0.38 : groupKey === "log" ? 0.24 : 0.08;
+    const seededX = anchor.x * (1 - centerPull) + centerX * centerPull + seedOffset.x;
+    const seededY = anchor.y * (1 - centerPull) + centerY * centerPull + seedOffset.y;
 
     return {
       relativePath: note.relativePath,
       title: note.title,
       groupKey,
       color: getKnowledgeBaseGraphColor(groupKey),
-      x: previousNode?.x ?? anchor.x + Math.cos(angle) * localRadius,
-      y: previousNode?.y ?? anchor.y + Math.sin(angle) * localRadius,
+      groupSize,
+      x: previousNode?.x ?? seededX,
+      y: previousNode?.y ?? seededY,
       vx: previousNode?.vx ?? 0,
       vy: previousNode?.vy ?? 0,
       fx: 0,
