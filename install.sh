@@ -537,7 +537,14 @@ ensure_tailscale() {
 }
 
 systemd_is_running() {
-  [ -d /run/systemd/system ] || [ "$(ps -p 1 -o comm= 2>/dev/null | head -n 1)" = "systemd" ]
+  local state
+
+  if ! has_command systemctl; then
+    return 1
+  fi
+
+  state="$(systemctl is-system-running 2>/dev/null || true)"
+  [ "$state" = "running" ] || [ "$state" = "degraded" ]
 }
 
 install_systemd_service() {

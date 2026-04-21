@@ -651,6 +651,10 @@ exec /bin/ps "$@"
       path.join(fakeBin, "systemctl"),
       `#!/usr/bin/env sh
 printf '%s\\n' "$*" >> ${JSON.stringify(systemctlLog)}
+if [ "\${1:-}" = "is-system-running" ]; then
+  printf 'running\\n'
+  exit 0
+fi
 exit 0
 `,
     );
@@ -686,8 +690,57 @@ exit 0
     assert.match(unit, /KillMode=process/);
 
     assert.deepEqual((await readFile(systemctlLog, "utf8")).trim().split("\n"), [
+      "is-system-running",
       "daemon-reload",
       "enable --now remote-vibes-test.service",
+    ]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
+test("install.sh skips service install when systemctl reports offline", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-systemd-offline-"));
+  const installDir = path.join(installRoot, "remote-vibes");
+  const fakeBin = path.join(installRoot, "bin");
+  const serviceDir = path.join(installRoot, "systemd");
+  const systemctlLog = path.join(installRoot, "systemctl.log");
+
+  try {
+    await mkdir(fakeBin, { recursive: true });
+    await mkdir(serviceDir, { recursive: true });
+    await writeFile(path.join(fakeBin, "uname"), "#!/usr/bin/env sh\nprintf 'Linux\\n'\n");
+    await writeFile(
+      path.join(fakeBin, "systemctl"),
+      `#!/usr/bin/env sh
+printf '%s\\n' "$*" >> ${JSON.stringify(systemctlLog)}
+if [ "\${1:-}" = "is-system-running" ]; then
+  printf 'offline\\n'
+  exit 1
+fi
+exit 1
+`,
+    );
+    await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await execFile("chmod", ["+x", ...["uname", "systemctl", "sudo"].map((name) => path.join(fakeBin, name))]);
+
+    const result = await execFile("bash", [installScript], {
+      env: installTestEnv({
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+        REMOTE_VIBES_HOME: installDir,
+        REMOTE_VIBES_REPO_URL: repoDir,
+        REMOTE_VIBES_INSTALL_SERVICE: "1",
+        REMOTE_VIBES_SYSTEMD_SERVICE_DIR: serviceDir,
+      }),
+    });
+
+    assert.match(result.stdout, /SOURCE_VERSION=v1/);
+    assert.match(result.stdout, /Skipping service install because systemd is not available/);
+    await assert.rejects(() => stat(path.join(serviceDir, "remote-vibes.service")));
+    assert.deepEqual((await readFile(systemctlLog, "utf8")).trim().split("\n"), [
+      "is-system-running",
     ]);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
