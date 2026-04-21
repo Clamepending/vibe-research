@@ -1621,7 +1621,11 @@ test("brain setup remains scrollable on short viewports", async (t) => {
   }
 
   const workspaceDir = await createTempWorkspace("remote-vibes-brain-scroll-ui-");
-  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  const appDir = path.join(stateDir, "app");
+  const expectedClonePath = path.join(workspaceDir, "mac-brain");
+  await mkdir(appDir, { recursive: true });
+  const { app, baseUrl } = await startApp({ cwd: appDir, stateDir });
   let browser = null;
 
   try {
@@ -1633,10 +1637,12 @@ test("brain setup remains scrollable on short viewports", async (t) => {
     const before = await page.evaluate(() => {
       const screen = document.querySelector(".brain-setup-screen");
       const cloneButton = document.querySelector(".brain-setup-clone-button");
+      const clonePathInput = document.querySelector("#brain-clone-path");
       const screenBounds = screen.getBoundingClientRect();
       const buttonBounds = cloneButton.getBoundingClientRect();
 
       return {
+        clonePathPlaceholder: clonePathInput?.getAttribute("placeholder") || "",
         screenBottom: screenBounds.bottom,
         screenClientHeight: screen.clientHeight,
         screenScrollHeight: screen.scrollHeight,
@@ -1645,6 +1651,7 @@ test("brain setup remains scrollable on short viewports", async (t) => {
       };
     });
 
+    assert.equal(before.clonePathPlaceholder, expectedClonePath);
     assert.ok(before.screenScrollHeight > before.screenClientHeight, "setup screen should expose a scroll range");
     assert.equal(before.screenBottom, before.viewportHeight);
     assert.ok(before.buttonBottom > before.viewportHeight, "clone button should start below the short viewport");
@@ -1667,6 +1674,25 @@ test("brain setup remains scrollable on short viewports", async (t) => {
     assert.ok(after.screenScrollTop > 0, "setup screen did not scroll");
     assert.ok(after.buttonTop >= 0, "clone button scrolled above the viewport");
     assert.ok(after.buttonBottom <= after.viewportHeight, "clone button is still below the viewport");
+
+    await page.waitForTimeout(3_500);
+
+    const afterPoll = await page.evaluate(() => {
+      const screen = document.querySelector(".brain-setup-screen");
+      const cloneButton = document.querySelector(".brain-setup-clone-button");
+      const buttonBounds = cloneButton.getBoundingClientRect();
+
+      return {
+        screenScrollTop: screen.scrollTop,
+        buttonTop: buttonBounds.top,
+        buttonBottom: buttonBounds.bottom,
+        viewportHeight: window.innerHeight,
+      };
+    });
+
+    assert.ok(afterPoll.screenScrollTop > 0, "session polling reset the setup scroll position");
+    assert.ok(afterPoll.buttonTop >= 0, "clone button scrolled above the viewport after polling");
+    assert.ok(afterPoll.buttonBottom <= afterPoll.viewportHeight, "clone button moved below the viewport after polling");
   } finally {
     await browser?.close().catch(() => {});
     await app.close();

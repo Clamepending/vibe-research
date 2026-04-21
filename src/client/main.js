@@ -712,6 +712,7 @@ const state = {
   activeSessionId: null,
   connectedSessionId: null,
   defaultCwd: "",
+  stateDir: "",
   defaultProviderId: "claude",
   websocket: null,
   websocketReconnectTimer: null,
@@ -4332,7 +4333,26 @@ function inferWikiPathConfigured(settings) {
 }
 
 function getDefaultBrainClonePathHint() {
+  const stateDirParent = getParentPathForDisplay(state.stateDir);
+  if (stateDirParent) {
+    return `${stateDirParent}/mac-brain`;
+  }
+
   return state.defaultCwd ? `${state.defaultCwd.replace(/\/+$/, "")}/mac-brain` : "mac-brain";
+}
+
+function getParentPathForDisplay(value) {
+  const normalizedPath = String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "");
+  const separatorIndex = normalizedPath.lastIndexOf("/");
+
+  if (separatorIndex <= 0) {
+    return "";
+  }
+
+  return normalizedPath.slice(0, separatorIndex);
 }
 
 function sendTerminalInput(data) {
@@ -12041,12 +12061,14 @@ function renderBrainSetupScreen() {
 function renderShell() {
   const explorerScrollSnapshot = captureExplorerScrollSnapshots();
   const mainViewScrollSnapshot = captureMainViewScrollSnapshots();
+  const brainSetupScrollSnapshot = captureScrollSnapshot(".brain-setup-screen");
   teardownKnowledgeBaseGraphInteractions();
   teardownVisualPixelGame();
   syncFilesRoot();
 
   if (isBrainSetupRequired()) {
     renderBrainSetupScreen();
+    restoreScrollSnapshot(".brain-setup-screen", brainSetupScrollSnapshot);
     return;
   }
 
@@ -16309,6 +16331,10 @@ async function loadSessions() {
       void loadBrowserUseSession(state.browserUseSession.id, { silent: true });
     }
 
+    if (isBrainSetupRequired()) {
+      return;
+    }
+
     if (state.currentView !== "shell") {
       refreshSessionsList();
       return;
@@ -16384,12 +16410,19 @@ async function loadUpdateStatus({ force = false } = {}) {
 
 async function loadSettingsStatus() {
   try {
+    const wasBrainSetupRequired = isBrainSetupRequired();
     const wasLocalhostAppsEnabled = isLocalhostAppsEnabled();
     const payload = await fetchJson("/api/settings", {
       cache: "no-store",
     });
     applySettingsState(payload.settings);
+    const brainSetupRequired = isBrainSetupRequired();
     const localhostAppsEnabled = isLocalhostAppsEnabled();
+
+    if (wasBrainSetupRequired !== brainSetupRequired) {
+      renderShell();
+      return;
+    }
 
     if (wasLocalhostAppsEnabled !== localhostAppsEnabled) {
       if (!localhostAppsEnabled) {
@@ -16812,6 +16845,7 @@ async function bootstrapApp() {
   state.sessions = payload.sessions;
   pruneSessionReadState();
   state.defaultCwd = payload.cwd;
+  state.stateDir = payload.stateDir || "";
   state.defaultProviderId = payload.defaultProviderId;
   applySettingsState(payload.settings);
   state.ports = isLocalhostAppsEnabled() ? (payload.ports ?? []) : [];
