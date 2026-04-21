@@ -949,6 +949,96 @@ test("knowledge base graph highlights linked notes on hover and can pulse physic
   }
 });
 
+test("knowledge base graph keeps dense replay inside the viewport", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for the knowledge graph fit smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("remote-vibes-knowledge-graph-fit-");
+  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+  await mkdir(wikiDir, { recursive: true });
+
+  const noteLinks = [];
+  for (let index = 0; index < 48; index += 1) {
+    const groupName = `cluster-${index % 8}`;
+    const noteDir = path.join(wikiDir, groupName);
+    const noteName = `note-${String(index).padStart(2, "0")}.md`;
+    await mkdir(noteDir, { recursive: true });
+    await writeFile(
+      path.join(noteDir, noteName),
+      `# ${groupName} ${index}\n\nBack to [[../index]] and [[../cluster-${(index + 1) % 8}/note-${String((index + 1) % 48).padStart(2, "0")}]].\n`,
+      "utf8",
+    );
+    noteLinks.push(`[[${groupName}/${noteName.replace(/\.md$/, "")}]]`);
+  }
+
+  await writeFile(path.join(wikiDir, "index.md"), `# Dense Index\n\n${noteLinks.join(" ")}\n`, "utf8");
+
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+  let browser = null;
+
+  const readGraphClipState = async (page) =>
+    page.evaluate(() => {
+      const svg = document.querySelector("#knowledge-base-graph");
+      const viewport = document.querySelector("[data-kb-graph-viewport]");
+      const svgBox = svg?.getBoundingClientRect();
+      if (!svg || !svgBox) {
+        return { clippedCircles: -1, transform: "" };
+      }
+
+      const clippedCircles = Array.from(document.querySelectorAll("[data-kb-graph-node] circle")).filter((circle) => {
+        const box = circle.getBoundingClientRect();
+        return (
+          box.left < svgBox.left - 1 ||
+          box.right > svgBox.right + 1 ||
+          box.top < svgBox.top - 1 ||
+          box.bottom > svgBox.bottom + 1
+        );
+      }).length;
+
+      return {
+        clippedCircles,
+        transform: viewport?.getAttribute("transform") || "",
+      };
+    });
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ wikiPath: wikiDir }),
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    await page.goto(`${baseUrl}/?view=knowledge-base`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#knowledge-base-graph", { timeout: 10_000 });
+    await page.waitForFunction(() => document.querySelectorAll("[data-kb-graph-node]").length >= 49, null, {
+      timeout: 10_000,
+    });
+    await page.waitForTimeout(1_200);
+
+    const initialClipState = await readGraphClipState(page);
+    assert.equal(initialClipState.clippedCircles, 0);
+    assert.match(initialClipState.transform, /scale\([0-9.]+\)/);
+
+    await page.click("#pulse-knowledge-base-graph");
+    await page.waitForTimeout(1_200);
+
+    const replayClipState = await readGraphClipState(page);
+    assert.equal(replayClipState.clippedCircles, 0);
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("fresh browser starts on brain folder setup until a folder is chosen", async (t) => {
   const executablePath = await resolveBrowserExecutablePath({ env: process.env });
   if (!executablePath) {

@@ -58,6 +58,9 @@ const KNOWLEDGE_BASE_GRAPH_MAX_SCALE = 2.8;
 const KNOWLEDGE_BASE_GRAPH_FIT_PADDING = 72;
 const KNOWLEDGE_BASE_GRAPH_FOCUS_SCALE = 1.65;
 const KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX = 6;
+const KNOWLEDGE_BASE_GRAPH_LABEL_CHAR_WIDTH = 6.2;
+const KNOWLEDGE_BASE_GRAPH_LABEL_GAP = 10;
+const KNOWLEDGE_BASE_GRAPH_LABEL_HEIGHT = 14;
 const KNOWLEDGE_BASE_GRAPH_PROJECT_PREFIX = "project:";
 const KNOWLEDGE_BASE_GRAPH_PHYSICS = Object.freeze({
   alphaDecay: 0.972,
@@ -5158,6 +5161,19 @@ function truncateKnowledgeBaseLabel(value, maxLength = 16) {
   return `${text.slice(0, Math.max(1, maxLength - 1))}…`;
 }
 
+function getKnowledgeBaseGraphSignature(notes, edges) {
+  const noteKeys = (Array.isArray(notes) ? notes : [])
+    .map((note) => normalizeFileTreePath(note?.relativePath))
+    .filter(Boolean)
+    .sort();
+  const edgeKeys = (Array.isArray(edges) ? edges : [])
+    .map((edge) => `${normalizeFileTreePath(edge?.source)}>${normalizeFileTreePath(edge?.target)}`)
+    .filter((edgeKey) => !edgeKey.startsWith(">") && !edgeKey.endsWith(">"))
+    .sort();
+
+  return `${noteKeys.join("|")}::${edgeKeys.join("|")}`;
+}
+
 function hashString(value) {
   let hash = 0;
 
@@ -5346,6 +5362,8 @@ function createEmptyKnowledgeBaseGraphLayout(previousLayout = null) {
     hoveredPath: previousLayout?.hoveredPath ?? "",
     refs: null,
     cleanup: null,
+    signature: "",
+    autoFitDuringSimulation: false,
     cameraInitialized: previousLayout?.cameraInitialized ?? false,
   };
 }
@@ -5460,7 +5478,25 @@ function syncKnowledgeBaseGraphDom() {
   refs.svg.classList.toggle("is-dragging-node", Boolean(layout.dragState));
 }
 
-function fitKnowledgeBaseGraphCamera() {
+function getKnowledgeBaseGraphNodeLabel(node) {
+  return truncateKnowledgeBaseLabel(node?.title || node?.relativePath || "", 18);
+}
+
+function getKnowledgeBaseGraphNodeVisualBounds(node) {
+  const labelWidth = getKnowledgeBaseGraphNodeLabel(node).length * KNOWLEDGE_BASE_GRAPH_LABEL_CHAR_WIDTH;
+  const horizontalPadding = Math.max(node.radius + 12, labelWidth / 2 + 8);
+  const topPadding = node.radius + KNOWLEDGE_BASE_GRAPH_LABEL_GAP + KNOWLEDGE_BASE_GRAPH_LABEL_HEIGHT + 8;
+  const bottomPadding = node.radius + 12;
+
+  return {
+    minX: node.x - horizontalPadding,
+    minY: node.y - topPadding,
+    maxX: node.x + horizontalPadding,
+    maxY: node.y + bottomPadding,
+  };
+}
+
+function fitKnowledgeBaseGraphCamera({ sync = true } = {}) {
   const layout = state.knowledgeBase.graphLayout;
 
   if (!layout.nodes.length) {
@@ -5473,10 +5509,11 @@ function fitKnowledgeBaseGraphCamera() {
   let maxY = -Infinity;
 
   for (const node of layout.nodes) {
-    minX = Math.min(minX, node.x - node.radius - 20);
-    minY = Math.min(minY, node.y - node.radius - 24);
-    maxX = Math.max(maxX, node.x + node.radius + 20);
-    maxY = Math.max(maxY, node.y + node.radius + 24);
+    const bounds = getKnowledgeBaseGraphNodeVisualBounds(node);
+    minX = Math.min(minX, bounds.minX);
+    minY = Math.min(minY, bounds.minY);
+    maxX = Math.max(maxX, bounds.maxX);
+    maxY = Math.max(maxY, bounds.maxY);
   }
 
   const contentWidth = Math.max(180, maxX - minX);
@@ -5493,7 +5530,9 @@ function fitKnowledgeBaseGraphCamera() {
   layout.offsetX = layout.width / 2 - ((minX + maxX) / 2) * nextScale;
   layout.offsetY = layout.height / 2 - ((minY + maxY) / 2) * nextScale;
   layout.cameraInitialized = true;
-  syncKnowledgeBaseGraphDom();
+  if (sync) {
+    syncKnowledgeBaseGraphDom();
+  }
 }
 
 function focusKnowledgeBaseGraphNode(relativePath) {
@@ -5563,10 +5602,8 @@ function replayKnowledgeBaseGraphUnfold() {
   const spreadRadius = Math.min(layout.width, layout.height) * 0.055;
   const velocityBase = Math.min(layout.width, layout.height) * 0.0032;
 
-  layout.scale = 1;
-  layout.offsetX = 0;
-  layout.offsetY = 0;
-  layout.cameraInitialized = true;
+  fitKnowledgeBaseGraphCamera({ sync: false });
+  layout.autoFitDuringSimulation = true;
 
   layout.nodes.forEach((node, index) => {
     const currentAngle = Math.atan2(node.y - centerY, node.x - centerX);
@@ -5710,11 +5747,17 @@ function scheduleKnowledgeBaseGraphFrame() {
     }
 
     layout.alpha = Math.max(alphaTarget, alpha * physics.alphaDecay - physics.alphaCooling, 0);
+    if (layout.autoFitDuringSimulation && !layout.dragState && !layout.panState) {
+      fitKnowledgeBaseGraphCamera({ sync: false });
+    }
     syncKnowledgeBaseGraphDom();
 
     const shouldContinue =
       Boolean(layout.dragState) || maxVelocity > physics.stopVelocity || layout.alpha > physics.stopAlpha;
     layout.running = shouldContinue;
+    if (!shouldContinue) {
+      layout.autoFitDuringSimulation = false;
+    }
 
     if (shouldContinue) {
       scheduleKnowledgeBaseGraphFrame();
@@ -5738,6 +5781,8 @@ function createKnowledgeBaseGraphLayout(notes, edges) {
   const previousLayout = state.knowledgeBase.graphLayout;
   const width = KNOWLEDGE_BASE_GRAPH_WIDTH;
   const height = KNOWLEDGE_BASE_GRAPH_HEIGHT;
+  const signature = getKnowledgeBaseGraphSignature(notes, edges);
+  const canReusePreviousLayout = previousLayout?.signature === signature;
 
   if (!notes.length) {
     return createEmptyKnowledgeBaseGraphLayout(previousLayout);
@@ -5745,7 +5790,9 @@ function createKnowledgeBaseGraphLayout(notes, edges) {
 
   const centerX = width / 2;
   const centerY = height / 2;
-  const previousNodes = new Map((previousLayout?.nodes || []).map((node) => [node.relativePath, node]));
+  const previousNodes = canReusePreviousLayout
+    ? new Map((previousLayout?.nodes || []).map((node) => [node.relativePath, node]))
+    : new Map();
   const groupKeys = Array.from(new Set(notes.map((note) => getKnowledgeBaseGraphGroupKey(note.relativePath)))).sort((left, right) => {
     const leftRank = getKnowledgeBaseGraphGroupSortRank(left);
     const rightRank = getKnowledgeBaseGraphGroupSortRank(right);
@@ -5830,6 +5877,7 @@ function createKnowledgeBaseGraphLayout(notes, edges) {
   const physics = KNOWLEDGE_BASE_GRAPH_PHYSICS;
   const previousHoveredPath = previousLayout?.hoveredPath || "";
   const hoveredPath = sizedNodeMap.has(previousHoveredPath) ? previousHoveredPath : "";
+  const canReuseCamera = Boolean(canReusePreviousLayout && previousLayout?.cameraInitialized);
 
   return {
     width,
@@ -5853,9 +5901,9 @@ function createKnowledgeBaseGraphLayout(notes, edges) {
       };
     }),
     groupAnchors,
-    scale: previousLayout?.scale ?? 1,
-    offsetX: previousLayout?.offsetX ?? 0,
-    offsetY: previousLayout?.offsetY ?? 0,
+    scale: canReuseCamera ? previousLayout.scale : 1,
+    offsetX: canReuseCamera ? previousLayout.offsetX : 0,
+    offsetY: canReuseCamera ? previousLayout.offsetY : 0,
     alpha: Math.max(previousLayout?.alpha || 0, 0.22),
     running: false,
     frameHandle: 0,
@@ -5864,7 +5912,9 @@ function createKnowledgeBaseGraphLayout(notes, edges) {
     hoveredPath,
     refs: null,
     cleanup: null,
-    cameraInitialized: previousLayout?.cameraInitialized ?? false,
+    signature,
+    autoFitDuringSimulation: false,
+    cameraInitialized: canReuseCamera,
   };
 }
 
@@ -11780,6 +11830,7 @@ function bindKnowledgeBaseGraphInteractions() {
           return;
         }
 
+        layout.autoFitDuringSimulation = false;
         layout.dragState = {
           pointerId: event.pointerId,
           node,
@@ -11803,6 +11854,7 @@ function bindKnowledgeBaseGraphInteractions() {
         return;
       }
 
+      layout.autoFitDuringSimulation = false;
       layout.panState = {
         pointerId: event.pointerId,
         startClientX: event.clientX,
@@ -11891,6 +11943,7 @@ function bindKnowledgeBaseGraphInteractions() {
         return;
       }
 
+      layout.autoFitDuringSimulation = false;
       layout.scale = nextScale;
       layout.offsetX = svgPoint.x - worldX * nextScale;
       layout.offsetY = svgPoint.y - worldY * nextScale;
@@ -11904,6 +11957,7 @@ function bindKnowledgeBaseGraphInteractions() {
     "click",
     () => {
       fitKnowledgeBaseGraphCamera();
+      layout.autoFitDuringSimulation = true;
       startKnowledgeBaseGraphSimulation(0.18);
     },
     { signal },
