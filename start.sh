@@ -305,7 +305,11 @@ ensure_dependencies_installed() {
   fi
 
   echo "Installing dependencies..."
-  npm install
+  if [ -f package-lock.json ]; then
+    npm ci
+  else
+    npm install
+  fi
   touch "$NPM_STAMP_FILE"
 }
 

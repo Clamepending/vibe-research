@@ -711,6 +711,13 @@ restore_managed_prompt_files() {
   restore_managed_prompt_file GEMINI.md
 }
 
+restore_installer_generated_files() {
+  if [ -n "$(git status --porcelain -- package-lock.json 2>/dev/null)" ]; then
+    log "Restoring generated package-lock change before update"
+    git checkout -- package-lock.json >/dev/null 2>&1 || true
+  fi
+}
+
 update_repo() {
   local ssh_url checkout_ref
   ssh_url="git@github.com:${REPO_SLUG}.git"
@@ -722,6 +729,7 @@ update_repo() {
 
   cd "$INSTALL_DIR"
   restore_managed_prompt_files
+  restore_installer_generated_files
 
   if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
     log "Local changes detected in $INSTALL_DIR, skipping update"

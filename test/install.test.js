@@ -135,6 +135,47 @@ test("install.sh clones and updates a checkout in one command", async () => {
   }
 });
 
+test("install.sh restores generated package-lock churn before updating a checkout", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-lockfile-update-"));
+  const installDir = path.join(installRoot, "remote-vibes");
+
+  try {
+    await writeFile(path.join(repoDir, "package-lock.json"), '{"lockfileVersion":3}\n');
+    await execFile("git", ["add", "package-lock.json"], { cwd: repoDir });
+    await execFile("git", ["commit", "-m", "Add lockfile"], { cwd: repoDir });
+
+    await execFile("bash", [installScript], {
+      env: installTestEnv({
+        REMOTE_VIBES_HOME: installDir,
+        REMOTE_VIBES_REPO_URL: repoDir,
+        REMOTE_VIBES_SKIP_RUN: "1",
+      }),
+    });
+
+    await writeFile(path.join(installDir, "package-lock.json"), '{"lockfileVersion":3,"packages":{"node_modules/xterm":{"peer":true}}}\n');
+    await writeFile(path.join(repoDir, "VERSION"), "v2\n");
+    await execFile("git", ["add", "VERSION"], { cwd: repoDir });
+    await execFile("git", ["commit", "-m", "Update"], { cwd: repoDir });
+
+    const secondRun = await execFile("bash", [installScript], {
+      env: installTestEnv({
+        REMOTE_VIBES_HOME: installDir,
+        REMOTE_VIBES_REPO_URL: repoDir,
+        REMOTE_VIBES_SKIP_RUN: "1",
+      }),
+    });
+
+    assert.match(secondRun.stdout, /Restoring generated package-lock change before update/);
+    assert.match(secondRun.stdout, /Updating existing checkout/);
+    assert.equal(await readFile(path.join(installDir, "VERSION"), "utf8"), "v2\n");
+    assert.equal(await readFile(path.join(installDir, "package-lock.json"), "utf8"), '{"lockfileVersion":3}\n');
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
 test("install.sh defaults to an app checkout under the home Remote Vibes directory", async () => {
   const { tempRoot, repoDir } = await createSourceRepo();
   const homeDir = path.join(tempRoot, "home");
