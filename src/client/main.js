@@ -113,6 +113,9 @@ const FILE_IMAGE_MAX_ZOOM = 8;
 const FILE_IMAGE_ZOOM_STEP = 0.25;
 const TERMINAL_FILE_PREVIEW_DELAY_MS = 220;
 const TERMINAL_FILE_PREVIEW_TEXT_MAX_CHARS = 3600;
+const TERMINAL_ATTACHMENT_MAX_IMAGES = 8;
+const TERMINAL_KEYBOARD_SCROLL_LINES = 3;
+const TERMINAL_KEYBOARD_SCROLL_PAGE_RATIO = 0.85;
 const TERMINAL_IMAGE_PATH_EXTENSIONS = new Set([
   ".apng",
   ".avif",
@@ -126,6 +129,32 @@ const TERMINAL_IMAGE_PATH_EXTENSIONS = new Set([
   ".tif",
   ".tiff",
   ".webp",
+]);
+const TERMINAL_ATTACHMENT_MIME_TYPE_BY_EXTENSION = new Map([
+  [".apng", "image/apng"],
+  [".avif", "image/avif"],
+  [".bmp", "image/bmp"],
+  [".gif", "image/gif"],
+  [".heic", "image/heic"],
+  [".heif", "image/heif"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".png", "image/png"],
+  [".tif", "image/tiff"],
+  [".tiff", "image/tiff"],
+  [".webp", "image/webp"],
+]);
+const TERMINAL_ATTACHMENT_EXTENSION_BY_MIME_TYPE = new Map([
+  ["image/apng", ".apng"],
+  ["image/avif", ".avif"],
+  ["image/bmp", ".bmp"],
+  ["image/gif", ".gif"],
+  ["image/heic", ".heic"],
+  ["image/heif", ".heif"],
+  ["image/jpeg", ".jpg"],
+  ["image/png", ".png"],
+  ["image/tiff", ".tiff"],
+  ["image/webp", ".webp"],
 ]);
 const KNOWLEDGE_BASE_IMAGE_EXTENSIONS = TERMINAL_IMAGE_PATH_EXTENSIONS;
 const KNOWLEDGE_BASE_VIDEO_EXTENSIONS = new Set([".mp4", ".m4v", ".mov", ".ogv", ".webm"]);
@@ -2567,6 +2596,49 @@ function getTerminalWheelDeltaY(event) {
   return event.deltaY;
 }
 
+function getTerminalTranscriptLineHeightPx() {
+  const pre = document.querySelector("#terminal-transcript-pre");
+  const element = pre instanceof HTMLElement ? pre : getTerminalTranscriptViewport();
+  if (!(element instanceof HTMLElement)) {
+    return 18;
+  }
+
+  const lineHeight = Number.parseFloat(window.getComputedStyle(element).lineHeight);
+  return Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : 18;
+}
+
+function scrollTerminalTranscriptByDelta(deltaY) {
+  if (!(getTerminalTranscriptViewport() instanceof HTMLElement)) {
+    return false;
+  }
+
+  const applyTranscriptScroll = () => {
+    const transcriptViewport = getTerminalTranscriptViewport();
+    if (!(transcriptViewport instanceof HTMLElement)) {
+      return;
+    }
+
+    const maxScrollTop = Math.max(0, transcriptViewport.scrollHeight - transcriptViewport.clientHeight);
+    const nextScrollTop = clamp(transcriptViewport.scrollTop + deltaY, 0, maxScrollTop);
+    transcriptViewport.scrollTop = nextScrollTop;
+
+    if (deltaY > 0 && nextScrollTop >= maxScrollTop - 2) {
+      hideTerminalTranscriptOverlay();
+    } else {
+      syncTerminalScrollState();
+    }
+  };
+
+  if (!state.terminalTranscriptVisible) {
+    setTerminalTranscriptVisible(true);
+    renderTerminalTranscriptHistory({ afterRender: applyTranscriptScroll, scrollToBottom: true });
+    return true;
+  }
+
+  applyTranscriptScroll();
+  return true;
+}
+
 function routeTerminalTranscriptWheel(event) {
   if (!event.deltaY || event.ctrlKey || event.metaKey) {
     return false;
@@ -2585,31 +2657,93 @@ function routeTerminalTranscriptWheel(event) {
   event.stopPropagation();
   event.stopImmediatePropagation?.();
 
-  const wheelDeltaY = getTerminalWheelDeltaY(event);
-  const applyTranscriptWheel = () => {
-    const transcriptViewport = getTerminalTranscriptViewport();
-    if (!(transcriptViewport instanceof HTMLElement)) {
-      return;
-    }
-    const maxScrollTop = Math.max(0, transcriptViewport.scrollHeight - transcriptViewport.clientHeight);
-    const nextScrollTop = clamp(transcriptViewport.scrollTop + wheelDeltaY, 0, maxScrollTop);
-    transcriptViewport.scrollTop = nextScrollTop;
+  return scrollTerminalTranscriptByDelta(getTerminalWheelDeltaY(event));
+}
 
-    if (event.deltaY > 0 && nextScrollTop >= maxScrollTop - 2) {
-      hideTerminalTranscriptOverlay();
-    } else {
-      syncTerminalScrollState();
-    }
-  };
-
-  if (!state.terminalTranscriptVisible) {
-    setTerminalTranscriptVisible(true);
-    renderTerminalTranscriptHistory({ afterRender: applyTranscriptWheel, scrollToBottom: true });
-    return true;
+function getTerminalKeyboardScrollIntent(event) {
+  if (
+    event.type !== "keydown" ||
+    event.defaultPrevented ||
+    event.isComposing ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey
+  ) {
+    return null;
   }
 
-  applyTranscriptWheel();
+  if (event.key === "PageUp") {
+    return { direction: -1, kind: "page" };
+  }
 
+  if (event.key === "PageDown") {
+    return { direction: 1, kind: "page" };
+  }
+
+  if (!event.shiftKey) {
+    return null;
+  }
+
+  if (event.key === "ArrowUp") {
+    return { direction: -1, kind: "line" };
+  }
+
+  if (event.key === "ArrowDown") {
+    return { direction: 1, kind: "line" };
+  }
+
+  return null;
+}
+
+function getTerminalKeyboardScrollLineCount(intent) {
+  if (intent?.kind === "page") {
+    return Math.max(1, Math.floor((Number(state.terminal?.rows) || 24) * TERMINAL_KEYBOARD_SCROLL_PAGE_RATIO));
+  }
+
+  return TERMINAL_KEYBOARD_SCROLL_LINES;
+}
+
+function scrollNativeTerminalHistory(intent) {
+  if (!state.terminal) {
+    return false;
+  }
+
+  const lineCount = getTerminalKeyboardScrollLineCount(intent);
+  state.terminal.scrollLines(intent.direction * lineCount);
+  window.requestAnimationFrame(() => {
+    syncTerminalScrollState();
+  });
+  return true;
+}
+
+function scrollTerminalTranscriptHistoryByKeyboard(intent) {
+  const lineCount = getTerminalKeyboardScrollLineCount(intent);
+  const deltaY =
+    intent.kind === "page"
+      ? intent.direction * (getTerminalTranscriptViewport()?.clientHeight || 320) * TERMINAL_KEYBOARD_SCROLL_PAGE_RATIO
+      : intent.direction * lineCount * getTerminalTranscriptLineHeightPx();
+
+  return scrollTerminalTranscriptByDelta(deltaY);
+}
+
+function routeTerminalKeyboardScroll(event) {
+  const intent = getTerminalKeyboardScrollIntent(event);
+  if (!intent) {
+    return false;
+  }
+
+  const handled =
+    state.terminalTranscriptVisible || !hasNativeTerminalScrollableHistory()
+      ? scrollTerminalTranscriptHistoryByKeyboard(intent)
+      : scrollNativeTerminalHistory(intent);
+
+  if (!handled) {
+    return false;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation?.();
   return true;
 }
 
@@ -4124,7 +4258,232 @@ function sendTerminalInput(data) {
     return;
   }
 
+  hideTerminalTranscriptOverlay();
   state.websocket.send(JSON.stringify({ type: "input", data }));
+  scheduleTerminalTextareaReset();
+}
+
+function isImageFileLike(file) {
+  if (!file) {
+    return false;
+  }
+
+  const mimeType = String(file.type || "").toLowerCase();
+  if (mimeType.startsWith("image/")) {
+    return true;
+  }
+
+  return TERMINAL_IMAGE_PATH_EXTENSIONS.has(getTerminalFilePathExtension(file.name || ""));
+}
+
+function getImageMimeTypeForFile(file) {
+  const mimeType = String(file?.type || "").toLowerCase();
+  if (mimeType.startsWith("image/")) {
+    return mimeType;
+  }
+
+  return TERMINAL_ATTACHMENT_MIME_TYPE_BY_EXTENSION.get(getTerminalFilePathExtension(file?.name || "")) || "";
+}
+
+function getImageFilesFromClipboardData(clipboardData) {
+  if (!clipboardData) {
+    return [];
+  }
+
+  const files = [];
+  for (const item of Array.from(clipboardData.items || [])) {
+    if (item?.kind !== "file" || !String(item.type || "").toLowerCase().startsWith("image/")) {
+      continue;
+    }
+
+    const file = item.getAsFile?.();
+    if (isImageFileLike(file)) {
+      files.push(file);
+    }
+  }
+
+  if (files.length) {
+    return files.slice(0, TERMINAL_ATTACHMENT_MAX_IMAGES);
+  }
+
+  return Array.from(clipboardData.files || [])
+    .filter(isImageFileLike)
+    .slice(0, TERMINAL_ATTACHMENT_MAX_IMAGES);
+}
+
+function getClipboardText(clipboardData) {
+  try {
+    return String(clipboardData?.getData?.("text/plain") || "");
+  } catch {
+    return "";
+  }
+}
+
+function isImagePlaceholderPasteText(value) {
+  return /^\s*\[image(?:\s+\d+)?\]\s*$/i.test(String(value || ""));
+}
+
+function getImageExtensionForMimeType(mimeType) {
+  const normalizedMimeType = String(mimeType || "").toLowerCase();
+  return TERMINAL_ATTACHMENT_EXTENSION_BY_MIME_TYPE.get(normalizedMimeType) || ".png";
+}
+
+async function getImageFilesFromNavigatorClipboard() {
+  if (typeof navigator.clipboard?.read !== "function") {
+    return [];
+  }
+
+  const items = await navigator.clipboard.read();
+  const files = [];
+
+  for (const item of Array.from(items || [])) {
+    const mimeType = Array.from(item?.types || []).find((type) => String(type || "").toLowerCase().startsWith("image/"));
+    if (!mimeType || typeof item.getType !== "function") {
+      continue;
+    }
+
+    const blob = await item.getType(mimeType);
+    if (!blob) {
+      continue;
+    }
+
+    const fileMimeType = blob.type || mimeType;
+    files.push(
+      new window.File([blob], `clipboard-image-${files.length + 1}${getImageExtensionForMimeType(fileMimeType)}`, {
+        type: fileMimeType,
+      }),
+    );
+
+    if (files.length >= TERMINAL_ATTACHMENT_MAX_IMAGES) {
+      break;
+    }
+  }
+
+  return files;
+}
+
+async function attachTerminalImagePlaceholderPaste(fallbackText) {
+  try {
+    const files = await getImageFilesFromNavigatorClipboard();
+    if (files.length) {
+      await attachTerminalImageFiles(files, "paste");
+      return;
+    }
+  } catch (error) {
+    console.warn("[remote-vibes] clipboard image read failed", error);
+  }
+
+  pasteTextIntoTerminal(fallbackText);
+}
+
+function getImageFilesFromDataTransfer(dataTransfer) {
+  return Array.from(dataTransfer?.files || [])
+    .filter(isImageFileLike)
+    .slice(0, TERMINAL_ATTACHMENT_MAX_IMAGES);
+}
+
+function dataTransferHasImage(dataTransfer) {
+  if (
+    Array.from(dataTransfer?.items || []).some((item) =>
+      String(item?.type || "").toLowerCase().startsWith("image/"),
+    )
+  ) {
+    return true;
+  }
+
+  return Array.from(dataTransfer?.types || []).includes("Files");
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result || "")), { once: true });
+    reader.addEventListener("error", () => reject(reader.error || new Error("Could not read image.")), { once: true });
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadTerminalImageAttachment(file, source) {
+  if (!state.activeSessionId) {
+    throw new Error("No active terminal session.");
+  }
+
+  const dataUrl = await readFileAsDataUrl(file);
+  let payload;
+  try {
+    payload = await fetchJson("/api/attachments/images", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId: state.activeSessionId,
+        source,
+        name: file.name || "",
+        mimeType: getImageMimeTypeForFile(file),
+        dataUrl,
+      }),
+    });
+  } catch (error) {
+    if (error?.status === 404 && /^Request failed with status 404$/i.test(error.message || "")) {
+      throw new Error("Image attachments need a Remote Vibes relaunch before they are available.");
+    }
+
+    throw error;
+  }
+
+  return payload.attachment;
+}
+
+function escapeMarkdownAltText(value) {
+  return String(value || "image").replace(/[\\\]]/g, "\\$&");
+}
+
+function formatMarkdownImageDestination(value) {
+  const pathText = String(value || "");
+  if (/[\s()<>]/.test(pathText)) {
+    return `<${pathText.replaceAll("<", "%3C").replaceAll(">", "%3E")}>`;
+  }
+
+  return pathText;
+}
+
+function formatTerminalImageAttachmentReference(attachment) {
+  const label = attachment?.source === "drop" ? "dropped image" : "pasted image";
+  const fileName = attachment?.fileName || "image";
+  return `Attached image: ![${label}: ${escapeMarkdownAltText(fileName)}](${formatMarkdownImageDestination(
+    attachment?.absolutePath || "",
+  )})`;
+}
+
+function pasteTextIntoTerminal(text) {
+  if (!text) {
+    return;
+  }
+
+  state.terminal?.focus?.();
+  if (typeof state.terminal?.paste === "function") {
+    state.terminal.paste(text);
+    return;
+  }
+
+  sendTerminalInput(text);
+}
+
+async function attachTerminalImageFiles(files, source) {
+  const imageFiles = Array.from(files || []).filter(isImageFileLike).slice(0, TERMINAL_ATTACHMENT_MAX_IMAGES);
+  if (!imageFiles.length) {
+    return;
+  }
+
+  try {
+    const attachments = [];
+    for (const file of imageFiles) {
+      attachments.push(await uploadTerminalImageAttachment(file, source));
+    }
+
+    pasteTextIntoTerminal(attachments.map(formatTerminalImageAttachmentReference).join(" "));
+  } catch (error) {
+    console.error("[remote-vibes] image attachment failed", error);
+    window.alert(error.message || "Could not attach image.");
+  }
 }
 
 function normalizeFileTreePath(value) {
@@ -14307,8 +14666,74 @@ function setupTerminalInteractions(mount) {
     routeTerminalTranscriptWheel(event);
   };
 
+  const handleKeyboardScroll = (event) => {
+    routeTerminalKeyboardScroll(event);
+  };
+
   const handleTranscriptClick = () => {
     focusTerminalInput();
+  };
+
+  const handlePaste = (event) => {
+    const files = getImageFilesFromClipboardData(event.clipboardData);
+    if (!files.length) {
+      const clipboardText = getClipboardText(event.clipboardData);
+      if (!isImagePlaceholderPasteText(clipboardText)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      focusTerminalInput();
+      void attachTerminalImagePlaceholderPaste(clipboardText);
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    focusTerminalInput();
+    void attachTerminalImageFiles(files, "paste");
+  };
+
+  const handleDragEnter = (event) => {
+    if (!dataTransferHasImage(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    mount.classList.add("is-attachment-dragover");
+  };
+
+  const handleDragOver = (event) => {
+    if (!dataTransferHasImage(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    mount.classList.add("is-attachment-dragover");
+  };
+
+  const handleDragLeave = (event) => {
+    if (event.relatedTarget instanceof Node && mount.contains(event.relatedTarget)) {
+      return;
+    }
+
+    mount.classList.remove("is-attachment-dragover");
+  };
+
+  const handleDrop = (event) => {
+    const files = getImageFilesFromDataTransfer(event.dataTransfer);
+    if (!files.length) {
+      mount.classList.remove("is-attachment-dragover");
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    mount.classList.remove("is-attachment-dragover");
+    focusTerminalInput();
+    void attachTerminalImageFiles(files, "drop");
   };
 
   const handleBeforeInput = (event) => {
@@ -14372,7 +14797,14 @@ function setupTerminalInteractions(mount) {
 
   mount.addEventListener("pointerdown", handlePointerDown);
   mount.addEventListener("wheel", handleTranscriptFallbackWheel, { capture: true, passive: false });
+  mount.addEventListener("keydown", handleKeyboardScroll, { capture: true });
+  mount.addEventListener("paste", handlePaste, { capture: true });
+  mount.addEventListener("dragenter", handleDragEnter);
+  mount.addEventListener("dragover", handleDragOver);
+  mount.addEventListener("dragleave", handleDragLeave);
+  mount.addEventListener("drop", handleDrop);
   transcriptViewport?.addEventListener("wheel", handleTranscriptFallbackWheel, { capture: true, passive: false });
+  transcriptViewport?.addEventListener("keydown", handleKeyboardScroll, { capture: true });
   transcriptViewport?.addEventListener("click", handleTranscriptClick);
   viewport.addEventListener("scroll", handleViewportScroll, { passive: true });
   viewport.addEventListener("touchstart", handleTouchStart, { capture: true, passive: true });
@@ -14388,7 +14820,15 @@ function setupTerminalInteractions(mount) {
   state.terminalInteractionCleanup = () => {
     mount.removeEventListener("pointerdown", handlePointerDown);
     mount.removeEventListener("wheel", handleTranscriptFallbackWheel, true);
+    mount.removeEventListener("keydown", handleKeyboardScroll, true);
+    mount.removeEventListener("paste", handlePaste, true);
+    mount.removeEventListener("dragenter", handleDragEnter);
+    mount.removeEventListener("dragover", handleDragOver);
+    mount.removeEventListener("dragleave", handleDragLeave);
+    mount.removeEventListener("drop", handleDrop);
+    mount.classList.remove("is-attachment-dragover");
     transcriptViewport?.removeEventListener("wheel", handleTranscriptFallbackWheel, true);
+    transcriptViewport?.removeEventListener("keydown", handleKeyboardScroll, true);
     transcriptViewport?.removeEventListener("click", handleTranscriptClick);
     viewport.removeEventListener("scroll", handleViewportScroll);
     viewport.removeEventListener("touchstart", handleTouchStart, true);

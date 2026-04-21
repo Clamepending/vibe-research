@@ -47,11 +47,123 @@ const execFileAsync = promisify(execFile);
 const SERVER_INFO_FILENAME = "server.json";
 const TAILSCALE_HTTPS_SERVE_ENABLED = process.env.REMOTE_VIBES_TAILSCALE_HTTPS !== "0";
 const JSON_BODY_LIMIT = "25mb";
+const ATTACHMENTS_SUBDIR = "attachments";
+const MAX_ATTACHMENT_IMAGE_BYTES = 15 * 1024 * 1024;
+const ATTACHMENT_IMAGE_EXTENSIONS_BY_MIME_TYPE = new Map([
+  ["image/apng", ".apng"],
+  ["image/avif", ".avif"],
+  ["image/bmp", ".bmp"],
+  ["image/gif", ".gif"],
+  ["image/heic", ".heic"],
+  ["image/heif", ".heif"],
+  ["image/jpeg", ".jpg"],
+  ["image/png", ".png"],
+  ["image/tiff", ".tiff"],
+  ["image/webp", ".webp"],
+]);
 
 function buildHttpError(message, statusCode = 400) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
+}
+
+function normalizeAttachmentSource(value) {
+  return value === "drop" ? "drop" : "paste";
+}
+
+function sanitizeAttachmentStem(value) {
+  const stem = path.basename(String(value || ""), path.extname(String(value || "")))
+    .normalize("NFKD")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72);
+
+  if (!stem || /^(?:image|screenshot|screen-shot|clipboard|paste)$/i.test(stem)) {
+    return "";
+  }
+
+  return stem;
+}
+
+function getAttachmentDayFolder(createdAt) {
+  return createdAt.slice(0, 10);
+}
+
+function getAttachmentTimestampToken(createdAt) {
+  return createdAt.replace(/\D/g, "").slice(0, 14);
+}
+
+function decodeAttachmentDataUrl(dataUrl, fallbackMimeType) {
+  const match = String(dataUrl || "").match(/^data:([^;,]*);base64,([A-Za-z0-9+/=\s]+)$/);
+
+  if (!match) {
+    throw buildHttpError("Image upload must be a base64 data URL.", 400);
+  }
+
+  const dataUrlMimeType = match[1].toLowerCase();
+  const hintedMimeType = String(fallbackMimeType || "").toLowerCase();
+  let mimeType = dataUrlMimeType;
+  if (
+    !ATTACHMENT_IMAGE_EXTENSIONS_BY_MIME_TYPE.has(mimeType) &&
+    ATTACHMENT_IMAGE_EXTENSIONS_BY_MIME_TYPE.has(hintedMimeType)
+  ) {
+    mimeType = hintedMimeType;
+  }
+
+  const extension = ATTACHMENT_IMAGE_EXTENSIONS_BY_MIME_TYPE.get(mimeType);
+  if (!extension) {
+    throw buildHttpError(`Unsupported image type: ${mimeType || hintedMimeType || "unknown"}.`, 415);
+  }
+
+  const buffer = Buffer.from(match[2].replace(/\s+/g, ""), "base64");
+  if (!buffer.byteLength) {
+    throw buildHttpError("Image upload is empty.", 400);
+  }
+
+  if (buffer.byteLength > MAX_ATTACHMENT_IMAGE_BYTES) {
+    throw buildHttpError(
+      `Image upload is too large (max ${MAX_ATTACHMENT_IMAGE_BYTES} bytes).`,
+      413,
+    );
+  }
+
+  return { buffer, extension, mimeType };
+}
+
+async function saveImageAttachment({ stateDir, session, dataUrl, originalName, source, mimeType }) {
+  const { buffer, extension, mimeType: decodedMimeType } = decodeAttachmentDataUrl(dataUrl, mimeType);
+  const createdAt = new Date().toISOString();
+  const id = `att_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  const safeSource = normalizeAttachmentSource(source);
+  const timestamp = getAttachmentTimestampToken(createdAt);
+  const originalStem = sanitizeAttachmentStem(originalName);
+  const stem = originalStem || `${safeSource}-${timestamp}`;
+  const fileName = `${stem}-${id.slice(4)}${extension}`;
+  const sessionId = String(session.id || "").trim();
+  const directoryPath = path.join(
+    stateDir,
+    ATTACHMENTS_SUBDIR,
+    "sessions",
+    sessionId,
+    getAttachmentDayFolder(createdAt),
+  );
+  const absolutePath = path.join(directoryPath, fileName);
+
+  await mkdir(directoryPath, { recursive: true });
+  await writeFile(absolutePath, buffer);
+
+  return {
+    id,
+    kind: "image",
+    mimeType: decodedMimeType,
+    fileName,
+    absolutePath,
+    byteLength: buffer.byteLength,
+    source: safeSource,
+    sessionId,
+    createdAt,
+  };
 }
 
 function normalizePort(value) {
@@ -1342,6 +1454,31 @@ export async function createRemoteVibesApp({
       });
 
       response.json({ file });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/attachments/images", async (request, response) => {
+    try {
+      const sessionId = String(request.body?.sessionId || "").trim();
+      const session = sessionId ? sessionManager.getSession(sessionId) : null;
+
+      if (!session) {
+        response.status(404).json({ error: "Session not found." });
+        return;
+      }
+
+      const attachment = await saveImageAttachment({
+        stateDir,
+        session,
+        dataUrl: request.body?.dataUrl,
+        originalName: request.body?.name,
+        mimeType: request.body?.mimeType,
+        source: request.body?.source,
+      });
+
+      response.status(201).json({ attachment });
     } catch (error) {
       response.status(error.statusCode || 400).json({ error: error.message });
     }

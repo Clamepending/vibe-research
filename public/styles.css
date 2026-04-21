@@ -5387,6 +5387,12 @@ input[readonly][data-folder-picker-target] {
   padding: 14px 12px;
 }
 
+.terminal-mount.is-attachment-dragover {
+  outline: 2px solid rgba(106, 227, 198, 0.72);
+  outline-offset: -5px;
+  background: rgba(106, 227, 198, 0.06);
+}
+
 .terminal-transcript-scroll {
   display: none;
   grid-area: 1 / 1;

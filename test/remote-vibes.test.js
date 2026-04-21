@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { once } from "node:events";
-import { chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { chromium } from "playwright-core";
 import { WebSocket } from "ws";
@@ -157,6 +157,47 @@ async function waitForValue(check, expectedValue) {
   throw new Error(`Expected value ${expectedValue} was never observed.`);
 }
 
+async function listFilesRecursive(root) {
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return [];
+    }
+
+    throw error;
+  }
+
+  const files = [];
+  for (const entry of entries) {
+    const entryPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await listFilesRecursive(entryPath));
+      continue;
+    }
+
+    if (entry.isFile()) {
+      files.push(entryPath);
+    }
+  }
+
+  return files.sort();
+}
+
+async function waitForAttachmentFiles(root, expectedCount) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const files = await listFilesRecursive(root);
+    if (files.length >= expectedCount) {
+      return files;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new Error(`Expected at least ${expectedCount} attachment files under ${root}.`);
+}
+
 test("state is available without authentication", async () => {
   const workspaceDir = await createTempWorkspace("remote-vibes-state-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
@@ -203,6 +244,269 @@ test("state is available without authentication", async () => {
   } finally {
     await app.close();
     await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("image attachments are saved under the Remote Vibes state directory", async () => {
+  const workspaceDir = await createTempWorkspace("remote-vibes-attachment-workspace-");
+  const stateDir = await createTempWorkspace("remote-vibes-attachment-state-");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
+
+  try {
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "shell", name: "attachment test" }),
+    });
+    assert.equal(createResponse.status, 201);
+    const { session } = await createResponse.json();
+
+    const response = await fetch(`${baseUrl}/api/attachments/images`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        source: "paste",
+        name: "screenshot.png",
+        dataUrl: `data:image/png;base64,${PNG_FIXTURE.toString("base64")}`,
+      }),
+    });
+
+    assert.equal(response.status, 201);
+    const payload = await response.json();
+    const attachment = payload.attachment;
+    const expectedPrefix = path.join(stateDir, "attachments", "sessions", session.id);
+    assert.equal(attachment.kind, "image");
+    assert.equal(attachment.mimeType, "image/png");
+    assert.equal(attachment.source, "paste");
+    assert.equal(attachment.byteLength, PNG_FIXTURE.byteLength);
+    assert.ok(attachment.absolutePath.startsWith(`${expectedPrefix}${path.sep}`));
+    assert.ok(!attachment.absolutePath.startsWith(`${workspaceDir}${path.sep}`));
+    assert.equal(path.extname(attachment.absolutePath), ".png");
+    assert.deepEqual(await readFile(attachment.absolutePath), PNG_FIXTURE);
+
+    const hintedMimeResponse = await fetch(`${baseUrl}/api/attachments/images`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        source: "drop",
+        name: "fallback-image",
+        mimeType: "image/gif",
+        dataUrl: `data:;base64,${GIF_FIXTURE.toString("base64")}`,
+      }),
+    });
+    assert.equal(hintedMimeResponse.status, 201);
+    const hintedMimePayload = await hintedMimeResponse.json();
+    assert.equal(hintedMimePayload.attachment.mimeType, "image/gif");
+    assert.equal(path.extname(hintedMimePayload.attachment.absolutePath), ".gif");
+    assert.deepEqual(await readFile(hintedMimePayload.attachment.absolutePath), GIF_FIXTURE);
+
+    const missingSessionResponse = await fetch(`${baseUrl}/api/attachments/images`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "missing-session",
+        dataUrl: `data:image/png;base64,${PNG_FIXTURE.toString("base64")}`,
+      }),
+    });
+    assert.equal(missingSessionResponse.status, 404);
+
+    const unsupportedTypeResponse = await fetch(`${baseUrl}/api/attachments/images`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        dataUrl: "data:text/plain;base64,aGVsbG8=",
+      }),
+    });
+    assert.equal(unsupportedTypeResponse.status, 415);
+  } finally {
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("terminal paste and drop insert safe saved image markdown references", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for terminal attachment smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("remote-vibes-terminal-attachment-workspace-");
+  const stateDir = await createTempWorkspace("remote-vibes-terminal-attachment-state-");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
+  let browser = null;
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wikiPath: path.join(workspaceDir, "brain") }),
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        providerId: "shell",
+        name: "Attachment Terminal",
+        cwd: workspaceDir,
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+    const { session } = await createResponse.json();
+    const attachmentRoot = path.join(stateDir, "attachments", "sessions", session.id);
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    await page.goto(baseUrl);
+    await page.waitForSelector("#terminal-mount .xterm-helper-textarea", { timeout: 10_000 });
+
+    const pasteResult = await page.evaluate((pngBase64) => {
+      const mount = document.querySelector("#terminal-mount");
+      const binary = atob(pngBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([bytes], "mobile screenshot.png", { type: "image/png" }));
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: transfer });
+      const defaultAllowed = mount.dispatchEvent(event);
+
+      return {
+        defaultAllowed,
+        defaultPrevented: event.defaultPrevented,
+      };
+    }, PNG_FIXTURE.toString("base64"));
+
+    assert.equal(pasteResult.defaultAllowed, false);
+    assert.equal(pasteResult.defaultPrevented, true);
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#terminal-mount .xterm")?.textContent?.includes(
+          "Attached image: ![pasted image: mobile-screenshot-",
+        ),
+      { timeout: 10_000 },
+    );
+    const pastedFiles = await waitForAttachmentFiles(attachmentRoot, 1);
+    const pastedContents = await Promise.all(pastedFiles.map((filePath) => readFile(filePath)));
+    assert.ok(pastedContents.some((content) => content.equals(PNG_FIXTURE)));
+
+    const dropResult = await page.evaluate((gifBase64) => {
+      const mount = document.querySelector("#terminal-mount");
+      const binary = atob(gifBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([bytes], "wireframe.gif", { type: "image/gif" }));
+      const dispatch = (type) => {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "dataTransfer", { value: transfer });
+        const defaultAllowed = mount.dispatchEvent(event);
+        return {
+          defaultAllowed,
+          defaultPrevented: event.defaultPrevented,
+          dragover: mount.classList.contains("is-attachment-dragover"),
+        };
+      };
+
+      const entered = dispatch("dragenter");
+      const hovered = dispatch("dragover");
+      const dropped = dispatch("drop");
+
+      return {
+        entered,
+        hovered,
+        dropped,
+        dragoverAfterDrop: mount.classList.contains("is-attachment-dragover"),
+      };
+    }, GIF_FIXTURE.toString("base64"));
+
+    assert.equal(dropResult.entered.defaultAllowed, false);
+    assert.equal(dropResult.hovered.defaultAllowed, false);
+    assert.equal(dropResult.hovered.dragover, true);
+    assert.equal(dropResult.dropped.defaultAllowed, false);
+    assert.equal(dropResult.dropped.defaultPrevented, true);
+    assert.equal(dropResult.dragoverAfterDrop, false);
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#terminal-mount .xterm")?.textContent?.includes(
+          "Attached image: ![dropped image: wireframe-",
+        ),
+      { timeout: 10_000 },
+    );
+
+    const placeholderPasteResult = await page.evaluate((pngBase64) => {
+      const mount = document.querySelector("#terminal-mount");
+      const binary = atob(pngBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          read: async () => [
+            {
+              types: ["image/png"],
+              getType: async () => new Blob([bytes], { type: "image/png" }),
+            },
+          ],
+        },
+      });
+
+      const transfer = new DataTransfer();
+      transfer.setData("text/plain", "[image 1]");
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: transfer });
+      const defaultAllowed = mount.dispatchEvent(event);
+
+      return {
+        defaultAllowed,
+        defaultPrevented: event.defaultPrevented,
+      };
+    }, PNG_FIXTURE.toString("base64"));
+
+    assert.equal(placeholderPasteResult.defaultAllowed, false);
+    assert.equal(placeholderPasteResult.defaultPrevented, true);
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#terminal-mount .xterm")?.textContent?.includes(
+          "Attached image: ![pasted image: clipboard-image-1-",
+        ),
+      { timeout: 10_000 },
+    );
+
+    const allFiles = await waitForAttachmentFiles(attachmentRoot, 3);
+    const allContents = await Promise.all(allFiles.map((filePath) => readFile(filePath)));
+    assert.ok(allContents.some((content) => content.equals(PNG_FIXTURE)));
+    assert.ok(allContents.some((content) => content.equals(GIF_FIXTURE)));
+
+    const terminalText = await page.evaluate(
+      () => document.querySelector("#terminal-mount .xterm")?.textContent || "",
+    );
+    assert.match(terminalText, /!\[pasted image: mobile-screenshot-[^\]]+\.png\]\(/);
+    assert.match(terminalText, /!\[pasted image: clipboard-image-1-[^\]]+\.png\]\(/);
+    assert.match(terminalText, /!\[dropped image: wireframe-[^\]]+\.gif\]\(/);
+    assert.doesNotMatch(terminalText, /(?:^|[\r\n])!\[(?:pasted|dropped) image:/);
+    assert.ok(terminalText.includes(path.join(stateDir, "attachments", "sessions", session.id)));
+    assert.ok(!terminalText.includes(path.join(workspaceDir, ".remote-vibes", "attachments")));
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(stateDir, { recursive: true, force: true });
   }
 });
 
@@ -2263,6 +2567,135 @@ test("terminal wheel opens a scrollable transcript history", async (t) => {
       assert.match(wheelAfter.terminalText, /RV_XTERM_SCROLL_/);
     }
   } finally {
+    if (websocket && websocket.readyState < WebSocket.CLOSING) {
+      websocket.close();
+    }
+    await browser?.close().catch(() => {});
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("terminal keyboard scroll chords move history without stealing plain arrows", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for the terminal keyboard scroll smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("remote-vibes-keyboard-scroll-");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+  let websocket = null;
+  let browser = null;
+  let websocketOutput = "";
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ wikiPath: path.join(workspaceDir, "brain") }),
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId: "shell",
+        name: "Keyboard Scroll Smoke",
+        cwd: workspaceDir,
+      }),
+    });
+
+    assert.equal(createResponse.status, 201);
+    const { session } = await createResponse.json();
+    websocket = new WebSocket(`${baseUrl.replace("http", "ws")}/ws?sessionId=${session.id}`);
+
+    await new Promise((resolve, reject) => {
+      let sentCommand = false;
+      const timeout = setTimeout(() => {
+        reject(new Error("Timed out preparing terminal keyboard scroll history."));
+      }, 10_000);
+
+      websocket.on("open", () => {
+        websocket.send(JSON.stringify({ type: "resize", cols: 80, rows: 24 }));
+      });
+
+      websocket.on("message", (chunk) => {
+        const payload = JSON.parse(String(chunk));
+        websocketOutput += payload.data || "";
+
+        if (!sentCommand) {
+          websocket.send(
+            JSON.stringify({
+              type: "input",
+              data: "i=1; while [ \"$i\" -le 120 ]; do printf 'RV_KEY_SCROLL_LINE_%03d\\n' \"$i\"; i=$((i+1)); done; cat -v\r",
+            }),
+          );
+          sentCommand = true;
+        }
+
+        if (websocketOutput.includes("RV_KEY_SCROLL_LINE_120") && websocketOutput.includes("cat -v")) {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+    });
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
+    await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#terminal-mount .xterm-viewport", { timeout: 10_000 });
+    await page.waitForFunction(
+      () => document.querySelector("#terminal-mount .xterm")?.textContent?.includes("RV_KEY_SCROLL_LINE_120"),
+      null,
+      { timeout: 10_000 },
+    );
+
+    const focused = await page.evaluate(() => {
+      const viewport = document.querySelector("#terminal-mount .xterm-viewport");
+      const textarea = document.querySelector("#terminal-mount .xterm-helper-textarea");
+      viewport.scrollTop = viewport.scrollHeight;
+      textarea?.focus();
+      return document.activeElement === textarea;
+    });
+    assert.equal(focused, true);
+
+    await page.keyboard.down("Shift");
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.up("Shift");
+    await page.waitForTimeout(100);
+
+    const afterShiftArrow = await page.evaluate(() => {
+      const nativeViewport = document.querySelector("#terminal-mount .xterm-viewport");
+      const transcriptViewport = document.querySelector("#terminal-transcript-scroll");
+      return {
+        nativeMaxScrollTop: Math.max(0, nativeViewport.scrollHeight - nativeViewport.clientHeight),
+        nativeScrollTop: nativeViewport.scrollTop,
+        transcriptMaxScrollTop: Math.max(0, transcriptViewport.scrollHeight - transcriptViewport.clientHeight),
+        transcriptScrollTop: transcriptViewport.scrollTop,
+        transcriptVisible: document.querySelector(".terminal-stack")?.classList.contains("is-transcript-scroll"),
+      };
+    });
+
+    assert.ok(
+      afterShiftArrow.transcriptVisible
+        ? afterShiftArrow.transcriptScrollTop < afterShiftArrow.transcriptMaxScrollTop
+        : afterShiftArrow.nativeScrollTop < afterShiftArrow.nativeMaxScrollTop,
+      "Shift+ArrowUp did not scroll terminal history",
+    );
+    assert.doesNotMatch(websocketOutput, /\^\[(?:\[|O)1;2A/);
+
+    await page.keyboard.press("ArrowUp");
+    await waitForValue(() => /\^\[(?:\[|O)A/.test(websocketOutput), true);
+  } finally {
+    if (websocket && websocket.readyState === WebSocket.OPEN) {
+      websocket.send(JSON.stringify({ type: "input", data: "\u0003" }));
+    }
     if (websocket && websocket.readyState < WebSocket.CLOSING) {
       websocket.close();
     }
