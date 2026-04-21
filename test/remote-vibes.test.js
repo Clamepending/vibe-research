@@ -659,6 +659,53 @@ test("wiki clone endpoint sets the brain from an existing git repo", async () =>
   }
 });
 
+test("wiki clone endpoint replaces the installer mac-brain scaffold automatically", async () => {
+  const workspaceDir = await createTempWorkspace("remote-vibes-clone-scaffold-");
+  const { remoteDir } = await createBrainGitRemote(workspaceDir, "mac-brain");
+  const scaffoldDir = path.join(workspaceDir, "mac-brain");
+  await mkdir(scaffoldDir, { recursive: true });
+  await execFileAsync("git", ["-C", scaffoldDir, "init"]);
+  await writeFile(
+    path.join(scaffoldDir, "README.md"),
+    `# mac-brain\n\nLocal wiki for this Mac.\n\nRemote Vibes settings live in:\n\n\`\`\`\n${path.join(workspaceDir, ".remote-vibes")}\n\`\`\`\n`,
+    "utf8",
+  );
+  await writeFile(path.join(scaffoldDir, ".gitignore"), ".DS_Store\n", "utf8");
+  const { app, baseUrl } = await startApp({
+    cwd: path.join(workspaceDir, ".remote-vibes", "app"),
+    stateDir: path.join(workspaceDir, ".remote-vibes"),
+  });
+
+  try {
+    const cloneResponse = await fetch(`${baseUrl}/api/wiki/clone`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        remoteUrl: remoteDir,
+      }),
+    });
+    assert.equal(cloneResponse.status, 200);
+    const clonePayload = await cloneResponse.json();
+    const canonicalBrainDir = await realpath(scaffoldDir);
+    assert.equal(clonePayload.clone.action, "clone");
+    assert.match(clonePayload.clone.backupPath, /mac-brain\.remote-vibes-scaffold-/);
+    assert.equal(clonePayload.settings.wikiPath, canonicalBrainDir);
+    assert.equal(clonePayload.settings.wikiPathConfigured, true);
+    assert.equal(clonePayload.settings.wikiGitRemoteUrl, remoteDir);
+
+    const backupReadme = await readFile(path.join(clonePayload.clone.backupPath, "README.md"), "utf8");
+    assert.match(backupReadme, /Local wiki for this Mac/);
+
+    const clonedReadme = await readFile(path.join(scaffoldDir, "index.md"), "utf8");
+    assert.match(clonedReadme, /Existing Brain/);
+  } finally {
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("update endpoints report status and schedule restart", async () => {
   const workspaceDir = await createTempWorkspace("remote-vibes-update-");
   const updatePayload = {

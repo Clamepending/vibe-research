@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import httpProxy from "http-proxy";
-import { mkdir, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -196,6 +196,19 @@ function getGitRepoFolderName(remoteUrl) {
     .replace(/^-+|-+$/g, "");
 
   return folderName || "brain";
+}
+
+function normalizeGitRemoteForCompare(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[?#].*$/, "")
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "");
+}
+
+function createCloneBackupPath(targetPath) {
+  const timestamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "Z");
+  return `${targetPath}.remote-vibes-scaffold-${timestamp}`;
 }
 
 function getPortFromProxyPath(pathname) {
@@ -704,7 +717,40 @@ export async function createRemoteVibesApp({
     }
   }
 
-  async function ensureBrainCloneTargetAvailable(targetPath) {
+  async function readGitOriginRemote(targetPath) {
+    try {
+      const { stdout = "" } = await execFileAsync("git", ["-C", targetPath, "remote", "get-url", "origin"]);
+      return stdout.trim();
+    } catch {
+      return "";
+    }
+  }
+
+  async function isInstallerBrainScaffold(targetPath, entries) {
+    const allowedEntries = new Set([".git", ".gitignore", "README.md"]);
+    const meaningfulEntries = entries.filter((entry) => entry !== ".DS_Store");
+    if (
+      meaningfulEntries.length === 0 ||
+      meaningfulEntries.some((entry) => !allowedEntries.has(entry)) ||
+      !meaningfulEntries.includes("README.md")
+    ) {
+      return false;
+    }
+
+    const originRemote = await readGitOriginRemote(targetPath);
+    if (originRemote) {
+      return false;
+    }
+
+    try {
+      const readme = await readFile(path.join(targetPath, "README.md"), "utf8");
+      return readme.includes("# mac-brain") && readme.includes("Remote Vibes settings live in:");
+    } catch {
+      return false;
+    }
+  }
+
+  async function prepareBrainCloneTarget(targetPath, remoteUrl) {
     await mkdir(path.dirname(targetPath), { recursive: true });
 
     try {
@@ -715,14 +761,31 @@ export async function createRemoteVibesApp({
 
       const entries = await readdir(targetPath);
       const meaningfulEntries = entries.filter((entry) => entry !== ".DS_Store");
-      if (meaningfulEntries.length > 0) {
-        throw buildHttpError("Brain clone folder must be empty.", 409);
+      if (meaningfulEntries.length === 0) {
+        return { action: "clone", existed: true };
       }
 
-      return { existed: true };
+      const originRemote = await readGitOriginRemote(targetPath);
+      if (
+        originRemote &&
+        normalizeGitRemoteForCompare(originRemote) === normalizeGitRemoteForCompare(remoteUrl)
+      ) {
+        return { action: "adopt", existed: true };
+      }
+
+      if (await isInstallerBrainScaffold(targetPath, entries)) {
+        const backupPath = createCloneBackupPath(targetPath);
+        await rename(targetPath, backupPath);
+        return { action: "clone", backupPath, existed: false };
+      }
+
+      throw buildHttpError(
+        `Brain clone folder already has files: ${targetPath}. Choose an empty folder or move the existing folder first.`,
+        409,
+      );
     } catch (error) {
       if (error?.code === "ENOENT") {
-        return { existed: false };
+        return { action: "clone", existed: false };
       }
 
       throw error;
@@ -996,26 +1059,30 @@ export async function createRemoteVibesApp({
 
   app.post("/api/wiki/clone", async (request, response) => {
     let targetPath = "";
-    let targetExisted = true;
+    let cloneTarget = null;
 
     try {
       const remoteUrl = normalizeGitCloneRemoteUrl(request.body?.remoteUrl);
       const defaultFolder = path.join(path.dirname(stateDir), getGitRepoFolderName(remoteUrl));
       targetPath = settingsStore.normalizeWikiPath(request.body?.wikiPath || defaultFolder);
-      const availability = await ensureBrainCloneTargetAvailable(targetPath);
-      targetExisted = availability.existed;
+      cloneTarget = await prepareBrainCloneTarget(targetPath, remoteUrl);
 
-      try {
-        await execFileAsync("git", ["clone", remoteUrl, targetPath], {
-          timeout: 120_000,
-        });
-      } catch (error) {
-        if (!targetExisted && targetPath) {
-          await rm(targetPath, { recursive: true, force: true }).catch(() => {});
+      if (cloneTarget.action === "clone") {
+        try {
+          await execFileAsync("git", ["clone", remoteUrl, targetPath], {
+            timeout: 120_000,
+          });
+        } catch (error) {
+          if (!cloneTarget.existed && targetPath) {
+            await rm(targetPath, { recursive: true, force: true }).catch(() => {});
+          }
+          if (cloneTarget.backupPath && targetPath) {
+            await rename(cloneTarget.backupPath, targetPath).catch(() => {});
+          }
+
+          const stderr = String(error?.stderr || error?.message || "").trim();
+          throw buildHttpError(stderr || "Could not clone the brain git repo.", 400);
         }
-
-        const stderr = String(error?.stderr || error?.message || "").trim();
-        throw buildHttpError(stderr || "Could not clone the brain git repo.", 400);
       }
 
       const wikiPath = await realpath(targetPath);
@@ -1036,6 +1103,8 @@ export async function createRemoteVibesApp({
         agentPrompt: await agentPromptStore.getState(),
         clone: {
           branch,
+          backupPath: cloneTarget.backupPath || "",
+          action: cloneTarget.action,
           remoteUrl,
           wikiPath,
         },
