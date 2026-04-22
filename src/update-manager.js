@@ -75,6 +75,12 @@ function compareVersionParts(left, right) {
   return 0;
 }
 
+function compareVersionTags(left, right) {
+  const leftParts = parseVersionTag(left);
+  const rightParts = parseVersionTag(right);
+  return leftParts && rightParts ? compareVersionParts(leftParts, rightParts) : null;
+}
+
 function parseLsRemoteTags(stdout) {
   const tags = new Map();
   for (const line of trim(stdout).split(/\r?\n/).filter(Boolean)) {
@@ -315,9 +321,13 @@ export class UpdateManager {
       }
 
       let updateAvailable = Boolean(currentCommit && latestCommit && currentCommit !== latestCommit);
+      const aheadByVersion =
+        latest.targetType === "release" && currentVersion && latest.version
+          ? compareVersionTags(currentVersion, latest.version) > 0
+          : false;
       const aheadOfTarget =
         updateAvailable && latest.targetType === "release"
-          ? await this.isCommitAncestor(latestCommit, currentCommit)
+          ? aheadByVersion || (await this.isCommitAncestor(latestCommit, currentCommit))
           : false;
       if (aheadOfTarget) {
         updateAvailable = false;
@@ -486,24 +496,24 @@ export class UpdateManager {
 
     if (this.channel !== "branch") {
       try {
-        const channelTarget = await this.readLatestReleaseChannel(remoteUrl);
-        if (channelTarget?.commit) {
-          return channelTarget;
-        }
-        releaseCheck = "channel none";
-      } catch (error) {
-        releaseCheck = error.message || "release channel lookup failed.";
-      }
-
-      try {
         const releaseTarget = await this.readLatestGitHubRelease(remoteUrl);
         if (releaseTarget?.commit) {
           return releaseTarget;
         }
-        releaseCheck = releaseCheck === "skipped" ? "none" : `${releaseCheck}; GitHub release none`;
+        releaseCheck = "GitHub release none";
       } catch (error) {
-        const releaseError = error.message || "GitHub release lookup failed.";
-        releaseCheck = releaseCheck && releaseCheck !== "skipped" ? `${releaseCheck}; ${releaseError}` : releaseError;
+        releaseCheck = error.message || "GitHub release lookup failed.";
+      }
+
+      try {
+        const channelTarget = await this.readLatestReleaseChannel(remoteUrl);
+        if (channelTarget?.commit) {
+          return channelTarget;
+        }
+        releaseCheck = releaseCheck === "skipped" ? "channel none" : `${releaseCheck}; channel none`;
+      } catch (error) {
+        const channelError = error.message || "release channel lookup failed.";
+        releaseCheck = releaseCheck && releaseCheck !== "skipped" ? `${releaseCheck}; ${channelError}` : channelError;
       }
 
       try {

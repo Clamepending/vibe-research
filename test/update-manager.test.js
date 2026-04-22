@@ -9,6 +9,7 @@ import { getGitHubHttpsRemoteUrl, UpdateManager } from "../src/update-manager.js
 
 const execFile = promisify(execFileCallback);
 const releaseChannelUrl = "https://raw.githubusercontent.com/Clamepending/vibe-research/main/release-channel.json";
+const githubLatestUrl = "https://api.github.com/repos/Clamepending/vibe-research/releases/latest";
 const MANAGED_PROMPT_MARKER = "<!-- vibe-research:managed-agent-prompt -->";
 const LEGACY_MANAGED_PROMPT_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
 
@@ -286,7 +287,7 @@ test("UpdateManager schedules a detached pull and restart for clean updates", as
   }
 });
 
-test("UpdateManager prefers the static release channel when available", async () => {
+test("UpdateManager falls back to the static release channel when GitHub Releases are unavailable", async () => {
   const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
   const latestCommit = await commitSourceVersion(sourceDir, "v2");
   await git(checkoutDir, ["remote", "set-url", "origin", "git@github.com:Clamepending/vibe-research.git"]);
@@ -297,6 +298,13 @@ test("UpdateManager prefers the static release channel when available", async ()
       stateDir: path.join(tempRoot, "state"),
       cacheMs: 0,
       fetch: async (url) => {
+        if (url === githubLatestUrl) {
+          return {
+            ok: false,
+            status: 503,
+          };
+        }
+
         assert.equal(url, releaseChannelUrl);
         return {
           ok: true,
@@ -361,7 +369,7 @@ test("UpdateManager prefers GitHub Releases and schedules a tag checkout", async
           };
         }
 
-        assert.equal(url, "https://api.github.com/repos/Clamepending/vibe-research/releases/latest");
+        assert.equal(url, githubLatestUrl);
         return {
           ok: true,
           status: 200,
@@ -475,7 +483,7 @@ test("UpdateManager falls back to remote version tags for detached release check
     assert.equal(status.targetType, "release");
     assert.equal(status.latestVersion, "v2.0.0");
     assert.equal(status.latestCommit, latestCommit);
-    assert.equal(status.releaseCheck, "git-tags fallback after channel none; GitHub release lookup failed with HTTP 403.");
+    assert.equal(status.releaseCheck, "git-tags fallback after GitHub release lookup failed with HTTP 403.; channel none");
 
     await manager.scheduleUpdateAndRestart();
 
@@ -485,6 +493,77 @@ test("UpdateManager falls back to remote version tags for detached release check
       /git fetch --force --depth 1 'https:\/\/github\.com\/Clamepending\/vibe-research\.git' 'refs\/tags\/v2\.0\.0:refs\/tags\/v2\.0\.0'/,
     );
     assert.match(spawnCalls[0].args[1], /git checkout --detach 'refs\/tags\/v2\.0\.0'/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("UpdateManager does not offer stale release-channel downgrades for newer release checkouts", async () => {
+  const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
+  const staleReleaseCommit = await commitSourceVersion(sourceDir, "v2");
+  await writeFile(path.join(sourceDir, "package.json"), `${JSON.stringify({ version: "0.2.3" }, null, 2)}\n`, "utf8");
+  await git(sourceDir, ["add", "package.json"]);
+  await git(sourceDir, ["commit", "-m", "Release v3 package"]);
+  await git(checkoutDir, ["pull", "--ff-only"]);
+  await git(checkoutDir, ["checkout", "--detach"]);
+  await git(checkoutDir, ["remote", "set-url", "origin", "git@github.com:Clamepending/vibe-research.git"]);
+
+  try {
+    const manager = new UpdateManager({
+      cwd: checkoutDir,
+      stateDir: path.join(tempRoot, "state"),
+      cacheMs: 0,
+      fetch: async (url) => {
+        if (url === githubLatestUrl) {
+          return {
+            ok: false,
+            status: 503,
+          };
+        }
+
+        assert.equal(url, releaseChannelUrl);
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              name: "Vibe Research",
+              version: "0.2.2",
+              tag: "v0.2.2",
+              releaseUrl: "https://github.com/Clamepending/vibe-research/releases/tag/v0.2.2",
+            };
+          },
+        };
+      },
+      execFile(command, args, options) {
+        if (
+          command === "git" &&
+          args[2] === "ls-remote" &&
+          args[3] === "https://github.com/Clamepending/vibe-research.git" &&
+          args[4] === "refs/tags/v0.2.2"
+        ) {
+          return Promise.resolve({
+            stdout: `${staleReleaseCommit}\trefs/tags/v0.2.2\n`,
+            stderr: "",
+          });
+        }
+
+        if (command === "git" && args[2] === "merge-base") {
+          return Promise.reject(new Error("shallow checkout missing stale release commit"));
+        }
+
+        return execFile(command, args, options);
+      },
+    });
+
+    const status = await manager.getStatus({ force: true });
+
+    assert.equal(status.status, "current");
+    assert.equal(status.updateAvailable, false);
+    assert.equal(status.canUpdate, false);
+    assert.equal(status.currentVersion, "v0.2.3");
+    assert.equal(status.latestVersion, "v0.2.2");
+    assert.equal(status.aheadOfTarget, true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
