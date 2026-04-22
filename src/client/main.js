@@ -494,7 +494,8 @@ const WORKSPACE_TAB_REORDER_KEYBOARD_STEP = 1;
 const WORKSPACE_TAB_REORDER_DRAG_SLOP_PX = 6;
 const WORKSPACE_GROUP_MAX_COUNT = 4;
 const WORKSPACE_GROUP_MIN_FRACTION = 0.22;
-const AGENT_TOWN_LAYOUT_EDIT_SNAP = 5;
+const AGENT_TOWN_BUILD_GRID_SIZE = VISUAL_GAME_MAP_LAYOUT.grid.cellSize;
+const AGENT_TOWN_LAYOUT_EDIT_SNAP = AGENT_TOWN_BUILD_GRID_SIZE;
 const AGENT_TOWN_DORM_SLOT_RECTS = [
   { x: 36, y: 36, width: 82, height: 58 },
   { x: 130, y: 36, width: 82, height: 58 },
@@ -544,7 +545,10 @@ const AGENT_TOWN_SCENERY_STRUCTURES = Object.freeze([
   { x: 250, y: 330, width: 34, height: 24, roof: "#4f6b77", body: "#735a34", accent: "#e9d2a2" },
   { x: 820, y: 346, width: 36, height: 25, roof: "#8a4c36", body: "#66643b", accent: "#f0be69" },
 ]);
-const AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE = Object.freeze({ width: 82, height: 58 });
+const AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE = Object.freeze({
+  width: AGENT_TOWN_BUILD_GRID_SIZE * 3,
+  height: AGENT_TOWN_BUILD_GRID_SIZE * 2,
+});
 const AGENT_TOWN_BUILDER_DEFAULT_TAB = "cosmetic";
 const AGENT_TOWN_BUILDER_TABS = new Set(["cosmetic", "functional"]);
 const AGENT_TOWN_BUILDER_COSMETIC_ITEMS = Object.freeze([
@@ -552,16 +556,16 @@ const AGENT_TOWN_BUILDER_COSMETIC_ITEMS = Object.freeze([
     id: "road-square",
     label: "Road Square",
     meta: "paver tile",
-    width: 30,
-    height: 30,
+    width: AGENT_TOWN_BUILD_GRID_SIZE,
+    height: AGENT_TOWN_BUILD_GRID_SIZE,
     kind: "road",
   },
   {
     id: "fence-horizontal",
     label: "Fence",
     meta: "horizontal",
-    width: 78,
-    height: 17,
+    width: AGENT_TOWN_BUILD_GRID_SIZE,
+    height: AGENT_TOWN_BUILD_GRID_SIZE,
     kind: "fence",
     orientation: "horizontal",
   },
@@ -569,8 +573,8 @@ const AGENT_TOWN_BUILDER_COSMETIC_ITEMS = Object.freeze([
     id: "fence-vertical",
     label: "Fence",
     meta: "vertical",
-    width: 17,
-    height: 78,
+    width: AGENT_TOWN_BUILD_GRID_SIZE,
+    height: AGENT_TOWN_BUILD_GRID_SIZE,
     kind: "fence",
     orientation: "vertical",
   },
@@ -578,16 +582,16 @@ const AGENT_TOWN_BUILDER_COSMETIC_ITEMS = Object.freeze([
     id: "planter",
     label: "Planter",
     meta: "greenery",
-    width: 44,
-    height: 14,
+    width: AGENT_TOWN_BUILD_GRID_SIZE,
+    height: AGENT_TOWN_BUILD_GRID_SIZE,
     kind: "planter",
   },
   {
     id: "shed",
     label: "Tiny Shed",
     meta: "cosmetic",
-    width: 38,
-    height: 27,
+    width: AGENT_TOWN_BUILD_GRID_SIZE * 2,
+    height: AGENT_TOWN_BUILD_GRID_SIZE,
     kind: "structure",
     roof: "#80505e",
     body: "#6f5b3a",
@@ -597,7 +601,7 @@ const AGENT_TOWN_BUILDER_COSMETIC_ITEMS = Object.freeze([
 const AGENT_TOWN_PLACE_COLLISION_GAP = 2;
 const AGENT_TOWN_BUILDER_FEEDBACK_MS = 1500;
 const AGENT_TOWN_BUILDER_PULSE_MS = 720;
-const AGENT_TOWN_BUILDER_GRID_SIZE = 10;
+const AGENT_TOWN_BUILDER_GRID_SIZE = AGENT_TOWN_BUILD_GRID_SIZE;
 const AGENT_TOWN_DEFAULT_THEME_ID = "default";
 const AGENT_TOWN_THEMES = Object.freeze([
   {
@@ -15595,12 +15599,12 @@ function getAgentTownPlacementRectAtPoint(placement, point) {
 
   const width = Number(placement.width || 1);
   const height = Number(placement.height || 1);
-  return {
-    x: clamp(snapAgentTownLayoutValue(point.x - width / 2), 0, VISUAL_GAME_WIDTH - width),
-    y: clamp(snapAgentTownLayoutValue(point.y - height / 2), 0, VISUAL_GAME_HEIGHT - height),
+  return getAgentTownSnappedPlacementRect({
+    x: point.x - width / 2,
+    y: point.y - height / 2,
     width,
     height,
-  };
+  });
 }
 
 function getAgentTownPlacementBlocker(placement, rect) {
@@ -15636,7 +15640,7 @@ function getAgentTownBuilderNearbyOpenPreview(placement, preferredPoint) {
     return preferredPreview;
   }
 
-  const radii = [44, 88, 132, 176, 220, 264];
+  const radii = [1, 2, 3, 4, 5, 6].map((step) => step * AGENT_TOWN_BUILD_GRID_SIZE);
   for (const radius of radii) {
     const candidates = [
       [radius, 0],
@@ -15879,11 +15883,17 @@ function addAgentTownDecoration(itemId, rect) {
     return null;
   }
 
+  const snappedRect = getAgentTownSnappedPlacementRect({
+    x: rect.x,
+    y: rect.y,
+    width: item.width,
+    height: item.height,
+  });
   const decoration = normalizeAgentTownDecoration({
     id: createClientId(`decor-${item.id}`),
     itemId: item.id,
-    x: rect.x,
-    y: rect.y,
+    x: snappedRect.x,
+    y: snappedRect.y,
   });
   if (!decoration) {
     return null;
@@ -15955,9 +15965,15 @@ function setAgentTownFunctionalPlacement(pluginId, rect) {
     return false;
   }
 
+  const snappedRect = getAgentTownSnappedPlacementRect({
+    x: rect.x,
+    y: rect.y,
+    width: AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.width,
+    height: AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.height,
+  });
   getAgentTownFunctionalPlacements()[normalizedPluginId] = {
-    x: clamp(Math.round(rect.x), 0, VISUAL_GAME_WIDTH - AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.width),
-    y: clamp(Math.round(rect.y), 0, VISUAL_GAME_HEIGHT - AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.height),
+    x: snappedRect.x,
+    y: snappedRect.y,
   };
   setAgentTownFunctionalPending(normalizedPluginId, false);
   return true;
@@ -16001,6 +16017,27 @@ function setAgentTownFunctionalPending(pluginId, pending) {
   return false;
 }
 
+function getAgentTownSnappedLayoutValueInRange(value, min, max) {
+  const snap = AGENT_TOWN_LAYOUT_EDIT_SNAP;
+  const lower = Math.ceil(Math.min(min, max) / snap) * snap;
+  const upper = Math.floor(Math.max(min, max) / snap) * snap;
+  if (lower > upper) {
+    return clamp(snapAgentTownLayoutValue(value), min, max);
+  }
+  return clamp(snapAgentTownLayoutValue(value), lower, upper);
+}
+
+function getAgentTownSnappedPlacementRect(rect) {
+  const width = Math.max(1, Number(rect?.width || 1));
+  const height = Math.max(1, Number(rect?.height || 1));
+  return {
+    x: getAgentTownSnappedLayoutValueInRange(Number(rect?.x || 0), 0, Math.max(0, VISUAL_GAME_WIDTH - width)),
+    y: getAgentTownSnappedLayoutValueInRange(Number(rect?.y || 0), 0, Math.max(0, VISUAL_GAME_HEIGHT - height)),
+    width,
+    height,
+  };
+}
+
 function snapAgentTownLayoutValue(value) {
   return Math.round(Number(value || 0) / AGENT_TOWN_LAYOUT_EDIT_SNAP) * AGENT_TOWN_LAYOUT_EDIT_SNAP;
 }
@@ -16014,8 +16051,8 @@ function snapAgentTownLayoutOffset(offset) {
 
 function clampAgentTownOffset(baseRect, offset) {
   return {
-    x: clamp(offset.x, -baseRect.x, VISUAL_GAME_WIDTH - (baseRect.x + baseRect.width)),
-    y: clamp(offset.y, -baseRect.y, VISUAL_GAME_HEIGHT - (baseRect.y + baseRect.height)),
+    x: getAgentTownSnappedLayoutValueInRange(offset.x, -baseRect.x, VISUAL_GAME_WIDTH - (baseRect.x + baseRect.width)),
+    y: getAgentTownSnappedLayoutValueInRange(offset.y, -baseRect.y, VISUAL_GAME_HEIGHT - (baseRect.y + baseRect.height)),
   };
 }
 
