@@ -131,6 +131,10 @@ function providerHasReadyHint(providerId, buffer) {
     return /ML\s*Intern|Hugging\s*Face\s*Agent|>\s*$/i.test(text);
   }
 
+  if (providerId === "openclaw") {
+    return /OpenClaw|Molty|lobster|tui|>\s*$/i.test(text);
+  }
+
   return true;
 }
 

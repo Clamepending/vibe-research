@@ -99,7 +99,7 @@ export default defineBuilding({
 - `ui.entryView` names the compact building panel implementation; `ui.workspaceView` names the routed view used when the building needs the whole screen.
 - `onboarding.variables` powers the generic install checklist.
 - `onboarding.steps[].completeWhen` can use `{ type: "installed" }`, `{ setting: "key" }`, `{ configuredSetting: "key" }`, `{ allConfigured: ["key"] }`, or `{ anyConfigured: ["key"] }`.
-- `agentGuide` powers generated Markdown manuals for Codex, Claude Code, and shell agents. The generated index is available at `$VIBE_RESEARCH_BUILDING_GUIDES_INDEX`; per-building files live in `$VIBE_RESEARCH_BUILDING_GUIDES_DIR/<building-id>.md`.
+- `agentGuide` powers generated Markdown manuals for Codex, Claude Code, OpenClaw, and shell agents. The generated index is available at `$VIBE_RESEARCH_BUILDING_GUIDES_INDEX`; per-building files live in `$VIBE_RESEARCH_BUILDING_GUIDES_DIR/<building-id>.md`.
 - `agentGuide.commands` are declarative setup or inspection commands for agents to try when appropriate. They are not automatically executed by the catalog.
 - `agentGuide.env` should name runtime environment variables and credential expectations without including secret values.
 - Secrets should use a redacted public setting such as `exampleApiKeyConfigured`; the raw secret should not be returned to the browser.

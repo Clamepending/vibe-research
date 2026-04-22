@@ -27,6 +27,14 @@ const fakeAgentProviders = [
     launchCommand: "codex",
   },
   {
+    id: "openclaw",
+    label: "OpenClaw",
+    command: "openclaw",
+    defaultName: "OpenClaw",
+    available: true,
+    launchCommand: "openclaw",
+  },
+  {
     id: "gemini",
     label: "Gemini CLI",
     command: "gemini",
@@ -1483,6 +1491,26 @@ test("ML Intern launches as a generic provider without unsupported session captu
     const launch = await manager.prepareProviderLaunch(session, manager.getProvider("ml-intern"), { restored: false });
 
     assert.equal(launch.commandString, "'ml-intern'");
+    assert.equal(launch.afterLaunch, null);
+    assert.equal(session.pendingProviderCapture, null);
+  } finally {
+    await cleanupManager(manager, workspaceDir, userHomeDir);
+  }
+});
+
+test("OpenClaw launches the TUI without unsupported session capture", async () => {
+  const { manager, workspaceDir, userHomeDir } = await createManager();
+
+  try {
+    const session = manager.buildSessionRecord({
+      providerId: "openclaw",
+      providerLabel: "OpenClaw",
+      name: "OpenClaw 1",
+      cwd: workspaceDir,
+    });
+    const launch = await manager.prepareProviderLaunch(session, manager.getProvider("openclaw"), { restored: false });
+
+    assert.equal(launch.commandString, "'openclaw' 'tui'");
     assert.equal(launch.afterLaunch, null);
     assert.equal(session.pendingProviderCapture, null);
   } finally {

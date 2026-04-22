@@ -257,7 +257,7 @@ export function renderBuildingAgentGuideIndex(buildings, { generatedAt = new Dat
     "",
     `Generated: ${generatedAt}`,
     "",
-    "These are agent-readable manuals for the Buildings catalog. Codex, Claude Code, and shell agents receive this directory through environment variables.",
+    "These are agent-readable manuals for the Buildings catalog. Codex, Claude Code, OpenClaw, and shell agents receive this directory through environment variables.",
     "",
     "## Agent Entry Points",
     "",

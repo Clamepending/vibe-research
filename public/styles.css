@@ -5562,6 +5562,13 @@ button.visual-agent-tile:focus-visible,
   box-shadow: 0 5px 0 rgba(0, 0, 0, 0.32);
 }
 
+.visual-agent-sprite-openclaw {
+  width: 44px;
+  border-color: rgba(230, 82, 44, 0.5);
+  background: #160c10;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.34);
+}
+
 .claude-code-avatar {
   --claude-code-avatar-fill: #d77b4a;
   --claude-code-avatar-dark: #050609;
@@ -5650,6 +5657,116 @@ button.visual-agent-tile:focus-visible,
   left: 22px;
 }
 
+.openclaw-crab-avatar {
+  --openclaw-crab-fill: #e6522c;
+  --openclaw-crab-trim: #ffd0b4;
+  --openclaw-crab-dark: #2f1815;
+  position: relative;
+  display: block;
+  width: 38px;
+  height: 32px;
+  image-rendering: pixelated;
+}
+
+.openclaw-crab-avatar i {
+  position: absolute;
+  display: block;
+  background: var(--openclaw-crab-fill);
+}
+
+.openclaw-crab-avatar-shell {
+  left: 7px;
+  top: 11px;
+  width: 24px;
+  height: 15px;
+  border-radius: 7px 7px 5px 5px;
+  box-shadow: inset 0 3px 0 rgba(255, 255, 255, 0.14);
+}
+
+.openclaw-crab-avatar-belly {
+  left: 12px;
+  top: 18px;
+  width: 14px;
+  height: 4px;
+  background: var(--openclaw-crab-trim);
+}
+
+.openclaw-crab-avatar-claw {
+  top: 15px;
+  width: 8px;
+  height: 7px;
+  border-radius: 4px 4px 2px 2px;
+}
+
+.openclaw-crab-avatar-claw-left {
+  left: 0;
+}
+
+.openclaw-crab-avatar-claw-right {
+  right: 0;
+}
+
+.openclaw-crab-avatar-arm {
+  top: 20px;
+  width: 7px;
+  height: 4px;
+}
+
+.openclaw-crab-avatar-arm-left {
+  left: 4px;
+}
+
+.openclaw-crab-avatar-arm-right {
+  right: 4px;
+}
+
+.openclaw-crab-avatar-leg {
+  top: 25px;
+  width: 4px;
+  height: 5px;
+}
+
+.openclaw-crab-avatar-leg-one {
+  left: 8px;
+}
+
+.openclaw-crab-avatar-leg-two {
+  left: 14px;
+}
+
+.openclaw-crab-avatar-leg-three {
+  left: 22px;
+}
+
+.openclaw-crab-avatar-leg-four {
+  left: 28px;
+}
+
+.openclaw-crab-avatar-eye {
+  top: 8px;
+  width: 4px;
+  height: 5px;
+  background: var(--openclaw-crab-fill);
+}
+
+.openclaw-crab-avatar-eye::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 1px;
+  width: 2px;
+  height: 3px;
+  background: var(--openclaw-crab-dark);
+}
+
+.openclaw-crab-avatar-eye-left {
+  left: 12px;
+}
+
+.openclaw-crab-avatar-eye-right {
+  right: 12px;
+}
+
 .visual-agent-sprite-working {
   border-color: rgba(125, 189, 255, 0.56);
   animation: visual-agent-pulse 1.4s ease-in-out infinite;
@@ -5667,7 +5784,10 @@ button.visual-agent-tile:focus-visible,
 
 .visual-agent-sprite-claude.visual-agent-sprite-working,
 .visual-agent-sprite-claude.visual-agent-sprite-done,
-.visual-agent-sprite-claude.visual-agent-sprite-failed {
+.visual-agent-sprite-claude.visual-agent-sprite-failed,
+.visual-agent-sprite-openclaw.visual-agent-sprite-working,
+.visual-agent-sprite-openclaw.visual-agent-sprite-done,
+.visual-agent-sprite-openclaw.visual-agent-sprite-failed {
   background: #050609;
 }
 
@@ -7430,6 +7550,16 @@ button.visual-town-building:focus-visible {
   transform: scale(0.9);
 }
 
+.visual-town-agent.visual-provider-openclaw .visual-town-agent-body {
+  width: 48px;
+  border-color: rgba(230, 82, 44, 0.48);
+  background: #160c10;
+}
+
+.visual-town-agent.visual-provider-openclaw .visual-town-agent-body .openclaw-crab-avatar {
+  transform: scale(0.92);
+}
+
 .visual-town-agent.visual-status-done .visual-town-agent-body {
   background: rgba(154, 214, 127, 0.18);
   color: #dffae8;
@@ -7447,7 +7577,10 @@ button.visual-town-building:focus-visible {
 
 .visual-town-agent.visual-provider-claude.visual-status-done .visual-town-agent-body,
 .visual-town-agent.visual-provider-claude.visual-status-failed .visual-town-agent-body,
-.visual-town-agent.visual-provider-claude.is-working .visual-town-agent-body {
+.visual-town-agent.visual-provider-claude.is-working .visual-town-agent-body,
+.visual-town-agent.visual-provider-openclaw.visual-status-done .visual-town-agent-body,
+.visual-town-agent.visual-provider-openclaw.visual-status-failed .visual-town-agent-body,
+.visual-town-agent.visual-provider-openclaw.is-working .visual-town-agent-body {
   background: #050609;
 }
 
@@ -10851,6 +10984,30 @@ button.visual-town-building:focus-visible {
   font-size: 0.58rem;
   font-weight: 700;
   letter-spacing: 0;
+}
+
+.agent-profile-avatar-openclaw {
+  background:
+    radial-gradient(circle at 50% 26%, rgba(255, 218, 185, 0.24), transparent 30%),
+    linear-gradient(180deg, rgba(230, 82, 44, 0.18), rgba(51, 24, 33, 0.22)),
+    #160c10;
+}
+
+.agent-profile-avatar-openclaw .agent-profile-avatar-backdrop {
+  background: linear-gradient(180deg, var(--agent-profile-coat, #e6522c), var(--agent-profile-boots, #2f1815));
+  opacity: 0.38;
+}
+
+.agent-profile-avatar-crab {
+  position: relative;
+  z-index: 1;
+  transform: scale(1.32);
+}
+
+.agent-profile-avatar-crab .openclaw-crab-avatar {
+  --openclaw-crab-fill: var(--agent-profile-coat, #e6522c);
+  --openclaw-crab-trim: var(--agent-profile-trim, #ffd0b4);
+  --openclaw-crab-dark: var(--agent-profile-boots, #2f1815);
 }
 
 .agent-profile-facts {

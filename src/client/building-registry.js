@@ -400,7 +400,7 @@ const CORE_BUILDING_MANIFESTS = [
     },
     access: {
       label: "Managed prompts",
-      detail: "Uses the local Occupations prompt store and syncs managed instructions into AGENTS.md, CLAUDE.md, and GEMINI.md so Codex, Claude, Gemini, and OpenCode sessions receive the same role guidance.",
+      detail: "Uses the local Occupations prompt store and syncs managed instructions into AGENTS.md, CLAUDE.md, and GEMINI.md so Codex, Claude, OpenClaw, Gemini, and OpenCode sessions receive the same role guidance.",
     },
     agentGuide: {
       summary: "Use Occupations when an agent needs to inspect or explain the shared role prompt that will be injected into new sessions.",

@@ -32,7 +32,7 @@ If you explicitly set `VIBE_RESEARCH_INSTALL_CLAUDE_CODE=1`, the shell installer
 VIBE_RESEARCH_INSTALL_CLAUDE_CODE=1 curl -fsSL https://vibe-research.net/install.sh | bash
 ```
 
-The onboarding UI also offers Claude Code, Codex, OpenCode, Gemini CLI, and ML Intern install/detection from the provider picker.
+The onboarding UI also offers Claude Code, Codex, OpenClaw, OpenCode, Gemini CLI, and ML Intern install/detection from the provider picker.
 
 ## Details...
 

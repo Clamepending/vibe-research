@@ -74,6 +74,7 @@ test("provider definitions include one-command installer hints for onboarding", 
   assert.match(installers.claude, /timeout 600s/);
   assert.match(installers.claude, /claude --version/);
   assert.equal(installers.codex, "npm install -g @openai/codex");
+  assert.equal(installers.openclaw, "npm install -g openclaw@latest");
   assert.equal(installers.gemini, "npm install -g @google/gemini-cli");
   assert.equal(installers.opencode, "curl -fsSL https://opencode.ai/install | bash");
   assert.match(installers["ml-intern"], /github\.com\/huggingface\/ml-intern/);
@@ -107,6 +108,7 @@ test("provider definitions include real auth entrypoints for onboarding", () => 
 
   assert.equal(authCommands.claude, "claude auth login");
   assert.equal(authCommands.codex, "codex login --device-auth");
+  assert.equal(authCommands.openclaw, "openclaw onboard --install-daemon");
   assert.equal(authCommands.gemini, "gemini");
   assert.equal(authCommands.opencode, "opencode auth login");
   assert.equal(authCommands["ml-intern"], "ml-intern");
@@ -219,6 +221,24 @@ test("providerDefinitions includes OpenCode with desktop and common CLI path hin
     "/Applications/OpenCode.app/Contents/MacOS/opencode-cli",
     "/opt/homebrew/bin/opencode",
     "/usr/local/bin/opencode",
+  ]);
+});
+
+test("providerDefinitions includes OpenClaw with onboarding metadata", () => {
+  const provider = providerDefinitions.find((entry) => entry.id === "openclaw");
+
+  assert.ok(provider);
+  assert.equal(provider.label, "OpenClaw");
+  assert.equal(provider.command, "openclaw");
+  assert.equal(provider.launchCommand, "openclaw");
+  assert.equal(provider.defaultName, "OpenClaw");
+  assert.deepEqual(provider.verifyArgs, ["--version"]);
+  assert.equal(provider.installCommand, "npm install -g openclaw@latest");
+  assert.equal(provider.authCommand, "openclaw onboard --install-daemon");
+  assert.deepEqual(provider.pathHints, [
+    "~/.local/bin/openclaw",
+    "/opt/homebrew/bin/openclaw",
+    "/usr/local/bin/openclaw",
   ]);
 });
 

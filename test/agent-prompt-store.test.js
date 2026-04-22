@@ -17,7 +17,7 @@ test("managed prompts tell Codex and Claude Code how to find building guides", a
     const state = await store.getState();
     assert.match(state.prompt, /vibe-research:building-guides-protocol:v1/);
     assert.match(state.prompt, /\$VIBE_RESEARCH_BUILDING_GUIDES_INDEX/);
-    assert.match(state.prompt, /Codex, Claude Code, and shell agents/);
+    assert.match(state.prompt, /Codex, Claude Code, OpenClaw, and shell agents/);
 
     for (const filename of ["AGENTS.md", "CLAUDE.md", "GEMINI.md"]) {
       const contents = await readFile(path.join(cwd, filename), "utf8");

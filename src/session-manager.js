@@ -66,7 +66,7 @@ const CLAUDE_BACKGROUND_TASK_TAIL_BYTES = 900_000;
 const CLAUDE_BACKGROUND_TASK_STALE_MS = 24 * 60 * 60 * 1000;
 const CLAUDE_BACKGROUND_TASK_GRACE_MS = 30_000;
 const CLAUDE_SKIP_PERMISSIONS_ARG = "--dangerously-skip-permissions";
-const PERSISTENT_TERMINAL_PROVIDER_IDS = new Set(["claude", "codex", "gemini", "ml-intern", "opencode", "shell"]);
+const PERSISTENT_TERMINAL_PROVIDER_IDS = new Set(["claude", "codex", "gemini", "ml-intern", "openclaw", "opencode", "shell"]);
 const IDLE_TERMINAL_COMMANDS = new Set(["bash", "csh", "dash", "fish", "ksh", "login", "sh", "tcsh", "zsh"]);
 const PROVIDER_CREDENTIAL_ENV_KEYS = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "OPENAI_API_KEY", "HF_TOKEN"];
 const TMUX_SESSION_ENV_KEYS = new Set([
@@ -430,6 +430,10 @@ function providerHasReadyHint(providerId, buffer) {
 
   if (providerId === "ml-intern") {
     return /ML\s*Intern|Hugging\s*Face\s*Agent|>\s*$/i.test(text);
+  }
+
+  if (providerId === "openclaw") {
+    return /OpenClaw|Molty|lobster|tui|>\s*$/i.test(text);
   }
 
   return true;
@@ -3306,6 +3310,14 @@ export class SessionManager {
           }
           await this.beginPendingProviderCapture(session);
         },
+      };
+    }
+
+    if (provider.id === "openclaw") {
+      this.setPendingProviderCapture(session, null);
+      return {
+        commandString: buildShellCommand(provider.launchCommand, ["tui"]),
+        afterLaunch: null,
       };
     }
 

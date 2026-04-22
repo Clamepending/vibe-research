@@ -9949,6 +9949,20 @@ function getAgentProfileForSession(session, selection = state.agentProfile) {
 }
 
 function renderAgentProfileAvatar(profile) {
+  if (isOpenClawProviderId(profile?.providerId)) {
+    return `
+      <span
+        class="agent-profile-avatar agent-profile-avatar-openclaw agent-profile-avatar-${escapeHtml(profile.statusClass || "read")}"
+        style="${escapeHtml(getAgentProfilePaletteStyle(profile))}"
+        aria-hidden="true"
+      >
+        <span class="agent-profile-avatar-backdrop"></span>
+        <span class="agent-profile-avatar-crab">${renderOpenClawCrabAvatarMarkup()}</span>
+        <span class="agent-profile-avatar-initials">${escapeHtml(profile.initials || "AI")}</span>
+      </span>
+    `;
+  }
+
   const hatKind = getOccupationHatKind({
     id: profile?.occupationId || "",
     label: profile?.occupationLabel || "",
@@ -14248,6 +14262,14 @@ function isClaudeCodeProviderAgent(agent) {
   return String(agent?.providerId || "").toLowerCase() === "claude";
 }
 
+function isOpenClawProviderId(providerId) {
+  return String(providerId || "").toLowerCase() === "openclaw";
+}
+
+function isOpenClawProviderAgent(agent) {
+  return isOpenClawProviderId(agent?.providerId);
+}
+
 function renderClaudeCodeAvatarMarkup() {
   return `
     <span class="claude-code-avatar" aria-hidden="true">
@@ -14266,13 +14288,38 @@ function renderClaudeCodeAvatarMarkup() {
   `;
 }
 
+function renderOpenClawCrabAvatarMarkup() {
+  return `
+    <span class="openclaw-crab-avatar" aria-hidden="true">
+      <i class="openclaw-crab-avatar-claw openclaw-crab-avatar-claw-left"></i>
+      <i class="openclaw-crab-avatar-claw openclaw-crab-avatar-claw-right"></i>
+      <i class="openclaw-crab-avatar-arm openclaw-crab-avatar-arm-left"></i>
+      <i class="openclaw-crab-avatar-arm openclaw-crab-avatar-arm-right"></i>
+      <i class="openclaw-crab-avatar-shell"></i>
+      <i class="openclaw-crab-avatar-belly"></i>
+      <i class="openclaw-crab-avatar-leg openclaw-crab-avatar-leg-one"></i>
+      <i class="openclaw-crab-avatar-leg openclaw-crab-avatar-leg-two"></i>
+      <i class="openclaw-crab-avatar-leg openclaw-crab-avatar-leg-three"></i>
+      <i class="openclaw-crab-avatar-leg openclaw-crab-avatar-leg-four"></i>
+      <i class="openclaw-crab-avatar-eye openclaw-crab-avatar-eye-left"></i>
+      <i class="openclaw-crab-avatar-eye openclaw-crab-avatar-eye-right"></i>
+    </span>
+  `;
+}
+
 function renderVisualAgentTile(agent, index) {
   const statusClass = getVisualStatusClass(agent.status);
   const icon = agent.kind === "camera" ? Camera : agent.kind === "ottoauth" ? ShoppingCart : agent.kind === "browser" ? AppWindow : agent.kind === "helper" ? Zap : Bot;
   const isClaudeAgent = isClaudeCodeProviderAgent(agent);
+  const isOpenClawAgent = isOpenClawProviderAgent(agent);
+  const avatar = isClaudeAgent
+    ? renderClaudeCodeAvatarMarkup()
+    : isOpenClawAgent
+      ? renderOpenClawCrabAvatarMarkup()
+      : renderIcon(icon);
   const content = `
-    <span class="visual-agent-sprite visual-agent-sprite-${escapeHtml(statusClass)} ${isClaudeAgent ? "visual-agent-sprite-claude" : ""}" aria-hidden="true">
-      ${isClaudeAgent ? renderClaudeCodeAvatarMarkup() : renderIcon(icon)}
+    <span class="visual-agent-sprite visual-agent-sprite-${escapeHtml(statusClass)} ${isClaudeAgent ? "visual-agent-sprite-claude" : ""} ${isOpenClawAgent ? "visual-agent-sprite-openclaw" : ""}" aria-hidden="true">
+      ${avatar}
     </span>
     <span class="visual-agent-copy">
       <strong>${escapeHtml(agent.name)}</strong>
@@ -14586,6 +14633,7 @@ function renderVisualTownAgent(agent, index) {
   const placement = getVisualTownAgentPlacement(agent, index);
   const icon = agent.kind === "camera" ? Camera : agent.kind === "ottoauth" ? ShoppingCart : agent.kind === "browser" ? AppWindow : agent.kind === "helper" ? Zap : Bot;
   const isClaudeAgent = isClaudeCodeProviderAgent(agent);
+  const isOpenClawAgent = isOpenClawProviderAgent(agent);
   const isWorking = placement.statusClass === "working";
   const label = truncateSwarmLabel(agent.name || "agent", isWorking ? 28 : 18);
   const style = [
@@ -14595,15 +14643,20 @@ function renderVisualTownAgent(agent, index) {
     `--wander-y:${placement.walkY}px`,
     `--wander-speed:${placement.speed}`,
   ].join(";");
+  const avatar = isClaudeAgent
+    ? renderClaudeCodeAvatarMarkup()
+    : isOpenClawAgent
+      ? renderOpenClawCrabAvatarMarkup()
+      : renderIcon(icon);
   const content = `
-    <span class="visual-town-agent-body" aria-hidden="true">${isClaudeAgent ? renderClaudeCodeAvatarMarkup() : renderIcon(icon)}</span>
+    <span class="visual-town-agent-body" aria-hidden="true">${avatar}</span>
     <span class="visual-town-agent-shadow" aria-hidden="true"></span>
     <span class="visual-town-agent-label">
       <strong>${escapeHtml(label)}</strong>
       <em>${escapeHtml(isWorking ? "at computer" : "walking")}</em>
     </span>
   `;
-  const attributes = `class="visual-town-agent visual-status-${escapeHtml(placement.statusClass)} ${isWorking ? "is-working" : "is-roaming"} ${isClaudeAgent ? "visual-provider-claude" : ""}" style="${escapeHtml(style)}"`;
+  const attributes = `class="visual-town-agent visual-status-${escapeHtml(placement.statusClass)} ${isWorking ? "is-working" : "is-roaming"} ${isClaudeAgent ? "visual-provider-claude" : ""} ${isOpenClawAgent ? "visual-provider-openclaw" : ""}" style="${escapeHtml(style)}"`;
 
   if (agent.browserUseSessionId) {
     return `
@@ -16644,7 +16697,7 @@ function getAgentTownProviderDisplayLabel(provider) {
 }
 
 function getAgentTownProviderPriority(provider) {
-  const priority = ["claude", "codex", "ml-intern", "opencode", "gemini"];
+  const priority = ["claude", "codex", "openclaw", "ml-intern", "opencode", "gemini"];
   const index = priority.indexOf(provider?.id || "");
   return index >= 0 ? index : priority.length;
 }
@@ -16670,6 +16723,16 @@ function getAgentTownProviderDormPalette(providerId) {
       floorPattern: "codex",
       floorPatternColor: "#d8fff6",
       floorPatternAlpha: 0.46,
+    },
+    openclaw: {
+      floor: "#8f3f2e",
+      wall: "#5b2b34",
+      trim: "#331821",
+      blanket: "#ff8f55",
+      pillow: "#ffe0be",
+      floorPattern: "openclaw",
+      floorPatternColor: "#ffd0b4",
+      floorPatternAlpha: 0.5,
     },
     "ml-intern": {
       floor: "#8b6b2d",
@@ -16724,6 +16787,16 @@ function getVisualGameProviderAgentPalette(providerId) {
       trim: "#d8fff6",
       pants: "#173f3a",
       boots: "#102923",
+    },
+    openclaw: {
+      hat: "#d94f31",
+      brim: "#7f2d24",
+      hair: "#241918",
+      skin: "#f2a276",
+      coat: "#e6522c",
+      trim: "#ffd0b4",
+      pants: "#362128",
+      boots: "#2f1815",
     },
     "ml-intern": {
       hat: "#b78a24",
@@ -18411,6 +18484,8 @@ function drawVisualGameProviderFloorPattern(context, x, y, width, height, option
       drawVisualGameClaudeFloorLogo(context, center.x, center.y, motifSize, options.color);
     } else if (pattern === "codex") {
       drawVisualGameCodexFloorLogo(context, center.x, center.y, motifSize, options.color, options.trim);
+    } else if (pattern === "openclaw") {
+      drawVisualGameOpenClawFloorLogo(context, center.x, center.y, motifSize, options.color, options.trim);
     }
   }
   context.restore();
@@ -18454,6 +18529,20 @@ function drawVisualGameCodexFloorLogo(context, centerX, centerY, size, color, tr
   context.beginPath();
   context.arc(0, 0, size * 0.11, 0, Math.PI * 2);
   context.fill();
+  context.restore();
+}
+
+function drawVisualGameOpenClawFloorLogo(context, centerX, centerY, size, color, trim) {
+  context.save();
+  context.translate(centerX, centerY);
+  context.fillStyle = color || "#ffd0b4";
+  context.fillRect(Math.round(-size * 0.33), Math.round(-size * 0.12), Math.round(size * 0.66), Math.round(size * 0.34));
+  context.fillRect(Math.round(-size * 0.52), Math.round(-size * 0.02), Math.round(size * 0.18), Math.round(size * 0.18));
+  context.fillRect(Math.round(size * 0.34), Math.round(-size * 0.02), Math.round(size * 0.18), Math.round(size * 0.18));
+  context.fillStyle = trim || "#331821";
+  context.fillRect(Math.round(-size * 0.28), Math.round(-size * 0.24), Math.max(2, Math.round(size * 0.12)), Math.max(2, Math.round(size * 0.12)));
+  context.fillRect(Math.round(size * 0.16), Math.round(-size * 0.24), Math.max(2, Math.round(size * 0.12)), Math.max(2, Math.round(size * 0.12)));
+  context.fillRect(Math.round(-size * 0.5), Math.round(size * 0.22), Math.round(size), Math.max(2, Math.round(size * 0.1)));
   context.restore();
 }
 
@@ -19926,12 +20015,94 @@ function drawVisualGameClaudeCodeAgentSprite(context, agent, time, visualDestina
   drawVisualGameClaudeCodeAvatar(context, 0, 1, { color, legPhase, typingPhase });
 }
 
+function drawVisualGameOpenClawAvatar(context, x, y, {
+  color = "#e6522c",
+  dark = "#2f1815",
+  trim = "#ffd0b4",
+  legPhase = 0,
+  sleeping = false,
+  typingPhase = null,
+} = {}) {
+  const legLift = sleeping ? 0 : Math.max(0, Math.floor(legPhase) % 2);
+  const tap = Number.isFinite(typingPhase) ? Math.max(0, Math.floor(typingPhase)) % 2 : 0;
+
+  context.fillStyle = "rgba(5, 6, 9, 0.36)";
+  context.fillRect(x + 6, y + 12, 26, 16);
+  context.fillRect(x + 1, y + 16, 7, 7);
+  context.fillRect(x + 30, y + 16, 7, 7);
+
+  context.fillStyle = color;
+  context.fillRect(x + 7, y + 11, 24, 15);
+  context.fillRect(x + 10, y + 8, 18, 8);
+  context.fillRect(x + 1, y + 15 + tap, 8, 7);
+  context.fillRect(x + 29, y + 15 + (1 - tap), 8, 7);
+  context.fillRect(x + 5, y + 20, 5, 4);
+  context.fillRect(x + 28, y + 20, 5, 4);
+
+  context.fillStyle = trim;
+  context.fillRect(x + 11, y + 14, 16, 3);
+  context.fillRect(x + 13, y + 19, 12, 3);
+
+  context.fillStyle = dark;
+  if (sleeping) {
+    context.fillRect(x + 13, y + 10, 4, 1);
+    context.fillRect(x + 23, y + 10, 4, 1);
+  } else {
+    context.fillRect(x + 13, y + 9, 3, 4);
+    context.fillRect(x + 24, y + 9, 3, 4);
+  }
+
+  context.fillStyle = color;
+  context.fillRect(x + 8, y + 26 + legLift, 4, 5);
+  context.fillRect(x + 14, y + 26 + (1 - legLift), 4, 5);
+  context.fillRect(x + 22, y + 26 + (1 - legLift), 4, 5);
+  context.fillRect(x + 28, y + 26 + legLift, 4, 5);
+}
+
+function drawVisualGameOpenClawAgentSprite(context, agent, time, visualDestination, {
+  isStationed = false,
+  isRoamingIdle = false,
+  palette = null,
+  step = 0,
+} = {}) {
+  const color = palette?.coat || "#e6522c";
+  const dark = palette?.boots || "#2f1815";
+  const trim = palette?.trim || "#ffd0b4";
+  const legPhase = isStationed || isRoamingIdle ? 0 : step;
+
+  if (visualDestination === "sleep") {
+    context.fillStyle = "#332519";
+    context.fillRect(1, 16, 35, 12);
+    context.fillStyle = "#5b3f29";
+    context.fillRect(3, 14, 31, 4);
+    context.fillStyle = "#2a1d15";
+    context.fillRect(3, 26, 30, 3);
+    context.fillStyle = "#f0d9ad";
+    context.fillRect(3, 11, 10, 7);
+    context.save();
+    context.translate(7, 6);
+    context.scale(0.78, 0.78);
+    drawVisualGameOpenClawAvatar(context, 0, 0, { color, dark, trim, sleeping: true });
+    context.restore();
+    context.fillStyle = "#f7efba";
+    context.fillRect(28, 8, 2, 2);
+    context.fillRect(30, 6, 2, 2);
+    context.fillRect(32, 4, 2, 2);
+    return;
+  }
+
+  drawVisualGameClaudeCodeStationProp(context, visualDestination);
+  const typingPhase = isStationed ? Math.floor(time / 140 + agent.index) : null;
+  drawVisualGameOpenClawAvatar(context, 0, 1, { color, dark, trim, legPhase, typingPhase });
+}
+
 function drawVisualGameAgent(context, agent, time, hitAreas) {
   const scale = agent.scale || 1;
   const palette = getVisualGameAgentPalette(agent);
   const hatKind = getVisualGameAgentHatKind(agent);
   const hatColors = getVisualGameAgentHatColors(palette);
   const isClaudeCodeAgent = isClaudeCodeProviderAgent(agent);
+  const isOpenClawAgent = isOpenClawProviderAgent(agent);
   const isWalking = Boolean(agent.walking);
   const visualDestination = isWalking ? "roam" : agent.destination;
   const isRoamingIdle = agent.destination === "roam" && !isWalking;
@@ -19949,23 +20120,23 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
     ? Math.floor(Math.sin(time / 220 + agent.index) * 1)
     : Math.floor(Math.sin(time / 150 + agent.index) * 2);
   const step = Math.floor(time / 180 + agent.index) % 4;
-  const spriteBaseWidth = isClaudeCodeAgent ? 34 : VISUAL_GAME_AGENT_SIZE;
+  const spriteBaseWidth = isClaudeCodeAgent ? 34 : isOpenClawAgent ? 38 : VISUAL_GAME_AGENT_SIZE;
   const spriteWidth = spriteBaseWidth * scale;
   const spriteTopOffset = visualDestination === "sleep"
-    ? isClaudeCodeAgent ? 18 : 17
-    : isClaudeCodeAgent ? 25 : 25;
+    ? isClaudeCodeAgent || isOpenClawAgent ? 18 : 17
+    : isClaudeCodeAgent || isOpenClawAgent ? 25 : 25;
   const x = Math.round(agent.x - spriteWidth / 2);
   const y = Math.round(agent.y - spriteTopOffset * scale + bob);
-  const shadowX = x + (isClaudeCodeAgent ? 4 : 1) * scale;
+  const shadowX = x + (isClaudeCodeAgent || isOpenClawAgent ? 4 : 1) * scale;
   const shadowY = y + (
     visualDestination === "sleep"
-      ? isClaudeCodeAgent ? 25 : 24
-      : isClaudeCodeAgent ? 31 : 27
+      ? isClaudeCodeAgent || isOpenClawAgent ? 25 : 24
+      : isClaudeCodeAgent || isOpenClawAgent ? 31 : 27
   ) * scale;
   const shadowWidth = (
     visualDestination === "sleep"
-      ? isClaudeCodeAgent ? 27 : 22
-      : isClaudeCodeAgent ? 26 : 15
+      ? isClaudeCodeAgent || isOpenClawAgent ? 27 : 22
+      : isClaudeCodeAgent ? 26 : isOpenClawAgent ? 30 : 15
   ) * scale;
 
   drawVisualGameShadow(
@@ -19981,6 +20152,13 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
 
   if (isClaudeCodeAgent) {
     drawVisualGameClaudeCodeAgentSprite(context, agent, time, visualDestination, {
+      isStationed,
+      isRoamingIdle,
+      palette,
+      step,
+    });
+  } else if (isOpenClawAgent) {
+    drawVisualGameOpenClawAgentSprite(context, agent, time, visualDestination, {
       isStationed,
       isRoamingIdle,
       palette,
@@ -20045,7 +20223,7 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
     context.fillRect(7, 19, 5, 2);
   }
 
-  if (!isClaudeCodeAgent && visualDestination !== "sleep") {
+  if (!isClaudeCodeAgent && !isOpenClawAgent && visualDestination !== "sleep") {
     context.fillStyle = palette.boots;
     if (isStationed || isRoamingIdle) {
       context.fillRect(4, 24, 4, 3);
@@ -20091,8 +20269,8 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
     }
   }
 
-  const statusBadgeX = isClaudeCodeAgent ? 28 : 14;
-  const statusBadgeY = isClaudeCodeAgent ? 2 : 0;
+  const statusBadgeX = isClaudeCodeAgent ? 28 : isOpenClawAgent ? 31 : 14;
+  const statusBadgeY = isClaudeCodeAgent || isOpenClawAgent ? 2 : 0;
   if (agent.statusClass === "failed") {
     context.fillStyle = "#ff7f79";
     context.fillRect(statusBadgeX, statusBadgeY, 4, 4);
@@ -20113,7 +20291,7 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
 
   if (agent.isSubagent) {
     context.fillStyle = "#fff0bd";
-    context.fillRect(isClaudeCodeAgent ? 4 : 2, isClaudeCodeAgent ? 1 : -1, 3, 3);
+    context.fillRect(isClaudeCodeAgent || isOpenClawAgent ? 4 : 2, isClaudeCodeAgent || isOpenClawAgent ? 1 : -1, 3, 3);
   }
 
   context.restore();
@@ -20122,14 +20300,14 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
     drawVisualGameNameplate(
       context,
       truncateSwarmLabel(agent.name, agent.isSubagent ? 12 : 14),
-      x + (isClaudeCodeAgent ? 17 : 9) * scale,
+      x + (isClaudeCodeAgent ? 17 : isOpenClawAgent ? 19 : 9) * scale,
       y + 34 * scale,
       scale,
     );
   }
-  const hitPaddingX = (isClaudeCodeAgent ? 9 : 10) * scale;
-  const hitWidth = (isClaudeCodeAgent ? 52 : 38) * scale;
-  const hitHeight = (isClaudeCodeAgent ? 50 : 48) * scale;
+  const hitPaddingX = (isClaudeCodeAgent || isOpenClawAgent ? 9 : 10) * scale;
+  const hitWidth = (isClaudeCodeAgent ? 52 : isOpenClawAgent ? 56 : 38) * scale;
+  const hitHeight = (isClaudeCodeAgent || isOpenClawAgent ? 50 : 48) * scale;
   hitAreas.push({
     x: x - hitPaddingX,
     y: y - 5 * scale,
@@ -22128,7 +22306,7 @@ function renderAgentPromptView() {
         <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
         <div class="dashboard-copy">
           <strong>Occupations</strong>
-          <div class="terminal-meta">shared instruction sets injected into Codex, Claude, Gemini, and OpenCode sessions</div>
+          <div class="terminal-meta">shared instruction sets injected into Codex, Claude, OpenClaw, Gemini, and OpenCode sessions</div>
         </div>
         <div class="dashboard-actions">
           <button class="icon-button toolbar-control refresh-icon-button" type="button" id="refresh-agent-prompt" aria-label="Reload occupations from disk" ${tooltipAttributes("Reload occupations from disk")}>${renderIcon(RefreshCw)}</button>
@@ -22490,7 +22668,7 @@ function renderAgentSetupProviderCards() {
     return `
       <div class="agent-setup-empty">
         <strong>No coding agents were found.</strong>
-        <span>Refresh detection after installing Claude Code, Codex, Gemini, OpenCode, or ML Intern.</span>
+        <span>Refresh detection after installing Claude Code, Codex, OpenClaw, Gemini, OpenCode, or ML Intern.</span>
       </div>
     `;
   }

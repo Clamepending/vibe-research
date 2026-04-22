@@ -39,6 +39,21 @@ export const providerDefinitions = [
     pathHints: ["/Applications/Codex.app/Contents/Resources/codex"],
   },
   {
+    id: "openclaw",
+    label: "OpenClaw",
+    command: "openclaw",
+    launchCommand: "openclaw",
+    defaultName: "OpenClaw",
+    verifyArgs: ["--version"],
+    installCommand: "npm install -g openclaw@latest",
+    authCommand: "openclaw onboard --install-daemon",
+    pathHints: [
+      "~/.local/bin/openclaw",
+      "/opt/homebrew/bin/openclaw",
+      "/usr/local/bin/openclaw",
+    ],
+  },
+  {
     id: "opencode",
     label: "OpenCode",
     command: "opencode",
