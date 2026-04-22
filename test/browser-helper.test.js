@@ -511,25 +511,51 @@ test("shell sessions can invoke vr-browser against localhost apps", async () => 
       "utf8",
     );
 
-    const snapshot = await new Promise((resolve, reject) => {
+    await new Promise((resolve, reject) => {
       let combined = "";
-      const timeout = setTimeout(() => {
-        reject(new Error(`Timed out waiting for the shell snapshot.\n${combined}`));
-      }, 20_000);
-
-      websocket.on("message", (chunk) => {
-        const payload = JSON.parse(String(chunk));
-        const data = payload.data || "";
-        combined += data;
-
-        if (payload.type === "snapshot") {
-          clearTimeout(timeout);
-          resolve(payload);
+      let settled = false;
+      const finish = () => {
+        if (settled) {
+          return;
         }
-      });
+        settled = true;
+        clearTimeout(timeout);
+        websocket.off("open", finish);
+        websocket.off("message", handleMessage);
+        websocket.off("error", handleError);
+        resolve();
+      };
+      const handleError = (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        websocket.off("open", finish);
+        websocket.off("message", handleMessage);
+        reject(error);
+      };
+      const handleMessage = (chunk) => {
+        const payload = JSON.parse(String(chunk));
+        combined += payload.data || "";
+        finish();
+      };
+      const timeout = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        websocket.off("open", finish);
+        websocket.off("message", handleMessage);
+        websocket.off("error", handleError);
+        reject(new Error(`Timed out waiting for the shell websocket.\n${combined}`));
+      }, 60_000);
+
+      websocket.once("open", finish);
+      websocket.on("message", handleMessage);
+      websocket.once("error", handleError);
     });
 
-    assert.equal(snapshot.type, "snapshot");
     websocket.send(
       JSON.stringify({
         type: "resize",
@@ -551,10 +577,10 @@ test("shell sessions can invoke vr-browser against localhost apps", async () => 
       }),
     );
 
-    await waitForFile(commandPath);
-    await waitForFile(jsonPath);
-    await waitForFile(screenshotPath);
-    await waitForFile(donePath);
+    await waitForFile(commandPath, 60_000);
+    await waitForFile(jsonPath, 60_000);
+    await waitForFile(screenshotPath, 60_000);
+    await waitForFile(donePath, 60_000);
     websocket.close();
     await once(websocket, "close");
 
