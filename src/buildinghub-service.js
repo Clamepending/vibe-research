@@ -115,6 +115,15 @@ function normalizeCompleteWhen(completeWhen) {
     };
   }
 
+  if (Array.isArray(completeWhen.anyConfigured)) {
+    return {
+      anyConfigured: completeWhen.anyConfigured
+        .map((entry) => normalizeText(entry, 120))
+        .filter(Boolean)
+        .slice(0, 12),
+    };
+  }
+
   return null;
 }
 
