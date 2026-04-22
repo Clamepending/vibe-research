@@ -514,6 +514,85 @@ const AGENT_TOWN_PLUGIN_BUILDING_RECTS = [
   { x: 520, y: 470, width: 82, height: 58 },
   { x: 616, y: 470, width: 82, height: 58 },
 ];
+const AGENT_TOWN_SCENERY_FENCES = Object.freeze([
+  { x: 520, y: 52, length: 116, orientation: "vertical" },
+  { x: 520, y: 168, length: 135, orientation: "horizontal" },
+  { x: 630, y: 58, length: 74, orientation: "horizontal" },
+  { x: 238, y: 305, length: 72, orientation: "horizontal" },
+  { x: 238, y: 305, length: 56, orientation: "vertical" },
+  { x: 626, y: 322, length: 72, orientation: "horizontal" },
+  { x: 626, y: 322, length: 50, orientation: "vertical" },
+  { x: 820, y: 314, length: 54, orientation: "horizontal" },
+  { x: 820, y: 314, length: 70, orientation: "vertical" },
+]);
+const AGENT_TOWN_SCENERY_PAVERS = Object.freeze([
+  { x: 548, y: 98, columns: 5, rows: 2 },
+  { x: 244, y: 326, columns: 4, rows: 2 },
+  { x: 626, y: 342, columns: 4, rows: 2 },
+  { x: 812, y: 330, columns: 4, rows: 3 },
+]);
+const AGENT_TOWN_SCENERY_PLANTERS = Object.freeze([
+  { x: 548, y: 78, width: 44, height: 14 },
+  { x: 640, y: 150, width: 46, height: 14 },
+  { x: 244, y: 314, width: 42, height: 14 },
+  { x: 630, y: 330, width: 42, height: 14 },
+  { x: 824, y: 332, width: 34, height: 14 },
+]);
+const AGENT_TOWN_SCENERY_STRUCTURES = Object.freeze([
+  { x: 570, y: 86, width: 38, height: 27, roof: "#80505e", body: "#6f5b3a", accent: "#f1c978" },
+  { x: 250, y: 330, width: 34, height: 24, roof: "#4f6b77", body: "#735a34", accent: "#e9d2a2" },
+  { x: 820, y: 346, width: 36, height: 25, roof: "#8a4c36", body: "#66643b", accent: "#f0be69" },
+]);
+const AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE = Object.freeze({ width: 82, height: 58 });
+const AGENT_TOWN_BUILDER_DEFAULT_TAB = "cosmetic";
+const AGENT_TOWN_BUILDER_TABS = new Set(["cosmetic", "functional"]);
+const AGENT_TOWN_BUILDER_COSMETIC_ITEMS = Object.freeze([
+  {
+    id: "road-square",
+    label: "Road Square",
+    meta: "paver tile",
+    width: 30,
+    height: 30,
+    kind: "road",
+  },
+  {
+    id: "fence-horizontal",
+    label: "Fence",
+    meta: "horizontal",
+    width: 78,
+    height: 17,
+    kind: "fence",
+    orientation: "horizontal",
+  },
+  {
+    id: "fence-vertical",
+    label: "Fence",
+    meta: "vertical",
+    width: 17,
+    height: 78,
+    kind: "fence",
+    orientation: "vertical",
+  },
+  {
+    id: "planter",
+    label: "Planter",
+    meta: "greenery",
+    width: 44,
+    height: 14,
+    kind: "planter",
+  },
+  {
+    id: "shed",
+    label: "Tiny Shed",
+    meta: "cosmetic",
+    width: 38,
+    height: 27,
+    kind: "structure",
+    roof: "#80505e",
+    body: "#6f5b3a",
+    accent: "#f1c978",
+  },
+]);
 const AGENT_TOWN_PLACE_COLLISION_GAP = 2;
 const AGENT_TOWN_DEFAULT_THEME_ID = "default";
 const AGENT_TOWN_THEMES = Object.freeze([
@@ -919,14 +998,91 @@ function normalizeAgentTownLayoutOffsets(value) {
   );
 }
 
+function getAgentTownCosmeticItem(itemId) {
+  const normalizedItemId = normalizeBuildingId(itemId);
+  return AGENT_TOWN_BUILDER_COSMETIC_ITEMS.find((item) => item.id === normalizedItemId) || null;
+}
+
+function normalizeAgentTownDecoration(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const item = getAgentTownCosmeticItem(value.itemId || value.kind || value.id);
+  if (!item) {
+    return null;
+  }
+
+  const x = Number(value.x);
+  const y = Number(value.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return null;
+  }
+
+  return {
+    id: String(value.id || createClientId("decor")).trim() || createClientId("decor"),
+    itemId: item.id,
+    x: clamp(Math.round(x), 0, VISUAL_GAME_WIDTH - item.width),
+    y: clamp(Math.round(y), 0, VISUAL_GAME_HEIGHT - item.height),
+  };
+}
+
+function normalizeAgentTownDecorations(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map(normalizeAgentTownDecoration).filter(Boolean).slice(0, 160);
+}
+
+function normalizeAgentTownFunctionalPlacements(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([id, rect]) => {
+        const pluginId = normalizeBuildingId(id);
+        if (!pluginId || !rect || typeof rect !== "object" || Array.isArray(rect)) {
+          return null;
+        }
+        const x = Number(rect.x);
+        const y = Number(rect.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          return null;
+        }
+        return [
+          pluginId,
+          {
+            x: clamp(Math.round(x), 0, VISUAL_GAME_WIDTH - AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.width),
+            y: clamp(Math.round(y), 0, VISUAL_GAME_HEIGHT - AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.height),
+          },
+        ];
+      })
+      .filter(Boolean),
+  );
+}
+
+function normalizeAgentTownPendingFunctional(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return [...new Set(value.map(normalizeBuildingId).filter(Boolean))].slice(0, 80);
+}
+
 function normalizeAgentTownLayout(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { places: {}, roads: {} };
+    return { places: {}, roads: {}, decorations: [], functional: {}, pendingFunctional: [] };
   }
 
   return {
     places: normalizeAgentTownLayoutOffsets(value.places),
     roads: normalizeAgentTownLayoutOffsets(value.roads),
+    decorations: normalizeAgentTownDecorations(value.decorations),
+    functional: normalizeAgentTownFunctionalPlacements(value.functional),
+    pendingFunctional: normalizeAgentTownPendingFunctional(value.pendingFunctional),
   };
 }
 
@@ -934,7 +1090,7 @@ function loadAgentTownLayoutPreferences() {
   try {
     return normalizeAgentTownLayout(JSON.parse(window.localStorage.getItem(AGENT_TOWN_LAYOUT_STORAGE_KEY) || "{}"));
   } catch {
-    return { places: {}, roads: {} };
+    return { places: {}, roads: {}, decorations: [], functional: {}, pendingFunctional: [] };
   }
 }
 
@@ -1028,6 +1184,9 @@ const state = {
     customLayout: agentTownLayoutPreferences,
     themeId: agentTownThemePreference,
     dogName: agentTownDogNamePreference,
+    builderOpen: false,
+    builderTab: AGENT_TOWN_BUILDER_DEFAULT_TAB,
+    builderPlacement: null,
     selectedSessionId: "",
     selectedBrowserUseSessionId: "",
     selectedBuildingId: "",
@@ -13967,11 +14126,14 @@ function renderVisualPixelGame(graph) {
   const agents = getVisualInterfaceAgents(graph);
   const workingCount = agents.filter((agent) => getVisualStatusClass(agent.status) === "working").length;
   const roamingCount = Math.max(0, agents.length - workingCount);
-  const hoverLabel = isAgentTownEditMode() ? "edit town: drag buildings or paths" : "agent town";
+  const placementLabel = state.visualGame.builderPlacement?.label || "";
+  const hoverLabel = placementLabel ? `place ${placementLabel}` : isAgentTownEditMode() ? "edit town: drag buildings or paths" : "agent town";
+  const unplacedCount = getAgentTownUnplacedFunctionalPlugins().length;
+  const builderOpen = isAgentTownBuilderOpen();
 
   return `
     <section class="visual-game-stage" aria-label="Agent Town">
-      <div class="visual-game-frame ${isAgentTownEditMode() ? "is-editing" : ""}">
+      <div class="visual-game-frame ${isAgentTownEditMode() ? "is-editing" : ""} ${state.visualGame.builderPlacement ? "is-builder-placing" : ""}">
         <canvas
           id="visual-game-canvas"
           class="visual-game-canvas"
@@ -13982,6 +14144,26 @@ function renderVisualPixelGame(graph) {
           aria-label="${escapeHtml(`${workingCount} working agents, ${roamingCount} roaming agents in Agent Town`)}"
         ></canvas>
         <div class="visual-game-hover" aria-hidden="true">${escapeHtml(hoverLabel)}</div>
+        <button
+          class="agent-town-builder-button ${builderOpen ? "is-active" : ""} ${unplacedCount ? "has-alert" : ""}"
+          type="button"
+          data-agent-town-builder-toggle
+          aria-label="${escapeHtml(unplacedCount ? `Open BuildingHub builder, ${unplacedCount} building${unplacedCount === 1 ? "" : "s"} to place` : "Open BuildingHub builder")}"
+          ${tooltipAttributes(unplacedCount ? `${unplacedCount} to place` : "BuildingHub builder")}
+        >
+          ${renderIcon(Wrench)}
+          ${unplacedCount ? `<span class="agent-town-builder-badge" aria-hidden="true">!</span>` : ""}
+        </button>
+        ${
+          state.visualGame.builderPlacement
+            ? `
+              <button class="agent-town-builder-cancel" type="button" data-agent-town-builder-cancel-placement>
+                ${renderIcon(X)}
+                <span>${escapeHtml(placementLabel)}</span>
+              </button>
+            `
+            : ""
+        }
       </div>
     </section>
   `;
@@ -14523,7 +14705,154 @@ function renderVisualGameBuildingDrawer() {
   `;
 }
 
+function renderAgentTownBuilderCosmeticPreview(item) {
+  const className = `agent-town-builder-preview agent-town-builder-preview-${escapeHtml(item.id)}`;
+  if (item.kind === "fence" && item.orientation === "vertical") {
+    return `<span class="${className}" aria-hidden="true"><i></i><i></i><b></b><b></b></span>`;
+  }
+  if (item.kind === "fence") {
+    return `<span class="${className}" aria-hidden="true"><i></i><i></i><b></b><b></b></span>`;
+  }
+  if (item.kind === "road") {
+    return `<span class="${className}" aria-hidden="true"><i></i><i></i><i></i><i></i></span>`;
+  }
+  if (item.kind === "planter") {
+    return `<span class="${className}" aria-hidden="true"><i></i><i></i><i></i></span>`;
+  }
+  return `<span class="${className}" aria-hidden="true"><i></i><b></b></span>`;
+}
+
+function renderAgentTownBuilderCosmeticTab() {
+  return `
+    <div class="agent-town-builder-list" role="list">
+      ${AGENT_TOWN_BUILDER_COSMETIC_ITEMS.map((item) => `
+        <button
+          class="agent-town-builder-card ${state.visualGame.builderPlacement?.kind === "cosmetic" && state.visualGame.builderPlacement.itemId === item.id ? "is-active" : ""}"
+          type="button"
+          draggable="true"
+          data-agent-town-builder-place-cosmetic="${escapeHtml(item.id)}"
+          aria-label="${escapeHtml(`Place ${item.label}`)}"
+        >
+          ${renderAgentTownBuilderCosmeticPreview(item)}
+          <span class="agent-town-builder-card-copy">
+            <strong>${escapeHtml(item.label)}</strong>
+            <em>${escapeHtml(item.meta)}</em>
+          </span>
+          <span class="agent-town-builder-card-action">Place</span>
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function getAgentTownFunctionalStatus(plugin) {
+  const pluginId = getPluginId(plugin);
+  if (!isPluginInstalled(plugin)) {
+    return "available";
+  }
+  if (isAgentTownFunctionalPending(pluginId)) {
+    return "unplaced";
+  }
+  if (getAgentTownFunctionalPlacement(pluginId)) {
+    return "placed";
+  }
+  return "auto";
+}
+
+function renderAgentTownBuilderFunctionalCard(plugin) {
+  const pluginId = getPluginId(plugin);
+  const status = getAgentTownFunctionalStatus(plugin);
+  const pendingAction = getPluginPendingAction(plugin);
+  const installing = Boolean(pendingAction);
+  const active = state.visualGame.builderPlacement?.kind === "functional" && state.visualGame.builderPlacement.pluginId === pluginId;
+  const issue = getPluginBuildingIssue(plugin);
+  const statusLabel =
+    status === "available"
+      ? "not installed"
+      : status === "unplaced"
+        ? "needs spot"
+        : status === "placed"
+          ? "placed"
+          : "auto placed";
+  const actionLabel =
+    installing
+      ? pendingAction === "installing" ? "Installing..." : "Removing..."
+      : status === "available"
+        ? "Install"
+        : status === "unplaced"
+          ? "Place"
+          : "Move";
+  const actionAttr =
+    status === "available"
+      ? `data-agent-town-builder-install-functional="${escapeHtml(pluginId)}"`
+      : `data-agent-town-builder-place-functional="${escapeHtml(pluginId)}"`;
+
+  return `
+    <article class="agent-town-builder-card agent-town-builder-functional-card ${active ? "is-active" : ""} is-${escapeHtml(status)} ${issue ? "has-building-issue" : ""}" role="listitem">
+      <span class="agent-town-builder-building-icon" aria-hidden="true">${renderIcon(plugin.icon || Plug)}</span>
+      <span class="agent-town-builder-card-copy">
+        <strong>${escapeHtml(plugin.name)}</strong>
+        <em>${escapeHtml(statusLabel)}</em>
+      </span>
+      <button
+        class="${status === "available" ? "primary-button" : "ghost-button"} agent-town-builder-card-action"
+        type="button"
+        ${status === "available" ? "" : "draggable=\"true\""}
+        ${actionAttr}
+        ${installing ? "disabled" : ""}
+      >${escapeHtml(actionLabel)}</button>
+    </article>
+  `;
+}
+
+function renderAgentTownBuilderFunctionalTab() {
+  const plugins = getAgentTownFunctionalPlugins();
+  return `
+    <div class="agent-town-builder-list" role="list">
+      ${plugins.map(renderAgentTownBuilderFunctionalCard).join("")}
+    </div>
+  `;
+}
+
+function renderAgentTownBuilderDrawer() {
+  const activeTab = normalizeAgentTownBuilderTab(state.visualGame.builderTab);
+  const unplacedCount = getAgentTownUnplacedFunctionalPlugins().length;
+  const title = state.visualGame.builderPlacement
+    ? `Placing ${state.visualGame.builderPlacement.label}`
+    : "BuildingHub";
+
+  return `
+    <aside class="visual-game-building-panel visual-game-side-panel agent-town-builder-panel" aria-label="BuildingHub builder">
+      <div class="visual-game-session-head">
+        <div class="terminal-copy">
+          <strong><span class="visual-building-title-icon" aria-hidden="true">${renderIcon(Wrench)}</span>${escapeHtml(title)}</strong>
+          <div class="terminal-meta">${escapeHtml(unplacedCount ? `${unplacedCount} building${unplacedCount === 1 ? "" : "s"} to place` : "town builder")}</div>
+        </div>
+        <div class="visual-game-session-actions">
+          ${
+            state.visualGame.builderPlacement
+              ? `<button class="ghost-button toolbar-control" type="button" data-agent-town-builder-cancel-placement>${renderIcon(X)}<span>Cancel</span></button>`
+              : ""
+          }
+          <button class="icon-button toolbar-control" type="button" data-agent-town-builder-close aria-label="Close builder" ${tooltipAttributes("Close builder")}>${renderIcon(X)}</button>
+        </div>
+      </div>
+      <div class="agent-town-builder-body">
+        <div class="agent-town-builder-tabs" role="tablist" aria-label="Builder categories">
+          <button class="agent-town-builder-tab ${activeTab === "cosmetic" ? "is-active" : ""}" type="button" data-agent-town-builder-tab="cosmetic" role="tab" aria-selected="${activeTab === "cosmetic" ? "true" : "false"}">${renderIcon(Palette)}<span>Cosmetic</span></button>
+          <button class="agent-town-builder-tab ${activeTab === "functional" ? "is-active" : ""} ${unplacedCount ? "has-alert" : ""}" type="button" data-agent-town-builder-tab="functional" role="tab" aria-selected="${activeTab === "functional" ? "true" : "false"}">${renderIcon(Plug)}<span>Functional</span>${unplacedCount ? `<b aria-hidden="true">!</b>` : ""}</button>
+        </div>
+        ${activeTab === "functional" ? renderAgentTownBuilderFunctionalTab() : renderAgentTownBuilderCosmeticTab()}
+      </div>
+    </aside>
+  `;
+}
+
 function renderVisualGameSidePanel(graph) {
+  if (state.visualGame.builderOpen) {
+    return renderAgentTownBuilderDrawer();
+  }
+
   if (state.visualGame.selectedSessionId) {
     return renderVisualGameSessionDrawer(graph);
   }
@@ -14532,7 +14861,7 @@ function renderVisualGameSidePanel(graph) {
 }
 
 function renderVisualVillage(graph) {
-  const hasSidePanel = Boolean(state.visualGame.selectedSessionId || state.visualGame.selectedBuildingId);
+  const hasSidePanel = Boolean(state.visualGame.builderOpen || state.visualGame.selectedSessionId || state.visualGame.selectedBuildingId);
   const panelStyle = hasSidePanel
     ? ` style="--visual-game-side-panel-width: ${getVisualGameSidePanelWidth()}px"`
     : "";
@@ -14585,6 +14914,7 @@ function openVisualGameBuildingPanel(buildingId, { render = true } = {}) {
     return true;
   }
 
+  closeAgentTownBuilder({ render: false });
   state.visualGame.selectedSessionId = "";
   state.visualGame.selectedBrowserUseSessionId = "";
   state.visualGame.selectedBuildingId = normalizedBuildingId;
@@ -14665,14 +14995,212 @@ async function openBuildingWorkspace(buildingId, workspaceView) {
 
 async function openBuildingHubCatalogView() {
   clearVisualGameSelection({ render: false });
+  closeAgentTownBuilder({ render: false });
   state.pluginDetailId = "";
   await openMainView("plugins");
+}
+
+function normalizeAgentTownBuilderTab(tab) {
+  const normalizedTab = String(tab || "").trim().toLowerCase();
+  return AGENT_TOWN_BUILDER_TABS.has(normalizedTab) ? normalizedTab : AGENT_TOWN_BUILDER_DEFAULT_TAB;
+}
+
+function isAgentTownBuilderOpen() {
+  return Boolean(state.visualGame.builderOpen);
+}
+
+function openAgentTownBuilder({ tab = state.visualGame.builderTab, render = true } = {}) {
+  clearVisualGameSelection({ render: false });
+  state.visualGame.builderOpen = true;
+  state.visualGame.builderTab = normalizeAgentTownBuilderTab(tab);
+  if (!isVisualInterfaceView()) {
+    setCurrentView("visual-interface");
+  } else {
+    updateRoute({ view: "visual-interface" });
+  }
+  closeMobileSidebar();
+  if (render) {
+    renderShell();
+  }
+}
+
+function closeAgentTownBuilder({ render = true, clearPlacement = true } = {}) {
+  const hadBuilder = Boolean(state.visualGame.builderOpen || state.visualGame.builderPlacement);
+  state.visualGame.builderOpen = false;
+  if (clearPlacement) {
+    state.visualGame.builderPlacement = null;
+  }
+  if (render && hadBuilder) {
+    renderShell();
+  }
+}
+
+function toggleAgentTownBuilder() {
+  if (state.visualGame.builderOpen) {
+    closeAgentTownBuilder();
+    return;
+  }
+
+  openAgentTownBuilder({ tab: state.visualGame.builderTab || AGENT_TOWN_BUILDER_DEFAULT_TAB });
+}
+
+function setAgentTownBuilderTab(tab) {
+  state.visualGame.builderTab = normalizeAgentTownBuilderTab(tab);
+  state.visualGame.builderOpen = true;
+  renderShell();
+}
+
+function createAgentTownBuilderPlacement(kind, id) {
+  if (kind === "cosmetic") {
+    const item = getAgentTownCosmeticItem(id);
+    if (!item) {
+      return null;
+    }
+    return {
+      kind: "cosmetic",
+      itemId: item.id,
+      label: item.label,
+      width: item.width,
+      height: item.height,
+      cursorRect: null,
+      blocked: false,
+    };
+  }
+
+  const plugin = getPluginById(id);
+  if (!plugin || !isAgentTownFunctionalPlugin(plugin)) {
+    return null;
+  }
+
+  return {
+    kind: "functional",
+    pluginId: getPluginId(plugin),
+    label: plugin.name,
+    width: AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.width,
+    height: AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.height,
+    cursorRect: null,
+    blocked: false,
+  };
+}
+
+function startAgentTownBuilderPlacement(kind, id, { render = true } = {}) {
+  const placement = createAgentTownBuilderPlacement(kind, id);
+  if (!placement) {
+    return false;
+  }
+
+  state.visualGame.builderPlacement = placement;
+  openAgentTownBuilder({
+    tab: kind === "functional" ? "functional" : "cosmetic",
+    render,
+  });
+  return true;
+}
+
+function clearAgentTownBuilderPlacement({ render = true } = {}) {
+  if (!state.visualGame.builderPlacement) {
+    return false;
+  }
+  state.visualGame.builderPlacement = null;
+  if (render) {
+    renderShell();
+  }
+  return true;
+}
+
+function getAgentTownPlacementRectAtPoint(placement, point) {
+  if (!placement || !point) {
+    return null;
+  }
+
+  const width = Number(placement.width || 1);
+  const height = Number(placement.height || 1);
+  return {
+    x: clamp(snapAgentTownLayoutValue(point.x - width / 2), 0, VISUAL_GAME_WIDTH - width),
+    y: clamp(snapAgentTownLayoutValue(point.y - height / 2), 0, VISUAL_GAME_HEIGHT - height),
+    width,
+    height,
+  };
+}
+
+function getAgentTownPlacementBlocker(placement, rect) {
+  if (!placement || !rect) {
+    return null;
+  }
+
+  if (placement.kind === "functional") {
+    return getAgentTownPlaceCollision(rect, `building-${placement.pluginId}`);
+  }
+
+  const item = getAgentTownCosmeticItem(placement.itemId);
+  if (item?.kind === "structure") {
+    return getAgentTownPlaceCollision(rect, "");
+  }
+
+  return null;
+}
+
+function updateAgentTownBuilderPlacementPreview(point) {
+  const placement = state.visualGame.builderPlacement;
+  if (!placement) {
+    return null;
+  }
+
+  const rect = getAgentTownPlacementRectAtPoint(placement, point);
+  const blocker = getAgentTownPlacementBlocker(placement, rect);
+  placement.cursorRect = rect;
+  placement.blocked = Boolean(blocker);
+  placement.blockedLabel = blocker?.label || "";
+  return { rect, blocker };
+}
+
+function commitAgentTownBuilderPlacement(point) {
+  const placement = state.visualGame.builderPlacement;
+  if (!placement) {
+    return false;
+  }
+
+  const preview = updateAgentTownBuilderPlacementPreview(point);
+  if (!preview?.rect || preview.blocker) {
+    return false;
+  }
+
+  if (placement.kind === "functional") {
+    if (!setAgentTownFunctionalPlacement(placement.pluginId, preview.rect)) {
+      return false;
+    }
+    state.visualGame.builderPlacement = null;
+    saveAgentTownLayoutPreferences();
+    renderShell();
+    return true;
+  }
+
+  const decoration = addAgentTownDecoration(placement.itemId, preview.rect);
+  return Boolean(decoration);
+}
+
+function startAgentTownFunctionalPlacement(pluginId, { markPending = false, render = true } = {}) {
+  const normalizedPluginId = normalizeBuildingId(pluginId);
+  const plugin = getPluginById(normalizedPluginId);
+  if (!plugin || !isAgentTownFunctionalPlugin(plugin)) {
+    return false;
+  }
+
+  if (markPending) {
+    setAgentTownFunctionalPending(normalizedPluginId, true);
+    saveAgentTownLayoutPreferences();
+  }
+
+  return startAgentTownBuilderPlacement("functional", normalizedPluginId, { render });
 }
 
 function isAgentTownLayoutCustomized() {
   return Boolean(
     Object.keys(state.visualGame.customLayout?.places || {}).length ||
-    Object.keys(state.visualGame.customLayout?.roads || {}).length,
+    Object.keys(state.visualGame.customLayout?.roads || {}).length ||
+    Object.keys(state.visualGame.customLayout?.functional || {}).length ||
+    (Array.isArray(state.visualGame.customLayout?.decorations) && state.visualGame.customLayout.decorations.length) ||
+    (Array.isArray(state.visualGame.customLayout?.pendingFunctional) && state.visualGame.customLayout.pendingFunctional.length),
   );
 }
 
@@ -14742,7 +15270,8 @@ function setAgentTownDogName(value, { render = true } = {}) {
 }
 
 function resetAgentTownLayout({ render = true } = {}) {
-  state.visualGame.customLayout = { places: {}, roads: {} };
+  state.visualGame.customLayout = { places: {}, roads: {}, decorations: [], functional: {}, pendingFunctional: [] };
+  state.visualGame.builderPlacement = null;
   saveAgentTownLayoutPreferences();
   if (render) {
     renderShell();
@@ -14760,7 +15289,7 @@ function isAgentTownEditMode() {
 
 function getAgentTownLayoutBucket(kind) {
   if (!state.visualGame.customLayout || typeof state.visualGame.customLayout !== "object") {
-    state.visualGame.customLayout = { places: {}, roads: {} };
+    state.visualGame.customLayout = { places: {}, roads: {}, decorations: [], functional: {}, pendingFunctional: [] };
   }
   const key = kind === "road" ? "roads" : "places";
   if (!state.visualGame.customLayout[key] || typeof state.visualGame.customLayout[key] !== "object") {
@@ -14781,6 +15310,124 @@ function setAgentTownLayoutOffset(kind, id, offset) {
     return;
   }
   bucket[id] = normalized;
+}
+
+function getAgentTownDecorations() {
+  if (!state.visualGame.customLayout || typeof state.visualGame.customLayout !== "object") {
+    state.visualGame.customLayout = { places: {}, roads: {}, decorations: [], functional: {}, pendingFunctional: [] };
+  }
+  if (!Array.isArray(state.visualGame.customLayout.decorations)) {
+    state.visualGame.customLayout.decorations = [];
+  }
+  return state.visualGame.customLayout.decorations;
+}
+
+function addAgentTownDecoration(itemId, rect) {
+  const item = getAgentTownCosmeticItem(itemId);
+  if (!item || !rect) {
+    return null;
+  }
+
+  const decoration = normalizeAgentTownDecoration({
+    id: createClientId(`decor-${item.id}`),
+    itemId: item.id,
+    x: rect.x,
+    y: rect.y,
+  });
+  if (!decoration) {
+    return null;
+  }
+
+  getAgentTownDecorations().push(decoration);
+  saveAgentTownLayoutPreferences();
+  return decoration;
+}
+
+function getAgentTownFunctionalPlacements() {
+  if (!state.visualGame.customLayout || typeof state.visualGame.customLayout !== "object") {
+    state.visualGame.customLayout = { places: {}, roads: {}, decorations: [], functional: {}, pendingFunctional: [] };
+  }
+  if (!state.visualGame.customLayout.functional || typeof state.visualGame.customLayout.functional !== "object") {
+    state.visualGame.customLayout.functional = {};
+  }
+  return state.visualGame.customLayout.functional;
+}
+
+function getAgentTownPendingFunctionalIds() {
+  if (!state.visualGame.customLayout || typeof state.visualGame.customLayout !== "object") {
+    state.visualGame.customLayout = { places: {}, roads: {}, decorations: [], functional: {}, pendingFunctional: [] };
+  }
+  if (!Array.isArray(state.visualGame.customLayout.pendingFunctional)) {
+    state.visualGame.customLayout.pendingFunctional = [];
+  }
+  return state.visualGame.customLayout.pendingFunctional;
+}
+
+function getAgentTownFunctionalPlacement(pluginId) {
+  const normalizedPluginId = normalizeBuildingId(pluginId);
+  const placement = normalizedPluginId ? getAgentTownFunctionalPlacements()[normalizedPluginId] : null;
+  if (!placement) {
+    return null;
+  }
+
+  return {
+    x: placement.x,
+    y: placement.y,
+    width: AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.width,
+    height: AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.height,
+  };
+}
+
+function setAgentTownFunctionalPlacement(pluginId, rect) {
+  const normalizedPluginId = normalizeBuildingId(pluginId);
+  if (!normalizedPluginId || !rect) {
+    return false;
+  }
+
+  getAgentTownFunctionalPlacements()[normalizedPluginId] = {
+    x: clamp(Math.round(rect.x), 0, VISUAL_GAME_WIDTH - AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.width),
+    y: clamp(Math.round(rect.y), 0, VISUAL_GAME_HEIGHT - AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.height),
+  };
+  setAgentTownFunctionalPending(normalizedPluginId, false);
+  return true;
+}
+
+function removeAgentTownFunctionalPlacement(pluginId) {
+  const normalizedPluginId = normalizeBuildingId(pluginId);
+  if (!normalizedPluginId) {
+    return;
+  }
+
+  delete getAgentTownFunctionalPlacements()[normalizedPluginId];
+  setAgentTownFunctionalPending(normalizedPluginId, false);
+}
+
+function isAgentTownFunctionalPending(pluginId) {
+  const normalizedPluginId = normalizeBuildingId(pluginId);
+  return Boolean(normalizedPluginId && getAgentTownPendingFunctionalIds().includes(normalizedPluginId));
+}
+
+function setAgentTownFunctionalPending(pluginId, pending) {
+  const normalizedPluginId = normalizeBuildingId(pluginId);
+  if (!normalizedPluginId) {
+    return false;
+  }
+
+  const pendingIds = getAgentTownPendingFunctionalIds();
+  const index = pendingIds.indexOf(normalizedPluginId);
+  if (pending) {
+    if (index < 0) {
+      pendingIds.push(normalizedPluginId);
+      return true;
+    }
+    return false;
+  }
+
+  if (index >= 0) {
+    pendingIds.splice(index, 1);
+    return true;
+  }
+  return false;
 }
 
 function snapAgentTownLayoutValue(value) {
@@ -15125,15 +15772,60 @@ function getAgentTownDormForAgent(agent) {
   return dorms.find((dorm) => dorm.providerId && dorm.providerId === agent.providerId) || dorms[agent.familyIndex % dorms.length] || dorms[0];
 }
 
+function isAgentTownFunctionalPlugin(plugin) {
+  const pluginId = getPluginId(plugin);
+  return Boolean(pluginId && pluginId !== "buildinghub" && !AGENT_TOWN_SPECIAL_BUILDING_IDS.has(pluginId));
+}
+
+function getAgentTownFunctionalPlugins() {
+  return PLUGIN_CATALOG
+    .filter(isAgentTownFunctionalPlugin)
+    .sort((left, right) => {
+      const leftInstalled = isPluginInstalled(left) ? 1 : 0;
+      const rightInstalled = isPluginInstalled(right) ? 1 : 0;
+      if (leftInstalled !== rightInstalled) {
+        return rightInstalled - leftInstalled;
+      }
+      const leftPending = isAgentTownFunctionalPending(getPluginId(left)) ? 1 : 0;
+      const rightPending = isAgentTownFunctionalPending(getPluginId(right)) ? 1 : 0;
+      if (leftPending !== rightPending) {
+        return rightPending - leftPending;
+      }
+      return String(left.name || "").localeCompare(String(right.name || ""));
+    });
+}
+
+function getAgentTownUnplacedFunctionalPlugins() {
+  return getAgentTownFunctionalPlugins()
+    .filter((plugin) => isPluginInstalled(plugin))
+    .filter((plugin) => isAgentTownFunctionalPending(getPluginId(plugin)));
+}
+
+function getAgentTownPlacedFunctionalPluginIds() {
+  return new Set(
+    getAgentTownFunctionalPlugins()
+      .filter((plugin) => isPluginInstalled(plugin) && !isAgentTownFunctionalPending(getPluginId(plugin)))
+      .map(getPluginId),
+  );
+}
+
 function getAgentTownPluginBuildingBlueprints() {
   const installedPlugins = PLUGIN_CATALOG
     .filter((plugin) => isPluginInstalled(plugin))
-    .filter((plugin) => !AGENT_TOWN_SPECIAL_BUILDING_IDS.has(getPluginId(plugin)));
+    .filter(isAgentTownFunctionalPlugin)
+    .filter((plugin) => !isAgentTownFunctionalPending(getPluginId(plugin)));
 
-  return installedPlugins.slice(0, AGENT_TOWN_PLUGIN_BUILDING_RECTS.length).map((plugin, index) => {
+  let autoSlotIndex = 0;
+  return installedPlugins.map((plugin) => {
     const pluginId = getPluginId(plugin);
     const issue = getPluginBuildingIssue(plugin);
     const shape = getPluginBuildingShape(plugin);
+    const placedRect = getAgentTownFunctionalPlacement(pluginId);
+    const autoRect = placedRect ? null : AGENT_TOWN_PLUGIN_BUILDING_RECTS[autoSlotIndex++];
+    const baseRect = placedRect || autoRect;
+    if (!baseRect) {
+      return null;
+    }
     return {
       ...getAgentTownPluginBuildingPalette(pluginId),
       id: `building-${pluginId}`,
@@ -15142,14 +15834,14 @@ function getAgentTownPluginBuildingBlueprints() {
       label: plugin.name,
       meta: pluginId === "tailscale" ? getTailscaleBuildingMeta() : getPluginStatusBadgeLabel(plugin, issue) || plugin.category || "building",
       shape,
-      baseRect: AGENT_TOWN_PLUGIN_BUILDING_RECTS[index],
+      baseRect,
       action: {
         kind: "building",
         buildingId: pluginId,
         label: `${plugin.name} building`,
       },
     };
-  });
+  }).filter(Boolean);
 }
 
 function getAgentTownPluginBuildingPalette(pluginId) {
@@ -15494,6 +16186,44 @@ function mountVisualPixelGame() {
   };
 
   const isTownEditHit = (hit) => isAgentTownEditMode() && (hit?.kind === "town-place" || hit?.kind === "town-road");
+  const updateBuilderPlacementFromEvent = (event) => {
+    if (!state.visualGame.builderPlacement) {
+      return false;
+    }
+
+    const point = getWorldPoint(event);
+    if (!point) {
+      return true;
+    }
+
+    const preview = updateAgentTownBuilderPlacementPreview(point);
+    const blockedLabel = preview?.blocker?.label || "building";
+    canvas.classList.add("is-builder-placement");
+    canvas.classList.toggle("is-editing-blocked", Boolean(preview?.blocker));
+    setHoverLabel(preview?.blocker ? `blocked by ${blockedLabel}` : `place ${state.visualGame.builderPlacement.label}`);
+    event.preventDefault();
+    return true;
+  };
+  const commitBuilderPlacementFromEvent = (event) => {
+    if (!state.visualGame.builderPlacement) {
+      return false;
+    }
+
+    const point = getWorldPoint(event);
+    if (!point) {
+      return true;
+    }
+
+    const placed = commitAgentTownBuilderPlacement(point);
+    canvas.classList.toggle("is-editing-blocked", !placed);
+    if (placed) {
+      setHoverLabel(state.visualGame.builderPlacement ? `place ${state.visualGame.builderPlacement.label}` : "placed");
+    } else {
+      setHoverLabel("blocked");
+    }
+    event.preventDefault();
+    return true;
+  };
   const startTownEditDrag = (event, hit) => {
     const worldPoint = getWorldPoint(event);
     if (!worldPoint || !isTownEditHit(hit)) {
@@ -15578,6 +16308,10 @@ function mountVisualPixelGame() {
     return true;
   };
   const onPointerMove = (event) => {
+    if (updateBuilderPlacementFromEvent(event)) {
+      return;
+    }
+
     if (updateTownEditDrag(event)) {
       return;
     }
@@ -15611,6 +16345,9 @@ function mountVisualPixelGame() {
   const onPointerLeave = () => {
     if (!panState && !townDragState) {
       canvas.classList.remove("is-actionable");
+      if (!state.visualGame.builderPlacement) {
+        canvas.classList.remove("is-builder-placement", "is-editing-blocked");
+      }
       setHoverLabel("");
     }
   };
@@ -15621,6 +16358,11 @@ function mountVisualPixelGame() {
 
     const point = getViewportPoint(event);
     if (!point) {
+      return;
+    }
+
+    if (state.visualGame.builderPlacement) {
+      updateBuilderPlacementFromEvent(event);
       return;
     }
 
@@ -15661,6 +16403,10 @@ function mountVisualPixelGame() {
   const onClick = (event) => {
     if (Date.now() < suppressClickUntil) {
       event.preventDefault();
+      return;
+    }
+
+    if (commitBuilderPlacementFromEvent(event)) {
       return;
     }
 
@@ -15707,10 +16453,28 @@ function mountVisualPixelGame() {
   const onLostPointerCapture = () => {
     panState = null;
     townDragState = null;
-    canvas.classList.remove("is-panning", "is-editing-drag", "is-editing-blocked", "is-dragging");
+    canvas.classList.remove("is-panning", "is-editing-drag", "is-editing-blocked", "is-dragging", "is-builder-placement");
   };
   const onZoomInClick = () => zoomCameraFromCenter(VISUAL_GAME_ZOOM_STEP);
   const onZoomOutClick = () => zoomCameraFromCenter(1 / VISUAL_GAME_ZOOM_STEP);
+  const onDragOver = (event) => {
+    if (!state.visualGame.builderPlacement) {
+      return;
+    }
+
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = state.visualGame.builderPlacement.kind === "functional" ? "move" : "copy";
+    }
+    updateBuilderPlacementFromEvent(event);
+  };
+  const onDrop = (event) => {
+    if (!state.visualGame.builderPlacement) {
+      return;
+    }
+
+    commitBuilderPlacementFromEvent(event);
+  };
 
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
@@ -15720,6 +16484,8 @@ function mountVisualPixelGame() {
   canvas.addEventListener("pointerleave", onPointerLeave);
   canvas.addEventListener("click", onClick);
   canvas.addEventListener("wheel", onWheel, { passive: false });
+  canvas.addEventListener("dragover", onDragOver);
+  canvas.addEventListener("drop", onDrop);
   zoomInButton?.addEventListener("click", onZoomInClick);
   zoomOutButton?.addEventListener("click", onZoomOutClick);
   resetCameraButton?.addEventListener("click", resetCamera);
@@ -15762,6 +16528,8 @@ function mountVisualPixelGame() {
     canvas.removeEventListener("pointerleave", onPointerLeave);
     canvas.removeEventListener("click", onClick);
     canvas.removeEventListener("wheel", onWheel);
+    canvas.removeEventListener("dragover", onDragOver);
+    canvas.removeEventListener("drop", onDrop);
     zoomInButton?.removeEventListener("click", onZoomInClick);
     zoomOutButton?.removeEventListener("click", onZoomOutClick);
     resetCameraButton?.removeEventListener("click", resetCamera);
@@ -15884,6 +16652,7 @@ function drawVisualGameScene(context, graph, model, time, hitAreas, visibleWorld
 
   drawVisualGameGround(context, time, visibleWorld);
   drawVisualGamePaths(context, hitAreas);
+  drawAgentTownScenery(context, time, visibleWorld);
   drawVisualGameSleepingQuarters(context, hitAreas, time, sleepingAgents);
   drawVisualGameSchool(context, hitAreas, time);
   drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents);
@@ -15908,6 +16677,8 @@ function drawVisualGameScene(context, graph, model, time, hitAreas, visibleWorld
   if (isAgentTownEditMode()) {
     drawAgentTownEditOutlines(context, hitAreas);
   }
+
+  drawAgentTownBuilderPlacementPreview(context, time);
 
   for (const agent of agents.sort((left, right) => left.y - right.y)) {
     drawVisualGameAgent(context, agent, time, hitAreas);
@@ -15979,6 +16750,7 @@ function drawVisualGamePathRect(context, x, y, width, height) {
   context.fillRect(x, y, width, height);
   context.fillStyle = path.fill || "#d1af63";
   context.fillRect(x + 3, y + 3, width - 6, height - 6);
+  drawAgentTownPathSquares(context, x, y, width, height, path);
   context.fillStyle = path.detail || "#a87b3f";
   for (let offset = 0; offset < width; offset += 21) {
     context.fillRect(x + offset + 5, y + 7 + ((offset / 7) % 3), 6, 2);
@@ -15986,6 +16758,292 @@ function drawVisualGamePathRect(context, x, y, width, height) {
   context.fillStyle = path.shadow || "rgba(82, 58, 31, 0.2)";
   context.fillRect(x, y, width, 2);
   context.fillRect(x, y + height - 2, width, 2);
+}
+
+function drawAgentTownPathSquares(context, x, y, width, height, path) {
+  const left = x + 6;
+  const top = y + 6;
+  const right = x + width - 5;
+  const bottom = y + height - 5;
+
+  if (right <= left || bottom <= top) {
+    return;
+  }
+
+  const squareFill = path.square || "rgba(255, 242, 190, 0.24)";
+  const squareAltFill = path.squareAlt || "rgba(118, 82, 43, 0.18)";
+  const squareShadow = path.squareShadow || "rgba(78, 54, 28, 0.2)";
+  for (let tileY = top; tileY < bottom; tileY += 11) {
+    const row = Math.floor((tileY - top) / 11);
+    const stagger = row % 2 === 0 ? 0 : 6;
+    for (let tileX = left + stagger; tileX < right; tileX += 13) {
+      const squareWidth = Math.min(8, right - tileX);
+      const squareHeight = Math.min(5, bottom - tileY);
+      if (squareWidth < 3 || squareHeight < 2) {
+        continue;
+      }
+      const hash = getVisualGameHash(Math.floor(tileX / 3), Math.floor(tileY / 3));
+      const nudgeX = (hash % 3) - 1;
+      const nudgeY = Math.floor(hash / 5) % 2;
+      context.fillStyle = hash % 4 === 0 ? squareAltFill : squareFill;
+      context.fillRect(tileX + nudgeX, tileY + nudgeY, squareWidth, squareHeight);
+      context.fillStyle = squareShadow;
+      context.fillRect(tileX + nudgeX, tileY + nudgeY + squareHeight - 1, squareWidth, 1);
+    }
+  }
+}
+
+function drawAgentTownScenery(context, time, visibleWorld = null) {
+  const palette = getAgentTownSceneryPalette();
+
+  for (const paver of AGENT_TOWN_SCENERY_PAVERS) {
+    if (isAgentTownSceneryVisible(getAgentTownPaverBounds(paver), visibleWorld)) {
+      drawAgentTownPaverPatch(context, paver, palette);
+    }
+  }
+
+  for (const fence of AGENT_TOWN_SCENERY_FENCES) {
+    if (isAgentTownSceneryVisible(getAgentTownFenceBounds(fence), visibleWorld)) {
+      drawAgentTownFence(context, fence, palette);
+    }
+  }
+
+  for (const planter of AGENT_TOWN_SCENERY_PLANTERS) {
+    if (isAgentTownSceneryVisible(planter, visibleWorld)) {
+      drawAgentTownPlanter(context, planter, palette, time);
+    }
+  }
+
+  for (const structure of AGENT_TOWN_SCENERY_STRUCTURES) {
+    if (isAgentTownSceneryVisible(structure, visibleWorld)) {
+      drawAgentTownCosmeticStructure(context, structure, palette, time);
+    }
+  }
+
+  drawAgentTownPlacedCosmetics(context, time, visibleWorld, palette);
+}
+
+function getAgentTownSceneryPalette() {
+  const theme = getAgentTownTheme();
+  const path = theme.path || AGENT_TOWN_THEME_BY_ID.get(AGENT_TOWN_DEFAULT_THEME_ID).path || {};
+  return {
+    fenceShadow: "rgba(52, 34, 20, 0.28)",
+    fenceDark: "#4f321f",
+    fence: "#8a5a32",
+    fenceLight: "#c08a52",
+    paver: path.square || "rgba(225, 198, 136, 0.45)",
+    paverAlt: path.squareAlt || "rgba(188, 148, 83, 0.38)",
+    paverShadow: path.squareShadow || "rgba(72, 48, 24, 0.18)",
+    planterShadow: "rgba(38, 25, 16, 0.24)",
+    planterBox: "#74512e",
+    planterTrim: "#b47a3c",
+    leaf: "#4c9b57",
+    leafAlt: "#77bd62",
+    flower: "#f2cf66",
+    structureShadow: "rgba(34, 24, 18, 0.28)",
+    structureTrim: "#36281f",
+  };
+}
+
+function isAgentTownSceneryVisible(rect, visibleWorld = null, padding = 44) {
+  if (!visibleWorld) {
+    return true;
+  }
+
+  return (
+    rect.x + rect.width >= visibleWorld.x - padding
+    && rect.x <= visibleWorld.x + visibleWorld.width + padding
+    && rect.y + rect.height >= visibleWorld.y - padding
+    && rect.y <= visibleWorld.y + visibleWorld.height + padding
+  );
+}
+
+function getAgentTownFenceBounds(fence) {
+  if (fence.orientation === "vertical") {
+    return { x: fence.x, y: fence.y, width: 17, height: fence.length + 5 };
+  }
+  return { x: fence.x, y: fence.y, width: fence.length + 5, height: 17 };
+}
+
+function getAgentTownPaverBounds(paver) {
+  const size = paver.size || 10;
+  const gap = paver.gap ?? 2;
+  return {
+    x: paver.x,
+    y: paver.y,
+    width: paver.columns * size + Math.max(0, paver.columns - 1) * gap + Math.floor(size / 2),
+    height: paver.rows * size + Math.max(0, paver.rows - 1) * gap,
+  };
+}
+
+function drawAgentTownPaverPatch(context, paver, palette) {
+  const size = paver.size || 10;
+  const gap = paver.gap ?? 2;
+  for (let row = 0; row < paver.rows; row += 1) {
+    const offsetX = row % 2 === 0 ? 0 : Math.floor(size / 2);
+    for (let column = 0; column < paver.columns; column += 1) {
+      const x = paver.x + offsetX + column * (size + gap);
+      const y = paver.y + row * (size + gap);
+      context.fillStyle = (row + column) % 2 === 0 ? palette.paver : palette.paverAlt;
+      context.fillRect(x, y, size, size);
+      context.fillStyle = palette.paverShadow;
+      context.fillRect(x, y + size - 1, size, 1);
+      context.fillRect(x + size - 1, y + 2, 1, Math.max(0, size - 2));
+    }
+  }
+}
+
+function drawAgentTownPlacedCosmetics(context, time, visibleWorld, palette) {
+  for (const decoration of getAgentTownDecorations()) {
+    const item = getAgentTownCosmeticItem(decoration.itemId);
+    if (!item) {
+      continue;
+    }
+    const rect = { x: decoration.x, y: decoration.y, width: item.width, height: item.height };
+    if (!isAgentTownSceneryVisible(rect, visibleWorld)) {
+      continue;
+    }
+    drawAgentTownCosmeticItem(context, item, rect, palette, time);
+  }
+}
+
+function drawAgentTownCosmeticItem(context, item, rect, palette, time) {
+  if (item.kind === "road") {
+    drawVisualGamePathRect(context, rect.x, rect.y, rect.width, rect.height);
+    return;
+  }
+
+  if (item.kind === "fence") {
+    drawAgentTownFence(context, {
+      x: rect.x,
+      y: rect.y,
+      length: item.orientation === "vertical" ? rect.height - 5 : rect.width - 5,
+      orientation: item.orientation || "horizontal",
+    }, palette);
+    return;
+  }
+
+  if (item.kind === "planter") {
+    drawAgentTownPlanter(context, rect, palette, time);
+    return;
+  }
+
+  if (item.kind === "structure") {
+    drawAgentTownCosmeticStructure(context, {
+      ...rect,
+      roof: item.roof,
+      body: item.body,
+      accent: item.accent,
+    }, palette, time);
+  }
+}
+
+function drawAgentTownFence(context, fence, palette) {
+  context.fillStyle = palette.fenceShadow;
+  if (fence.orientation === "vertical") {
+    context.fillRect(fence.x + 2, fence.y + 3, 14, fence.length + 4);
+    context.fillStyle = palette.fenceDark;
+    context.fillRect(fence.x + 4, fence.y, 3, fence.length);
+    context.fillRect(fence.x + 11, fence.y, 3, fence.length);
+    context.fillStyle = palette.fence;
+    for (let offset = 0; offset <= fence.length; offset += 18) {
+      context.fillRect(fence.x, fence.y + offset, 17, 5);
+      context.fillStyle = palette.fenceLight;
+      context.fillRect(fence.x + 2, fence.y + offset + 1, 12, 1);
+      context.fillStyle = palette.fence;
+    }
+    return;
+  }
+
+  context.fillRect(fence.x + 2, fence.y + 3, fence.length + 4, 14);
+  context.fillStyle = palette.fenceDark;
+  context.fillRect(fence.x, fence.y + 4, fence.length, 3);
+  context.fillRect(fence.x, fence.y + 11, fence.length, 3);
+  context.fillStyle = palette.fence;
+  for (let offset = 0; offset <= fence.length; offset += 18) {
+    context.fillRect(fence.x + offset, fence.y, 5, 17);
+    context.fillStyle = palette.fenceLight;
+    context.fillRect(fence.x + offset + 1, fence.y + 2, 1, 12);
+    context.fillStyle = palette.fence;
+  }
+}
+
+function drawAgentTownPlanter(context, planter, palette, time) {
+  const leafShift = Math.floor(Math.sin(time / 650 + planter.x) * 1);
+  context.fillStyle = palette.planterShadow;
+  context.fillRect(planter.x + 2, planter.y + planter.height - 1, planter.width, 5);
+  context.fillStyle = palette.planterBox;
+  context.fillRect(planter.x, planter.y + 6, planter.width, planter.height - 6);
+  context.fillStyle = palette.planterTrim;
+  context.fillRect(planter.x + 2, planter.y + 8, Math.max(0, planter.width - 4), 2);
+  for (let offset = 3; offset < planter.width - 3; offset += 8) {
+    context.fillStyle = offset % 16 === 3 ? palette.leaf : palette.leafAlt;
+    context.fillRect(planter.x + offset, planter.y + 1 + leafShift, 5, 7);
+    context.fillRect(planter.x + offset + 3, planter.y + 4 - leafShift, 5, 5);
+    if (offset % 24 === 3) {
+      context.fillStyle = palette.flower;
+      context.fillRect(planter.x + offset + 2, planter.y, 2, 2);
+    }
+  }
+}
+
+function drawAgentTownCosmeticStructure(context, structure, palette, time) {
+  const { x, y, width, height } = structure;
+  const bodyTop = y + 9;
+  const glow = 0.18 + Math.sin(time / 520 + x) * 0.05;
+
+  context.fillStyle = palette.structureShadow;
+  context.fillRect(x + 2, y + height - 1, width, 6);
+
+  context.fillStyle = structure.body || "#6f5b3a";
+  context.fillRect(x + 2, bodyTop, width - 4, height - 9);
+  context.fillStyle = "rgba(255, 232, 171, 0.14)";
+  context.fillRect(x + 5, bodyTop + 3, Math.max(0, width - 10), 3);
+
+  context.fillStyle = structure.roof || "#80505e";
+  context.beginPath();
+  context.moveTo(x - 2, bodyTop);
+  context.lineTo(x + Math.floor(width / 2), y + 1);
+  context.lineTo(x + width + 2, bodyTop);
+  context.lineTo(x + width - 1, bodyTop + 6);
+  context.lineTo(x + 1, bodyTop + 6);
+  context.closePath();
+  context.fill();
+  context.fillStyle = palette.structureTrim;
+  context.fillRect(x + 1, bodyTop + 6, width - 2, 2);
+
+  context.fillStyle = palette.structureTrim;
+  context.fillRect(x + Math.floor(width * 0.55), y + height - 11, 7, 11);
+  context.fillStyle = `rgba(255, 218, 126, ${glow})`;
+  context.fillRect(x + Math.floor(width * 0.22), bodyTop + 8, 6, 5);
+  context.fillStyle = structure.accent || "#f1c978";
+  context.fillRect(x + Math.floor(width * 0.22), bodyTop + 8, 6, 1);
+  context.fillRect(x + Math.floor(width * 0.22) + 2, bodyTop + 8, 1, 5);
+}
+
+function drawAgentTownBuilderPlacementPreview(context, time) {
+  const placement = state.visualGame.builderPlacement;
+  const rect = placement?.cursorRect;
+  if (!placement || !rect) {
+    return;
+  }
+
+  const blocked = Boolean(placement.blocked);
+  context.save();
+  context.fillStyle = blocked ? "rgba(255, 90, 90, 0.24)" : "rgba(88, 167, 255, 0.24)";
+  context.strokeStyle = blocked ? "rgba(255, 120, 120, 0.92)" : "rgba(114, 190, 255, 0.96)";
+  context.lineWidth = 2;
+  context.fillRect(rect.x, rect.y, rect.width, rect.height);
+  context.strokeRect(rect.x + 1, rect.y + 1, Math.max(0, rect.width - 2), Math.max(0, rect.height - 2));
+  context.fillStyle = blocked ? "rgba(255, 212, 212, 0.82)" : "rgba(212, 238, 255, 0.86)";
+  for (let x = rect.x + 5; x < rect.x + rect.width - 2; x += 12) {
+    context.fillRect(x, rect.y + 4 + Math.floor(Math.sin(time / 280 + x) * 1), 6, 2);
+  }
+  for (let y = rect.y + 5; y < rect.y + rect.height - 2; y += 12) {
+    context.fillRect(rect.x + 4, y, 2, 6);
+    context.fillRect(rect.x + rect.width - 6, y, 2, 6);
+  }
+  context.restore();
 }
 
 function drawAgentTownEditOutlines(context, hitAreas) {
@@ -20973,12 +22031,13 @@ function bindBuildingHubCatalogControls() {
   });
 }
 
-async function setPluginInstalled(pluginId, installed, { force = false } = {}) {
+async function setPluginInstalled(pluginId, installed, { force = false, placeAfterInstall = false } = {}) {
   const plugin = getPluginById(pluginId);
   if (!plugin) {
     return;
   }
   const normalizedPluginId = getPluginId(plugin);
+  const wasInstalled = isPluginInstalled(plugin);
   const detailOpen = state.currentView === "plugins" && state.pluginDetailId === normalizedPluginId;
   const buildingOpen = isVisualInterfaceView() && state.visualGame.selectedBuildingId === normalizedPluginId;
   const surfaceOpen = detailOpen || buildingOpen;
@@ -21054,6 +22113,16 @@ async function setPluginInstalled(pluginId, installed, { force = false } = {}) {
 
     if (pluginId === "buildinghub") {
       await loadBuildingHubCatalog({ force: true, renderOnComplete: false });
+    }
+
+    if (!installed && isAgentTownFunctionalPlugin(plugin)) {
+      removeAgentTownFunctionalPlacement(normalizedPluginId);
+      saveAgentTownLayoutPreferences();
+    }
+
+    if (installed && isAgentTownFunctionalPlugin(plugin) && (placeAfterInstall || !wasInstalled)) {
+      startAgentTownFunctionalPlacement(normalizedPluginId, { markPending: true });
+      return;
     }
 
     if (surfaceOpen) {
@@ -21414,7 +22483,21 @@ function bindCommunicationsForm() {
     }
 
     try {
+      const wasAgentMailInstalled = isPluginIdInstalled("agentmail");
+      const wasTelegramInstalled = isPluginIdInstalled("telegram");
       await setupCommunicationsFromForm(form);
+      const newlyInstalled = [
+        !wasAgentMailInstalled && isPluginIdInstalled("agentmail") ? "agentmail" : "",
+        !wasTelegramInstalled && isPluginIdInstalled("telegram") ? "telegram" : "",
+      ].filter((pluginId) => isAgentTownFunctionalPlugin(getPluginById(pluginId)));
+      if (newlyInstalled.length) {
+        for (const pluginId of newlyInstalled) {
+          setAgentTownFunctionalPending(pluginId, true);
+        }
+        saveAgentTownLayoutPreferences();
+        startAgentTownFunctionalPlacement(newlyInstalled[0]);
+        return;
+      }
       renderShell();
     } catch (error) {
       window.alert(error.message);
@@ -24593,6 +25676,74 @@ function bindDoghouseNameEvents() {
   });
 }
 
+function bindAgentTownBuilderEvents() {
+  document.querySelectorAll("[data-agent-town-builder-toggle]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      toggleAgentTownBuilder();
+    });
+  });
+
+  document.querySelectorAll("[data-agent-town-builder-close]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      closeAgentTownBuilder();
+    });
+  });
+
+  document.querySelectorAll("[data-agent-town-builder-cancel-placement]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      clearAgentTownBuilderPlacement();
+    });
+  });
+
+  document.querySelectorAll("[data-agent-town-builder-tab]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      setAgentTownBuilderTab(button.getAttribute("data-agent-town-builder-tab") || AGENT_TOWN_BUILDER_DEFAULT_TAB);
+    });
+  });
+
+  document.querySelectorAll("[data-agent-town-builder-place-cosmetic]").forEach((button) => {
+    const itemId = button.getAttribute("data-agent-town-builder-place-cosmetic") || "";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      startAgentTownBuilderPlacement("cosmetic", itemId);
+    });
+    button.addEventListener("dragstart", (event) => {
+      startAgentTownBuilderPlacement("cosmetic", itemId, { render: false });
+      event.dataTransfer?.setData("text/plain", `cosmetic:${itemId}`);
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "copy";
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-agent-town-builder-place-functional]").forEach((button) => {
+    const pluginId = button.getAttribute("data-agent-town-builder-place-functional") || "";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      startAgentTownFunctionalPlacement(pluginId);
+    });
+    button.addEventListener("dragstart", (event) => {
+      startAgentTownFunctionalPlacement(pluginId, { render: false });
+      event.dataTransfer?.setData("text/plain", `functional:${pluginId}`);
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-agent-town-builder-install-functional]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const pluginId = button.getAttribute("data-agent-town-builder-install-functional") || "";
+      void setPluginInstalled(pluginId, true, { placeAfterInstall: true });
+    });
+  });
+}
+
 function bindShellEvents() {
   bindLineNumberEditors();
   ensureSessionProviderPickerGlobalListeners();
@@ -24781,6 +25932,7 @@ function bindShellEvents() {
   bindAutomationEvents();
   bindVisualBuildingLibraryEvents();
   bindDoghouseNameEvents();
+  bindAgentTownBuilderEvents();
   bindUpdateEvents();
   bindSystemToastEvents();
 
