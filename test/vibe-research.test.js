@@ -832,7 +832,7 @@ test("BuildingHub settings do not trigger a Library backup", async () => {
   }
 });
 
-test("Telegram building detail saves through fetch without expanding settings in the grid", async (t) => {
+test("Telegram building detail saves through fetch and opens placement without expanding settings in the grid", async (t) => {
   const executablePath = await resolveBrowserExecutablePath({ env: process.env });
   if (!executablePath) {
     t.skip("No local Chromium/Chrome executable is available for the Telegram plugin setup smoke.");
@@ -932,11 +932,14 @@ test("Telegram building detail saves through fetch without expanding settings in
     await page.getByLabel("allowed chat IDs").fill("12345, -99");
     await page.getByRole("button", { name: "save and install" }).click();
     const settingsPayload = await waitForTelegramSettings();
+    await page.waitForFunction(() => new URL(window.location.href).searchParams.get("view") === "visual-interface");
 
     const currentUrl = new URL(page.url());
-    assert.equal(currentUrl.searchParams.get("view"), "plugins");
-    assert.equal(currentUrl.searchParams.get("building"), "telegram");
+    assert.equal(currentUrl.searchParams.get("view"), "visual-interface");
+    assert.equal(currentUrl.searchParams.has("building"), false);
     assert.equal(currentUrl.searchParams.has("telegramBotToken"), false);
+    await page.locator(".agent-town-builder-panel[aria-label='BuildingHub builder']").waitFor({ timeout: 10_000 });
+    await page.getByText("Placing Telegram", { exact: true }).waitFor({ timeout: 10_000 });
 
     assert.equal(settingsPayload.settings.telegramEnabled, true);
     assert.equal(settingsPayload.settings.telegramBotToken, "");

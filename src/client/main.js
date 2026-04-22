@@ -17037,7 +17037,7 @@ function mountVisualPixelGame() {
   const zoomInButton = document.querySelector("#visual-game-zoom-in");
   const zoomOutButton = document.querySelector("#visual-game-zoom-out");
   const resetCameraButton = document.querySelector("#visual-game-reset-camera");
-  const graph = state.swarmGraph.data;
+  const graph = getVisualGameGraphForDisplay();
   if (!(canvas instanceof HTMLCanvasElement) || !graph) {
     return;
   }
@@ -20718,8 +20718,40 @@ function getVisualGameHash(a, b) {
   return value;
 }
 
+function shouldRenderAgentTownWithoutSwarmGraph() {
+  return Boolean(
+    state.visualGame.builderOpen ||
+    state.visualGame.builderPlacement ||
+    state.visualGame.selectedBuildingId ||
+    state.visualGame.selectedCosmeticDecorationId ||
+    state.visualGame.selectedSessionId,
+  );
+}
+
+function createEmptyAgentTownGraph() {
+  const root = state.defaultCwd || state.filesRoot || "";
+  return {
+    generatedAt: "",
+    sessionId: null,
+    cwd: root,
+    git: {
+      dirtyCount: 0,
+      isRepository: false,
+      root,
+      worktrees: [],
+    },
+    sessions: [],
+    nodes: [],
+    edges: [],
+  };
+}
+
+function getVisualGameGraphForDisplay() {
+  return state.swarmGraph.data || (shouldRenderAgentTownWithoutSwarmGraph() ? createEmptyAgentTownGraph() : null);
+}
+
 function renderSwarmGraphView() {
-  const graph = state.swarmGraph.data;
+  const graph = getVisualGameGraphForDisplay();
 
   return `
     <section class="dashboard-panel main-view visual-interface-view is-map-only ${state.swarmGraph.error ? "has-visual-error" : ""}" ${renderMainViewAttributes(
