@@ -363,7 +363,19 @@ test("masterplan host serves the short public post", async () => {
     const masterplanText = masterplanPayload.body;
     assert.match(masterplanText, /<title>Vibe Research Masterplan<\/title>/);
     assert.match(masterplanText, /personal agent communities/i);
+    assert.match(masterplanText, /Base-building is the perfect UI for personal agents/);
+    assert.match(masterplanText, /clash-of-clans-base-builder\.webp/);
     assert.match(masterplanText, /\/masterplan\/masterplan\.css/);
+    assert.match(masterplanText, /data-node-background/);
+    assert.match(masterplanText, /\/masterplan\/masterplan\.js/);
+
+    const imageResponse = await fetch(`${baseUrl}/masterplan/clash-of-clans-base-builder.webp`);
+    assert.equal(imageResponse.status, 200);
+    assert.match(imageResponse.headers.get("content-type") || "", /image\/webp/);
+
+    const scriptResponse = await fetch(`${baseUrl}/masterplan/masterplan.js`);
+    assert.equal(scriptResponse.status, 200);
+    assert.match(scriptResponse.headers.get("content-type") || "", /javascript/);
   } finally {
     await app.close();
     await removeTempWorkspace(workspaceDir);

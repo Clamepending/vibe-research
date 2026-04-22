@@ -87,6 +87,7 @@ function getRequestHostname(request) {
 function isMasterplanHost(request) {
   return getRequestHostname(request) === MASTERPLAN_HOSTNAME;
 }
+
 const ATTACHMENTS_SUBDIR = "attachments";
 const MAX_ATTACHMENT_IMAGE_BYTES = 15 * 1024 * 1024;
 const ATTACHMENT_IMAGE_EXTENSIONS_BY_MIME_TYPE = new Map([
@@ -1276,6 +1277,16 @@ export async function createVibeResearchApp({
     } catch (error) {
       response.status(error.statusCode || 400).json({ error: error.message || "Could not load BuildingHub catalog." });
     }
+  });
+
+  app.get("/", (request, response, next) => {
+    if (!isMasterplanHost(request)) {
+      next();
+      return;
+    }
+
+    response.setHeader("Cache-Control", "no-store");
+    response.sendFile(masterplanIndexPath);
   });
 
   app.get("/api/ports", async (_request, response) => {
