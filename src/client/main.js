@@ -1013,6 +1013,35 @@ function getAgentTownCosmeticItem(itemId) {
   return AGENT_TOWN_BUILDER_COSMETIC_ITEMS.find((item) => item.id === normalizedItemId) || null;
 }
 
+function normalizeAgentTownRotation(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && Math.abs(Math.round(number)) % 2 === 1 ? 1 : 0;
+}
+
+function getAgentTownRotatedSize(size, rotation = 0) {
+  const width = Math.max(1, Number(size?.width || 1));
+  const height = Math.max(1, Number(size?.height || 1));
+  return normalizeAgentTownRotation(rotation)
+    ? { width: height, height: width }
+    : { width, height };
+}
+
+function getAgentTownCosmeticItemSize(item, rotation = 0) {
+  return getAgentTownRotatedSize(item, rotation);
+}
+
+function getAgentTownFunctionalBuildingSize(rotation = 0) {
+  return getAgentTownRotatedSize(AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE, rotation);
+}
+
+function getAgentTownFenceOrientation(item, rotation = 0) {
+  const baseOrientation = item?.orientation === "vertical" ? "vertical" : "horizontal";
+  if (!normalizeAgentTownRotation(rotation)) {
+    return baseOrientation;
+  }
+  return baseOrientation === "vertical" ? "horizontal" : "vertical";
+}
+
 function normalizeAgentTownDecoration(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -1029,11 +1058,19 @@ function normalizeAgentTownDecoration(value) {
     return null;
   }
 
-  return {
+  const rotation = normalizeAgentTownRotation(value.rotation ?? value.rotated);
+  const size = getAgentTownCosmeticItemSize(item, rotation);
+  const decoration = {
     id: String(value.id || createClientId("decor")).trim() || createClientId("decor"),
     itemId: item.id,
-    x: clamp(Math.round(x), 0, VISUAL_GAME_WIDTH - item.width),
-    y: clamp(Math.round(y), 0, VISUAL_GAME_HEIGHT - item.height),
+    x: clamp(Math.round(x), 0, VISUAL_GAME_WIDTH - size.width),
+    y: clamp(Math.round(y), 0, VISUAL_GAME_HEIGHT - size.height),
+  };
+  if (rotation) {
+    decoration.rotation = rotation;
+  }
+  return {
+    ...decoration,
   };
 }
 
@@ -1062,12 +1099,18 @@ function normalizeAgentTownFunctionalPlacements(value) {
         if (!Number.isFinite(x) || !Number.isFinite(y)) {
           return null;
         }
+        const rotation = normalizeAgentTownRotation(rect.rotation ?? rect.rotated);
+        const size = getAgentTownFunctionalBuildingSize(rotation);
+        const placement = {
+          x: clamp(Math.round(x), 0, VISUAL_GAME_WIDTH - size.width),
+          y: clamp(Math.round(y), 0, VISUAL_GAME_HEIGHT - size.height),
+        };
+        if (rotation) {
+          placement.rotation = rotation;
+        }
         return [
           pluginId,
-          {
-            x: clamp(Math.round(x), 0, VISUAL_GAME_WIDTH - AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.width),
-            y: clamp(Math.round(y), 0, VISUAL_GAME_HEIGHT - AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.height),
-          },
+          placement,
         ];
       })
       .filter(Boolean),
@@ -15186,8 +15229,9 @@ function renderAgentTownCosmeticPanelContent(details) {
   const { decoration, item } = details;
   const sameItemCount = getAgentTownDecorations().filter((candidate) => candidate.itemId === item.id).length;
   const locationLabel = `grid ${Math.round(decoration.x / AGENT_TOWN_BUILD_GRID_SIZE)}, ${Math.round(decoration.y / AGENT_TOWN_BUILD_GRID_SIZE)}`;
-  const columns = Math.max(1, Math.round(item.width / AGENT_TOWN_BUILD_GRID_SIZE));
-  const rows = Math.max(1, Math.round(item.height / AGENT_TOWN_BUILD_GRID_SIZE));
+  const rect = getAgentTownDecorationRect(decoration, item);
+  const columns = Math.max(1, Math.round((rect?.width || item.width) / AGENT_TOWN_BUILD_GRID_SIZE));
+  const rows = Math.max(1, Math.round((rect?.height || item.height) / AGENT_TOWN_BUILD_GRID_SIZE));
   const sizeLabel = `${columns}x${rows} ${columns * rows === 1 ? "tile" : "tiles"}`;
   const countLabel = sameItemCount === 1 ? "1 placed" : `${sameItemCount} placed`;
 
@@ -15809,6 +15853,20 @@ function setAgentTownBuilderTab(tab) {
   renderShell();
 }
 
+function getAgentTownBuilderPlacementRotation(placement) {
+  return normalizeAgentTownRotation(placement?.rotation);
+}
+
+function getAgentTownBuilderPlacementSize(placement) {
+  const rotation = getAgentTownBuilderPlacementRotation(placement);
+  if (placement?.kind === "functional") {
+    return getAgentTownFunctionalBuildingSize(rotation);
+  }
+
+  const item = getAgentTownCosmeticItem(placement?.itemId);
+  return getAgentTownCosmeticItemSize(item || placement, rotation);
+}
+
 function createAgentTownBuilderPlacement(kind, id) {
   if (kind === "cosmetic") {
     const item = getAgentTownCosmeticItem(id);
@@ -15821,6 +15879,7 @@ function createAgentTownBuilderPlacement(kind, id) {
       label: item.label,
       width: item.width,
       height: item.height,
+      rotation: 0,
       cursorRect: null,
       blocked: false,
       centerOnNextFrame: true,
@@ -15838,6 +15897,7 @@ function createAgentTownBuilderPlacement(kind, id) {
     label: plugin.name,
     width: AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.width,
     height: AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.height,
+    rotation: 0,
     cursorRect: null,
     blocked: false,
     centerOnNextFrame: true,
@@ -15873,13 +15933,34 @@ function clearAgentTownBuilderPlacement({ render = true } = {}) {
   return true;
 }
 
+function rotateAgentTownBuilderPlacement({ point = null } = {}) {
+  const placement = state.visualGame.builderPlacement;
+  if (!placement) {
+    return null;
+  }
+
+  const currentRect = placement.cursorRect;
+  const rotationPoint =
+    point ||
+    placement.cursorPoint ||
+    (currentRect
+      ? { x: currentRect.x + currentRect.width / 2, y: currentRect.y + currentRect.height / 2 }
+      : null);
+
+  placement.rotation = getAgentTownBuilderPlacementRotation(placement) ? 0 : 1;
+  placement.centerOnNextFrame = false;
+
+  const preview = rotationPoint ? updateAgentTownBuilderPlacementPreview(rotationPoint) : null;
+  setAgentTownBuilderFeedback(`${placement.label} rotated`, "info");
+  return preview;
+}
+
 function getAgentTownPlacementRectAtPoint(placement, point) {
   if (!placement || !point) {
     return null;
   }
 
-  const width = Number(placement.width || 1);
-  const height = Number(placement.height || 1);
+  const { width, height } = getAgentTownBuilderPlacementSize(placement);
   return getAgentTownSnappedPlacementRect({
     x: point.x - width / 2,
     y: point.y - height / 2,
@@ -15970,6 +16051,7 @@ function updateAgentTownBuilderPlacementPreview(point, { preferOpen = false } = 
 
   const { rect, blocker } = preview;
   placement.cursorRect = rect;
+  placement.cursorPoint = { x: point.x, y: point.y };
   placement.blocked = Boolean(blocker);
   placement.blockedLabel = blocker?.label || "";
   placement.centerOnNextFrame = false;
@@ -15993,7 +16075,9 @@ function commitAgentTownBuilderPlacement(point) {
   }
 
   if (placement.kind === "functional") {
-    if (!setAgentTownFunctionalPlacement(placement.pluginId, preview.rect)) {
+    if (!setAgentTownFunctionalPlacement(placement.pluginId, preview.rect, {
+      rotation: getAgentTownBuilderPlacementRotation(placement),
+    })) {
       return false;
     }
     setAgentTownBuilderPulse(preview.rect, "success");
@@ -16004,7 +16088,9 @@ function commitAgentTownBuilderPlacement(point) {
     return true;
   }
 
-  const decoration = addAgentTownDecoration(placement.itemId, preview.rect);
+  const decoration = addAgentTownDecoration(placement.itemId, preview.rect, {
+    rotation: getAgentTownBuilderPlacementRotation(placement),
+  });
   if (decoration) {
     setAgentTownBuilderPulse(preview.rect, "success");
     setAgentTownBuilderFeedback(`${placement.label} placed`, "success");
@@ -16158,23 +16244,26 @@ function getAgentTownDecorations() {
   return state.visualGame.customLayout.decorations;
 }
 
-function addAgentTownDecoration(itemId, rect) {
+function addAgentTownDecoration(itemId, rect, { rotation = rect?.rotation } = {}) {
   const item = getAgentTownCosmeticItem(itemId);
   if (!item || !rect) {
     return null;
   }
 
+  const normalizedRotation = normalizeAgentTownRotation(rotation);
+  const size = getAgentTownCosmeticItemSize(item, normalizedRotation);
   const snappedRect = getAgentTownSnappedPlacementRect({
     x: rect.x,
     y: rect.y,
-    width: item.width,
-    height: item.height,
+    width: size.width,
+    height: size.height,
   });
   const decoration = normalizeAgentTownDecoration({
     id: createClientId(`decor-${item.id}`),
     itemId: item.id,
     x: snappedRect.x,
     y: snappedRect.y,
+    rotation: normalizedRotation,
   });
   if (!decoration) {
     return null;
@@ -16224,6 +16313,22 @@ function getAgentTownDecorationDetails(decorationId) {
   return { decoration, item };
 }
 
+function getAgentTownDecorationRect(decoration, item = getAgentTownCosmeticItem(decoration?.itemId)) {
+  if (!decoration || !item) {
+    return null;
+  }
+
+  const rotation = normalizeAgentTownRotation(decoration.rotation);
+  const size = getAgentTownCosmeticItemSize(item, rotation);
+  return {
+    x: decoration.x,
+    y: decoration.y,
+    width: size.width,
+    height: size.height,
+    rotation,
+  };
+}
+
 function removeAgentTownDecoration(decorationId) {
   const id = String(decorationId || "").trim();
   if (!id) {
@@ -16271,30 +16376,39 @@ function getAgentTownFunctionalPlacement(pluginId) {
     return null;
   }
 
+  const rotation = normalizeAgentTownRotation(placement.rotation);
+  const size = getAgentTownFunctionalBuildingSize(rotation);
   return {
     x: placement.x,
     y: placement.y,
-    width: AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.width,
-    height: AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.height,
+    width: size.width,
+    height: size.height,
+    rotation,
   };
 }
 
-function setAgentTownFunctionalPlacement(pluginId, rect) {
+function setAgentTownFunctionalPlacement(pluginId, rect, { rotation = rect?.rotation } = {}) {
   const normalizedPluginId = normalizeBuildingId(pluginId);
   if (!normalizedPluginId || !rect) {
     return false;
   }
 
+  const normalizedRotation = normalizeAgentTownRotation(rotation);
+  const size = getAgentTownFunctionalBuildingSize(normalizedRotation);
   const snappedRect = getAgentTownSnappedPlacementRect({
     x: rect.x,
     y: rect.y,
-    width: AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.width,
-    height: AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE.height,
+    width: size.width,
+    height: size.height,
   });
-  getAgentTownFunctionalPlacements()[normalizedPluginId] = {
+  const placement = {
     x: snappedRect.x,
     y: snappedRect.y,
   };
+  if (normalizedRotation) {
+    placement.rotation = normalizedRotation;
+  }
+  getAgentTownFunctionalPlacements()[normalizedPluginId] = placement;
   setAgentTownFunctionalPending(normalizedPluginId, false);
   return true;
 }
@@ -17412,12 +17526,37 @@ function mountVisualPixelGame() {
     commitBuilderPlacementFromEvent(event);
   };
   const onKeyDown = (event) => {
-    if (event.key !== "Escape" || !state.visualGame.builderPlacement) {
+    if (!state.visualGame.builderPlacement) {
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      clearAgentTownBuilderPlacement();
+      return;
+    }
+
+    const target = event.target;
+    const isEditableTarget =
+      target instanceof HTMLElement &&
+      (target.isContentEditable || Boolean(target.closest("input, textarea, select")));
+    if (
+      event.repeat ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      isEditableTarget ||
+      String(event.key || "").toLowerCase() !== "r"
+    ) {
       return;
     }
 
     event.preventDefault();
-    clearAgentTownBuilderPlacement();
+    const preview = rotateAgentTownBuilderPlacement();
+    const blockedLabel = preview?.blocker?.label || "building";
+    canvas.classList.add("is-builder-placement");
+    canvas.classList.toggle("is-editing-blocked", Boolean(preview?.blocker));
+    setHoverLabel(preview?.blocker ? `blocked by ${blockedLabel}` : `place ${state.visualGame.builderPlacement.label}`);
   };
 
   canvas.addEventListener("pointerdown", onPointerDown);
@@ -17863,11 +18002,13 @@ function drawAgentTownPlacedCosmetics(context, hitAreas, time, visibleWorld, pal
     if (!item) {
       continue;
     }
-    const rect = { x: decoration.x, y: decoration.y, width: item.width, height: item.height };
-    if (!isAgentTownSceneryVisible(rect, visibleWorld)) {
+    const rect = getAgentTownDecorationRect(decoration, item);
+    if (!rect || !isAgentTownSceneryVisible(rect, visibleWorld)) {
       continue;
     }
-    drawAgentTownCosmeticItem(context, item, rect, palette, time);
+    drawAgentTownCosmeticItem(context, item, rect, palette, time, {
+      rotation: rect.rotation,
+    });
     if (!isAgentTownEditMode()) {
       hitAreas.push({
         ...rect,
@@ -17880,7 +18021,7 @@ function drawAgentTownPlacedCosmetics(context, hitAreas, time, visibleWorld, pal
   }
 }
 
-function drawAgentTownCosmeticItem(context, item, rect, palette, time) {
+function drawAgentTownCosmeticItem(context, item, rect, palette, time, { rotation = rect?.rotation } = {}) {
   if (item.kind === "road") {
     drawVisualGamePathRect(context, rect.x, rect.y, rect.width, rect.height);
     return;
@@ -17888,7 +18029,8 @@ function drawAgentTownCosmeticItem(context, item, rect, palette, time) {
 
   if (item.kind === "fence") {
     const fenceThickness = 17;
-    const centeredFence = (item.orientation || "horizontal") === "vertical"
+    const orientation = getAgentTownFenceOrientation(item, rotation);
+    const centeredFence = orientation === "vertical"
       ? {
           x: rect.x + Math.round((rect.width - fenceThickness) / 2),
           y: rect.y,
@@ -18072,7 +18214,9 @@ function drawAgentTownBuilderPlacementGhost(context, placement, rect, time) {
     if (!item) {
       return;
     }
-    drawAgentTownCosmeticItem(context, item, rect, getAgentTownSceneryPalette(), time);
+    drawAgentTownCosmeticItem(context, item, rect, getAgentTownSceneryPalette(), time, {
+      rotation: getAgentTownBuilderPlacementRotation(placement),
+    });
     return;
   }
 

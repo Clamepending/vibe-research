@@ -1419,6 +1419,28 @@ test("placed cosmetic buildings open an Agent Town drawer", async (t) => {
       await page.evaluate(() => JSON.parse(window.localStorage.getItem("vibe-research-agent-town-layout-v1")).decorations.length),
       0,
     );
+
+    await page.locator("[data-agent-town-builder-toggle]").click();
+    await page.getByRole("button", { name: "Place Tiny Shed" }).click();
+    await page.getByText("Placing Tiny Shed", { exact: true }).waitFor({ timeout: 10_000 });
+    await page.keyboard.press("r");
+    await page.waitForTimeout(100);
+
+    const rotatedShedPoint = await findCanvasHoverPoint(page, "place Tiny Shed");
+    assert.ok(rotatedShedPoint, "rotated Tiny Shed placement should find an open snapped square");
+    await clickCanvasPoint(page, rotatedShedPoint.x, rotatedShedPoint.y);
+    await page.waitForFunction(() => {
+      const layout = JSON.parse(window.localStorage.getItem("vibe-research-agent-town-layout-v1") || "{}");
+      return Array.isArray(layout.decorations) && layout.decorations.some((decoration) => decoration.itemId === "shed" && decoration.rotation === 1);
+    });
+
+    const rotatedDecoration = await page.evaluate(() => {
+      const layout = JSON.parse(window.localStorage.getItem("vibe-research-agent-town-layout-v1") || "{}");
+      return (layout.decorations || []).find((decoration) => decoration.itemId === "shed" && decoration.rotation === 1) || null;
+    });
+    assert.ok(rotatedDecoration, "pressing r before placement should persist a rotated shed");
+    assert.equal(rotatedDecoration.x % 30, 0);
+    assert.equal(rotatedDecoration.y % 30, 0);
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
@@ -1604,13 +1626,15 @@ test("settings api stores agent credentials redacted and injects them into new s
     for (let attempt = 0; attempt < 50; attempt += 1) {
       try {
         capturedEnv = await readFile(capturePath, "utf8");
-        break;
+        if (capturedEnv.includes("hf=hf_test_agent")) {
+          break;
+        }
       } catch (error) {
         if (error?.code !== "ENOENT") {
           throw error;
         }
-        await new Promise((resolve) => setTimeout(resolve, 50));
       }
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
 
     assert.match(capturedEnv, /anthropic=sk-ant-test-agent/);
