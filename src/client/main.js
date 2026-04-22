@@ -119,6 +119,7 @@ const TERMINAL_KEYBOARD_SCROLL_PAGE_RATIO = 0.85;
 const VISUAL_GAME_WIDTH = 480;
 const VISUAL_GAME_HEIGHT = 270;
 const VISUAL_GAME_RENDER_SCALE = 2;
+const VISUAL_GAME_SLEEP_AFTER_MS = 60_000;
 const VISUAL_GAME_TILE = 16;
 const VISUAL_GAME_AGENT_SIZE = 18;
 const VISUAL_GAME_AGENT_PALETTES = [
@@ -178,6 +179,13 @@ const VISUAL_GAME_BROWSER_SPOTS = [
   { x: 428, y: 125 },
   { x: 443, y: 126 },
   { x: 415, y: 126 },
+];
+const VISUAL_GAME_SLEEP_SPOTS = [
+  { x: 54, y: 68 },
+  { x: 81, y: 68 },
+  { x: 108, y: 68 },
+  { x: 206, y: 63 },
+  { x: 232, y: 63 },
 ];
 const VISUAL_GAME_LIBRARY_SPOTS = [
   { x: 78, y: 224 },
@@ -10171,6 +10179,12 @@ function getVisualInterfaceAgents(graph) {
       subtitle: [session.providerLabel, getWorkspacePathLeafName(session.cwd || "")].filter(Boolean).join(" · "),
       status: session.activityStatus || session.status || "idle",
       meta: relativeTime(session.lastOutputAt || session.updatedAt || session.createdAt),
+      activeAtMs: Math.max(
+        timestampMs(session.activityCompletedAt),
+        timestampMs(session.lastOutputAt),
+        timestampMs(session.updatedAt),
+        timestampMs(session.createdAt),
+      ),
       sessionId: session.id,
       parentSessionId: "",
       parentName: "",
@@ -10199,6 +10213,7 @@ function getVisualInterfaceAgents(graph) {
         subtitle: detail,
         status: subagent.status || "idle",
         meta: relativeTime(subagent.updatedAt),
+        activeAtMs: timestampMs(subagent.updatedAt),
         sessionId: session.id,
         parentSessionId: session.id,
         parentName: session.name || session.providerLabel || "Agent",
@@ -10846,20 +10861,11 @@ function drawVisualGameScene(context, graph, model, time, hitAreas) {
   const deskAgents = agents.filter((agent) => agent.destination === "desk");
   const browserAgents = agents.filter((agent) => agent.destination === "browser");
   const libraryAgents = agents.filter((agent) => agent.destination === "library");
+  const sleepingAgents = agents.filter((agent) => agent.destination === "sleep");
 
   drawVisualGameGround(context, time);
   drawVisualGamePaths(context);
-  drawVisualGameBuilding(context, hitAreas, {
-    x: 27,
-    y: 25,
-    width: 100,
-    height: 54,
-    label: "Mission Board",
-    meta: "start work",
-    roof: "#8d3c2f",
-    body: "#9d6935",
-    action: { kind: "new-session", label: "Mission Board" },
-  });
+  drawVisualGameSleepingQuarters(context, hitAreas, time, sleepingAgents);
   drawVisualGameBuilding(context, hitAreas, {
     x: 37,
     y: 110,
@@ -10872,17 +10878,6 @@ function drawVisualGameScene(context, graph, model, time, hitAreas) {
     action: { kind: "main-view", view: "plugins", label: "Tool Shed" },
   });
   drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents);
-  drawVisualGameBuilding(context, hitAreas, {
-    x: 182,
-    y: 27,
-    width: 84,
-    height: 44,
-    label: "Schedule",
-    meta: "helpers",
-    roof: "#70523a",
-    body: "#695b42",
-    action: { kind: "main-view", view: "automations", label: "Schedule" },
-  });
   drawVisualGameWorkshop(context, hitAreas, time, deskAgents);
   drawVisualGameBrowserLab(context, hitAreas, time, browserAgents);
   drawVisualGameDock(context);
@@ -11008,6 +11003,58 @@ function drawVisualGameBuilding(context, hitAreas, building) {
 
   if (action) {
     hitAreas.push({ x, y, width, height, ...action });
+  }
+}
+
+function drawVisualGameSleepingQuarters(context, hitAreas, time, sleepingAgents) {
+  const restingCount = sleepingAgents.length;
+  drawVisualGameSleepRoom(context, {
+    x: 27,
+    y: 25,
+    width: 100,
+    height: 54,
+    label: "Dormitory",
+    meta: restingCount ? `${restingCount} resting` : "quiet beds",
+    beds: [
+      { x: 43, y: 55 },
+      { x: 70, y: 55 },
+      { x: 97, y: 55 },
+    ],
+  });
+  drawVisualGameSleepRoom(context, {
+    x: 182,
+    y: 27,
+    width: 84,
+    height: 44,
+    label: "Quiet Wing",
+    meta: "idle >1m",
+    beds: [
+      { x: 198, y: 54 },
+      { x: 224, y: 54 },
+    ],
+  });
+  hitAreas.push({ x: 27, y: 25, width: 100, height: 54, kind: "main-view", view: "visual-interface", label: "Dormitory" });
+  hitAreas.push({ x: 182, y: 27, width: 84, height: 44, kind: "main-view", view: "visual-interface", label: "Quiet Wing" });
+}
+
+function drawVisualGameSleepRoom(context, room) {
+  const { x, y, width, height, label, meta, beds } = room;
+  drawVisualGameRoomFloor(context, x, y, width, height, {
+    floor: "#826449",
+    wall: "#63463b",
+    trim: "#3b2a22",
+    entrance: "bottom",
+  });
+  drawVisualGameBuildingSign(context, x + 8, y + 7, Math.min(width - 16, 88), 23, label, meta);
+  for (const bed of beds) {
+    context.fillStyle = "#493628";
+    context.fillRect(bed.x, bed.y + 7, 20, 8);
+    context.fillStyle = "#f1d9a6";
+    context.fillRect(bed.x + 2, bed.y + 2, 7, 5);
+    context.fillStyle = "#7895b4";
+    context.fillRect(bed.x + 8, bed.y + 2, 10, 11);
+    context.fillStyle = "rgba(255, 244, 198, 0.18)";
+    context.fillRect(bed.x + 10, bed.y + 4, 6, 2);
   }
 }
 
@@ -11163,7 +11210,7 @@ function drawVisualGameForeground(context, time) {
 function drawVisualGameAgent(context, agent, time, hitAreas) {
   const scale = agent.scale || 1;
   const palette = VISUAL_GAME_AGENT_PALETTES[(agent.familyIndex ?? agent.index) % VISUAL_GAME_AGENT_PALETTES.length];
-  const isStationed = agent.destination === "desk" || agent.destination === "browser" || agent.destination === "library";
+  const isStationed = agent.destination === "desk" || agent.destination === "browser" || agent.destination === "library" || agent.destination === "sleep";
   const bob = isStationed ? Math.floor(Math.sin(time / 190 + agent.index) * 1) : Math.floor(Math.sin(time / 150 + agent.index) * 2);
   const step = Math.floor(time / 180 + agent.index) % 4;
   const spriteWidth = VISUAL_GAME_AGENT_SIZE * scale;
@@ -11175,7 +11222,21 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
   context.translate(x, y);
   context.scale(scale, scale);
 
-  if (agent.destination === "desk") {
+  if (agent.destination === "sleep") {
+    context.fillStyle = "#3c2d24";
+    context.fillRect(0, 17, 19, 10);
+    context.fillStyle = "#f0d9ad";
+    context.fillRect(2, 14, 7, 5);
+    context.fillStyle = "#6e8aa9";
+    context.fillRect(7, 17, 10, 9);
+    context.fillStyle = palette.skin;
+    context.fillRect(3, 10, 7, 5);
+    context.fillStyle = palette.hat;
+    context.fillRect(2, 7, 10, 4);
+    context.fillStyle = "#f7efba";
+    context.fillRect(14, 7, 2, 2);
+    context.fillRect(16, 5, 2, 2);
+  } else if (agent.destination === "desk") {
     context.fillStyle = "#2b2018";
     context.fillRect(2, 18, 15, 11);
     context.fillStyle = "#624632";
@@ -11189,42 +11250,44 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
     context.fillRect(9, 18, 1, 5);
   }
 
-  context.fillStyle = palette.boots;
-  if (isStationed) {
-    context.fillRect(4, 24, 4, 3);
-    context.fillRect(11, 24, 4, 3);
-  } else {
-    context.fillRect(4, 25 + (step % 2), 4, 3);
-    context.fillRect(11, 25 + ((step + 1) % 2), 4, 3);
-  }
-  context.fillStyle = palette.pants;
-  context.fillRect(5, 20, 4, isStationed ? 5 : 7);
-  context.fillRect(10, 20, 4, isStationed ? 5 : 7);
-  context.fillStyle = palette.coat;
-  context.fillRect(3, 11, 13, 11);
-  context.fillStyle = palette.trim;
-  context.fillRect(8, 12, 2, 10);
-  context.fillStyle = palette.skin;
-  context.fillRect(5, 7, 9, 7);
-  context.fillStyle = palette.hair;
-  context.fillRect(4, 6, 11, 3);
-  context.fillStyle = palette.hat;
-  context.fillRect(3, 1, 13, 7);
-  context.fillRect(5, -2, 9, 3);
-  context.fillStyle = palette.brim;
-  context.fillRect(1, 7, 17, 2);
-  context.fillStyle = "#fff0d6";
-  context.fillRect(8, 10, 2, 2);
-  context.fillStyle = palette.skin;
-  if (isStationed) {
-    const tap = Math.floor(time / 140 + agent.index) % 2;
-    context.fillRect(1, 16 + tap, 4, 3);
-    context.fillRect(14, 16 + (1 - tap), 4, 3);
-    context.fillStyle = agent.destination === "browser" ? "#bfffb0" : agent.destination === "library" ? "#f0cf72" : "#79bdf8";
-    context.fillRect(3, 22, 13, 1);
-  } else {
-    context.fillRect(1, 15 + (step % 2), 3, 7);
-    context.fillRect(15, 15 + ((step + 1) % 2), 3, 7);
+  if (agent.destination !== "sleep") {
+    context.fillStyle = palette.boots;
+    if (isStationed) {
+      context.fillRect(4, 24, 4, 3);
+      context.fillRect(11, 24, 4, 3);
+    } else {
+      context.fillRect(4, 25 + (step % 2), 4, 3);
+      context.fillRect(11, 25 + ((step + 1) % 2), 4, 3);
+    }
+    context.fillStyle = palette.pants;
+    context.fillRect(5, 20, 4, isStationed ? 5 : 7);
+    context.fillRect(10, 20, 4, isStationed ? 5 : 7);
+    context.fillStyle = palette.coat;
+    context.fillRect(3, 11, 13, 11);
+    context.fillStyle = palette.trim;
+    context.fillRect(8, 12, 2, 10);
+    context.fillStyle = palette.skin;
+    context.fillRect(5, 7, 9, 7);
+    context.fillStyle = palette.hair;
+    context.fillRect(4, 6, 11, 3);
+    context.fillStyle = palette.hat;
+    context.fillRect(3, 1, 13, 7);
+    context.fillRect(5, -2, 9, 3);
+    context.fillStyle = palette.brim;
+    context.fillRect(1, 7, 17, 2);
+    context.fillStyle = "#fff0d6";
+    context.fillRect(8, 10, 2, 2);
+    context.fillStyle = palette.skin;
+    if (isStationed) {
+      const tap = Math.floor(time / 140 + agent.index) % 2;
+      context.fillRect(1, 16 + tap, 4, 3);
+      context.fillRect(14, 16 + (1 - tap), 4, 3);
+      context.fillStyle = agent.destination === "browser" ? "#bfffb0" : agent.destination === "library" ? "#f0cf72" : "#79bdf8";
+      context.fillRect(3, 22, 13, 1);
+    } else {
+      context.fillRect(1, 15 + (step % 2), 3, 7);
+      context.fillRect(15, 15 + ((step + 1) % 2), 3, 7);
+    }
   }
 
   if (agent.statusClass === "failed") {
@@ -11263,6 +11326,10 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
 function getVisualGameAgentHoverLabel(agent) {
   if (agent.destination === "browser") {
     return `${agent.name} - browser lab`;
+  }
+
+  if (agent.destination === "sleep") {
+    return `${agent.name} - resting in sleeping quarters`;
   }
 
   if (agent.destination === "desk") {
@@ -11356,6 +11423,7 @@ function drawVisualGameShadow(context, x, y, width, height) {
 function getVisualGameAgents(graph, time) {
   const deskIndex = { value: 0 };
   const browserIndex = { value: 0 };
+  const sleepIndex = { value: 0 };
   const libraryIndex = { value: 0 };
   const evidenceIndex = { value: 0 };
   const roamingIndex = { value: 0 };
@@ -11375,6 +11443,9 @@ function getVisualGameAgents(graph, time) {
     if (destination === "browser") {
       target = getVisualGameBrowserSpot(browserIndex.value);
       browserIndex.value += 1;
+    } else if (destination === "sleep") {
+      target = getVisualGameSleepSpot(sleepIndex.value);
+      sleepIndex.value += 1;
     } else if (destination === "library") {
       target = getVisualGameLibrarySpot(libraryIndex.value);
       libraryIndex.value += 1;
@@ -11399,6 +11470,10 @@ function getVisualGameAgentDestination(agent, statusClass) {
     return "browser";
   }
 
+  if (isVisualGameSleepyAgent(agent, statusClass)) {
+    return "sleep";
+  }
+
   if (hasVisualGameLibraryActivity(agent)) {
     return "library";
   }
@@ -11408,6 +11483,15 @@ function getVisualGameAgentDestination(agent, statusClass) {
   }
 
   return "roam";
+}
+
+function isVisualGameSleepyAgent(agent, statusClass) {
+  if (statusClass === "working") {
+    return false;
+  }
+
+  const activeAtMs = Number(agent.activeAtMs || 0);
+  return activeAtMs > 0 && Date.now() - activeAtMs >= VISUAL_GAME_SLEEP_AFTER_MS;
 }
 
 function hasVisualGameLibraryActivity(agent) {
@@ -11501,6 +11585,15 @@ function getVisualGameBrowserSpot(index) {
   return {
     x: spot.x - row * 7,
     y: spot.y + row * 6,
+  };
+}
+
+function getVisualGameSleepSpot(index) {
+  const spot = VISUAL_GAME_SLEEP_SPOTS[index % VISUAL_GAME_SLEEP_SPOTS.length];
+  const row = Math.floor(index / VISUAL_GAME_SLEEP_SPOTS.length);
+  return {
+    x: spot.x + row * 7,
+    y: spot.y + row * 5,
   };
 }
 
