@@ -1051,6 +1051,7 @@ exit 0
     assert.match(unit, new RegExp(`Environment=VIBE_RESEARCH_WORKSPACE_DIR=${escapeRegExp(workspaceDir)}`));
     assert.match(unit, new RegExp(`Environment=VIBE_RESEARCH_WIKI_DIR=${escapeRegExp(wikiDir)}`));
     assert.match(unit, /Environment=VIBE_RESEARCH_PORT=4999/);
+    assert.match(unit, /Environment=VIBE_RESEARCH_FORCE_RESTART=1/);
     assert.match(unit, new RegExp(`PIDFile=${escapeRegExp(path.join(stateDir, "server.pid"))}`));
     assert.match(unit, /Restart=always/);
     assert.match(unit, /KillMode=process/);
@@ -1058,7 +1059,8 @@ exit 0
     assert.deepEqual((await readFile(systemctlLog, "utf8")).trim().split("\n"), [
       "is-system-running",
       "daemon-reload",
-      "enable --now vibe-research-test.service",
+      "enable vibe-research-test.service",
+      "restart vibe-research-test.service",
     ]);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
