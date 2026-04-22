@@ -222,3 +222,16 @@ Do not leave contradictory notes side by side without explanation.
 
 - Use absolute paths when talking to the user
 - Qualitative results are encouraged. Link clearly labeled images in the experiment markdown.
+
+<!-- vibe-research:building-guides-protocol:v1 -->
+
+## Building Guides
+
+Vibe Research generates agent-readable manuals for every Building in the catalog.
+
+- Start with `$VIBE_RESEARCH_BUILDING_GUIDES_INDEX` before using or setting up a building.
+- Per-building guides live in `$VIBE_RESEARCH_BUILDING_GUIDES_DIR/<building-id>.md`.
+- Each guide summarizes what the building is for, setup variables, setup steps, helper commands, environment variables, and docs.
+- Codex, Claude Code, and shell agents receive the same guide paths through environment variables.
+- Prefer guide-listed helper commands and setup checks over guessing. If a required credential is missing, ask the human instead of inventing it or writing placeholders into durable notes.
+- Never write secrets, tokens, passwords, or private keys into the Library, result docs, logs, screenshots, or generated guide files.
