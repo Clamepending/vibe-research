@@ -20,6 +20,7 @@ import {
 import { AgentMailService } from "./agentmail-service.js";
 import { AgentPromptStore } from "./agent-prompt-store.js";
 import { AgentRunStore } from "./agent-run-store.js";
+import { AgentTownStore } from "./agent-town-store.js";
 import { writeBuildingAgentGuides } from "./building-agent-guides.js";
 import { BuildingHubService } from "./buildinghub-service.js";
 import { BrowserUseService } from "./browser-use-service.js";
@@ -50,8 +51,10 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, "..", "public");
+const masterplanIndexPath = path.join(publicDir, "masterplan", "index.html");
 const execFileAsync = promisify(execFile);
 const SERVER_INFO_FILENAME = "server.json";
+const MASTERPLAN_HOSTNAME = "masterplan.vibe-research.net";
 const TAILSCALE_HTTPS_SERVE_ENABLED =
   (process.env.VIBE_RESEARCH_TAILSCALE_HTTPS ?? process.env.REMOTE_VIBES_TAILSCALE_HTTPS) !== "0";
 const DEFAULT_TAILSCALE_HTTPS_SERVE_PORTS = [443, 8443, 10000];
@@ -68,6 +71,16 @@ const LIBRARY_SYNC_SETTING_KEYS = new Set([
   "wikiPathConfigured",
   "workspaceRootPath",
 ]);
+
+function getRequestHostname(request) {
+  return String(request.get("x-forwarded-host") || request.hostname || request.get("host") || "")
+    .split(":")[0]
+    .toLowerCase();
+}
+
+function isMasterplanHost(request) {
+  return getRequestHostname(request) === MASTERPLAN_HOSTNAME;
+}
 const ATTACHMENTS_SUBDIR = "attachments";
 const MAX_ATTACHMENT_IMAGE_BYTES = 15 * 1024 * 1024;
 const ATTACHMENT_IMAGE_EXTENSIONS_BY_MIME_TYPE = new Map([
@@ -81,6 +94,21 @@ const ATTACHMENT_IMAGE_EXTENSIONS_BY_MIME_TYPE = new Map([
   ["image/png", ".png"],
   ["image/tiff", ".tiff"],
   ["image/webp", ".webp"],
+]);
+const AGENT_CANVAS_IMAGE_MIME_TYPES_BY_EXTENSION = new Map([
+  [".apng", "image/apng"],
+  [".avif", "image/avif"],
+  [".bmp", "image/bmp"],
+  [".gif", "image/gif"],
+  [".heic", "image/heic"],
+  [".heif", "image/heif"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".png", "image/png"],
+  [".svg", "image/svg+xml"],
+  [".tif", "image/tiff"],
+  [".tiff", "image/tiff"],
+  [".webp", "image/webp"],
 ]);
 
 function expandHomePath(input) {
@@ -225,6 +253,37 @@ async function saveImageAttachment({ stateDir, session, dataUrl, originalName, s
     sessionId,
     createdAt,
   };
+}
+
+function getAgentCanvasImageMimeType(filePath) {
+  return AGENT_CANVAS_IMAGE_MIME_TYPES_BY_EXTENSION.get(path.extname(filePath).toLowerCase()) || "";
+}
+
+async function resolveAgentCanvasImage({ canvas, session, fallbackCwd }) {
+  const rawImagePath = String(canvas?.imagePath || "").trim();
+  if (!rawImagePath) {
+    throw buildHttpError("Agent canvas image path is not set.", 404);
+  }
+
+  const targetPath = path.resolve(session?.cwd || fallbackCwd, expandHomePath(rawImagePath));
+  const mimeType = getAgentCanvasImageMimeType(targetPath);
+  if (!mimeType) {
+    throw buildHttpError("Agent canvas image type is not supported.", 415);
+  }
+
+  const stats = await stat(targetPath).catch((error) => {
+    if (error?.code === "ENOENT") {
+      throw buildHttpError("Agent canvas image not found.", 404);
+    }
+
+    throw error;
+  });
+
+  if (!stats.isFile()) {
+    throw buildHttpError("Agent canvas image path is not a file.", 400);
+  }
+
+  return { targetPath, mimeType };
 }
 
 function normalizePort(value) {
@@ -605,6 +664,7 @@ export async function createVibeResearchApp({
   });
   const serverEnv = { ...process.env };
   const agentRunStore = new AgentRunStore({ stateDir });
+  const agentTownStore = new AgentTownStore({ stateDir });
   const systemRootPath = getVibeResearchSystemDir({ cwd, stateDir });
   const settingsStore = new SettingsStore({ cwd, stateDir, env: serverEnv, defaultAgentSpawnPath: defaultSessionCwd });
   const systemMetricsHistoryStore = new SystemMetricsHistoryStore({ stateDir });
@@ -706,6 +766,7 @@ export async function createVibeResearchApp({
           stateDir,
         });
   await agentRunStore.initialize();
+  await agentTownStore.initialize();
   await portAliasStore.initialize();
   await browserUseService.initialize();
   await ottoAuthService.initialize();
@@ -838,6 +899,7 @@ export async function createVibeResearchApp({
       VIBE_RESEARCH_PORT: String(resolvedPort),
       VIBE_RESEARCH_SERVER_URL: helperBaseUrl || "",
       VIBE_RESEARCH_URL: preferredUrl || helperBaseUrl || "",
+      VIBE_RESEARCH_AGENT_TOWN_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/agent-town`,
     };
   }
 
@@ -1081,12 +1143,23 @@ export async function createVibeResearchApp({
     proxyHttpRequest(request, response, proxyServer, proxiedPort, false);
   });
 
+  app.get("/", (request, response, next) => {
+    if (!isMasterplanHost(request)) {
+      next();
+      return;
+    }
+
+    response.setHeader("Cache-Control", "no-store");
+    response.sendFile(masterplanIndexPath);
+  });
+
   app.get("/api/state", async (_request, response) => {
     await buildingHubService.refresh();
     await syncBuildingAgentGuides();
     response.json({
       appName: "Vibe Research",
       agentPrompt: await agentPromptStore.getState(),
+      agentTown: agentTownStore.getState(),
       buildingHub: {
         buildings: buildingHubService.listBuildings(),
         status: buildingHubService.getStatus(),
@@ -1250,6 +1323,148 @@ export async function createVibeResearchApp({
         error: error.message || "Could not schedule update.",
         update: error.update,
       });
+    }
+  });
+
+  app.get("/api/agent-town/state", (_request, response) => {
+    response.json({
+      agentTown: agentTownStore.getState(),
+    });
+  });
+
+  app.put("/api/agent-town/state", async (request, response) => {
+    try {
+      const agentTown = await agentTownStore.updateMirror(request.body || {});
+      response.json({ agentTown });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not update Agent Town state." });
+    }
+  });
+
+  app.post("/api/agent-town/events", async (request, response) => {
+    try {
+      const payload = await agentTownStore.recordEvent(request.body || {});
+      response.status(201).json({
+        event: payload.event,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not record Agent Town event." });
+    }
+  });
+
+  app.get("/api/agent-town/action-items", (_request, response) => {
+    response.json({
+      actionItems: agentTownStore.getState().actionItems,
+    });
+  });
+
+  app.get("/api/agent-town/canvases", (_request, response) => {
+    response.json({
+      canvases: agentTownStore.getState().canvases,
+    });
+  });
+
+  app.post("/api/agent-town/canvases", async (request, response) => {
+    try {
+      const payload = await agentTownStore.upsertCanvas(request.body || {});
+      response.status(201).json({
+        canvas: payload.canvas,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not update Agent Town canvas." });
+    }
+  });
+
+  app.delete("/api/agent-town/canvases/:canvasId", async (request, response) => {
+    try {
+      const payload = await agentTownStore.deleteCanvas(request.params.canvasId);
+      response.json({
+        canvas: payload.canvas,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not clear Agent Town canvas." });
+    }
+  });
+
+  app.get("/api/agent-town/canvases/:canvasId/image", async (request, response) => {
+    try {
+      const canvas = agentTownStore.getCanvas(request.params.canvasId);
+      if (!canvas) {
+        response.status(404).json({ error: "Agent canvas not found." });
+        return;
+      }
+
+      const session = canvas.sourceSessionId ? sessionManager.getSession(canvas.sourceSessionId) : null;
+      const image = await resolveAgentCanvasImage({ canvas, session, fallbackCwd: cwd });
+      response.setHeader("Cache-Control", "no-store");
+      response.setHeader("Content-Type", image.mimeType);
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      response.sendFile(image.targetPath, { dotfiles: "allow" }, (error) => {
+        if (!error) {
+          return;
+        }
+
+        if (response.headersSent) {
+          response.destroy(error);
+          return;
+        }
+
+        response.status(error.statusCode || 500).json({ error: error.message });
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not read Agent Town canvas image." });
+    }
+  });
+
+  app.post("/api/agent-town/action-items", async (request, response) => {
+    try {
+      const payload = await agentTownStore.createActionItem(request.body || {});
+      response.status(201).json({
+        actionItem: payload.actionItem,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not create Agent Town action item." });
+    }
+  });
+
+  app.patch("/api/agent-town/action-items/:actionItemId", async (request, response) => {
+    try {
+      const payload = await agentTownStore.updateActionItem(request.params.actionItemId, request.body || {});
+      response.json({
+        actionItem: payload.actionItem,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not update Agent Town action item." });
+    }
+  });
+
+  app.get("/api/agent-town/wait", async (request, response) => {
+    try {
+      const payload = await agentTownStore.waitForPredicate({
+        predicate: request.query.predicate,
+        predicateParams: {
+          actionItemId: request.query.actionItemId,
+          pluginId: request.query.pluginId,
+          minCount: request.query.minCount,
+        },
+        timeoutMs: request.query.timeoutMs,
+      });
+      response.json(payload);
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not wait for Agent Town predicate." });
+    }
+  });
+
+  app.post("/api/agent-town/wait", async (request, response) => {
+    try {
+      response.json(await agentTownStore.waitForPredicate(request.body || {}));
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not wait for Agent Town predicate." });
     }
   });
 

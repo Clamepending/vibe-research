@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+log() {
+  printf '[vibe-research] %s\n' "$*"
+}
+
+fail() {
+  printf '[vibe-research] %s\n' "$*" >&2
+  exit 1
+}
+
+resolve_script_dir() {
+  local source dir target
+  source="${BASH_SOURCE[0]}"
+
+  while [ -L "$source" ]; do
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    target="$(readlink "$source")"
+    case "$target" in
+      /*)
+        source="$target"
+        ;;
+      *)
+        source="$dir/$target"
+        ;;
+    esac
+  done
+
+  cd -P "$(dirname "$source")" && pwd
+}
+
+resolve_app_dir() {
+  local script_dir configured_dir
+  script_dir="$(resolve_script_dir)"
+  configured_dir="${VIBE_RESEARCH_HOME:-${REMOTE_VIBES_HOME:-}}"
+
+  if [ -n "$configured_dir" ]; then
+    printf '%s\n' "$configured_dir"
+    return
+  fi
+
+  if [ -f "$script_dir/../start.sh" ]; then
+    (cd "$script_dir/.." && pwd -P)
+    return
+  fi
+
+  printf '%s\n' "$HOME/.vibe-research/app"
+}
+
+browser_url() {
+  local host port browser_host
+  host="${VIBE_RESEARCH_HOST:-${REMOTE_VIBES_HOST:-0.0.0.0}}"
+  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4123}}"
+
+  case "$host" in
+    ""|0.0.0.0|127.0.0.1|localhost|::|::0|[::]|::1|[::1])
+      browser_host="localhost"
+      ;;
+    *:*)
+      case "$host" in
+        [*]) browser_host="$host" ;;
+        *) browser_host="[$host]" ;;
+      esac
+      ;;
+    *)
+      browser_host="$host"
+      ;;
+  esac
+
+  printf 'http://%s:%s/\n' "$browser_host" "$port"
+}
+
+open_browser() {
+  local url="$1"
+  local open_command
+
+  if [ "${VIBE_RESEARCH_OPEN_BROWSER:-${REMOTE_VIBES_OPEN_BROWSER:-1}}" = "0" ]; then
+    log "Open Vibe Research: $url"
+    return
+  fi
+
+  open_command="${VIBE_RESEARCH_OPEN_COMMAND:-${REMOTE_VIBES_OPEN_COMMAND:-}}"
+  if [ -n "$open_command" ]; then
+    "$open_command" "$url" >/dev/null 2>&1 || {
+      log "Could not open browser automatically. Open: $url"
+      return
+    }
+    log "Opened Vibe Research: $url"
+    return
+  fi
+
+  if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] && [ -x /usr/bin/open ]; then
+    /usr/bin/open "$url" >/dev/null 2>&1 || log "Could not open browser automatically. Open: $url"
+    return
+  fi
+
+  if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$url" >/dev/null 2>&1 || log "Could not open browser automatically. Open: $url"
+    return
+  fi
+
+  if command -v wslview >/dev/null 2>&1; then
+    wslview "$url" >/dev/null 2>&1 || log "Could not open browser automatically. Open: $url"
+    return
+  fi
+
+  if command -v powershell.exe >/dev/null 2>&1; then
+    powershell.exe -NoProfile -Command 'Start-Process -FilePath $args[0]' "$url" >/dev/null 2>&1 || log "Could not open browser automatically. Open: $url"
+    return
+  fi
+
+  log "Open Vibe Research: $url"
+}
+
+print_usage() {
+  cat <<'EOF'
+Usage: vibe-research [--no-browser] [--url]
+
+Launch Vibe Research if needed and open the local UI in your browser.
+
+Options:
+  --no-browser   Start or reuse the server without opening a browser.
+  --url          Print the local browser URL and exit.
+  -h, --help     Show this help.
+EOF
+}
+
+open_after_start=1
+print_url_only=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --no-browser)
+      open_after_start=0
+      ;;
+    --url)
+      print_url_only=1
+      ;;
+    -h|--help)
+      print_usage
+      exit 0
+      ;;
+    *)
+      fail "Unknown option: $1"
+      ;;
+  esac
+  shift
+done
+
+url="$(browser_url)"
+if [ "$print_url_only" = "1" ]; then
+  printf '%s\n' "$url"
+  exit 0
+fi
+
+app_dir="$(resolve_app_dir)"
+if [ ! -x "$app_dir/start.sh" ]; then
+  fail "Could not find Vibe Research at $app_dir. Re-run the installer, or set VIBE_RESEARCH_HOME to the app checkout."
+fi
+
+"$app_dir/start.sh"
+
+if [ "$open_after_start" = "1" ]; then
+  open_browser "$url"
+else
+  log "Open Vibe Research: $url"
+fi

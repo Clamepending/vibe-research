@@ -20,6 +20,7 @@ INSTALL_UI="${VIBE_RESEARCH_INSTALL_UI:-${REMOTE_VIBES_INSTALL_UI:-auto}}"
 INSTALL_ANIMATION="${VIBE_RESEARCH_INSTALL_ANIMATION:-${REMOTE_VIBES_INSTALL_ANIMATION:-auto}}"
 INSTALL_SERVICE="${VIBE_RESEARCH_INSTALL_SERVICE:-${REMOTE_VIBES_INSTALL_SERVICE:-1}}"
 ENSURE_NODE_ONLY="${VIBE_RESEARCH_ENSURE_NODE_ONLY:-${REMOTE_VIBES_ENSURE_NODE_ONLY:-0}}"
+USER_BIN_DIR="${VIBE_RESEARCH_BIN_DIR:-${REMOTE_VIBES_BIN_DIR:-}}"
 TAILSCALE_UP="${VIBE_RESEARCH_TAILSCALE_UP:-${REMOTE_VIBES_TAILSCALE_UP:-1}}"
 TAILSCALE_COMMAND="${VIBE_RESEARCH_TAILSCALE_COMMAND:-${REMOTE_VIBES_TAILSCALE_COMMAND:-tailscale}}"
 CLAUDE_COMMAND="${VIBE_RESEARCH_CLAUDE_COMMAND:-${REMOTE_VIBES_CLAUDE_COMMAND:-claude}}"
@@ -35,7 +36,7 @@ APT_UPDATED=0
 MANAGED_PROMPT_MARKER="<!-- vibe-research:managed-agent-prompt -->"
 LEGACY_MANAGED_PROMPT_MARKER="<!-- remote-vibes:managed-agent-prompt -->"
 INSTALL_STEP=0
-INSTALL_TOTAL_STEPS=9
+INSTALL_TOTAL_STEPS=10
 INSTALL_SPINNER_PID=""
 INSTALL_RESET=""
 INSTALL_BOLD=""
@@ -328,9 +329,41 @@ is_root() {
   [ "$(id -u)" -eq 0 ]
 }
 
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+applescript_string_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+run_as_root_with_macos_prompt() {
+  if [ "$(uname -s 2>/dev/null || true)" != "Darwin" ] || ! has_command osascript; then
+    return 1
+  fi
+
+  case "${VIBE_RESEARCH_MACOS_ADMIN_PROMPT:-${REMOTE_VIBES_MACOS_ADMIN_PROMPT:-1}}" in
+    0 | false | False | FALSE | no | No | NO | off | Off | OFF)
+      return 1
+      ;;
+  esac
+
+  local command_string arg
+  command_string=""
+  for arg in "$@"; do
+    command_string="${command_string:+$command_string }$(shell_quote "$arg")"
+  done
+
+  osascript -e "do shell script \"$(applescript_string_escape "$command_string")\" with administrator privileges"
+}
+
 run_as_root() {
   if is_root; then
     "$@"
+    return
+  fi
+
+  if [ ! -t 0 ] && run_as_root_with_macos_prompt "$@"; then
     return
   fi
 
@@ -348,6 +381,10 @@ run_as_root_preserving_env() {
     return
   fi
 
+  if [ ! -t 0 ] && run_as_root_with_macos_prompt "$@"; then
+    return
+  fi
+
   if has_command sudo; then
     sudo -E "$@"
     return
@@ -359,6 +396,10 @@ run_as_root_preserving_env() {
 try_run_as_root() {
   if is_root; then
     "$@"
+    return
+  fi
+
+  if [ ! -t 0 ] && run_as_root_with_macos_prompt "$@"; then
     return
   fi
 
@@ -531,6 +572,49 @@ prepend_path_dir() {
       export PATH
       ;;
   esac
+}
+
+path_contains_dir() {
+  local dir="$1"
+  case ":$PATH:" in
+    *:"$dir":*) return 0 ;;
+  esac
+
+  return 1
+}
+
+can_prepare_launcher_dir() {
+  local dir parent
+  dir="$1"
+  parent="$(dirname "$dir")"
+
+  if [ -d "$dir" ] && [ -w "$dir" ]; then
+    return 0
+  fi
+
+  if [ ! -e "$dir" ] && [ -w "$parent" ]; then
+    return 0
+  fi
+
+  is_root || has_command sudo
+}
+
+resolve_launcher_bin_dir() {
+  local candidate
+
+  if [ -n "$USER_BIN_DIR" ]; then
+    printf '%s\n' "$USER_BIN_DIR"
+    return
+  fi
+
+  for candidate in "$HOME/.local/bin" "$HOME/bin" /usr/local/bin /opt/homebrew/bin; do
+    if path_contains_dir "$candidate" && can_prepare_launcher_dir "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  printf '%s\n' "$HOME/.local/bin"
 }
 
 refresh_claude_command() {
@@ -1280,11 +1364,61 @@ prepare_app_checkout() {
   fi
 
   if [ -d "$INSTALL_DIR/bin" ]; then
-    for helper in vr-browser vr-browser-detour vr-browser-use vr-mailwatch vr-playwright vr-session-name vr-agentmail-reply vr-videomemory rv-browser rv-browser-detour rv-browser-use rv-mailwatch rv-playwright rv-session-name rv-agentmail-reply rv-videomemory codex claude open osascript google-chrome chrome chromium chromium-browser firefox; do
+    for helper in vibe-research vr-browser vr-browser-detour vr-browser-use vr-mailwatch vr-playwright vr-session-name vr-agentmail-reply vr-videomemory rv-browser rv-browser-detour rv-browser-use rv-mailwatch rv-playwright rv-session-name rv-agentmail-reply rv-videomemory codex claude open osascript google-chrome chrome chromium chromium-browser firefox; do
       if [ -f "$INSTALL_DIR/bin/$helper" ] && [ ! -x "$INSTALL_DIR/bin/$helper" ]; then
         chmod +x "$INSTALL_DIR/bin/$helper"
       fi
     done
+  fi
+}
+
+install_launcher_command() {
+  local launcher_source launcher_dir launcher_path path_was_ready
+  launcher_source="$INSTALL_DIR/bin/vibe-research"
+  launcher_dir="$(resolve_launcher_bin_dir)"
+  launcher_path="$launcher_dir/vibe-research"
+  path_was_ready=0
+
+  if [ ! -f "$launcher_source" ]; then
+    log "Skipping terminal command because $launcher_source is missing"
+    return
+  fi
+
+  if path_contains_dir "$launcher_dir"; then
+    path_was_ready=1
+  fi
+
+  if ! mkdir -p "$launcher_dir" 2>/dev/null; then
+    try_run_as_root mkdir -p "$launcher_dir" || {
+      log "Could not create $launcher_dir; skipping terminal command"
+      return
+    }
+  fi
+
+  chmod +x "$launcher_source" || true
+
+  if [ -e "$launcher_path" ] && [ ! -L "$launcher_path" ]; then
+    log "Leaving existing $launcher_path in place; run $launcher_source directly or set VIBE_RESEARCH_BIN_DIR to another directory."
+    return
+  fi
+
+  if [ -L "$launcher_path" ]; then
+    rm -f "$launcher_path" 2>/dev/null || try_run_as_root rm -f "$launcher_path" || {
+      log "Could not update existing $launcher_path; skipping terminal command"
+      return
+    }
+  fi
+
+  if ! ln -s "$launcher_source" "$launcher_path" 2>/dev/null; then
+    try_run_as_root ln -s "$launcher_source" "$launcher_path" || {
+      log "Could not install $launcher_path; run $launcher_source directly or set VIBE_RESEARCH_BIN_DIR to a writable directory."
+      return
+    }
+  fi
+
+  log "Installed terminal command: $launcher_path"
+  if [ "$path_was_ready" != "1" ]; then
+    log "If 'vibe-research' is not found yet, open a new terminal or add $launcher_dir to PATH."
   fi
 }
 
@@ -1321,6 +1455,7 @@ main() {
   run_step "Tailscale" ensure_tailscale
   run_step "Installer prerequisites" ensure_required_commands
   run_step "App checkout" prepare_app_checkout
+  run_step "Terminal launcher" install_launcher_command
   run_step "Launch" launch_vibe_research
   run_step "Service setup" install_systemd_service
   print_installer_footer

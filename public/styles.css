@@ -2465,6 +2465,45 @@ input[readonly][data-folder-picker-target] {
   border-color: rgba(255, 126, 146, 0.18);
 }
 
+.agent-inbox-card.is-action {
+  border-color: rgba(170, 146, 255, 0.2);
+}
+
+.agent-inbox-card.is-approval {
+  border-color: rgba(255, 193, 112, 0.3);
+  background:
+    linear-gradient(180deg, rgba(255, 193, 112, 0.08), rgba(255, 255, 255, 0.02)),
+    var(--surface);
+}
+
+.agent-inbox-card.is-review {
+  border-color: rgba(124, 231, 240, 0.24);
+}
+
+.agent-inbox-card.is-setup {
+  border-color: rgba(190, 220, 105, 0.24);
+}
+
+.agent-inbox-card.is-priority-high,
+.agent-inbox-card.is-priority-urgent {
+  box-shadow: inset 3px 0 0 rgba(255, 193, 112, 0.72);
+}
+
+.agent-inbox-card.is-priority-urgent {
+  border-color: rgba(255, 126, 146, 0.36);
+  box-shadow: inset 3px 0 0 rgba(255, 126, 146, 0.78);
+}
+
+.agent-inbox-card.is-approval .plugin-status {
+  background: rgba(255, 193, 112, 0.13);
+  color: rgba(255, 228, 184, 0.92);
+}
+
+.agent-inbox-card.is-priority-urgent .plugin-status {
+  background: rgba(255, 126, 146, 0.13);
+  color: rgba(255, 210, 218, 0.95);
+}
+
 .plugin-status {
   align-self: start;
   justify-self: end;
@@ -5362,13 +5401,19 @@ button.visual-agent-tile:focus-visible,
   box-shadow: 0 5px 0 rgba(0, 0, 0, 0.32);
 }
 
+.visual-agent-sprite-openclaw {
+  border-color: rgba(255, 122, 61, 0.5);
+  background: #120605;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.34);
+}
+
 .claude-code-avatar {
   --claude-code-avatar-fill: #d77b4a;
   --claude-code-avatar-dark: #050609;
   position: relative;
   display: block;
   width: 34px;
-  height: 30px;
+  height: 31px;
   image-rendering: pixelated;
 }
 
@@ -5389,34 +5434,34 @@ button.visual-agent-tile:focus-visible,
   top: 12px;
   left: 1px;
   width: 8px;
-  height: 5px;
+  height: 6px;
 }
 
 .claude-code-avatar-mid {
   top: 11px;
   left: 5px;
   width: 24px;
-  height: 9px;
+  height: 10px;
 }
 
 .claude-code-avatar-right-arm {
   top: 12px;
   right: 1px;
   width: 8px;
-  height: 5px;
+  height: 6px;
 }
 
 .claude-code-avatar-base {
   top: 20px;
   left: 8px;
   width: 18px;
-  height: 4px;
+  height: 5px;
 }
 
 .claude-code-avatar-leg {
   top: 24px;
   width: 4px;
-  height: 5px;
+  height: 6px;
 }
 
 .claude-code-avatar-leg-one {
@@ -5450,6 +5495,122 @@ button.visual-agent-tile:focus-visible,
   left: 22px;
 }
 
+.openclaw-crab-avatar {
+  --openclaw-crab-fill: #e6522c;
+  --openclaw-crab-trim: #ffd0b4;
+  --openclaw-crab-dark: #2f1815;
+  position: relative;
+  display: block;
+  width: 36px;
+  height: 31px;
+  image-rendering: pixelated;
+}
+
+.openclaw-crab-avatar i {
+  position: absolute;
+  display: block;
+  background: var(--openclaw-crab-fill);
+}
+
+.openclaw-crab-avatar-shell {
+  top: 9px;
+  left: 9px;
+  width: 18px;
+  height: 13px;
+}
+
+.openclaw-crab-avatar-belly {
+  top: 20px;
+  left: 12px;
+  width: 12px;
+  height: 5px;
+}
+
+.openclaw-crab-avatar-claw {
+  top: 10px;
+  width: 7px;
+  height: 6px;
+}
+
+.openclaw-crab-avatar-claw-left {
+  left: 3px;
+}
+
+.openclaw-crab-avatar-claw-right {
+  right: 3px;
+}
+
+.openclaw-crab-avatar-arm {
+  top: 15px;
+  width: 5px;
+  height: 4px;
+}
+
+.openclaw-crab-avatar-arm-left {
+  left: 7px;
+}
+
+.openclaw-crab-avatar-arm-right {
+  right: 7px;
+}
+
+.openclaw-crab-avatar-leg {
+  top: 24px;
+  width: 4px;
+  height: 5px;
+}
+
+.openclaw-crab-avatar-leg-one {
+  left: 5px;
+}
+
+.openclaw-crab-avatar-leg-two {
+  left: 12px;
+}
+
+.openclaw-crab-avatar-leg-three {
+  left: 22px;
+}
+
+.openclaw-crab-avatar-leg-four {
+  left: 29px;
+}
+
+.openclaw-crab-avatar-eye {
+  top: 5px;
+  width: 3px;
+  height: 5px;
+}
+
+.openclaw-crab-avatar-eye::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3px;
+  height: 3px;
+  background: var(--openclaw-crab-dark);
+}
+
+.openclaw-crab-avatar-eye-left {
+  left: 13px;
+}
+
+.openclaw-crab-avatar-eye-right {
+  left: 22px;
+}
+
+.openclaw-crab-avatar-shell::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  width: 10px;
+  height: 1px;
+  background: var(--openclaw-crab-trim);
+  opacity: 0.78;
+}
+
 .visual-agent-sprite-working {
   border-color: rgba(125, 189, 255, 0.56);
   animation: visual-agent-pulse 1.4s ease-in-out infinite;
@@ -5469,6 +5630,12 @@ button.visual-agent-tile:focus-visible,
 .visual-agent-sprite-claude.visual-agent-sprite-done,
 .visual-agent-sprite-claude.visual-agent-sprite-failed {
   background: #050609;
+}
+
+.visual-agent-sprite-openclaw.visual-agent-sprite-working,
+.visual-agent-sprite-openclaw.visual-agent-sprite-done,
+.visual-agent-sprite-openclaw.visual-agent-sprite-failed {
+  background: #120605;
 }
 
 .visual-agent-copy,
@@ -5906,6 +6073,60 @@ button.visual-agent-tile:focus-visible,
   pointer-events: none;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.visual-game-agent-hover-card {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  width: min(360px, calc(100% - 20px));
+  max-height: calc(100% - 20px);
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(10px, 10px);
+  transition: opacity 90ms ease;
+}
+
+.visual-game-agent-hover-card.is-visible {
+  opacity: 1;
+}
+
+.visual-game-agent-hover-card-inner {
+  display: grid;
+  gap: 8px;
+  max-height: calc(100vh - 80px);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.visual-game-agent-hover-card .agent-profile-panel {
+  border-radius: 8px;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.28);
+}
+
+.visual-game-agent-hover-card .agent-profile-head {
+  grid-template-columns: 64px minmax(0, 1fr);
+}
+
+.visual-game-agent-hover-card .agent-profile-avatar {
+  width: 62px;
+  height: 62px;
+  border-radius: 14px;
+}
+
+.visual-game-agent-hover-card .agent-profile-facts {
+  gap: 5px;
+}
+
+.visual-game-agent-hover-card .agent-profile-note {
+  -webkit-line-clamp: 2;
+}
+
+.visual-game-agent-hover-card .agent-canvas-panel {
+  max-height: 210px;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.26);
 }
 
 .agent-town-floating-controls {
@@ -6410,6 +6631,10 @@ button.agent-town-builder-card {
   grid-area: title;
 }
 
+.visual-game-terminal-head .agent-profile-topbar {
+  grid-area: title;
+}
+
 .visual-game-panel-close-button {
   grid-area: close;
 }
@@ -6423,6 +6648,7 @@ button.agent-town-builder-card {
 .visual-game-terminal-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   min-width: 0;
   min-height: 0;
@@ -6430,8 +6656,12 @@ button.agent-town-builder-card {
   padding: 10px;
 }
 
-.visual-game-terminal-body.has-agent-profile {
-  grid-template-columns: minmax(0, 1fr) minmax(178px, 208px);
+.visual-game-terminal-body.has-agent-canvas {
+  grid-template-columns: minmax(220px, 1fr) minmax(178px, 220px);
+}
+
+.visual-game-terminal-body .agent-canvas-panel {
+  max-height: none;
 }
 
 .visual-game-session-panel .terminal-stack {
@@ -6617,6 +6847,53 @@ button.agent-town-builder-card {
 
 .visual-building-plugin-settings.plugin-detail-settings .plugin-onboarding {
   padding: 14px;
+}
+
+.visual-building-cosmetic-panel {
+  gap: 12px;
+}
+
+.visual-building-cosmetic-card {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.visual-building-cosmetic-card .agent-town-builder-preview {
+  width: 56px;
+  height: 48px;
+}
+
+.visual-building-cosmetic-card > span:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.visual-building-cosmetic-card strong,
+.visual-building-cosmetic-card em,
+.visual-building-cosmetic-card span span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visual-building-cosmetic-card em {
+  color: var(--text-subtle);
+  font-size: 0.74rem;
+  font-style: normal;
+}
+
+.visual-building-cosmetic-card span span {
+  color: rgba(232, 236, 240, 0.76);
+  font-size: 0.78rem;
 }
 
 .visual-building-buildinghub-panel .mcp-import-card,
@@ -7183,6 +7460,16 @@ button.visual-town-building:focus-visible {
   transform: scale(0.9);
 }
 
+.visual-town-agent.visual-provider-openclaw .visual-town-agent-body {
+  width: 46px;
+  border-color: rgba(255, 122, 61, 0.48);
+  background: #120605;
+}
+
+.visual-town-agent.visual-provider-openclaw .visual-town-agent-body .openclaw-crab-avatar {
+  transform: scale(0.9);
+}
+
 .visual-town-agent.visual-status-done .visual-town-agent-body {
   background: rgba(154, 214, 127, 0.18);
   color: #dffae8;
@@ -7202,6 +7489,12 @@ button.visual-town-building:focus-visible {
 .visual-town-agent.visual-provider-claude.visual-status-failed .visual-town-agent-body,
 .visual-town-agent.visual-provider-claude.is-working .visual-town-agent-body {
   background: #050609;
+}
+
+.visual-town-agent.visual-provider-openclaw.visual-status-done .visual-town-agent-body,
+.visual-town-agent.visual-provider-openclaw.visual-status-failed .visual-town-agent-body,
+.visual-town-agent.visual-provider-openclaw.is-working .visual-town-agent-body {
+  background: #120605;
 }
 
 .visual-town-agent-shadow {
@@ -9357,6 +9650,112 @@ button.visual-town-building:focus-visible {
   background: rgba(140, 137, 150, 0.24);
 }
 
+.session-card.has-profile {
+  grid-template-columns: 17px 42px minmax(0, 1fr) 82px;
+  align-items: center;
+  min-height: 50px;
+  padding-block: 4px;
+}
+
+.session-profile-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  min-width: 42px;
+  overflow: visible;
+  border-radius: 12px;
+}
+
+.session-profile-avatar .agent-profile-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+}
+
+.session-profile-avatar .agent-profile-avatar::after {
+  right: 5px;
+  bottom: 5px;
+  width: 7px;
+  height: 7px;
+  border-width: 1px;
+}
+
+.session-profile-avatar .agent-profile-avatar-backdrop {
+  inset: 5px;
+  border-radius: 10px;
+}
+
+.session-profile-avatar .agent-profile-avatar-portrait {
+  margin-top: 0;
+  transform: translateY(-8px) scale(0.56);
+  transform-origin: center center;
+}
+
+.session-profile-avatar .agent-profile-avatar-crab {
+  transform: scale(0.7);
+  transform-origin: center;
+}
+
+.session-profile-avatar .agent-profile-avatar-initials {
+  right: 5px;
+  top: 4px;
+  font-size: 0.44rem;
+}
+
+.session-card.has-profile .session-main {
+  display: grid;
+  gap: 2px;
+  grid-column: 3;
+  align-content: center;
+}
+
+.session-card.has-profile .session-time {
+  grid-column: 4;
+}
+
+.session-card.has-profile .session-actions {
+  grid-column: 4;
+}
+
+.session-card.has-profile .session-subtitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  line-height: 1.1;
+}
+
+.session-card.has-profile .session-subtitle > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-canvas-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid rgba(241, 200, 111, 0.18);
+  border-radius: 999px;
+  background: rgba(241, 200, 111, 0.08);
+  color: #f1c86f;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.56rem;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.session-canvas-pill .vr-icon {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+}
+
 .session-side {
   justify-content: space-between;
   min-width: 0;
@@ -10189,6 +10588,7 @@ button.visual-town-building:focus-visible {
 }
 
 .terminal-panel {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
@@ -10205,6 +10605,12 @@ button.visual-town-building:focus-visible {
   overflow: hidden;
 }
 
+.terminal-head-stack {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
 .workspace-split {
   --file-preview-width: 460px;
   display: grid;
@@ -10215,21 +10621,22 @@ button.visual-town-building:focus-visible {
   overflow: hidden;
 }
 
+.workspace-split.has-agent-canvas {
+  grid-template-columns: minmax(320px, 1fr) minmax(260px, 360px);
+  gap: 12px;
+}
+
 .workspace-split.has-file-preview {
   grid-template-columns: minmax(320px, 1fr) 12px minmax(280px, var(--file-preview-width));
 }
 
-.workspace-split.has-agent-profile {
-  grid-template-columns: minmax(300px, 1fr) minmax(220px, 280px);
-  gap: 12px;
-}
-
-.workspace-split.has-agent-profile.has-file-preview {
+.workspace-split.has-agent-canvas.has-file-preview {
   grid-template-columns:
     minmax(280px, 1fr)
-    minmax(210px, 260px)
+    minmax(250px, 340px)
     12px
     minmax(260px, var(--file-preview-width));
+  gap: 10px;
 }
 
 .workspace-split > * {
@@ -10279,6 +10686,149 @@ button.visual-town-building:focus-visible {
   border-radius: 16px;
   background: var(--panel-soft);
   backdrop-filter: blur(16px);
+}
+
+.agent-canvas-host {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
+.agent-canvas-host:empty {
+  display: none;
+}
+
+.agent-canvas-window {
+  align-self: stretch;
+  justify-self: stretch;
+}
+
+.agent-canvas-window.is-floating {
+  position: absolute;
+  left: var(--agent-canvas-window-left, 16px);
+  top: var(--agent-canvas-window-top, 86px);
+  z-index: 12;
+  width: min(var(--agent-canvas-window-width, 360px), calc(100% - 20px));
+  height: min(var(--agent-canvas-window-height, 360px), calc(100% - 20px));
+  max-height: calc(100% - 20px);
+}
+
+.agent-canvas-window.is-floating .agent-canvas-panel {
+  box-shadow: 0 20px 52px rgba(0, 0, 0, 0.34);
+}
+
+.agent-canvas-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.052), rgba(255, 255, 255, 0.018)),
+    rgba(15, 17, 20, 0.96);
+}
+
+.agent-canvas-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.agent-canvas-window.is-dragging .agent-canvas-head {
+  cursor: grabbing;
+}
+
+.agent-canvas-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #f1c86f;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.agent-canvas-kicker .vr-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.agent-canvas-head strong,
+.agent-canvas-head em,
+.agent-canvas-caption {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-canvas-head strong {
+  color: rgba(246, 248, 250, 0.94);
+  font-size: 0.82rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.agent-canvas-head em {
+  color: rgba(226, 233, 239, 0.54);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.62rem;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.agent-canvas-open {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 8px;
+}
+
+.agent-canvas-open .vr-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.agent-canvas-stage {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
+  background:
+    linear-gradient(135deg, rgba(139, 183, 255, 0.1), rgba(242, 138, 104, 0.08)),
+    rgba(4, 6, 8, 0.56);
+}
+
+.agent-canvas-stage img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.agent-canvas-caption {
+  display: -webkit-box;
+  margin: 0;
+  color: rgba(226, 233, 239, 0.62);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .terminal-copy {
@@ -10496,6 +11046,38 @@ button.visual-town-building:focus-visible {
   opacity: 0.48;
 }
 
+.agent-profile-avatar-openclaw {
+  background:
+    radial-gradient(circle at 50% 28%, rgba(255, 218, 190, 0.2), transparent 30%),
+    linear-gradient(180deg, rgba(255, 122, 61, 0.16), rgba(226, 61, 45, 0.1)),
+    #17100f;
+}
+
+.agent-profile-avatar-openclaw .agent-profile-avatar-backdrop {
+  background: linear-gradient(180deg, var(--agent-profile-coat, #e6522c), var(--agent-profile-boots, #2f1815));
+  opacity: 0.6;
+}
+
+.agent-profile-avatar-crab {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 50px;
+}
+
+.agent-profile-avatar-crab .openclaw-crab-avatar {
+  --openclaw-crab-fill: var(--agent-profile-coat, #e6522c);
+  --openclaw-crab-trim: var(--agent-profile-trim, #ffd0b4);
+  --openclaw-crab-dark: var(--agent-profile-boots, #2f1815);
+  transform: scale(1.26);
+}
+
+.agent-profile-avatar-openclaw .agent-profile-avatar-initials {
+  display: none;
+}
+
 .agent-profile-avatar-portrait {
   position: relative;
   width: 48px;
@@ -10656,6 +11238,123 @@ button.visual-town-building:focus-visible {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   white-space: normal;
+}
+
+.agent-profile-topbar {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.agent-profile-topbar .agent-profile-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+}
+
+.agent-profile-topbar .agent-profile-avatar::after {
+  right: 6px;
+  bottom: 6px;
+  width: 9px;
+  height: 9px;
+}
+
+.agent-profile-topbar .agent-profile-avatar-backdrop {
+  inset: 7px;
+  border-radius: 12px;
+}
+
+.agent-profile-topbar .agent-profile-avatar-portrait {
+  transform: scale(0.75);
+  transform-origin: center bottom;
+}
+
+.agent-profile-topbar .agent-profile-avatar-initials {
+  right: 6px;
+  top: 5px;
+  font-size: 0.5rem;
+}
+
+.agent-profile-topbar-body {
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-profile-topbar-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-profile-topbar-title span,
+.agent-profile-topbar-title strong,
+.agent-profile-topbar-title em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-profile-topbar-title span {
+  flex: 0 0 auto;
+  color: #f1c86f;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.agent-profile-topbar-title strong {
+  color: #f6f8fa;
+  font-size: 0.98rem;
+  line-height: 1.08;
+}
+
+.agent-profile-topbar-title em {
+  flex: 0 1 auto;
+  color: rgba(226, 233, 239, 0.62);
+  font-size: 0.72rem;
+  font-style: normal;
+}
+
+.agent-profile-topbar-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  min-width: 0;
+}
+
+.agent-profile-topbar-fact {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  gap: 6px;
+  color: rgba(226, 233, 239, 0.6);
+  font-size: 0.68rem;
+}
+
+.agent-profile-topbar-fact > span {
+  flex: 0 0 auto;
+  color: rgba(226, 233, 239, 0.42);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.agent-profile-topbar-fact > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(241, 245, 248, 0.86);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .file-preview-pane {
@@ -11322,20 +12021,32 @@ select:disabled {
     border-radius: 20px;
   }
 
+  .workspace-split.has-agent-canvas,
+  .workspace-split.has-agent-canvas.has-file-preview,
   .workspace-split.has-file-preview {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(220px, 1fr) minmax(260px, 0.8fr);
-  }
-
-  .workspace-split.has-agent-profile,
-  .workspace-split.has-agent-profile.has-file-preview {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(220px, 1fr) auto;
     gap: 10px;
   }
 
-  .workspace-split.has-agent-profile.has-file-preview {
+  .workspace-split.has-agent-canvas.has-file-preview {
     grid-template-rows: minmax(220px, 1fr) auto minmax(260px, 0.8fr);
+  }
+
+  .workspace-split.has-agent-canvas .workspace-resize-handle {
+    display: none;
+  }
+
+  .agent-canvas-window,
+  .agent-canvas-window.is-floating {
+    position: static;
+    width: auto;
+    height: min(260px, 32vh);
+    max-height: 260px;
+  }
+
+  .agent-canvas-window.is-floating {
+    box-shadow: none;
   }
 
   .plugins-layout,
@@ -11531,11 +12242,22 @@ select:disabled {
     border-radius: 18px;
   }
 
+  .terminal-toolbar.has-agent-profile {
+    grid-template-columns: 42px minmax(0, 1fr) auto;
+  }
+
   .terminal-toolbar .toolbar-actions {
     grid-column: 1 / -1;
     width: 100%;
     justify-content: flex-start;
     padding-top: 2px;
+  }
+
+  .terminal-toolbar.has-agent-profile .toolbar-actions {
+    grid-column: auto;
+    width: auto;
+    justify-content: flex-end;
+    padding-top: 0;
   }
 
   .terminal-toolbar .toolbar-actions > .icon-button,
@@ -11893,9 +12615,9 @@ select:disabled {
     gap: 12px;
   }
 
-  .visual-game-terminal-body.has-agent-profile {
+  .visual-game-terminal-body.has-agent-canvas {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(220px, 1fr) auto;
+    grid-template-rows: minmax(180px, 1fr) minmax(150px, 0.6fr);
   }
 
   .visual-game-side-resize-handle {
@@ -11915,6 +12637,10 @@ select:disabled {
     top: 8px;
     left: 8px;
     max-width: 150px;
+  }
+
+  .visual-game-agent-hover-card {
+    display: none;
   }
 
   .visual-town-world {

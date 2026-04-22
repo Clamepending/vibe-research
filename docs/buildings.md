@@ -2,6 +2,8 @@
 
 Buildings are the extension unit for Vibe Research integrations. A building gives an integration a visible home, install state, onboarding checklist, settings variables, and optional Agent Town behavior.
 
+For the broader visual operating-system contract that buildings plug into, see `docs/visual-os-foundation.md`.
+
 ## Files
 
 - `src/client/building-sdk.js` owns the manifest primitives: `defineBuilding`, `createBuildingRegistry`, and `normalizeBuildingId`.
@@ -99,10 +101,11 @@ export default defineBuilding({
 - `ui.entryView` names the compact building panel implementation; `ui.workspaceView` names the routed view used when the building needs the whole screen.
 - `onboarding.variables` powers the generic install checklist.
 - `onboarding.steps[].completeWhen` can use `{ type: "installed" }`, `{ setting: "key" }`, `{ configuredSetting: "key" }`, `{ allConfigured: ["key"] }`, or `{ anyConfigured: ["key"] }`.
-- `agentGuide` powers generated Markdown manuals for Codex, Claude Code, and shell agents. The generated index is available at `$VIBE_RESEARCH_BUILDING_GUIDES_INDEX`; per-building files live in `$VIBE_RESEARCH_BUILDING_GUIDES_DIR/<building-id>.md`.
+- `agentGuide` powers generated Markdown manuals for Codex, Claude Code, OpenClaw, and shell agents. The generated index is available at `$VIBE_RESEARCH_BUILDING_GUIDES_INDEX`; per-building files live in `$VIBE_RESEARCH_BUILDING_GUIDES_DIR/<building-id>.md`.
 - `agentGuide.commands` are declarative setup or inspection commands for agents to try when appropriate. They are not automatically executed by the catalog.
 - `agentGuide.env` should name runtime environment variables and credential expectations without including secret values.
 - Secrets should use a redacted public setting such as `exampleApiKeyConfigured`; the raw secret should not be returned to the browser.
+- Sensitive building actions should create Agent Inbox approval cards with capability tags before they spend money, send messages, publish work, use credentials, delete user content, control devices, or expose private data.
 
 ## BuildingHub
 

@@ -81,6 +81,7 @@ Do a lightweight literature/current-docs pass before expensive or method-shaping
   - `cycle 3 @c5f6e22: +dropout=0.3 +aug -> accuracy=0.78. qual: carrier wave clean 8/8.`
   If you find yourself wanting to branch cycles (run two variants in parallel and compare), close this move and open sibling moves instead.
 - **Results** — numbers, tables, links to artifacts. No bare numbers; every figure cites commit + command + artifact path. For qualitative or mix criteria, link representative artifacts a reader can inspect.
+- **Agent canvas** — when the move produces a graph, image, screenshot, sample, or other visual artifact, publish the most significant qualitative result so far to the agent canvas with `vr-agent-canvas --image <path> --title "<short title>" --caption "<what changed>"`. Keep the result doc as the durable record; use the canvas as the current thing the human should see first.
 - **Analysis** — what the results show, what they rule out, how the prior updated.
 - **Reproducibility** — commit SHA (as `<github-url>/commit/<sha>`), exact command, artifact paths, config + seed.
 - **Leaderboard verdict** — one line per current leaderboard row, using the project's criterion flavor:

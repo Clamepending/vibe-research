@@ -7,7 +7,7 @@ const MANAGED_MARKER = "<!-- vibe-research:managed-agent-prompt -->";
 const LEGACY_MANAGED_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
 const MANAGED_MARKERS = [MANAGED_MARKER, LEGACY_MANAGED_MARKER];
 const WIKI_V2_MARKER = "<!-- vibe-research:library-v2-protocol:v2 -->";
-const BUILDING_GUIDES_MARKER = "<!-- vibe-research:building-guides-protocol:v1 -->";
+const BUILDING_GUIDES_MARKER = "<!-- vibe-research:building-guides-protocol:v2 -->";
 const WIKI_V2_SECTION_MARKER_PATTERN =
   /<!-- (?:vibe-research|remote-vibes):(?:wiki|library)-v2-protocol:v\d+ -->/;
 const BUILDING_GUIDES_SECTION_MARKER_PATTERN =
@@ -190,9 +190,22 @@ Vibe Research generates agent-readable manuals for every Building in the catalog
 - Start with \`$VIBE_RESEARCH_BUILDING_GUIDES_INDEX\` before using or setting up a building.
 - Per-building guides live in \`$VIBE_RESEARCH_BUILDING_GUIDES_DIR/<building-id>.md\`.
 - Each guide summarizes what the building is for, setup variables, setup steps, helper commands, environment variables, and docs.
-- Codex, Claude Code, and shell agents receive the same guide paths through environment variables.
+- Codex, Claude Code, OpenClaw, and shell agents receive the same guide paths through environment variables.
 - Prefer guide-listed helper commands and setup checks over guessing. If a required credential is missing, ask the human instead of inventing it or writing placeholders into durable notes.
 - Never write secrets, tokens, passwords, or private keys into the Library, result docs, logs, screenshots, or generated guide files.
+
+## Agent Town State
+
+Use the local Agent Town API when coordinating UI tutorial steps or checking whether the human completed a town action.
+
+- Read \`$VIBE_RESEARCH_AGENT_TOWN_API/state\` to inspect the mirrored town layout, action items, events, and signals.
+- Create tiny user-facing action items with \`POST $VIBE_RESEARCH_AGENT_TOWN_API/action-items\`.
+- Use action item metadata when it matters: \`kind\` (\`action\`, \`approval\`, \`review\`, \`setup\`), \`priority\` (\`low\`, \`normal\`, \`high\`, \`urgent\`), \`sourceSessionId\`, \`target\`, and \`capabilityIds\`.
+- Publish images you want the human to see with \`vr-agent-canvas --image <path> --title <short title>\` or \`POST $VIBE_RESEARCH_AGENT_TOWN_API/canvases\` using \`sourceSessionId\`, \`title\`, \`caption\`, and \`imagePath\`; the latest canvas appears under the agent profile.
+- Wait for UI predicates with \`POST $VIBE_RESEARCH_AGENT_TOWN_API/wait\` instead of asking the human to report completion when a predicate can prove it.
+- Treat a wait response with \`satisfied: true\` as authoritative completion: acknowledge the action, then move to the next bite-sized step without asking the human to confirm again.
+- Supported predicates include \`first_building_placed\`, \`cosmetic_building_placed\`, \`functional_building_placed\`, \`agent_clicked\`, \`automation_created\`, \`library_note_saved\`, and \`action_item_completed\`.
+- Prefer one bite-sized action item plus one wait at a time; avoid turning onboarding into a long checklist.
 `);
 }
 

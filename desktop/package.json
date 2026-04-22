@@ -1,0 +1,75 @@
+{
+  "name": "vibe-research-desktop",
+  "version": "0.2.10",
+  "description": "Desktop launcher and first-run installer for Vibe Research.",
+  "private": true,
+  "main": "src/main.cjs",
+  "scripts": {
+    "icons": "node scripts/create-icons.mjs",
+    "dev": "electron .",
+    "pack": "npm run icons && electron-builder --dir",
+    "dist": "npm run icons && electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^41.2.2",
+    "electron-builder": "^26.8.1"
+  },
+  "build": {
+    "appId": "net.vibe-research.desktop",
+    "productName": "Vibe Research",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "package.json",
+      "src/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../install.sh",
+        "to": "install.sh"
+      },
+      {
+        "from": "../release-channel.json",
+        "to": "release-channel.json"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "extendInfo": {
+        "NSCameraUsageDescription": "Vibe Research uses the camera only when you choose camera or browser features that request it.",
+        "NSMicrophoneUsageDescription": "Vibe Research uses the microphone only when you choose voice input or browser features that request it.",
+        "NSBluetoothAlwaysUsageDescription": "Vibe Research does not use Bluetooth directly.",
+        "NSBluetoothPeripheralUsageDescription": "Vibe Research does not use Bluetooth directly."
+      }
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "linux": {
+      "category": "Development",
+      "icon": "assets/icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    }
+  }
+}

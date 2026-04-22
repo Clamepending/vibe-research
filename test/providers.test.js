@@ -71,7 +71,11 @@ test("provider definitions include one-command installer hints for onboarding", 
 
   assert.match(installers.claude, /https:\/\/claude\.ai\/install\.sh/);
   assert.match(installers.claude, /@anthropic-ai\/claude-code/);
+  assert.match(installers["claude-ollama"], /https:\/\/claude\.ai\/install\.sh/);
+  assert.match(installers["claude-ollama"], /https:\/\/ollama\.com\/install\.sh/);
+  assert.match(installers["claude-ollama"], /ollama pull/);
   assert.equal(installers.codex, "npm install -g @openai/codex");
+  assert.equal(installers.openclaw, "npm install -g openclaw@latest");
   assert.equal(installers.gemini, "npm install -g @google/gemini-cli");
   assert.equal(installers.opencode, "curl -fsSL https://opencode.ai/install | bash");
   assert.match(installers["ml-intern"], /github\.com\/huggingface\/ml-intern/);
@@ -87,6 +91,7 @@ test("provider definitions include real auth entrypoints for onboarding", () => 
 
   assert.equal(authCommands.claude, "claude auth login");
   assert.equal(authCommands.codex, "codex login --device-auth");
+  assert.equal(authCommands.openclaw, "openclaw onboard --install-daemon");
   assert.equal(authCommands.gemini, "gemini");
   assert.equal(authCommands.opencode, "opencode auth login");
   assert.equal(authCommands["ml-intern"], "ml-intern");
@@ -202,6 +207,24 @@ test("providerDefinitions includes OpenCode with desktop and common CLI path hin
   ]);
 });
 
+test("providerDefinitions includes OpenClaw with onboarding metadata", () => {
+  const provider = providerDefinitions.find((entry) => entry.id === "openclaw");
+
+  assert.ok(provider);
+  assert.equal(provider.label, "OpenClaw");
+  assert.equal(provider.command, "openclaw");
+  assert.equal(provider.launchCommand, "openclaw");
+  assert.equal(provider.defaultName, "OpenClaw");
+  assert.deepEqual(provider.verifyArgs, ["--version"]);
+  assert.equal(provider.installCommand, "npm install -g openclaw@latest");
+  assert.equal(provider.authCommand, "openclaw onboard --install-daemon");
+  assert.deepEqual(provider.pathHints, [
+    "~/.local/bin/openclaw",
+    "/opt/homebrew/bin/openclaw",
+    "/usr/local/bin/openclaw",
+  ]);
+});
+
 test("providerDefinitions includes Claude npm package fallback metadata", () => {
   const provider = providerDefinitions.find((entry) => entry.id === "claude");
 
@@ -257,6 +280,87 @@ test("providerDefinitions includes Claude path hints for common installs", () =>
     "/usr/local/bin/claude",
   ]);
   assert.equal(provider.preferPathHints, true);
+});
+
+test("providerDefinitions includes local Claude Code via Ollama metadata", () => {
+  const provider = providerDefinitions.find((entry) => entry.id === "claude-ollama");
+
+  assert.ok(provider);
+  assert.equal(provider.label, "Local Claude Code (Ollama)");
+  assert.equal(provider.command, "claude");
+  assert.equal(provider.launchCommand, "claude");
+  assert.equal(provider.defaultName, "Local Claude");
+  assert.deepEqual(provider.verifyArgs, ["--version"]);
+  assert.equal(provider.preferPathHints, true);
+  assert.deepEqual(provider.npmPackage, {
+    name: "@anthropic-ai/claude-code",
+    bin: "claude",
+  });
+  assert.deepEqual(provider.requiredCommands, [
+    {
+      command: "ollama",
+      verifyArgs: ["--version"],
+    },
+  ]);
+  assert.deepEqual(provider.pathHints, [
+    "~/.local/bin/claude",
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+  ]);
+});
+
+test("resolveProviderCommand requires Ollama for the local Claude provider", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-provider-ollama-"));
+  const fakeBinDir = path.join(tempDir, "bin");
+  const fakeClaudePath = path.join(fakeBinDir, "claude");
+  const fakeOllamaPath = path.join(fakeBinDir, "fake-ollama");
+
+  try {
+    await mkdir(fakeBinDir, { recursive: true });
+    await writeFile(fakeClaudePath, "#!/usr/bin/env bash\nprintf 'Claude Code 2.1.117\\n'\n");
+    await writeFile(fakeOllamaPath, "#!/usr/bin/env bash\nprintf 'ollama version is 0.21.0\\n'\n");
+    await chmod(fakeClaudePath, 0o755);
+    await chmod(fakeOllamaPath, 0o755);
+
+    const provider = providerDefinitions.find((entry) => entry.id === "claude-ollama");
+    const testProvider = {
+      ...provider,
+      pathHints: [fakeClaudePath],
+      requiredCommands: [
+        {
+          command: "fake-ollama",
+          verifyArgs: ["--version"],
+        },
+      ],
+    };
+    const missingOllama = await resolveProviderCommand(
+      testProvider,
+      {
+        HOME: tempDir,
+        PATH: "/usr/bin:/bin",
+        SHELL: "/bin/zsh",
+      },
+    );
+    assert.deepEqual(missingOllama, {
+      available: false,
+      resolvedCommand: null,
+    });
+
+    const withOllama = await resolveProviderCommand(
+      testProvider,
+      {
+        HOME: tempDir,
+        PATH: `${fakeBinDir}:/usr/bin:/bin`,
+        SHELL: "/bin/zsh",
+      },
+    );
+    assert.deepEqual(withOllama, {
+      available: true,
+      resolvedCommand: fakeClaudePath,
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("providerDefinitions includes ML Intern with safe help-based verification", () => {

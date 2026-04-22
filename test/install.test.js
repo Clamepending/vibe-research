@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { cp, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import http from "node:http";
@@ -685,6 +685,75 @@ exit 0
 
     await rm(tempRoot, { recursive: true, force: true });
     await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
+test("install.sh installs a vibe-research launcher command", async () => {
+  const { tempRoot, repoDir } = await createWorkingTreeRepoSnapshot();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-launcher-install-"));
+  const installDir = path.join(installRoot, "vibe-research");
+  const userBinDir = path.join(installRoot, "bin");
+
+  try {
+    const result = await execFile("bash", [installScript], {
+      env: installTestEnv({
+        VIBE_RESEARCH_HOME: installDir,
+        VIBE_RESEARCH_REPO_URL: repoDir,
+        VIBE_RESEARCH_BIN_DIR: userBinDir,
+        VIBE_RESEARCH_SKIP_RUN: "1",
+      }),
+    });
+
+    assert.match(result.stdout, /Installed terminal command:/);
+    assert.match(result.stdout, /If 'vibe-research' is not found yet/);
+    const launcherPath = path.join(userBinDir, "vibe-research");
+    const launcherStat = await lstat(launcherPath);
+    assert.equal(launcherStat.isSymbolicLink(), true);
+    assert.equal(await realpath(launcherPath), await realpath(path.join(installDir, "bin", "vibe-research")));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
+test("vibe-research command starts the app and opens the browser URL", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-command-"));
+  const appDir = path.join(tempRoot, "app");
+  const openLog = path.join(tempRoot, "open.log");
+  const startLog = path.join(tempRoot, "start.log");
+  const opener = path.join(tempRoot, "open-browser");
+  const port = await getFreePort();
+
+  try {
+    await mkdir(appDir, { recursive: true });
+    await writeFile(
+      path.join(appDir, "start.sh"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf 'started with port=%s\\n' "\${VIBE_RESEARCH_PORT:-}" >> ${JSON.stringify(startLog)}
+`,
+    );
+    await writeFile(
+      opener,
+      `#!/usr/bin/env bash
+printf '%s\\n' "$1" >> ${JSON.stringify(openLog)}
+`,
+    );
+    await execFile("chmod", ["+x", path.join(appDir, "start.sh"), opener]);
+
+    const result = await execFile("bash", [path.join(rootDir, "bin", "vibe-research")], {
+      env: installTestEnv({
+        VIBE_RESEARCH_HOME: appDir,
+        VIBE_RESEARCH_PORT: String(port),
+        VIBE_RESEARCH_OPEN_COMMAND: opener,
+      }),
+    });
+
+    assert.match(result.stdout, new RegExp(`Opened Vibe Research: http://localhost:${port}/`));
+    assert.equal(await readFile(startLog, "utf8"), `started with port=${port}\n`);
+    assert.equal(await readFile(openLog, "utf8"), `http://localhost:${port}/\n`);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
   }
 });
 
@@ -1628,6 +1697,7 @@ test("install.sh can launch vibe research in one command", async () => {
       env: installTestEnv({
         VIBE_RESEARCH_HOME: installDir,
         VIBE_RESEARCH_REPO_URL: repoUrl,
+        VIBE_RESEARCH_BIN_DIR: path.join(installRoot, "bin"),
         VIBE_RESEARCH_PORT: String(port),
         VIBE_RESEARCH_STATE_DIR: path.join(installRoot, "state"),
         VIBE_RESEARCH_WIKI_DIR: path.join(installRoot, "mac-brain"),

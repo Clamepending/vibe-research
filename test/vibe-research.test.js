@@ -246,6 +246,8 @@ test("state is available without authentication", async () => {
     assert.equal(state.agentPrompt.promptPath, ".vibe-research/agent-prompt.md");
     assert.equal(state.agentPrompt.wikiRoot, "vibe-research/buildings/library");
     assert.ok(Array.isArray(state.agentPrompt.targets));
+    assert.equal(state.agentTown.layoutSummary.cosmeticCount, 0);
+    assert.deepEqual(state.agentTown.actionItems, []);
     assert.equal(state.settings.preventSleepEnabled, true);
     assert.equal(state.settings.sleepPrevention.enabled, true);
     assert.equal(state.settings.sleepPrevention.lastStatus, "unsupported");
@@ -272,6 +274,153 @@ test("state is available without authentication", async () => {
   } finally {
     await app.close();
     await removeTempWorkspace(workspaceDir);
+  }
+});
+
+test("masterplan host serves the short public post", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-masterplan-");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+
+  try {
+    const defaultResponse = await fetch(baseUrl);
+    assert.equal(defaultResponse.status, 200);
+    assert.match(await defaultResponse.text(), /<title>Vibe Research<\/title>/);
+
+    const masterplanPayload = await new Promise((resolve, reject) => {
+      const url = new URL(baseUrl);
+      const request = http.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: "/",
+          headers: { Host: "masterplan.vibe-research.net" },
+        },
+        (response) => {
+          let body = "";
+          response.setEncoding("utf8");
+          response.on("data", (chunk) => {
+            body += chunk;
+          });
+          response.on("end", () => {
+            resolve({ body, status: response.statusCode });
+          });
+        },
+      );
+      request.on("error", reject);
+      request.end();
+    });
+    assert.equal(masterplanPayload.status, 200);
+    const masterplanText = masterplanPayload.body;
+    assert.match(masterplanText, /<title>Vibe Research Masterplan<\/title>/);
+    assert.match(masterplanText, /personal agent communities/i);
+    assert.match(masterplanText, /\/masterplan\/masterplan\.css/);
+  } finally {
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+  }
+});
+
+test("Agent Town API exposes action items, mirrored layout predicates, and events", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-town-api-");
+  const stateDir = await createTempWorkspace("vibe-research-agent-town-api-state-");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
+
+  try {
+    const stateResponse = await fetch(`${baseUrl}/api/state`);
+    assert.equal(stateResponse.status, 200);
+    const statePayload = await stateResponse.json();
+    assert.equal(statePayload.agentTown.layoutSummary.functionalCount, 0);
+
+    const createResponse = await fetch(`${baseUrl}/api/agent-town/action-items`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "onboarding-first-building",
+        kind: "setup",
+        priority: "high",
+        title: "Place your first building",
+        detail: "Open Agent Town and place one cosmetic or functional building.",
+        href: "?view=swarm",
+        cta: "Open Agent Town",
+        predicate: "first_building_placed",
+        source: "test",
+        sourceSessionId: "session-1",
+        target: {
+          type: "building",
+          id: "buildinghub",
+          label: "BuildingHub",
+        },
+        capabilityIds: ["ui-guidance"],
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+    const createPayload = await createResponse.json();
+    assert.equal(createPayload.actionItem.status, "open");
+    assert.equal(createPayload.actionItem.kind, "setup");
+    assert.equal(createPayload.actionItem.priority, "high");
+    assert.equal(createPayload.actionItem.sourceSessionId, "session-1");
+    assert.equal(createPayload.actionItem.target.type, "building");
+    assert.deepEqual(createPayload.actionItem.capabilityIds, ["ui-guidance"]);
+
+    const waitPromise = fetch(`${baseUrl}/api/agent-town/wait`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        predicate: "first_building_placed",
+        timeoutMs: 5_000,
+      }),
+    }).then(async (response) => {
+      assert.equal(response.status, 200);
+      return response.json();
+    });
+
+    const mirrorResponse = await fetch(`${baseUrl}/api/agent-town/state`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        layoutSummary: {
+          cosmeticCount: 1,
+          functionalCount: 0,
+          functionalIds: [],
+          pendingFunctionalIds: [],
+          themeId: "default",
+        },
+      }),
+    });
+    assert.equal(mirrorResponse.status, 200);
+
+    const waitPayload = await waitPromise;
+    assert.equal(waitPayload.satisfied, true);
+    assert.equal(waitPayload.state.actionItems[0].status, "completed");
+
+    const eventResponse = await fetch(`${baseUrl}/api/agent-town/events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "agent_clicked",
+        label: "Canvas Agent",
+      }),
+    });
+    assert.equal(eventResponse.status, 201);
+
+    const clickedWaitResponse = await fetch(
+      `${baseUrl}/api/agent-town/wait?predicate=agent_clicked&timeoutMs=50`,
+    );
+    assert.equal(clickedWaitResponse.status, 200);
+    const clickedWaitPayload = await clickedWaitResponse.json();
+    assert.equal(clickedWaitPayload.satisfied, true);
+    assert.equal(clickedWaitPayload.state.signals.agentClickedCount, 1);
+
+    const badWaitResponse = await fetch(`${baseUrl}/api/agent-town/wait`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ predicate: "unknown_predicate", timeoutMs: 1 }),
+    });
+    assert.equal(badWaitResponse.status, 400);
+  } finally {
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
   }
 });
 
@@ -448,6 +597,205 @@ test("image attachments are saved under the Vibe Research state directory", asyn
     });
     assert.equal(unsupportedTypeResponse.status, 415);
   } finally {
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
+  }
+});
+
+test("agent canvas API stores session image paths and serves the image", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-canvas-workspace-");
+  const stateDir = await createTempWorkspace("vibe-research-agent-canvas-state-");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wikiPath: path.join(workspaceDir, "brain") }),
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    await mkdir(path.join(workspaceDir, "results"), { recursive: true });
+    await writeFile(path.join(workspaceDir, "results", "chart.png"), PNG_FIXTURE);
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        providerId: "shell",
+        name: "canvas session",
+        cwd: workspaceDir,
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+    const { session } = await createResponse.json();
+
+    const canvasResponse = await fetch(`${baseUrl}/api/agent-town/canvases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sourceSessionId: session.id,
+        title: "Latest graph",
+        caption: "Accuracy by epoch.",
+        imagePath: "results/chart.png",
+      }),
+    });
+    assert.equal(canvasResponse.status, 201);
+    const canvasPayload = await canvasResponse.json();
+    assert.equal(canvasPayload.canvas.id, session.id);
+    assert.equal(canvasPayload.canvas.sourceSessionId, session.id);
+    assert.equal(canvasPayload.canvas.imagePath, "results/chart.png");
+
+    const stateResponse = await fetch(`${baseUrl}/api/agent-town/state`);
+    assert.equal(stateResponse.status, 200);
+    const statePayload = await stateResponse.json();
+    assert.equal(statePayload.agentTown.canvases.length, 1);
+    assert.equal(statePayload.agentTown.canvases[0].title, "Latest graph");
+
+    const imageResponse = await fetch(`${baseUrl}/api/agent-town/canvases/${canvasPayload.canvas.id}/image`);
+    assert.equal(imageResponse.status, 200);
+    assert.match(imageResponse.headers.get("content-type") || "", /image\/png/);
+    assert.deepEqual(Buffer.from(await imageResponse.arrayBuffer()), PNG_FIXTURE);
+
+    const deleteResponse = await fetch(`${baseUrl}/api/agent-town/canvases/${canvasPayload.canvas.id}`, {
+      method: "DELETE",
+    });
+    assert.equal(deleteResponse.status, 200);
+  } finally {
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
+  }
+});
+
+test("agent canvas appears below the terminal profile when a session is opened", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for agent canvas smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-canvas-ui-workspace-");
+  const stateDir = await createTempWorkspace("vibe-research-agent-canvas-ui-state-");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
+  let browser = null;
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wikiPath: path.join(workspaceDir, "brain") }),
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    await mkdir(path.join(workspaceDir, "results"), { recursive: true });
+    await writeFile(path.join(workspaceDir, "results", "chart.png"), PNG_FIXTURE);
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        providerId: "shell",
+        name: "Canvas Session",
+        cwd: workspaceDir,
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+    const { session } = await createResponse.json();
+
+    const canvasResponse = await fetch(`${baseUrl}/api/agent-town/canvases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sourceSessionId: session.id,
+        title: "Latest graph",
+        imagePath: "results/chart.png",
+      }),
+    });
+    assert.equal(canvasResponse.status, 201);
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    await page.setViewportSize({ width: 1180, height: 740 });
+    await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector(`.session-card[data-session-id="${session.id}"] .session-profile-avatar`, { timeout: 10_000 });
+    await page.waitForSelector(`.session-card[data-session-id="${session.id}"] .session-canvas-pill`, { timeout: 10_000 });
+    const sidebarCanvasText = await page.locator(`.session-card[data-session-id="${session.id}"] .session-canvas-pill`).textContent();
+    assert.match(sidebarCanvasText || "", /Canvas/);
+    assert.equal(await page.locator(`.session-card[data-session-id="${session.id}"] .session-canvas-peek`).count(), 0);
+    const sidebarProfile = await page.evaluate((sessionId) => {
+      const card = document.querySelector(`.session-card[data-session-id="${sessionId}"]`);
+      const avatar = card?.querySelector(".session-profile-avatar")?.getBoundingClientRect();
+      const portrait = card?.querySelector(".session-profile-avatar .agent-profile-avatar-portrait")?.getBoundingClientRect();
+      const avatarBox = card?.querySelector(".session-profile-avatar .agent-profile-avatar")?.getBoundingClientRect();
+      const cardBounds = card?.getBoundingClientRect();
+      return {
+        avatarWidth: avatar?.width || 0,
+        avatarHeight: avatar?.height || 0,
+        portraitTopInset: portrait && avatarBox ? portrait.top - avatarBox.top : 0,
+        portraitBottomInset: portrait && avatarBox ? avatarBox.bottom - portrait.bottom : 0,
+        cardHeight: cardBounds?.height || 0,
+      };
+    }, session.id);
+    assert.ok(sidebarProfile.avatarWidth >= 40, JSON.stringify(sidebarProfile));
+    assert.ok(sidebarProfile.avatarHeight >= 40, JSON.stringify(sidebarProfile));
+    assert.ok(sidebarProfile.portraitTopInset >= 2, JSON.stringify(sidebarProfile));
+    assert.ok(sidebarProfile.portraitBottomInset >= 2, JSON.stringify(sidebarProfile));
+    assert.ok(sidebarProfile.cardHeight <= 64, JSON.stringify(sidebarProfile));
+    await page.locator(`.session-card[data-session-id="${session.id}"]`).click();
+    await page.waitForSelector(".terminal-toolbar .agent-profile-topbar", { timeout: 10_000 });
+    await page.waitForSelector(".agent-canvas-panel img", { timeout: 10_000 });
+
+    const placement = await page.evaluate(() => {
+      const profile = document.querySelector(".terminal-toolbar .agent-profile-topbar")?.getBoundingClientRect();
+      const canvasHost = document.querySelector(".agent-canvas-host")?.getBoundingClientRect();
+      const canvas = document.querySelector(".agent-canvas-panel")?.getBoundingClientRect();
+      const terminal = document.querySelector(".workspace-split .terminal-stack")?.getBoundingClientRect();
+      const image = document.querySelector(".agent-canvas-panel img");
+
+      return {
+        profileBottom: profile?.bottom || 0,
+        terminalTop: terminal?.top || 0,
+        terminalRight: terminal?.right || 0,
+        terminalBottom: terminal?.bottom || 0,
+        canvasHostLeft: canvasHost?.left || 0,
+        canvasHostTop: canvasHost?.top || 0,
+        canvasHostBottom: canvasHost?.bottom || 0,
+        canvasTop: canvas?.top || 0,
+        imageWidth: image?.naturalWidth || 0,
+        imageHeight: image?.naturalHeight || 0,
+      };
+    });
+
+    assert.ok(placement.imageWidth > 0 && placement.imageHeight > 0, "agent canvas image should load");
+    assert.ok(placement.terminalTop >= placement.profileBottom, "terminal should sit below the profile");
+    assert.ok(placement.canvasHostLeft >= placement.terminalRight - 1, "agent canvas should dock to the right of the terminal");
+    assert.ok(Math.abs(placement.canvasHostTop - placement.terminalTop) <= 2, "agent canvas should align with terminal top");
+    assert.ok(Math.abs(placement.canvasHostBottom - placement.terminalBottom) <= 2, "agent canvas should align with terminal bottom");
+    assert.ok(placement.canvasTop >= placement.canvasHostTop, "agent canvas should render inside the window");
+
+    const handleBox = await page.locator(".agent-canvas-head").boundingBox();
+    assert.ok(handleBox, "agent canvas header should be draggable");
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handleBox.x + handleBox.width / 2 - 90, handleBox.y + handleBox.height / 2 + 36, { steps: 6 });
+    await page.mouse.up();
+
+    const draggedPlacement = await page.evaluate(() => {
+      const host = document.querySelector(".agent-canvas-host");
+      const rect = host?.getBoundingClientRect();
+      return {
+        floating: host?.classList.contains("is-floating") || false,
+        left: rect?.left || 0,
+        top: rect?.top || 0,
+      };
+    });
+    assert.equal(draggedPlacement.floating, true);
+    assert.ok(draggedPlacement.left < placement.canvasHostLeft, "dragging should undock the canvas window");
+    assert.ok(draggedPlacement.top > placement.canvasHostTop, "dragging should move the canvas window vertically");
+  } finally {
+    await browser?.close().catch(() => {});
     await app.close();
     await removeTempWorkspace(workspaceDir);
     await removeTempWorkspace(stateDir);
@@ -1374,6 +1722,177 @@ test("placed cosmetic buildings open an Agent Town drawer", async (t) => {
   }
 });
 
+test("Agent Inbox action items guide first building placement in Agent Town", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for the Agent Town onboarding action smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-town-action-ui-");
+  const stateDir = await createTempWorkspace("vibe-research-agent-town-action-state-");
+  const wikiDir = getWorkspaceLibraryDir(workspaceDir);
+  await mkdir(wikiDir, { recursive: true });
+  await writeFile(path.join(wikiDir, "index.md"), "# Agent Town Action Library\n", "utf8");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
+  let browser = null;
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        preventSleepEnabled: false,
+        wikiGitRemoteEnabled: false,
+        wikiPath: wikiDir,
+        workspaceRootPath: workspaceDir,
+        wikiPathConfigured: true,
+      }),
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    const createSessionResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "shell", cwd: workspaceDir, name: "Onboarding Agent" }),
+    });
+    assert.equal(createSessionResponse.status, 201);
+
+    const createActionResponse = await fetch(`${baseUrl}/api/agent-town/action-items`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "onboarding-first-building",
+        kind: "setup",
+        priority: "high",
+        title: "Place your first building",
+        detail: "Open Agent Town and place one cosmetic or functional building.",
+        href: "?view=swarm",
+        cta: "Open Agent Town",
+        predicate: "first_building_placed",
+        source: "onboarding",
+        target: {
+          type: "building",
+          id: "buildinghub",
+          label: "BuildingHub",
+        },
+        capabilityIds: ["ui-guidance"],
+      }),
+    });
+    assert.equal(createActionResponse.status, 201);
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto(`${baseUrl}/?view=agent-inbox`, { waitUntil: "domcontentloaded" });
+    const actionCard = page.locator('[data-agent-town-action-item="onboarding-first-building"]');
+    await actionCard.waitFor({ timeout: 10_000 });
+    assert.match(await page.locator("#agent-inbox-summary").textContent(), /actions\s*1/i);
+    assert.match(await actionCard.textContent(), /high/i);
+    assert.match(await actionCard.textContent(), /BuildingHub/i);
+
+    await actionCard.getByRole("button", { name: "Open Agent Town" }).click();
+    await page.waitForFunction(() => new URL(window.location.href).searchParams.get("view") === "swarm");
+    await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
+
+    await page.locator("[data-agent-town-builder-toggle]").click();
+    await page.locator('[data-agent-town-builder-place-cosmetic="planter"]').first().click();
+    await page.waitForFunction(() => document.querySelector(".visual-game-hover")?.textContent?.includes("Planter"));
+    const canvasBox = await page.locator("#visual-game-canvas").boundingBox();
+    assert.ok(canvasBox, "visual game canvas should be visible");
+    await page.mouse.click(canvasBox.x + canvasBox.width * 0.42, canvasBox.y + canvasBox.height * 0.55);
+
+    await page.waitForFunction(async () => {
+      const response = await fetch("/api/agent-town/state", {
+        cache: "no-store",
+        headers: { "X-Vibe-Research-API": "1" },
+      });
+      const payload = await response.json();
+      return payload.agentTown?.layoutSummary?.cosmeticCount === 1 &&
+        payload.agentTown?.actionItems?.[0]?.status === "completed";
+    }, null, { timeout: 10_000 });
+
+    await page.goto(`${baseUrl}/?view=agent-inbox`, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => !document.querySelector('[data-agent-town-action-item="onboarding-first-building"]'));
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
+  }
+});
+
+test("fresh Agent Town browser does not erase mirrored layout state", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for the Agent Town mirror smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-town-fresh-browser-");
+  const stateDir = await createTempWorkspace("vibe-research-agent-town-fresh-state-");
+  const wikiDir = getWorkspaceLibraryDir(workspaceDir);
+  await mkdir(wikiDir, { recursive: true });
+  await writeFile(path.join(wikiDir, "index.md"), "# Agent Town Mirror Library\n", "utf8");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
+  let browser = null;
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        preventSleepEnabled: false,
+        wikiGitRemoteEnabled: false,
+        wikiPath: wikiDir,
+        workspaceRootPath: workspaceDir,
+        wikiPathConfigured: true,
+      }),
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    const mirrorResponse = await fetch(`${baseUrl}/api/agent-town/state`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        layoutSummary: {
+          cosmeticCount: 1,
+          functionalCount: 0,
+          functionalIds: [],
+          pendingFunctionalIds: [],
+          themeId: "default",
+        },
+      }),
+    });
+    assert.equal(mirrorResponse.status, 200);
+
+    const createSessionResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "shell", cwd: workspaceDir, name: "Mirror Agent" }),
+    });
+    assert.equal(createSessionResponse.status, 201);
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    await page.goto(`${baseUrl}/?view=swarm`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
+    await page.waitForTimeout(500);
+
+    const stateResponse = await fetch(`${baseUrl}/api/agent-town/state`, {
+      headers: { "X-Vibe-Research-API": "1" },
+    });
+    assert.equal(stateResponse.status, 200);
+    const statePayload = await stateResponse.json();
+    assert.equal(statePayload.agentTown.layoutSummary.cosmeticCount, 1);
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
+  }
+});
+
 test("external connector buildings open details and install from their building windows", async (t) => {
   const executablePath = await resolveBrowserExecutablePath({ env: process.env });
   if (!executablePath) {
@@ -1479,6 +1998,7 @@ test("settings api stores agent credentials redacted and injects them into new s
   printf 'claude=%s\\n' "$CLAUDE_API_KEY"
   printf 'openai=%s\\n' "$OPENAI_API_KEY"
   printf 'hf=%s\\n' "$HF_TOKEN"
+  printf 'town=%s\\n' "$VIBE_RESEARCH_AGENT_TOWN_API"
 } > "$VIBE_RESEARCH_ROOT/agent-env.txt"
 `,
     "utf8",
@@ -1548,22 +2068,25 @@ test("settings api stores agent credentials redacted and injects them into new s
     assert.equal(createResponse.status, 201);
 
     let capturedEnv = "";
-    for (let attempt = 0; attempt < 50; attempt += 1) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
       try {
         capturedEnv = await readFile(capturePath, "utf8");
-        break;
+        if (capturedEnv.includes("town=")) {
+          break;
+        }
       } catch (error) {
         if (error?.code !== "ENOENT") {
           throw error;
         }
-        await new Promise((resolve) => setTimeout(resolve, 50));
       }
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
     assert.match(capturedEnv, /anthropic=sk-ant-test-agent/);
     assert.match(capturedEnv, /claude=sk-ant-test-agent/);
     assert.match(capturedEnv, /openai=sk-openai-test-agent/);
     assert.match(capturedEnv, /hf=hf_test_agent/);
+    assert.match(capturedEnv, /town=http:\/\/127\.0\.0\.1:\d+\/api\/agent-town/);
   } finally {
     await app.close();
     await removeTempWorkspace(workspaceDir);
@@ -2816,9 +3339,66 @@ test("visual graph empty canvas click closes the selected session panel and dele
     });
     assert.equal(settingsResponse.status, 200);
 
+    await mkdir(path.join(workspaceDir, "results"), { recursive: true });
+    await writeFile(path.join(workspaceDir, "results", "hover-chart.png"), PNG_FIXTURE);
+    const canvasResponse = await fetch(`${baseUrl}/api/agent-town/canvases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sourceSessionId: "visual-session-1",
+        title: "Hover graph",
+        imagePath: "results/hover-chart.png",
+      }),
+    });
+    assert.equal(canvasResponse.status, 201);
+
     browser = await chromium.launch({ executablePath, headless: true });
     const page = await browser.newPage();
     await page.setViewportSize({ width: 1180, height: 740 });
+    await page.goto(`${baseUrl}/?view=swarm`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
+    await page.locator('.session-card[data-session-id="visual-session-1"]').waitFor({ timeout: 10_000 });
+
+    await page.locator('.session-card[data-session-id="visual-session-1"]').click();
+    await page.waitForSelector(".terminal-toolbar .agent-profile-topbar", { timeout: 10_000 });
+    const shellProfileText = await page.locator(".terminal-toolbar .agent-profile-topbar").textContent();
+    assert.match(shellProfileText || "", /Canvas Agent/);
+    assert.match(shellProfileText || "", /Researcher|Agent/);
+    const shellProfilePlacement = await page.evaluate(() => {
+      const terminal = document.querySelector(".workspace-split .terminal-stack")?.getBoundingClientRect();
+      const profile = document.querySelector(".terminal-toolbar .agent-profile-topbar")?.getBoundingClientRect();
+      const canvas = document.querySelector(".workspace-split .agent-canvas-host")?.getBoundingClientRect();
+      const split = document.querySelector(".workspace-split");
+      return {
+        terminalTop: terminal?.top || 0,
+        terminalRight: terminal?.right || 0,
+        terminalWidth: terminal?.width || 0,
+        canvasLeft: canvas?.left || 0,
+        canvasWidth: canvas?.width || 0,
+        profileBottom: profile?.bottom || 0,
+        profileWidth: profile?.width || 0,
+        hasProfileSplit: split?.classList.contains("has-agent-profile") || false,
+        sideProfileCount: document.querySelectorAll(".workspace-split > .agent-profile-panel").length,
+        shortcutButtonCount: document.querySelectorAll(".terminal-toolbar .terminal-control-button").length,
+        topbarCloseCount: document.querySelectorAll(".terminal-toolbar .agent-profile-topbar-close").length,
+      };
+    });
+    assert.ok(shellProfilePlacement.profileWidth > 0, "shell agent profile should be visible in the toolbar");
+    assert.equal(shellProfilePlacement.hasProfileSplit, false);
+    assert.equal(shellProfilePlacement.sideProfileCount, 0);
+    assert.equal(shellProfilePlacement.shortcutButtonCount, 0);
+    assert.equal(shellProfilePlacement.topbarCloseCount, 0);
+    assert.ok(
+      shellProfilePlacement.profileBottom <= shellProfilePlacement.terminalTop,
+      "shell agent profile should sit above the terminal instead of beside it",
+    );
+    assert.ok(shellProfilePlacement.terminalWidth > 300, "shell terminal should keep usable width with canvas visible");
+    assert.ok(shellProfilePlacement.canvasWidth > 0, "shell agent canvas should be visible as a window");
+    assert.ok(
+      shellProfilePlacement.canvasLeft >= shellProfilePlacement.terminalRight - 1,
+      "shell agent canvas should dock to the right of the terminal",
+    );
+
     await page.goto(`${baseUrl}/?view=swarm`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
     await page.locator('.session-card[data-session-id="visual-session-1"]').waitFor({ timeout: 10_000 });
@@ -2826,25 +3406,52 @@ test("visual graph empty canvas click closes the selected session panel and dele
     const initialShape = await assertCanvasTracksFrame(page, "initial visual game canvas");
 
     const agentPoint = await findCanvasHoverPoint(page, "Canvas Agent");
+    await page.waitForSelector(".visual-game-agent-hover-card.is-visible .agent-profile-panel-hover", { timeout: 10_000 });
+    const hoverProfileText = await page.locator(".visual-game-agent-hover-card.is-visible").textContent();
+    assert.match(hoverProfileText || "", /Canvas Agent/);
+    assert.match(hoverProfileText || "", /Researcher|Agent/);
+    assert.match(hoverProfileText || "", /Hover graph/);
+    await page.waitForFunction(
+      () => {
+        const image = document.querySelector(".visual-game-agent-hover-card.is-visible .agent-canvas-panel img");
+        return image && image.naturalWidth > 0 && image.naturalHeight > 0;
+      },
+      { timeout: 10_000 },
+    );
     await clickCanvasPoint(page, agentPoint.x, agentPoint.y);
     await page.waitForSelector(".visual-game-session-panel", { timeout: 10_000 });
-    await page.waitForSelector(".visual-game-session-panel .agent-profile-panel", { timeout: 10_000 });
-    const profileText = await page.locator(".visual-game-session-panel .agent-profile-panel").textContent();
+    await page.waitForSelector(".visual-game-session-panel .agent-profile-topbar", { timeout: 10_000 });
+    const profileText = await page.locator(".visual-game-session-panel .agent-profile-topbar").textContent();
     assert.match(profileText || "", /Canvas Agent/);
     assert.match(profileText || "", /Researcher|Agent/);
     const profilePlacement = await page.evaluate(() => {
       const terminal = document.querySelector(".visual-game-session-panel .terminal-stack")?.getBoundingClientRect();
-      const profile = document.querySelector(".visual-game-session-panel .agent-profile-panel")?.getBoundingClientRect();
+      const profile = document.querySelector(".visual-game-session-panel .agent-profile-topbar")?.getBoundingClientRect();
+      const canvas = document.querySelector(".visual-game-session-panel .agent-canvas-host")?.getBoundingClientRect();
       return {
+        terminalTop: terminal?.top || 0,
         terminalRight: terminal?.right || 0,
-        profileLeft: profile?.left || 0,
+        terminalWidth: terminal?.width || 0,
+        canvasLeft: canvas?.left || 0,
+        canvasWidth: canvas?.width || 0,
+        profileBottom: profile?.bottom || 0,
         profileWidth: profile?.width || 0,
+        shortcutButtonCount: document.querySelectorAll(".visual-game-session-panel .terminal-control-button").length,
+        topbarCloseCount: document.querySelectorAll(".visual-game-session-panel .agent-profile-topbar-close").length,
       };
     });
     assert.ok(profilePlacement.profileWidth > 0, "agent profile should be visible");
+    assert.equal(profilePlacement.shortcutButtonCount, 0);
+    assert.equal(profilePlacement.topbarCloseCount, 0);
     assert.ok(
-      profilePlacement.profileLeft >= profilePlacement.terminalRight - 1,
-      "agent profile should sit to the right of the terminal",
+      profilePlacement.profileBottom <= profilePlacement.terminalTop + 1,
+      "agent profile should replace the terminal header instead of sitting beside the terminal",
+    );
+    assert.ok(profilePlacement.terminalWidth > 180, "visual terminal should keep usable width with canvas visible");
+    assert.ok(profilePlacement.canvasWidth > 0, "visual drawer should show the canvas window");
+    assert.ok(
+      profilePlacement.canvasLeft >= profilePlacement.terminalRight - 1,
+      "visual drawer canvas should dock to the right of the terminal",
     );
     const sessionPanelShape = await assertCanvasTracksFrame(page, "visual game canvas with session panel");
     const panelWidthBeforeResize = await page.locator(".visual-game-session-panel").evaluate((panel) => (
@@ -4383,17 +4990,19 @@ test("login shells inherit mailbox helpers and agent inbox env vars", async () =
       "-i",
       "-l",
       "-c",
-      "printf 'INBOX=%s\\n' \"$VIBE_RESEARCH_AGENT_INBOX\"; printf 'WATCHER=%s\\n' \"$VIBE_RESEARCH_MAIL_WATCHER\"; printf 'PWCLI=%s\\n' \"$PWCLI\"; printf 'PWSKILL=%s\\n' \"$VIBE_RESEARCH_PLAYWRIGHT_SKILL\"; command -v vr-mailwatch; command -v vr-session-name; command -v vr-playwright; command -v playwright-cli",
+      "printf 'INBOX=%s\\n' \"$VIBE_RESEARCH_AGENT_INBOX\"; printf 'WATCHER=%s\\n' \"$VIBE_RESEARCH_MAIL_WATCHER\"; printf 'CANVAS=%s\\n' \"$VIBE_RESEARCH_AGENT_CANVAS_COMMAND\"; printf 'PWCLI=%s\\n' \"$PWCLI\"; printf 'PWSKILL=%s\\n' \"$VIBE_RESEARCH_PLAYWRIGHT_SKILL\"; command -v vr-mailwatch; command -v vr-session-name; command -v vr-agent-canvas; command -v vr-playwright; command -v playwright-cli",
     ],
     { env },
   );
 
   assert.match(stdout, new RegExp(`INBOX=.*${sessionId}.*/inbox`));
   assert.match(stdout, /WATCHER=vr-mailwatch/);
+  assert.match(stdout, /CANVAS=vr-agent-canvas/);
   assert.match(stdout, /PWCLI=vr-playwright/);
   assert.match(stdout, /PWSKILL=.*skills\/playwright\/SKILL\.md/);
   assert.match(stdout, /vr-mailwatch/);
   assert.match(stdout, /vr-session-name/);
+  assert.match(stdout, /vr-agent-canvas/);
   assert.match(stdout, /vr-playwright/);
   assert.match(stdout, /playwright-cli/);
 });
@@ -4522,6 +5131,67 @@ test("vr-session-name falls back to a filesystem request when localhost is unrea
       sessionsPayload.sessions.find((entry) => entry.id === session.id)?.name,
       "resource coordinator",
     );
+  } finally {
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+  }
+});
+
+test("vr-agent-canvas publishes the current session canvas through server metadata", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-canvas-helper-");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+
+  try {
+    await mkdir(path.join(workspaceDir, "results"), { recursive: true });
+    await writeFile(path.join(workspaceDir, "results", "best.png"), PNG_FIXTURE);
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId: "shell",
+        name: "Canvas Helper",
+        cwd: workspaceDir,
+      }),
+    });
+
+    assert.equal(createResponse.status, 201);
+    const { session } = await createResponse.json();
+    const env = buildSessionEnv(session.id, "shell", workspaceDir);
+    const helperPath = path.join(process.cwd(), "bin", "vr-agent-canvas");
+
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [
+        helperPath,
+        "--image",
+        "results/best.png",
+        "--title",
+        "Best qualitative result",
+        "--caption",
+        "Shows the clearest run so far.",
+      ],
+      {
+        cwd: workspaceDir,
+        env,
+      },
+    );
+
+    assert.match(stdout.trim(), new RegExp(`canvas ${session.id}: Best qualitative result`));
+
+    const stateResponse = await fetch(`${baseUrl}/api/agent-town/state`);
+    assert.equal(stateResponse.status, 200);
+    const statePayload = await stateResponse.json();
+    const canvas = statePayload.agentTown.canvases.find((entry) => entry.id === session.id);
+    assert.equal(canvas.sourceSessionId, session.id);
+    assert.equal(canvas.imagePath, "results/best.png");
+    assert.equal(canvas.caption, "Shows the clearest run so far.");
+
+    const imageResponse = await fetch(`${baseUrl}/api/agent-town/canvases/${session.id}/image`);
+    assert.equal(imageResponse.status, 200);
+    assert.deepEqual(Buffer.from(await imageResponse.arrayBuffer()), PNG_FIXTURE);
   } finally {
     await app.close();
     await removeTempWorkspace(workspaceDir);

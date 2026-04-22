@@ -119,6 +119,8 @@ if (dirtyTrackedLines.length > 0) {
 
 const packagePath = path.join(rootDir, "package.json");
 const packageLockPath = path.join(rootDir, "package-lock.json");
+const desktopPackagePath = path.join(rootDir, "desktop", "package.json");
+const desktopPackageLockPath = path.join(rootDir, "desktop", "package-lock.json");
 const releaseChannelPath = path.join(rootDir, "release-channel.json");
 const packageJson = readJson(packagePath);
 const version = nextVersion(packageJson.version, bump);
@@ -165,6 +167,21 @@ if (fs.existsSync(packageLockPath)) {
   writeJson(packageLockPath, packageLock);
 }
 
+if (fs.existsSync(desktopPackagePath)) {
+  const desktopPackageJson = readJson(desktopPackagePath);
+  desktopPackageJson.version = version;
+  writeJson(desktopPackagePath, desktopPackageJson);
+}
+
+if (fs.existsSync(desktopPackageLockPath)) {
+  const desktopPackageLock = readJson(desktopPackageLockPath);
+  desktopPackageLock.version = version;
+  if (desktopPackageLock.packages?.[""]) {
+    desktopPackageLock.packages[""].version = version;
+  }
+  writeJson(desktopPackageLockPath, desktopPackageLock);
+}
+
 writeJson(releaseChannelPath, {
   schemaVersion: 1,
   name: "Vibe Research",
@@ -177,7 +194,14 @@ writeJson(releaseChannelPath, {
   installer: `https://raw.githubusercontent.com/Clamepending/vibe-research/${tag}/install.sh`,
 });
 
-run("git", ["add", "package.json", "package-lock.json", "release-channel.json"]);
+run("git", [
+  "add",
+  "package.json",
+  "package-lock.json",
+  "release-channel.json",
+  "desktop/package.json",
+  "desktop/package-lock.json",
+]);
 run("git", ["commit", "-m", `Release ${tag}`]);
 run("git", ["tag", "-a", tag, "-m", `Vibe Research ${tag}`]);
 log(`Created ${tag}.`);

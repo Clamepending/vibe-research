@@ -66,7 +66,19 @@ const CLAUDE_BACKGROUND_TASK_TAIL_BYTES = 900_000;
 const CLAUDE_BACKGROUND_TASK_STALE_MS = 24 * 60 * 60 * 1000;
 const CLAUDE_BACKGROUND_TASK_GRACE_MS = 30_000;
 const CLAUDE_SKIP_PERMISSIONS_ARG = "--dangerously-skip-permissions";
-const PERSISTENT_TERMINAL_PROVIDER_IDS = new Set(["claude", "codex", "gemini", "ml-intern", "opencode", "shell"]);
+const CLAUDE_OLLAMA_PROVIDER_ID = "claude-ollama";
+const DEFAULT_CLAUDE_OLLAMA_BASE_URL = "http://localhost:11434";
+const DEFAULT_CLAUDE_OLLAMA_MODEL = "qwen3-coder";
+const PERSISTENT_TERMINAL_PROVIDER_IDS = new Set([
+  "claude",
+  CLAUDE_OLLAMA_PROVIDER_ID,
+  "codex",
+  "gemini",
+  "ml-intern",
+  "openclaw",
+  "opencode",
+  "shell",
+]);
 const IDLE_TERMINAL_COMMANDS = new Set(["bash", "csh", "dash", "fish", "ksh", "login", "sh", "tcsh", "zsh"]);
 const PROVIDER_CREDENTIAL_ENV_KEYS = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "OPENAI_API_KEY", "HF_TOKEN"];
 const TMUX_SESSION_ENV_KEYS = new Set([
@@ -116,6 +128,89 @@ function getShellArgs(shellPath) {
 
 function isDisabledFlag(value) {
   return /^(?:0|false|no|off)$/i.test(String(value ?? "").trim());
+}
+
+function isClaudeOllamaProviderId(providerId) {
+  return String(providerId || "").trim().toLowerCase() === CLAUDE_OLLAMA_PROVIDER_ID;
+}
+
+function isClaudeProviderId(providerId) {
+  const normalizedProviderId = String(providerId || "").trim().toLowerCase();
+  return normalizedProviderId === "claude" || normalizedProviderId === CLAUDE_OLLAMA_PROVIDER_ID;
+}
+
+function getClaudeOllamaBaseUrl(env = process.env) {
+  return (
+    String(
+      env?.VIBE_RESEARCH_CLAUDE_OLLAMA_BASE_URL ||
+        env?.REMOTE_VIBES_CLAUDE_OLLAMA_BASE_URL ||
+        env?.CLAUDE_OLLAMA_BASE_URL ||
+        "",
+    ).trim() ||
+    DEFAULT_CLAUDE_OLLAMA_BASE_URL
+  ).replace(/\/+$/, "");
+}
+
+function getClaudeOllamaModel(env = process.env) {
+  return String(
+    env?.VIBE_RESEARCH_CLAUDE_OLLAMA_MODEL ||
+      env?.REMOTE_VIBES_CLAUDE_OLLAMA_MODEL ||
+      env?.CLAUDE_OLLAMA_MODEL ||
+      "",
+  ).trim() || DEFAULT_CLAUDE_OLLAMA_MODEL;
+}
+
+function mergeNoProxy(value, entries) {
+  const seen = new Set();
+  return [
+    ...String(value || "").split(","),
+    ...entries,
+  ]
+    .map((entry) => String(entry || "").trim())
+    .filter((entry) => {
+      if (!entry || seen.has(entry.toLowerCase())) {
+        return false;
+      }
+      seen.add(entry.toLowerCase());
+      return true;
+    })
+    .join(",");
+}
+
+function buildProviderSpecificSessionEnv(providerId, env = process.env) {
+  if (!isClaudeOllamaProviderId(providerId)) {
+    return {};
+  }
+
+  const model = getClaudeOllamaModel(env);
+  const noProxy = mergeNoProxy(env?.NO_PROXY || env?.no_proxy || "", ["localhost", "127.0.0.1", "::1"]);
+
+  return {
+    ANTHROPIC_AUTH_TOKEN: "ollama",
+    ANTHROPIC_API_KEY: "local",
+    ANTHROPIC_BASE_URL: getClaudeOllamaBaseUrl(env),
+    ANTHROPIC_MODEL: model,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: model,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: model,
+    CLAUDE_CODE_SUBAGENT_MODEL: model,
+    CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1",
+    CLAUDE_CODE_DISABLE_THINKING: "1",
+    DISABLE_AUTOUPDATER: "1",
+    DISABLE_BUG_COMMAND: "1",
+    DISABLE_ERROR_REPORTING: "1",
+    DISABLE_FEEDBACK_COMMAND: "1",
+    DISABLE_INSTALL_GITHUB_APP_COMMAND: "1",
+    DISABLE_INTERLEAVED_THINKING: "1",
+    DISABLE_LOGIN_COMMAND: "1",
+    DISABLE_PROMPT_CACHING: "1",
+    DISABLE_TELEMETRY: "1",
+    DISABLE_UPGRADE_COMMAND: "1",
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+  };
 }
 
 function resolveExecutableCommand(command, env = process.env) {
@@ -409,7 +504,7 @@ function providerHasReadyHint(providerId, buffer) {
     return false;
   }
 
-  if (providerId === "claude") {
+  if (isClaudeProviderId(providerId)) {
     if (hasClaudeWorkspaceTrustPrompt(text)) {
       return false;
     }
@@ -430,6 +525,10 @@ function providerHasReadyHint(providerId, buffer) {
 
   if (providerId === "ml-intern") {
     return /ML\s*Intern|Hugging\s*Face\s*Agent|>\s*$/i.test(text);
+  }
+
+  if (providerId === "openclaw") {
+    return /OpenClaw|Molty|lobster|tui|>\s*$/i.test(text);
   }
 
   return true;
@@ -472,7 +571,7 @@ function getManagedProviderLaunchCommand(provider) {
     return null;
   }
 
-  if (provider.id === "claude" || provider.id === "codex") {
+  if (isClaudeProviderId(provider.id) || provider.id === "codex") {
     return path.join(helperBinDir, provider.command || provider.id);
   }
 
@@ -513,6 +612,12 @@ function buildResourceLimitEnv(env) {
   );
 }
 
+function getClaudeProviderLaunchArgs(provider, env = process.env) {
+  return isClaudeOllamaProviderId(provider?.id)
+    ? ["--model", getClaudeOllamaModel(env)]
+    : [];
+}
+
 export function buildSessionEnv(
   sessionId,
   providerId,
@@ -547,10 +652,12 @@ export function buildSessionEnv(
   const buildingGuidesIndex = getBuildingAgentGuideIndexPath(resolvedSystemRootPath);
   const agentDir = path.join(commsDir, "agents", sessionId);
   const { NO_COLOR: _noColor, ...colorCapableEnv } = env;
+  const providerSpecificEnv = buildProviderSpecificSessionEnv(providerId, colorCapableEnv);
 
   return {
     ...colorCapableEnv,
     ...buildResourceLimitEnv(colorCapableEnv),
+    ...providerSpecificEnv,
     CLICOLOR: "1",
     COLORTERM: "truecolor",
     LANG: "en_US.UTF-8",
@@ -591,6 +698,9 @@ export function buildSessionEnv(
     VIBE_RESEARCH_AGENT_ENV_FILE: path.join(agentDir, "env.sh"),
     VIBE_RESEARCH_AGENT_INBOX: path.join(agentDir, "inbox"),
     VIBE_RESEARCH_AGENT_PROCESSED_DIR: path.join(agentDir, "processed"),
+    VIBE_RESEARCH_AGENT_CANVAS_HELP:
+      "vr-agent-canvas --image results/chart.png --title \"Latest graph\" --caption \"Best qualitative result so far.\"",
+    VIBE_RESEARCH_AGENT_CANVAS_COMMAND: "vr-agent-canvas",
     VIBE_RESEARCH_AGENTMAIL_REPLY_COMMAND: "vr-agentmail-reply",
     VIBE_RESEARCH_TELEGRAM_REPLY_COMMAND: "vr-telegram-reply",
     VIBE_RESEARCH_MAIL_WATCHER: "vr-mailwatch",
@@ -619,6 +729,9 @@ export function buildSessionEnv(
     REMOTE_VIBES_AGENT_ENV_FILE: path.join(agentDir, "env.sh"),
     REMOTE_VIBES_AGENT_INBOX: path.join(agentDir, "inbox"),
     REMOTE_VIBES_AGENT_PROCESSED_DIR: path.join(agentDir, "processed"),
+    REMOTE_VIBES_AGENT_CANVAS_HELP:
+      "rv-agent-canvas --image results/chart.png --title \"Latest graph\" --caption \"Best qualitative result so far.\"",
+    REMOTE_VIBES_AGENT_CANVAS_COMMAND: "rv-agent-canvas",
     REMOTE_VIBES_AGENTMAIL_REPLY_COMMAND: "rv-agentmail-reply",
     REMOTE_VIBES_TELEGRAM_REPLY_COMMAND: "rv-telegram-reply",
     REMOTE_VIBES_MAIL_WATCHER: "rv-mailwatch",
@@ -997,7 +1110,7 @@ function summarizeClaudeSubagentTranscript(filePath, fallbackAgentId) {
 }
 
 function listClaudeSubagentsForSession(session, homeDirOrEnv = process.env) {
-  if (session?.providerId !== "claude") {
+  if (!isClaudeProviderId(session?.providerId)) {
     return [];
   }
 
@@ -1119,7 +1232,7 @@ function readFileTailSync(filePath, byteLimit) {
 }
 
 function getClaudeTranscriptPathsForSession(session, homeDirOrEnv = process.env) {
-  if (session?.providerId !== "claude") {
+  if (!isClaudeProviderId(session?.providerId)) {
     return [];
   }
 
@@ -1351,7 +1464,7 @@ function readClaudeBackgroundTasksFromTranscript(transcriptPath) {
 }
 
 function summarizeClaudeBackgroundTasksForSession(session, homeDirOrEnv = process.env) {
-  if (session?.providerId !== "claude" || session?.status === "exited") {
+  if (!isClaudeProviderId(session?.providerId) || session?.status === "exited") {
     return { active: false, activeCount: 0, updatedAt: null };
   }
 
@@ -2414,7 +2527,7 @@ export class SessionManager {
         return false;
       }
 
-      if (providerId === "claude") {
+      if (isClaudeProviderId(providerId)) {
         const pasted = this.write(session.id, normalizedPrompt);
         if (!pasted) {
           return false;
@@ -2445,7 +2558,7 @@ export class SessionManager {
       const elapsedMs = now - startedAt;
       const idleMs = now - lastOutputAt;
 
-      if (providerId === "claude" && !answeredWorkspaceTrust && hasClaudeWorkspaceTrustPrompt(session.buffer)) {
+      if (isClaudeProviderId(providerId) && !answeredWorkspaceTrust && hasClaudeWorkspaceTrustPrompt(session.buffer)) {
         answeredWorkspaceTrust = true;
         this.write(session.id, "1\r");
         this.setTimeoutFn(attempt, this.initialPromptRetryMs);
@@ -2635,7 +2748,7 @@ export class SessionManager {
     const sourceProviderState = removeTerminalProviderState(sourceSession.providerState);
     const sourceProviderSessionId =
       sourceProviderState?.sessionId ||
-      (sourceSession.providerId === "claude" ? sourceSession.id : null);
+      (isClaudeProviderId(sourceSession.providerId) ? sourceSession.id : null);
 
     if (!sourceProviderSessionId) {
       return sourceProviderState
@@ -3227,8 +3340,9 @@ export class SessionManager {
       };
     }
 
-    if (provider.id === "claude") {
+    if (isClaudeProviderId(provider.id)) {
       const launchCommand = getManagedProviderLaunchCommand(provider);
+      const claudeLaunchArgs = getClaudeProviderLaunchArgs(provider, this.env);
       this.setPendingProviderCapture(session, null);
       const fallbackSessionId = restored
         ? listClaudeSessionsForCwd(session.cwd, this.userHomeDir)[0]?.id || null
@@ -3240,12 +3354,13 @@ export class SessionManager {
       }
 
       const createCommand = buildShellCommand(launchCommand, [
+        ...claudeLaunchArgs,
         CLAUDE_SKIP_PERMISSIONS_ARG,
         "--session-id",
         sessionId || session.id,
       ]);
       const resumeCommand = sessionId
-        ? buildShellCommand(launchCommand, [CLAUDE_SKIP_PERMISSIONS_ARG, "--resume", sessionId])
+        ? buildShellCommand(launchCommand, [...claudeLaunchArgs, CLAUDE_SKIP_PERMISSIONS_ARG, "--resume", sessionId])
         : null;
       return {
         commandString: (restored || session.providerState?.forkedFromSessionId) && sessionId
@@ -3355,6 +3470,14 @@ export class SessionManager {
           }
           await this.beginPendingProviderCapture(session);
         },
+      };
+    }
+
+    if (provider.id === "openclaw") {
+      this.setPendingProviderCapture(session, null);
+      return {
+        commandString: buildShellCommand(provider.launchCommand, ["tui"]),
+        afterLaunch: null,
       };
     }
 

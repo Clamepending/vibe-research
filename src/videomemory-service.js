@@ -102,13 +102,17 @@ function hasClaudeWorkspaceTrustPrompt(buffer) {
   return /Quick\s*safety\s*check|Yes,\s*I\s*trust\s*this\s*folder|Claude\s*Code'll\s*be\s*able\s*to\s*read/i.test(text);
 }
 
+function isClaudeProviderId(providerId) {
+  return ["claude", "claude-ollama"].includes(String(providerId || "").trim().toLowerCase());
+}
+
 function providerHasReadyHint(providerId, buffer) {
   const text = normalizeTerminalText(buffer);
   if (!text) {
     return false;
   }
 
-  if (providerId === "claude") {
+  if (isClaudeProviderId(providerId)) {
     if (hasClaudeWorkspaceTrustPrompt(text)) {
       return false;
     }
@@ -129,6 +133,10 @@ function providerHasReadyHint(providerId, buffer) {
 
   if (providerId === "ml-intern") {
     return /ML\s*Intern|Hugging\s*Face\s*Agent|>\s*$/i.test(text);
+  }
+
+  if (providerId === "openclaw") {
+    return /OpenClaw|Molty|lobster|tui|>\s*$/i.test(text);
   }
 
   return true;
@@ -892,7 +900,7 @@ export class VideoMemoryService {
       return false;
     }
 
-    if (providerId === "claude") {
+    if (isClaudeProviderId(providerId)) {
       this.queueClaudePromptForSession(sessionId, prompt);
       return true;
     }
