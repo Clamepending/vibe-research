@@ -316,6 +316,8 @@ test("AgentMail recognizes provider interactive startup as ready", () => {
   assert.equal(testInternals.providerHasReadyHint("ml-intern", "ML Intern\n> "), true);
   assert.equal(testInternals.providerHasReadyHint("ml-intern", "Hugging Face Agent\n> "), true);
   assert.equal(testInternals.providerHasReadyHint("ml-intern", "Paste your HF token:"), false);
+  assert.equal(testInternals.providerHasReadyHint("openclaw", "OpenClaw TUI\n> "), true);
+  assert.equal(testInternals.providerHasReadyHint("openclaw", "Molty is ready\n> "), true);
   assert.equal(testInternals.providerHasReadyHint("ml-intern", ""), false);
   assert.equal(testInternals.providerHasReadyHint("openclaw", "OpenClaw TUI\n> "), true);
   assert.equal(testInternals.providerHasReadyHint("openclaw", "Molty is ready\n> "), true);

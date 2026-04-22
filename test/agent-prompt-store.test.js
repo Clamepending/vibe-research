@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { AgentPromptStore } from "../src/agent-prompt-store.js";
 
-test("managed prompts tell Codex and Claude Code how to find building guides", async () => {
+test("managed prompts tell terminal agents how to find building guides", async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "vr-agent-prompt-"));
   const stateDir = path.join(cwd, ".vibe-research");
   const wikiRootPath = path.join(stateDir, "wiki");
@@ -15,15 +15,22 @@ test("managed prompts tell Codex and Claude Code how to find building guides", a
     await store.initialize();
 
     const state = await store.getState();
-    assert.match(state.prompt, /vibe-research:building-guides-protocol:v1/);
+    assert.match(state.prompt, /vibe-research:building-guides-protocol:v2/);
     assert.match(state.prompt, /\$VIBE_RESEARCH_BUILDING_GUIDES_INDEX/);
     assert.match(state.prompt, /Codex, Claude Code, OpenClaw, and shell agents/);
+    assert.match(state.prompt, /## Agent Town State/);
+    assert.match(state.prompt, /\$VIBE_RESEARCH_AGENT_TOWN_API\/state/);
+    assert.match(state.prompt, /vr-agent-canvas --image <path>/);
+    assert.match(state.prompt, /satisfied: true/);
+    assert.match(state.prompt, /first_building_placed/);
 
     for (const filename of ["AGENTS.md", "CLAUDE.md", "GEMINI.md"]) {
       const contents = await readFile(path.join(cwd, filename), "utf8");
       assert.match(contents, /vibe-research:managed-agent-prompt/);
       assert.match(contents, /## Building Guides/);
       assert.match(contents, /\$VIBE_RESEARCH_BUILDING_GUIDES_DIR\/<building-id>\.md/);
+      assert.match(contents, /## Agent Town State/);
+      assert.match(contents, /latest canvas appears under the agent profile/);
       assert.match(contents, /Never write secrets/);
     }
   } finally {

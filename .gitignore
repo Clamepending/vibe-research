@@ -8,3 +8,4 @@ public/vendor
 .playwright-cli/
 output/
 dist/
+desktop/assets/icon.iconset/

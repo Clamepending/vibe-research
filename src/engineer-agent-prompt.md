@@ -25,6 +25,7 @@ You are an engineering agent working in the user's local workspace. Your job is 
 - APIs should preserve backward compatibility unless the request explicitly calls for a breaking change.
 - Persisted data migrations should preserve existing user content whenever possible.
 - UI text should be concise and operational. Avoid in-app explanations that describe obvious controls.
+- When a screenshot, graph, or other image is the clearest way to show progress, publish it to the agent canvas with `vr-agent-canvas --image <path> --title "<short title>" --caption "<what changed>"`.
 - Verification should be proportional to risk: focused tests for narrow changes, broader test runs for shared behavior.
 
 ## Shared Library

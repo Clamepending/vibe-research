@@ -3,7 +3,6 @@ import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "xterm-addon-canvas";
 import {
   AppWindow,
-  ArrowUp,
   BookOpen,
   Bot,
   Camera,
@@ -11,7 +10,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  CircleStop,
   Cpu,
   File,
   FilePenLine,
@@ -24,8 +22,6 @@ import {
   GitFork,
   Gpu,
   Image as ImageIcon,
-  IndentDecrease,
-  IndentIncrease,
   Inbox,
   MemoryStick,
   Menu,
@@ -43,7 +39,6 @@ import {
   Share2,
   ShoppingCart,
   Trash2,
-  Type,
   Waypoints,
   Wrench,
   X,
@@ -603,6 +598,7 @@ const AGENT_TOWN_BUILDER_COSMETIC_ITEMS = Object.freeze([
 const AGENT_TOWN_PLACE_COLLISION_GAP = 2;
 const AGENT_TOWN_BUILDER_FEEDBACK_MS = 1500;
 const AGENT_TOWN_BUILDER_PULSE_MS = 720;
+const AGENT_TOWN_BUILDER_CONSTRUCTION_MS = 1900;
 const AGENT_TOWN_BUILDER_GRID_SIZE = AGENT_TOWN_BUILD_GRID_SIZE;
 const AGENT_TOWN_DEFAULT_THEME_ID = "default";
 const AGENT_TOWN_THEMES = Object.freeze([
@@ -1262,6 +1258,23 @@ const state = {
     inProgress: false,
     toast: null,
   },
+  agentTown: {
+    actionItems: [],
+    canvases: [],
+    events: [],
+    layoutSummary: {
+      cosmeticCount: 0,
+      functionalCount: 0,
+      functionalIds: [],
+      pendingFunctionalIds: [],
+      themeId: AGENT_TOWN_DEFAULT_THEME_ID,
+    },
+    signals: {
+      agentClickedCount: 0,
+      automationCreatedCount: 0,
+      libraryNoteSavedCount: 0,
+    },
+  },
   agentProfile: {
     sessionId: "",
     subagentId: "",
@@ -1294,6 +1307,7 @@ const state = {
     builderPlacement: null,
     builderFeedback: null,
     builderPulse: null,
+    builderConstruction: null,
     selectedSessionId: "",
     selectedBrowserUseSessionId: "",
     selectedBuildingId: "",
@@ -2056,6 +2070,7 @@ function getSessionActivityStyle(status) {
 
 function getAgentInboxSummary() {
   const summary = {
+    actions: getAgentTownOpenActionItems().length,
     exited: 0,
     read: 0,
     total: state.sessions.length,
@@ -2081,6 +2096,9 @@ function getAgentInboxSummary() {
 
 function getAgentInboxNavMeta() {
   const summary = getAgentInboxSummary();
+  if (summary.actions > 0) {
+    return `${summary.actions} actions`;
+  }
   if (summary.unread > 0) {
     return `${summary.unread} to review`;
   }
@@ -2088,6 +2106,24 @@ function getAgentInboxNavMeta() {
     return `${summary.working} working`;
   }
   return `${summary.total} sessions`;
+}
+
+function getAgentTownOpenActionItems() {
+  const priorityRank = {
+    urgent: 0,
+    high: 1,
+    normal: 2,
+    low: 3,
+  };
+  return Array.isArray(state.agentTown?.actionItems)
+    ? state.agentTown.actionItems
+        .filter((item) => item?.status === "open")
+        .sort((left, right) => {
+          const leftRank = priorityRank[left.priority] ?? priorityRank.normal;
+          const rightRank = priorityRank[right.priority] ?? priorityRank.normal;
+          return leftRank - rightRank || timestampMs(right.createdAt) - timestampMs(left.createdAt);
+        })
+    : [];
 }
 
 function getAgentInboxPriority(status) {
@@ -5452,15 +5488,16 @@ Context:
 - Agent provider: ${providerLabel}
 - Project folder: ${workspacePath}
 - Library folder: ${libraryPath || "not chosen yet"}
+- Agent Town API: /api/agent-town (terminal agents also receive $VIBE_RESEARCH_AGENT_TOWN_API)
 
-Do not overload me with a full tour. Teach in mini bite-sized pieces: one small concept, one concrete action, and one gentle question at a time. Check in before moving to the next piece. When asking me to do something in the UI, ask me to say when it is done unless you have a real tool or API signal confirming it.
+Do not overload me with a full tour. Teach in mini bite-sized pieces: one small concept, one concrete action, and one gentle question at a time. Check in before moving to the next piece. When asking me to do something in the UI, ask me to say when it is done unless you have a real tool or API signal confirming it. When a wait response reports success (for example \`satisfied: true\`), treat that as the user action being complete: acknowledge what changed, mark the mini-step done, and continue without asking me to report it again.
 
 Start by saying "This is our village!" in a warm way. Then ask what name I want you to use and what background or comfort level I am coming from. Ask whether it is okay to save a brief, non-sensitive preference note in the Library; if I agree, create or update a short Library note with my name, background, preferred pace, and what I want to do first. Do not record secrets, credentials, or private details.
 
 Use this map for the bite-sized walkthrough, but do not dump it all at once:
 1. Agent Town: agents live in the canvas, and buildings are tool/integration homes.
 2. Library: shared markdown memory that agents can read and update for continuity.
-3. First building: guide me through one tiny win in the town builder: place one cosmetic building or install/place one functional building. Explain cosmetic versus functional only when it matters for that action.
+3. First building: create an Agent Town action item with predicate "first_building_placed", href "?view=swarm", sourceSessionId "$VIBE_RESEARCH_SESSION_ID" when available, and a short title like "Place your first building"; then wait on "first_building_placed" while guiding me to place one cosmetic building or install/place one functional building. Explain cosmetic versus functional only when it matters for that action.
 4. Agents: click an agent in Agent Town to open that agent's session and talk to them.
 5. Automations: open the Campanile/Automations building, choose a daily 9am schedule, and write a task prompt; give this concrete example: "Every morning at 9am, look through the Library and send me a summary of the day in my Agent Inbox."
 6. Occupations: the system prompts/roles that shape new agents.
@@ -9694,13 +9731,25 @@ function renderSessionCard(session) {
   const visibleSubagents = subagents.filter(
     (subagent) => subagent?.status === "working",
   );
+  const profile = getAgentProfileForSession(session, { sessionId: session.id });
+  const canvasBadge = renderSessionCanvasBadge(session);
+  const displayName = profile?.name || session.name || session.providerLabel || "Agent";
+  const subtitle = profile?.occupationLabel || session.providerLabel || session.providerId || "Agent";
 
   return `
-    <article class="session-card ${session.id === state.activeSessionId ? "is-active" : ""}" data-session-id="${session.id}">
+    <article class="session-card ${session.id === state.activeSessionId ? "is-active" : ""} ${profile ? "has-profile" : ""} ${canvasBadge ? "has-canvas" : ""}" data-session-id="${session.id}">
       ${renderSessionActivityButton(session, status)}
+      ${
+        profile
+          ? `<span class="session-profile-avatar">${renderAgentProfileAvatar(profile)}</span>`
+          : ""
+      }
       <div class="session-main">
-        <div class="session-name">${escapeHtml(session.name)}</div>
-        <div class="session-subtitle">${escapeHtml(session.providerLabel)}</div>
+        <div class="session-name">${escapeHtml(displayName)}</div>
+        <div class="session-subtitle">
+          <span>${escapeHtml(subtitle)}</span>
+          ${canvasBadge}
+        </div>
       </div>
       <span class="session-time">${relativeTime(session.lastOutputAt)}</span>
       <div class="session-actions">
@@ -9720,6 +9769,21 @@ function renderSessionCard(session) {
         ? `<div class="session-subagents" aria-label="Session subagents">${visibleSubagents.map((subagent) => renderSessionSubagentCard(subagent, session)).join("")}</div>`
         : ""
     }
+  `;
+}
+
+function renderSessionCanvasBadge(session) {
+  const canvas = getAgentCanvasForSession(session, { sessionId: session?.id || "" });
+  if (!canvas) {
+    return "";
+  }
+
+  const title = canvas.title || "Agent canvas";
+  return `
+    <span class="session-canvas-pill" title="${escapeHtml(title)}" aria-label="Agent canvas ${escapeHtml(title)}">
+      ${renderIcon(ImageIcon)}
+      <span>Canvas</span>
+    </span>
   `;
 }
 
@@ -9958,7 +10022,7 @@ function renderAgentProfileAvatar(profile) {
       >
         <span class="agent-profile-avatar-backdrop"></span>
         <span class="agent-profile-avatar-crab">${renderOpenClawCrabAvatarMarkup()}</span>
-        <span class="agent-profile-avatar-initials">${escapeHtml(profile.initials || "AI")}</span>
+        <span class="agent-profile-avatar-initials">${escapeHtml(profile.initials || "OC")}</span>
       </span>
     `;
   }
@@ -10008,8 +10072,8 @@ function renderAgentProfileFact(fact) {
   `;
 }
 
-function renderAgentProfilePanel(session, { surface = "workspace" } = {}) {
-  const profile = getAgentProfileForSession(session);
+function renderAgentProfilePanel(session, { surface = "workspace", selection = state.agentProfile, showClose = true } = {}) {
+  const profile = getAgentProfileForSession(session, selection);
   if (!profile) {
     return "";
   }
@@ -10023,7 +10087,11 @@ function renderAgentProfilePanel(session, { surface = "workspace" } = {}) {
           <strong>${escapeHtml(profile.name)}</strong>
           <em>${escapeHtml(profile.occupationLabel)}</em>
         </div>
-        <button class="icon-button agent-profile-close" type="button" data-close-agent-profile aria-label="Close profile" ${tooltipAttributes("Close profile")}>${renderIcon(X)}</button>
+        ${
+          showClose
+            ? `<button class="icon-button agent-profile-close" type="button" data-close-agent-profile aria-label="Close profile" ${tooltipAttributes("Close profile")}>${renderIcon(X)}</button>`
+            : ""
+        }
       </div>
       <dl class="agent-profile-facts">
         ${profile.facts.map(renderAgentProfileFact).join("")}
@@ -10035,6 +10103,438 @@ function renderAgentProfilePanel(session, { surface = "workspace" } = {}) {
       }
     </aside>
   `;
+}
+
+function renderAgentProfileTopBarFact(fact) {
+  const value = fact.statusClass
+    ? `
+      <span class="agent-profile-status-value">
+        <span class="session-activity-dot ${escapeHtml(fact.statusClass)}" aria-hidden="true"${getSessionActivityStyle({ className: fact.statusClass })}></span>
+        <span>${escapeHtml(fact.value)}</span>
+      </span>
+    `
+    : escapeHtml(fact.value);
+
+  return `
+    <span class="agent-profile-topbar-fact">
+      <span>${escapeHtml(fact.label)}</span>
+      <strong title="${escapeHtml(fact.value)}">${value}</strong>
+    </span>
+  `;
+}
+
+function renderAgentProfileTopBar(session) {
+  const profile = getAgentProfileForSession(session);
+  if (!profile) {
+    return "";
+  }
+
+  const topFacts = profile.facts
+    .filter((fact) => ["status", "provider", "project", "parent", "updated"].includes(fact.label))
+    .slice(0, 4);
+
+  return `
+    <div class="agent-profile-topbar" data-agent-profile-panel role="group" aria-label="Agent profile">
+      ${renderAgentProfileAvatar(profile)}
+      <div class="agent-profile-topbar-body">
+        <div class="agent-profile-topbar-title">
+          <span>${escapeHtml(profile.eyebrow)}</span>
+          <strong>${escapeHtml(profile.name)}</strong>
+          <em>${escapeHtml(profile.occupationLabel)}</em>
+        </div>
+        <div class="agent-profile-topbar-facts">
+          ${topFacts.map(renderAgentProfileTopBarFact).join("")}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function isSafeAgentCanvasUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return false;
+  }
+
+  try {
+    const url = new URL(text, window.location.origin);
+    return url.protocol === "http:" || url.protocol === "https:" || url.origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+function getAgentCanvasTime(canvas) {
+  const timestamp = Date.parse(canvas?.updatedAt || canvas?.createdAt || "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function getAgentCanvasForSession(session, selection = state.agentProfile) {
+  if (!session?.id || !Array.isArray(state.agentTown?.canvases)) {
+    return null;
+  }
+
+  const sessionId = String(session.id);
+  const canvases = state.agentTown.canvases
+    .filter((canvas) => (
+      canvas?.sourceSessionId === sessionId ||
+      canvas?.sessionId === sessionId ||
+      canvas?.id === sessionId
+    ))
+    .sort((left, right) => getAgentCanvasTime(right) - getAgentCanvasTime(left));
+
+  if (!canvases.length) {
+    return null;
+  }
+
+  const subagent = getSelectedAgentProfileSubagent(session, selection);
+  const subagentIds = new Set([
+    subagent?.id,
+    subagent?.agentId,
+    subagent?.browserUseSessionId,
+    subagent?.ottoAuthSessionId,
+    subagent?.videoMemoryMonitorId,
+  ].filter(Boolean).map(String));
+  if (subagentIds.size) {
+    const subagentCanvas = canvases.find((canvas) => subagentIds.has(String(canvas?.sourceAgentId || "")));
+    if (subagentCanvas) {
+      return subagentCanvas;
+    }
+  }
+
+  return canvases[0];
+}
+
+function getAgentCanvasImageSrc(canvas) {
+  if (!canvas?.id) {
+    return "";
+  }
+
+  if (canvas.imagePath) {
+    const params = new URLSearchParams();
+    if (canvas.updatedAt) {
+      params.set("updated", canvas.updatedAt);
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return `${getAppBaseUrl()}/api/agent-town/canvases/${encodeURIComponent(canvas.id)}/image${suffix}`;
+  }
+
+  const imageUrl = String(canvas.imageUrl || "").trim();
+  return isSafeAgentCanvasUrl(imageUrl) ? imageUrl : "";
+}
+
+function renderAgentCanvasPanel(session, selection = state.agentProfile) {
+  const canvas = getAgentCanvasForSession(session, selection);
+  if (!canvas) {
+    return "";
+  }
+
+  const imageSrc = getAgentCanvasImageSrc(canvas);
+  const title = canvas.title || "Agent canvas";
+  const caption = String(canvas.caption || "").trim();
+  const updated = relativeTimeAgo(canvas.updatedAt || canvas.createdAt) || "";
+  const openHref = isSafeAgentCanvasUrl(canvas.href) ? canvas.href : imageSrc;
+
+  return `
+    <section class="agent-canvas-panel" data-agent-canvas-panel data-agent-canvas-id="${escapeHtml(canvas.id)}" aria-label="Agent canvas">
+      <div class="agent-canvas-head" data-agent-canvas-drag-handle>
+        <span class="agent-canvas-kicker">${renderIcon(ImageIcon)}<span>Canvas</span></span>
+        <strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
+        ${updated ? `<em>${escapeHtml(updated)}</em>` : ""}
+        ${
+          openHref
+            ? `<a class="icon-button agent-canvas-open" href="${escapeHtml(openHref)}" target="_blank" rel="noreferrer" aria-label="Open canvas image" ${tooltipAttributes("Open canvas image")}>${renderIcon(AppWindow)}</a>`
+            : ""
+        }
+      </div>
+      <div class="agent-canvas-stage">
+        ${
+          imageSrc
+            ? `<img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(canvas.alt || title)}" loading="lazy" decoding="async" />`
+            : `<div class="blank-state">empty canvas</div>`
+        }
+      </div>
+      ${caption ? `<p class="agent-canvas-caption" title="${escapeHtml(caption)}">${escapeHtml(caption)}</p>` : ""}
+    </section>
+  `;
+}
+
+function renderAgentCanvasHost(session) {
+  return `
+    <aside
+      class="agent-canvas-host agent-canvas-window"
+      data-agent-canvas-host
+      data-agent-canvas-window
+      data-agent-canvas-session="${escapeHtml(session?.id || "")}"
+      data-agent-canvas-signature="${escapeHtml(getAgentCanvasSignature(session))}"
+      aria-label="Agent canvas window"
+    >${renderAgentCanvasPanel(session)}</aside>
+  `;
+}
+
+function getAgentCanvasSignature(session, selection = state.agentProfile) {
+  const canvas = getAgentCanvasForSession(session, selection);
+  if (!canvas) {
+    return "";
+  }
+
+  return [
+    canvas.id,
+    canvas.updatedAt,
+    canvas.title,
+    canvas.caption,
+    canvas.imagePath,
+    canvas.imageUrl,
+    canvas.href,
+  ].map((entry) => String(entry || "")).join("\u001f");
+}
+
+function refreshAgentCanvasUi() {
+  document.querySelectorAll("[data-agent-canvas-host]").forEach((host) => {
+    if (!(host instanceof HTMLElement)) {
+      return;
+    }
+
+    const sessionId = host.getAttribute("data-agent-canvas-session") || "";
+    const session = state.sessions.find((entry) => entry.id === sessionId) || null;
+    const signature = getAgentCanvasSignature(session);
+    if (host.getAttribute("data-agent-canvas-signature") !== signature) {
+      host.setAttribute("data-agent-canvas-signature", signature);
+      host.innerHTML = renderAgentCanvasPanel(session);
+      bindAgentCanvasWindowDrag(host);
+      if (!signature) {
+        clearAgentCanvasFloatingPosition(host);
+      }
+    }
+
+    const shellSplit = host.closest(".workspace-split");
+    if (shellSplit instanceof HTMLElement) {
+      shellSplit.classList.toggle("has-agent-canvas", Boolean(signature));
+    }
+    const visualBody = host.closest(".visual-game-terminal-body");
+    if (visualBody instanceof HTMLElement) {
+      visualBody.classList.toggle("has-agent-canvas", Boolean(signature));
+    }
+  });
+}
+
+function clearAgentCanvasFloatingPosition(host) {
+  host.classList.remove("is-floating", "is-dragging");
+  host.style.removeProperty("--agent-canvas-window-left");
+  host.style.removeProperty("--agent-canvas-window-top");
+  host.style.removeProperty("--agent-canvas-window-width");
+  host.style.removeProperty("--agent-canvas-window-height");
+}
+
+function getAgentCanvasDragBoundary(host) {
+  return host.closest(".terminal-panel")
+    || host.closest(".visual-game-session-panel")
+    || host.parentElement
+    || document.body;
+}
+
+function setAgentCanvasFloatingPosition(host, boundaryRect, hostRect, clientX, clientY, offsetX, offsetY) {
+  const edge = 10;
+  const maxLeft = Math.max(edge, boundaryRect.width - hostRect.width - edge);
+  const maxTop = Math.max(edge, boundaryRect.height - hostRect.height - edge);
+  const left = clamp(clientX - boundaryRect.left - offsetX, edge, maxLeft);
+  const top = clamp(clientY - boundaryRect.top - offsetY, edge, maxTop);
+  host.style.setProperty("--agent-canvas-window-left", `${Math.round(left)}px`);
+  host.style.setProperty("--agent-canvas-window-top", `${Math.round(top)}px`);
+}
+
+function bindAgentCanvasWindowDrag(root = document) {
+  root.querySelectorAll?.("[data-agent-canvas-drag-handle]").forEach((handle) => {
+    if (!(handle instanceof HTMLElement) || handle.dataset.agentCanvasDragBound === "true") {
+      return;
+    }
+
+    handle.dataset.agentCanvasDragBound = "true";
+    handle.addEventListener("dblclick", (event) => {
+      const host = handle.closest("[data-agent-canvas-window]");
+      if (host instanceof HTMLElement) {
+        clearAgentCanvasFloatingPosition(host);
+        event.preventDefault();
+      }
+    });
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || event.target?.closest?.("a, button, input, textarea, select")) {
+        return;
+      }
+
+      const host = handle.closest("[data-agent-canvas-window]");
+      if (!(host instanceof HTMLElement)) {
+        return;
+      }
+
+      const boundary = getAgentCanvasDragBoundary(host);
+      const boundaryRect = boundary.getBoundingClientRect();
+      const hostRect = host.getBoundingClientRect();
+      const offsetX = event.clientX - hostRect.left;
+      const offsetY = event.clientY - hostRect.top;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      let dragging = false;
+
+      const move = (moveEvent) => {
+        const distance = Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY);
+        if (!dragging && distance < 4) {
+          return;
+        }
+
+        if (!dragging) {
+          dragging = true;
+          host.classList.add("is-floating", "is-dragging");
+          host.style.setProperty("--agent-canvas-window-width", `${Math.round(hostRect.width)}px`);
+          host.style.setProperty("--agent-canvas-window-height", `${Math.round(hostRect.height)}px`);
+        }
+
+        setAgentCanvasFloatingPosition(host, boundaryRect, hostRect, moveEvent.clientX, moveEvent.clientY, offsetX, offsetY);
+        moveEvent.preventDefault();
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", up);
+        host.classList.remove("is-dragging");
+      };
+
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up, { once: true });
+      window.addEventListener("pointercancel", up, { once: true });
+    });
+  });
+}
+
+function getVisualGameAgentHoverSelection(hit) {
+  if (!hit?.sessionId) {
+    return null;
+  }
+
+  return {
+    sessionId: String(hit.sessionId || ""),
+    subagentId: String(hit.subagentId || hit.agentId || ""),
+    browserUseSessionId: String(hit.browserUseSessionId || ""),
+  };
+}
+
+function getVisualGameAgentHoverProfileSignature(hit) {
+  const selection = getVisualGameAgentHoverSelection(hit);
+  if (!selection) {
+    return "";
+  }
+
+  const session = state.sessions.find((entry) => entry.id === selection.sessionId) || null;
+  if (!session) {
+    return "";
+  }
+
+  const subagent = getSelectedAgentProfileSubagent(session, selection);
+  return [
+    selection.sessionId,
+    selection.subagentId,
+    selection.browserUseSessionId,
+    session.name,
+    session.status,
+    session.activityStatus,
+    session.updatedAt,
+    session.lastOutputAt,
+    subagent?.name,
+    subagent?.status,
+    subagent?.updatedAt,
+    getAgentCanvasSignature(session, selection),
+  ].map((entry) => String(entry || "")).join("\u001f");
+}
+
+function renderVisualGameAgentHoverProfile(hit) {
+  const selection = getVisualGameAgentHoverSelection(hit);
+  if (!selection) {
+    return "";
+  }
+
+  const session = state.sessions.find((entry) => entry.id === selection.sessionId) || null;
+  if (!session) {
+    return "";
+  }
+
+  const profile = renderAgentProfilePanel(session, {
+    surface: "hover",
+    selection,
+    showClose: false,
+  });
+  if (!profile) {
+    return "";
+  }
+
+  return `
+    <div class="visual-game-agent-hover-card-inner">
+      ${profile}
+      ${renderAgentCanvasPanel(session, selection)}
+    </div>
+  `;
+}
+
+function hideVisualGameAgentHoverProfile() {
+  const card = document.querySelector("[data-visual-agent-hover]");
+  if (!(card instanceof HTMLElement)) {
+    return;
+  }
+
+  card.classList.remove("is-visible");
+  card.setAttribute("aria-hidden", "true");
+}
+
+function positionVisualGameAgentHoverProfile(card, event) {
+  const frame = card.closest(".visual-game-frame");
+  if (!(frame instanceof HTMLElement)) {
+    return;
+  }
+
+  const frameRect = frame.getBoundingClientRect();
+  const gap = 14;
+  const edge = 10;
+  let left = event.clientX - frameRect.left + gap;
+  let top = event.clientY - frameRect.top + gap;
+  const cardRect = card.getBoundingClientRect();
+
+  if (left + cardRect.width > frameRect.width - edge) {
+    left = event.clientX - frameRect.left - cardRect.width - gap;
+  }
+  if (top + cardRect.height > frameRect.height - edge) {
+    top = event.clientY - frameRect.top - cardRect.height - gap;
+  }
+
+  left = clamp(left, edge, Math.max(edge, frameRect.width - cardRect.width - edge));
+  top = clamp(top, edge, Math.max(edge, frameRect.height - cardRect.height - edge));
+
+  card.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
+}
+
+function updateVisualGameAgentHoverProfile(event, hit) {
+  const card = document.querySelector("[data-visual-agent-hover]");
+  if (!(card instanceof HTMLElement)) {
+    return;
+  }
+
+  if (hit?.kind !== "session" || !hit.sessionId) {
+    hideVisualGameAgentHoverProfile();
+    return;
+  }
+
+  const signature = getVisualGameAgentHoverProfileSignature(hit);
+  if (!signature) {
+    hideVisualGameAgentHoverProfile();
+    return;
+  }
+
+  if (card.getAttribute("data-visual-agent-hover-signature") !== signature) {
+    card.setAttribute("data-visual-agent-hover-signature", signature);
+    card.innerHTML = renderVisualGameAgentHoverProfile(hit);
+  }
+
+  card.classList.add("is-visible");
+  card.setAttribute("aria-hidden", "false");
+  positionVisualGameAgentHoverProfile(card, event);
 }
 
 function setAgentProfileSelection({ sessionId = "", subagentId = "", browserUseSessionId = "" } = {}) {
@@ -12479,6 +12979,7 @@ function renderAutomationsView() {
 function renderAgentInboxSummaryCards() {
   const summary = getAgentInboxSummary();
   const cards = [
+    ["actions", summary.actions, "tutorial and agent-requested next steps"],
     ["to review", summary.unread, "finished sessions you have not opened yet"],
     ["working", summary.working, "sessions with active work, monitors, or subagents"],
     ["exited", summary.exited, "closed terminals still in the session list"],
@@ -12542,25 +13043,112 @@ function renderAgentInboxCard(item) {
   `;
 }
 
+function renderAgentTownActionItemCard(item) {
+  const kindLabel = getAgentTownActionItemKindLabel(item);
+  const metaLabel = getAgentTownActionItemMetaLabel(item);
+  const fallbackLabel = item.predicate ? `waits for ${item.predicate.replaceAll("_", " ")}` : "agent requested";
+  const href = String(item.href || item.target?.href || "").trim();
+  const priorityClass = item.priority && item.priority !== "normal" ? ` is-priority-${escapeHtml(item.priority)}` : "";
+  return `
+    <article class="automation-card agent-inbox-card is-action is-${escapeHtml(item.kind || "action")}${priorityClass}" data-agent-town-action-item="${escapeHtml(item.id)}">
+      <div class="agent-inbox-card-head">
+        <div class="automation-card-icon" aria-hidden="true">${renderIcon(Inbox)}</div>
+        <span class="plugin-status">${escapeHtml(kindLabel)}</span>
+      </div>
+      <strong>${escapeHtml(item.title || "Action item")}</strong>
+      <p>${escapeHtml(item.detail || fallbackLabel)}</p>
+      <div class="agent-inbox-card-meta">${escapeHtml(metaLabel || fallbackLabel)}</div>
+      <div class="plugin-onboarding-actions">
+        ${
+          href
+            ? `<button class="primary-button toolbar-control" type="button" data-agent-town-action-open="${escapeHtml(item.id)}">${escapeHtml(item.cta || "Open")}</button>`
+            : ""
+        }
+        <button class="ghost-button toolbar-control" type="button" data-agent-town-action-complete="${escapeHtml(item.id)}">done</button>
+        <button class="ghost-button toolbar-control" type="button" data-agent-town-action-dismiss="${escapeHtml(item.id)}">dismiss</button>
+      </div>
+    </article>
+  `;
+}
+
+function getAgentTownActionItemKindLabel(item) {
+  const priority = String(item.priority || "normal");
+  if (priority === "urgent") {
+    return "urgent";
+  }
+  if (priority === "high") {
+    return "high";
+  }
+
+  const kind = String(item.kind || "action");
+  if (kind === "approval") {
+    return "approval";
+  }
+  if (kind === "review") {
+    return "review";
+  }
+  if (kind === "setup") {
+    return "setup";
+  }
+  return "action";
+}
+
+function getAgentTownActionItemMetaLabel(item) {
+  const parts = [];
+  const priority = String(item.priority || "normal");
+  const source = String(item.source || "").trim();
+  const sourceSessionId = String(item.sourceSessionId || "").trim();
+  const target = item.target && typeof item.target === "object" ? item.target : null;
+  const capabilityIds = Array.isArray(item.capabilityIds) ? item.capabilityIds : [];
+
+  if (priority && priority !== "normal") {
+    parts.push(`${priority} priority`);
+  }
+  if (source && source !== "agent") {
+    parts.push(source);
+  } else if (sourceSessionId) {
+    parts.push("agent");
+  }
+  if (target?.label) {
+    parts.push(target.label);
+  } else if (target?.type) {
+    parts.push(target.type.replaceAll("_", " "));
+  }
+  if (capabilityIds.length) {
+    parts.push(capabilityIds.slice(0, 2).join(", "));
+  }
+  if (item.predicate) {
+    parts.push(`waits for ${String(item.predicate).replaceAll("_", " ")}`);
+  }
+
+  return parts.join(" · ");
+}
+
 function renderAgentInboxCards() {
   const items = getAgentInboxItems();
-  if (!items.length) {
+  const actionItems = getAgentTownOpenActionItems();
+  if (!items.length && !actionItems.length) {
     return `<div class="blank-state">no agent sessions yet</div>`;
   }
 
-  return items.map(renderAgentInboxCard).join("");
+  return [
+    ...actionItems.map(renderAgentTownActionItemCard),
+    ...items.map(renderAgentInboxCard),
+  ].join("");
 }
 
 function renderAgentInboxView() {
   const summary = getAgentInboxSummary();
-  const attentionLabel = summary.unread > 0
+  const attentionLabel = summary.actions > 0
+    ? `${summary.actions} action${summary.actions === 1 ? "" : "s"} ready`
+    : summary.unread > 0
     ? `${summary.unread} waiting for review`
     : summary.working > 0
       ? `${summary.working} still working`
       : "all caught up";
 
   return `
-    <section class="dashboard-panel main-view agent-inbox-view" ${renderMainViewAttributes("agent-inbox", `agent-inbox:${summary.total}:${summary.unread}:${summary.working}`)}>
+    <section class="dashboard-panel main-view agent-inbox-view" ${renderMainViewAttributes("agent-inbox", `agent-inbox:${summary.total}:${summary.unread}:${summary.working}:${summary.actions}`)}>
       <div class="dashboard-toolbar">
         <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
         <div class="dashboard-copy">
@@ -14259,7 +14847,7 @@ function isVisualGameLiveSubagent(subagent) {
 }
 
 function isClaudeCodeProviderAgent(agent) {
-  return String(agent?.providerId || "").toLowerCase() === "claude";
+  return ["claude", "claude-ollama"].includes(String(agent?.providerId || "").toLowerCase());
 }
 
 function isOpenClawProviderId(providerId) {
@@ -14312,14 +14900,14 @@ function renderVisualAgentTile(agent, index) {
   const icon = agent.kind === "camera" ? Camera : agent.kind === "ottoauth" ? ShoppingCart : agent.kind === "browser" ? AppWindow : agent.kind === "helper" ? Zap : Bot;
   const isClaudeAgent = isClaudeCodeProviderAgent(agent);
   const isOpenClawAgent = isOpenClawProviderAgent(agent);
-  const avatar = isClaudeAgent
+  const spriteMarkup = isClaudeAgent
     ? renderClaudeCodeAvatarMarkup()
     : isOpenClawAgent
       ? renderOpenClawCrabAvatarMarkup()
       : renderIcon(icon);
   const content = `
     <span class="visual-agent-sprite visual-agent-sprite-${escapeHtml(statusClass)} ${isClaudeAgent ? "visual-agent-sprite-claude" : ""} ${isOpenClawAgent ? "visual-agent-sprite-openclaw" : ""}" aria-hidden="true">
-      ${avatar}
+      ${spriteMarkup}
     </span>
     <span class="visual-agent-copy">
       <strong>${escapeHtml(agent.name)}</strong>
@@ -14643,13 +15231,13 @@ function renderVisualTownAgent(agent, index) {
     `--wander-y:${placement.walkY}px`,
     `--wander-speed:${placement.speed}`,
   ].join(";");
-  const avatar = isClaudeAgent
+  const spriteMarkup = isClaudeAgent
     ? renderClaudeCodeAvatarMarkup()
     : isOpenClawAgent
       ? renderOpenClawCrabAvatarMarkup()
       : renderIcon(icon);
   const content = `
-    <span class="visual-town-agent-body" aria-hidden="true">${avatar}</span>
+    <span class="visual-town-agent-body" aria-hidden="true">${spriteMarkup}</span>
     <span class="visual-town-agent-shadow" aria-hidden="true"></span>
     <span class="visual-town-agent-label">
       <strong>${escapeHtml(label)}</strong>
@@ -14770,6 +15358,7 @@ function renderVisualPixelGame(graph, { controls = true } = {}) {
           aria-label="${escapeHtml(`${workingCount} working agents, ${roamingCount} roaming agents in Agent Town`)}"
         ></canvas>
         <div class="visual-game-hover" aria-hidden="true">${escapeHtml(hoverLabel)}</div>
+        <div class="visual-game-agent-hover-card" data-visual-agent-hover aria-hidden="true"></div>
         ${
           controls
             ? `
@@ -14853,30 +15442,34 @@ function renderVisualGameSessionDrawer(graph) {
     ? [selectedSession.providerLabel, selectedSession.cwd].filter(Boolean).join(" · ")
     : "session unavailable";
   const browserUseSessionId = state.visualGame.selectedBrowserUseSessionId || "";
-  const agentProfilePanel = renderAgentProfilePanel(selectedSession, { surface: "visual" });
+  const agentProfileTopBar = renderAgentProfileTopBar(selectedSession);
+  const hasAgentCanvas = Boolean(getAgentCanvasSignature(selectedSession));
 
   return `
-    <aside class="visual-game-session-panel visual-game-side-panel" aria-label="Agent terminal and profile">
+    <aside class="visual-game-session-panel visual-game-side-panel" aria-label="Agent terminal">
       <div class="visual-game-session-head visual-game-terminal-head">
-        <div class="terminal-copy">
-          <strong>${escapeHtml(title)}</strong>
-          <div class="terminal-meta">${escapeHtml(meta)}</div>
-        </div>
+        ${
+          agentProfileTopBar
+            ? agentProfileTopBar
+            : `
+              <div class="terminal-copy">
+                <strong>${escapeHtml(title)}</strong>
+                <div class="terminal-meta">${escapeHtml(meta)}</div>
+              </div>
+            `
+        }
         <button class="icon-button toolbar-control visual-game-panel-close-button" type="button" id="visual-game-close-session" aria-label="Close agent terminal" ${tooltipAttributes("Close agent terminal")}>${renderIcon(X)}</button>
-        <div class="visual-game-session-actions">
-          ${
-            browserUseSessionId
-              ? `<button class="icon-button toolbar-control" type="button" data-open-browser-use-session="${escapeHtml(browserUseSessionId)}" aria-label="Open browser task" ${tooltipAttributes("Open browser task")}>${renderIcon(AppWindow)}</button>`
-              : ""
-          }
-          <button class="ghost-button toolbar-control terminal-control-button" type="button" id="tab-button" data-terminal-control aria-label="Send Tab" ${tooltipAttributes("Send Tab")} ${selectedSession ? "" : "disabled"}>${renderIcon(IndentIncrease)}</button>
-          <button class="ghost-button toolbar-control terminal-control-button" type="button" id="shift-tab-button" data-terminal-control aria-label="Send Shift Tab" ${tooltipAttributes("Send Shift Tab")} ${selectedSession ? "" : "disabled"}>${renderIcon(IndentDecrease)}</button>
-          <button class="ghost-button toolbar-control terminal-control-button" type="button" id="ctrl-p-button" data-terminal-control aria-label="Send Control P" ${tooltipAttributes("Send Control P")} ${selectedSession ? "" : "disabled"}>${renderIcon(ArrowUp)}</button>
-          <button class="ghost-button toolbar-control terminal-control-button" type="button" id="ctrl-t-button" data-terminal-control aria-label="Send Control T" ${tooltipAttributes("Send Control T")} ${selectedSession ? "" : "disabled"}>${renderIcon(Type)}</button>
-          <button class="ghost-button toolbar-control terminal-control-button" type="button" id="ctrl-c-button" data-terminal-control aria-label="Send Control C" ${tooltipAttributes("Send Control C")} ${selectedSession ? "" : "disabled"}>${renderIcon(CircleStop)}</button>
-        </div>
+        ${
+          browserUseSessionId
+            ? `
+              <div class="visual-game-session-actions">
+                <button class="icon-button toolbar-control" type="button" data-open-browser-use-session="${escapeHtml(browserUseSessionId)}" aria-label="Open browser task" ${tooltipAttributes("Open browser task")}>${renderIcon(AppWindow)}</button>
+              </div>
+            `
+            : ""
+        }
       </div>
-      <div class="visual-game-terminal-body ${agentProfilePanel ? "has-agent-profile" : ""}">
+      <div class="visual-game-terminal-body ${hasAgentCanvas ? "has-agent-canvas" : ""}">
         <div class="terminal-stack visual-game-terminal-stack">
           <div class="terminal-mount" id="terminal-mount"></div>
           <div class="terminal-transcript-scroll" id="terminal-transcript-scroll" tabindex="0" aria-label="Terminal transcript history">
@@ -14889,7 +15482,7 @@ function renderVisualGameSessionDrawer(graph) {
             <p class="empty-state-copy">session no longer available</p>
           </div>
         </div>
-        ${agentProfilePanel}
+        ${renderAgentCanvasHost(selectedSession)}
       </div>
     </aside>
   `;
@@ -15280,11 +15873,11 @@ function renderAgentTownCosmeticPanelContent(details) {
   }
 
   const { decoration, item } = details;
+  const rect = getAgentTownDecorationRect(decoration, item) || { width: item.width, height: item.height };
   const sameItemCount = getAgentTownDecorations().filter((candidate) => candidate.itemId === item.id).length;
   const locationLabel = `grid ${Math.round(decoration.x / AGENT_TOWN_BUILD_GRID_SIZE)}, ${Math.round(decoration.y / AGENT_TOWN_BUILD_GRID_SIZE)}`;
-  const rect = getAgentTownDecorationRect(decoration, item);
-  const columns = Math.max(1, Math.round((rect?.width || item.width) / AGENT_TOWN_BUILD_GRID_SIZE));
-  const rows = Math.max(1, Math.round((rect?.height || item.height) / AGENT_TOWN_BUILD_GRID_SIZE));
+  const columns = Math.max(1, Math.round(rect.width / AGENT_TOWN_BUILD_GRID_SIZE));
+  const rows = Math.max(1, Math.round(rect.height / AGENT_TOWN_BUILD_GRID_SIZE));
   const sizeLabel = `${columns}x${rows} ${columns * rows === 1 ? "tile" : "tiles"}`;
   const countLabel = sameItemCount === 1 ? "1 placed" : `${sameItemCount} placed`;
 
@@ -15847,6 +16440,47 @@ function setAgentTownBuilderPulse(rect, tone = "success") {
   };
 }
 
+function getAgentTownBuilderConstructionSourcePoint() {
+  const hubPlace = getAgentTownPluginBuildingPlaces().find((place) => place.pluginId === "buildinghub");
+  const fallbackBlueprint = getAgentTownPluginBuildingBlueprints().find((blueprint) => blueprint.pluginId === "buildinghub");
+  const rect = hubPlace?.rect || fallbackBlueprint?.baseRect || AGENT_TOWN_PLUGIN_BUILDING_RECTS[0];
+  return {
+    x: rect.x + rect.width / 2,
+    y: rect.y + rect.height + 10,
+  };
+}
+
+function startAgentTownBuilderConstruction(rect, detail = {}) {
+  if (!rect) {
+    state.visualGame.builderConstruction = null;
+    return;
+  }
+
+  const normalizedRect = {
+    x: Number(rect.x) || 0,
+    y: Number(rect.y) || 0,
+    width: Math.max(1, Number(rect.width) || 1),
+    height: Math.max(1, Number(rect.height) || 1),
+  };
+  const source = getAgentTownBuilderConstructionSourcePoint();
+  const centerX = normalizedRect.x + normalizedRect.width / 2;
+  const sideDirection = source.x <= centerX ? 1 : -1;
+  const sideOffset = Math.min(Math.max(normalizedRect.width * 0.32, 8), 22);
+  const targetX = normalizedRect.width > 12
+    ? clamp(centerX + sideDirection * sideOffset, normalizedRect.x + 5, normalizedRect.x + normalizedRect.width - 5)
+    : centerX;
+  state.visualGame.builderConstruction = {
+    ...detail,
+    rect: normalizedRect,
+    fromX: source.x,
+    fromY: source.y,
+    targetX,
+    targetY: normalizedRect.y + normalizedRect.height + 10,
+    startedAt: getAgentTownBuilderNow(),
+    seed: getVisualGameHash(normalizedRect.x, normalizedRect.y + normalizedRect.width),
+  };
+}
+
 function primeAgentTownBuilderPlacementPreview() {
   const placement = state.visualGame.builderPlacement;
   if (!placement) {
@@ -16134,9 +16768,14 @@ function commitAgentTownBuilderPlacement(point) {
       return false;
     }
     setAgentTownBuilderPulse(preview.rect, "success");
+    startAgentTownBuilderConstruction(preview.rect, { kind: "functional", label: placement.label });
     setAgentTownBuilderFeedback(`${placement.label} placed`, "success");
     state.visualGame.builderPlacement = null;
     saveAgentTownLayoutPreferences();
+    void recordAgentTownEvent("functional_building_placed", {
+      label: placement.label,
+      metadata: { pluginId: placement.pluginId },
+    });
     renderShell();
     return true;
   }
@@ -16146,7 +16785,12 @@ function commitAgentTownBuilderPlacement(point) {
   });
   if (decoration) {
     setAgentTownBuilderPulse(preview.rect, "success");
+    startAgentTownBuilderConstruction(preview.rect, { kind: "cosmetic", label: placement.label });
     setAgentTownBuilderFeedback(`${placement.label} placed`, "success");
+    void recordAgentTownEvent("cosmetic_building_placed", {
+      label: placement.label,
+      metadata: { itemId: placement.itemId },
+    });
     renderShell();
   }
   return Boolean(decoration);
@@ -16183,6 +16827,114 @@ function saveAgentTownLayoutPreferences() {
   } catch {
     // Local map customization is a convenience; storage failures should not block the town.
   }
+  void mirrorAgentTownState({ refreshUi: false });
+}
+
+function getAgentTownLayoutSummary() {
+  const functionalIds = Object.keys(getAgentTownFunctionalPlacements()).filter(Boolean).sort();
+  return {
+    cosmeticCount: getAgentTownDecorations().length,
+    functionalCount: functionalIds.length,
+    functionalIds,
+    pendingFunctionalIds: [...getAgentTownPendingFunctionalIds()].sort(),
+    themeId: normalizeAgentTownThemeId(state.visualGame.themeId),
+  };
+}
+
+function refreshAgentTownActionItemUi() {
+  refreshAgentInboxUi({ force: true, bindEvents: true });
+}
+
+async function loadAgentTownState({ refreshUi = true } = {}) {
+  try {
+    const payload = await fetchJson("/api/agent-town/state");
+    applyAgentTownState(payload.agentTown);
+    if (refreshUi) {
+      refreshAgentTownActionItemUi();
+      refreshAgentCanvasUi();
+    }
+    return payload.agentTown;
+  } catch (error) {
+    console.warn("[vibe-research] Agent Town state load failed", error);
+    return null;
+  }
+}
+
+async function mirrorAgentTownState({ refreshUi = true } = {}) {
+  try {
+    const payload = await fetchJson("/api/agent-town/state", {
+      method: "PUT",
+      body: JSON.stringify({
+        layoutSummary: getAgentTownLayoutSummary(),
+      }),
+    });
+    applyAgentTownState(payload.agentTown);
+    if (refreshUi) {
+      refreshAgentTownActionItemUi();
+      refreshAgentCanvasUi();
+    }
+    return payload.agentTown;
+  } catch (error) {
+    console.warn("[vibe-research] Agent Town state mirror failed", error);
+    return null;
+  }
+}
+
+async function recordAgentTownEvent(type, detail = {}) {
+  try {
+    const payload = await fetchJson("/api/agent-town/events", {
+      method: "POST",
+      body: JSON.stringify({ type, ...detail }),
+    });
+    applyAgentTownState(payload.agentTown);
+    refreshAgentTownActionItemUi();
+    refreshAgentCanvasUi();
+    return payload.event;
+  } catch (error) {
+    console.warn("[vibe-research] Agent Town event failed", error);
+    return null;
+  }
+}
+
+async function updateAgentTownActionItemStatus(actionItemId, status) {
+  const id = String(actionItemId || "").trim();
+  if (!id) {
+    return null;
+  }
+
+  try {
+    const payload = await fetchJson(`/api/agent-town/action-items/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+    applyAgentTownState(payload.agentTown);
+    refreshAgentTownActionItemUi();
+    refreshAgentCanvasUi();
+    return payload.actionItem;
+  } catch (error) {
+    window.alert(error.message);
+    return null;
+  }
+}
+
+function openAgentTownActionHref(actionItemId) {
+  const item = state.agentTown.actionItems.find((candidate) => candidate.id === actionItemId);
+  const href = String(item?.href || item?.target?.href || "").trim();
+  if (!href) {
+    return;
+  }
+
+  if (href.startsWith("?")) {
+    window.location.href = `${window.location.pathname}${href}`;
+    return;
+  }
+
+  if (href.startsWith("#")) {
+    window.location.hash = href.slice(1);
+    return;
+  }
+
+  window.location.href = href;
 }
 
 function getAgentTownTheme(themeId = state.visualGame.themeId) {
@@ -16205,6 +16957,7 @@ function setAgentTownTheme(themeId, { render = true } = {}) {
 
   state.visualGame.themeId = nextThemeId;
   saveAgentTownThemePreference();
+  void mirrorAgentTownState({ refreshUi: false });
   if (render) {
     renderShell();
   }
@@ -16247,6 +17000,7 @@ function resetAgentTownLayout({ render = true } = {}) {
   state.visualGame.builderPlacement = null;
   state.visualGame.builderFeedback = null;
   state.visualGame.builderPulse = null;
+  state.visualGame.builderConstruction = null;
   saveAgentTownLayoutPreferences();
   if (render) {
     renderShell();
@@ -16697,12 +17451,13 @@ function getAgentTownProviderDisplayLabel(provider) {
 }
 
 function getAgentTownProviderPriority(provider) {
-  const priority = ["claude", "codex", "openclaw", "ml-intern", "opencode", "gemini"];
+  const priority = ["claude", "claude-ollama", "codex", "openclaw", "ml-intern", "opencode", "gemini"];
   const index = priority.indexOf(provider?.id || "");
   return index >= 0 ? index : priority.length;
 }
 
 function getAgentTownProviderDormPalette(providerId) {
+  const normalizedProviderId = providerId === "claude-ollama" ? "claude" : providerId;
   const palettes = {
     claude: {
       floor: "#8a5a3e",
@@ -16757,7 +17512,7 @@ function getAgentTownProviderDormPalette(providerId) {
     },
   };
 
-  return palettes[providerId] || {
+  return palettes[normalizedProviderId] || {
     floor: "#826449",
     wall: "#63463b",
     trim: "#3b2a22",
@@ -16767,6 +17522,7 @@ function getAgentTownProviderDormPalette(providerId) {
 }
 
 function getVisualGameProviderAgentPalette(providerId) {
+  const normalizedProviderId = providerId === "claude-ollama" ? "claude" : providerId;
   const palettes = {
     claude: {
       hat: "#b65d3d",
@@ -16830,7 +17586,7 @@ function getVisualGameProviderAgentPalette(providerId) {
     },
   };
 
-  return palettes[providerId] || null;
+  return palettes[normalizedProviderId] || null;
 }
 
 function getAgentTownProviderDorms() {
@@ -17016,6 +17772,12 @@ function getAgentTownPluginBuildingPalette(pluginId) {
       trim: "#342c46",
       fixture: "#b16a47",
       screen: "#ffe7a8",
+    },
+    harbor: {
+      body: "#294853",
+      trim: "#163b3f",
+      fixture: "#25343c",
+      screen: "#b8f4f2",
     },
     "google-drive": {
       body: "#506d58",
@@ -17314,6 +18076,7 @@ function mountVisualPixelGame() {
       return false;
     }
 
+    hideVisualGameAgentHoverProfile();
     const point = getWorldPoint(event);
     if (!point) {
       return true;
@@ -17376,6 +18139,7 @@ function mountVisualPixelGame() {
     canvas.classList.add("is-editing-drag");
     canvas.setPointerCapture?.(event.pointerId);
     setHoverLabel(townDragState.label);
+    hideVisualGameAgentHoverProfile();
     event.preventDefault();
     return true;
   };
@@ -17428,6 +18192,7 @@ function mountVisualPixelGame() {
     const hit = getHitAtPoint(getWorldPoint(event));
     canvas.classList.toggle("is-actionable", Boolean(hit));
     setHoverLabel(hit?.label || "");
+    updateVisualGameAgentHoverProfile(event, hit);
     return true;
   };
   const onPointerMove = (event) => {
@@ -17440,6 +18205,7 @@ function mountVisualPixelGame() {
     }
 
     if (panState?.pointerId === event.pointerId) {
+      hideVisualGameAgentHoverProfile();
       const rect = canvas.getBoundingClientRect();
       if (!rect.width || !rect.height) {
         return;
@@ -17464,6 +18230,7 @@ function mountVisualPixelGame() {
     const hit = getHitAtPoint(getWorldPoint(event));
     canvas.classList.toggle("is-actionable", Boolean(hit));
     setHoverLabel(hit?.label || "");
+    updateVisualGameAgentHoverProfile(event, hit);
   };
   const onPointerLeave = () => {
     if (!panState && !townDragState) {
@@ -17472,6 +18239,7 @@ function mountVisualPixelGame() {
         canvas.classList.remove("is-builder-placement", "is-editing-blocked");
       }
       setHoverLabel("");
+      hideVisualGameAgentHoverProfile();
     }
   };
   const onPointerDown = (event) => {
@@ -17522,6 +18290,7 @@ function mountVisualPixelGame() {
     const hit = getHitAtPoint(getWorldPoint(event));
     canvas.classList.toggle("is-actionable", Boolean(hit));
     setHoverLabel(hit?.label || "");
+    updateVisualGameAgentHoverProfile(event, hit);
   };
   const onClick = (event) => {
     if (Date.now() < suppressClickUntil) {
@@ -17541,6 +18310,7 @@ function mountVisualPixelGame() {
 
     if (hit) {
       event.preventDefault();
+      hideVisualGameAgentHoverProfile();
       void handleVisualGameHit(hit);
       return;
     }
@@ -17562,6 +18332,7 @@ function mountVisualPixelGame() {
     const hit = getHitAtPoint(getVisualGameCameraWorldPoint(point, viewport));
     canvas.classList.toggle("is-actionable", Boolean(hit));
     setHoverLabel(hit?.label || "");
+    updateVisualGameAgentHoverProfile(event, hit);
   };
   const zoomCameraFromCenter = (zoomFactor) => {
     const viewport = getVisualGameCanvasViewport(canvas);
@@ -17577,6 +18348,7 @@ function mountVisualPixelGame() {
     panState = null;
     townDragState = null;
     canvas.classList.remove("is-panning", "is-editing-drag", "is-editing-blocked", "is-dragging", "is-builder-placement");
+    hideVisualGameAgentHoverProfile();
   };
   const onZoomInClick = () => zoomCameraFromCenter(VISUAL_GAME_ZOOM_STEP);
   const onZoomOutClick = () => zoomCameraFromCenter(1 / VISUAL_GAME_ZOOM_STEP);
@@ -17719,6 +18491,10 @@ async function handleVisualGameHit(hit) {
       browserUseSessionId: hit.browserUseSessionId || "",
     });
     const nextSession = state.sessions.find((session) => session.id === hit.sessionId);
+    void recordAgentTownEvent("agent_clicked", {
+      label: hit.label || nextSession?.name || "agent",
+      metadata: { sessionId: hit.sessionId },
+    });
     if (nextSession) {
       expandSessionProject(nextSession.cwd);
     }
@@ -17822,6 +18598,7 @@ function drawVisualGameScene(context, graph, model, time, hitAreas, visibleWorld
   const browserAgents = agents.filter((agent) => agent.destination === "browser");
   const ottoAuthAgents = agents.filter((agent) => agent.destination === "ottoauth");
   const cameraAgents = agents.filter((agent) => agent.destination === "camera");
+  const harborAgents = agents.filter((agent) => agent.destination === "harbor");
   const libraryAgents = agents.filter((agent) => agent.destination === "library");
   const sleepingAgents = agents.filter((agent) => agent.destination === "sleep");
 
@@ -17843,7 +18620,7 @@ function drawVisualGameScene(context, graph, model, time, hitAreas, visibleWorld
   if (isVideoMemoryPluginInstalled()) {
     drawVisualGameCameraRoom(context, hitAreas, time, cameraAgents);
   }
-  drawAgentTownInstalledPluginBuildings(context, hitAreas, time);
+  drawAgentTownInstalledPluginBuildings(context, hitAreas, time, { harborAgents });
   drawVisualGameSystemBuilding(context, hitAreas, model.gpuFactories, time);
   if (isLocalhostAppsEnabled()) {
     drawVisualGameDock(context, hitAreas, time);
@@ -17860,6 +18637,7 @@ function drawVisualGameScene(context, graph, model, time, hitAreas, visibleWorld
     drawVisualGameAgent(context, agent, time, hitAreas);
   }
   drawVisualGameDog(context, time, hitAreas);
+  drawAgentTownBuilderConstructionAgent(context, time);
 
   drawVisualGameForeground(context, time);
   context.restore();
@@ -18076,7 +18854,10 @@ function drawAgentTownPlacedCosmetics(context, hitAreas, time, visibleWorld, pal
       continue;
     }
     const rect = getAgentTownDecorationRect(decoration, item);
-    if (!rect || !isAgentTownSceneryVisible(rect, visibleWorld)) {
+    if (!rect) {
+      continue;
+    }
+    if (!isAgentTownSceneryVisible(rect, visibleWorld)) {
       continue;
     }
     drawAgentTownCosmeticItem(context, item, rect, palette, time, {
@@ -18101,8 +18882,8 @@ function drawAgentTownCosmeticItem(context, item, rect, palette, time, { rotatio
   }
 
   if (item.kind === "fence") {
-    const fenceThickness = 17;
     const orientation = getAgentTownFenceOrientation(item, rotation);
+    const fenceThickness = 17;
     const centeredFence = orientation === "vertical"
       ? {
           x: rect.x + Math.round((rect.width - fenceThickness) / 2),
@@ -18258,6 +19039,205 @@ function drawAgentTownBuilderPlacementPulse(context, time) {
   context.restore();
 }
 
+function getAgentTownBuilderConstructionEase(value) {
+  const t = clamp(value, 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+function drawAgentTownBuilderConstructionTrail(context, job, x, y, alpha) {
+  if (alpha <= 0) {
+    return;
+  }
+
+  const distance = Math.hypot(x - job.fromX, y - job.fromY);
+  if (distance < 8) {
+    return;
+  }
+
+  context.save();
+  context.globalAlpha *= alpha;
+  for (let index = 1; index <= 5; index += 1) {
+    const step = index / 6;
+    const px = job.fromX + (x - job.fromX) * step;
+    const py = job.fromY + (y - job.fromY) * step;
+    const size = index % 2 === 0 ? 3 : 2;
+    context.fillStyle = index % 2 === 0 ? "rgba(255, 230, 142, 0.42)" : "rgba(151, 218, 255, 0.34)";
+    context.fillRect(Math.round(px) - 1, Math.round(py) - 1, size, size);
+  }
+  context.restore();
+}
+
+function drawAgentTownBuilderConstructionPatch(context, job, time, alpha, doneAlpha = 0) {
+  const rect = job?.rect;
+  if (!rect || (alpha <= 0 && doneAlpha <= 0)) {
+    return;
+  }
+
+  const workAlpha = clamp(alpha, 0, 1);
+  const finishAlpha = clamp(doneAlpha, 0, 1);
+  const workX = rect.x + rect.width * 0.64;
+  const workY = rect.y + rect.height * 0.54;
+  context.save();
+  const baseAlpha = context.globalAlpha;
+
+  if (workAlpha > 0) {
+    context.globalAlpha = baseAlpha * workAlpha;
+    context.fillStyle = "rgba(79, 172, 255, 0.12)";
+    context.fillRect(rect.x - 4, rect.y - 4, rect.width + 8, rect.height + 8);
+    context.strokeStyle = "rgba(180, 231, 255, 0.76)";
+    context.lineWidth = 2;
+    context.strokeRect(rect.x - 4.5, rect.y - 4.5, rect.width + 9, rect.height + 9);
+
+    context.fillStyle = "rgba(255, 220, 124, 0.82)";
+    context.fillRect(rect.x - 7, rect.y + 2, 3, rect.height + 5);
+    context.fillRect(rect.x + rect.width + 4, rect.y + 2, 3, rect.height + 5);
+    context.fillRect(rect.x - 9, rect.y + 8, rect.width + 18, 3);
+    context.fillRect(rect.x - 8, rect.y + rect.height - 8, rect.width + 16, 3);
+
+    const sparkBeat = Math.floor(time / 84);
+    for (let index = 0; index < 6; index += 1) {
+      const hash = getVisualGameHash(job.seed + sparkBeat + index * 7, index + 13);
+      const angle = ((hash % 360) / 180) * Math.PI;
+      const radius = 4 + (hash % 11);
+      const sparkX = workX + Math.cos(angle) * radius;
+      const sparkY = workY + Math.sin(angle) * radius * 0.72;
+      context.fillStyle = index % 2 === 0 ? "#fff2a8" : "#ffb15f";
+      context.fillRect(Math.round(sparkX), Math.round(sparkY), 2, 2);
+    }
+  }
+
+  if (finishAlpha > 0) {
+    context.globalAlpha = baseAlpha * finishAlpha;
+    context.strokeStyle = "rgba(184, 255, 166, 0.92)";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(Math.round(rect.x + rect.width * 0.34), Math.round(rect.y + rect.height * 0.58));
+    context.lineTo(Math.round(rect.x + rect.width * 0.46), Math.round(rect.y + rect.height * 0.72));
+    context.lineTo(Math.round(rect.x + rect.width * 0.68), Math.round(rect.y + rect.height * 0.38));
+    context.stroke();
+  }
+
+  context.restore();
+}
+
+function drawAgentTownBuilderMechanic(context, x, y, time, options = {}) {
+  const alpha = clamp(Number(options.alpha) || 0, 0, 1);
+  if (alpha <= 0) {
+    return;
+  }
+
+  const walking = Boolean(options.walking);
+  const working = Boolean(options.working);
+  const scale = clamp(Number(options.scale) || 1, 0.45, 1.15);
+  const facing = Number(options.direction) < 0 ? -1 : 1;
+  const step = Math.floor(time / 120) % 4;
+  const bob = walking ? Math.sin(time / 95) * 1.6 : working ? Math.sin(time / 70) * 0.8 : 0;
+  const leftLeg = walking ? step % 2 : 0;
+  const rightLeg = walking ? (step + 1) % 2 : 0;
+  const toolSwing = working ? Math.floor(Math.sin(time / 68) * 3) : 0;
+
+  context.save();
+  context.globalAlpha *= alpha;
+  context.translate(Math.round(x), Math.round(y + bob));
+  context.scale(facing * scale, scale);
+
+  context.fillStyle = "rgba(0, 0, 0, 0.28)";
+  context.fillRect(-10, 0, 21, 4);
+
+  context.fillStyle = "#1f2730";
+  context.fillRect(-7, -3 + leftLeg, 6, 3);
+  context.fillRect(2, -3 + rightLeg, 6, 3);
+  context.fillStyle = "#263846";
+  context.fillRect(-6, -13, 5, 11 + leftLeg);
+  context.fillRect(2, -13, 5, 11 + rightLeg);
+  context.fillStyle = "#315f68";
+  context.fillRect(-8, -25, 16, 13);
+  context.fillStyle = "#d8763f";
+  context.fillRect(-5, -25, 10, 6);
+  context.fillStyle = "#9bd1e8";
+  context.fillRect(-5, -21, 3, 10);
+  context.fillRect(2, -21, 3, 10);
+  context.fillStyle = "#223844";
+  context.fillRect(-2, -18, 4, 2);
+
+  context.fillStyle = "#d8a16f";
+  if (working) {
+    context.fillRect(7, -24 + toolSwing, 4, 9);
+    context.fillStyle = "#c9d2d5";
+    context.fillRect(10, -31 + toolSwing, 2, 13);
+    context.fillRect(7, -31 + toolSwing, 8, 2);
+    context.fillRect(13, -34 + toolSwing, 2, 5);
+  } else {
+    context.fillRect(-11, -23 + leftLeg, 4, 9);
+    context.fillRect(8, -23 + rightLeg, 4, 8);
+    context.save();
+    context.translate(11, -20 + rightLeg);
+    context.rotate(-0.58);
+    context.fillStyle = "#c9d2d5";
+    context.fillRect(0, -8, 2, 12);
+    context.fillRect(-3, -9, 8, 2);
+    context.fillRect(4, -12, 2, 5);
+    context.restore();
+  }
+
+  context.fillStyle = "#d8a16f";
+  context.fillRect(-5, -33, 10, 9);
+  context.fillStyle = "#4a2b1b";
+  context.fillRect(-6, -34, 12, 3);
+  context.fillStyle = "#ffd45c";
+  context.fillRect(-8, -37, 16, 4);
+  context.fillRect(-5, -40, 10, 4);
+  context.fillStyle = "#fff0a6";
+  context.fillRect(-3, -39, 6, 1);
+  context.fillStyle = "#25323a";
+  context.fillRect(-3, -30, 2, 2);
+  context.fillRect(3, -30, 2, 2);
+  context.fillStyle = "#f1c58f";
+  context.fillRect(-1, -27, 3, 1);
+
+  context.restore();
+}
+
+function drawAgentTownBuilderConstructionAgent(context, time) {
+  const job = state.visualGame.builderConstruction;
+  if (!job) {
+    return;
+  }
+
+  const elapsed = time - Number(job.startedAt || 0);
+  if (!Number.isFinite(elapsed) || elapsed < 0) {
+    return;
+  }
+  if (elapsed > AGENT_TOWN_BUILDER_CONSTRUCTION_MS) {
+    state.visualGame.builderConstruction = null;
+    return;
+  }
+
+  const progress = clamp(elapsed / AGENT_TOWN_BUILDER_CONSTRUCTION_MS, 0, 1);
+  const travelEnd = 0.48;
+  const workEnd = 0.86;
+  const travelProgress = getAgentTownBuilderConstructionEase(progress / travelEnd);
+  const workProgress = clamp((progress - travelEnd) / (workEnd - travelEnd), 0, 1);
+  const fade = progress > workEnd ? 1 - clamp((progress - workEnd) / (1 - workEnd), 0, 1) : 1;
+  const popScale = progress < 0.12 ? 0.45 + getAgentTownBuilderConstructionEase(progress / 0.12) * 0.55 : 1;
+  const x = job.fromX + (job.targetX - job.fromX) * travelProgress;
+  const y = job.fromY + (job.targetY - job.fromY) * travelProgress;
+  const direction = job.targetX >= job.fromX ? 1 : -1;
+  const workAlpha = progress > travelEnd * 0.78 ? Math.min(1, workProgress + 0.24) * fade : 0;
+  const doneAlpha = progress > 0.78 ? clamp((progress - 0.78) / 0.12, 0, 1) * fade : 0;
+  const trailAlpha = clamp(1 - progress / 0.68, 0, 1) * fade;
+
+  drawAgentTownBuilderConstructionTrail(context, job, x, y, trailAlpha);
+  drawAgentTownBuilderConstructionPatch(context, job, time, workAlpha, doneAlpha);
+  drawAgentTownBuilderMechanic(context, x, y, time, {
+    alpha: fade,
+    walking: progress < travelEnd,
+    working: progress >= travelEnd && progress < workEnd,
+    direction,
+    scale: popScale,
+  });
+}
+
 function drawAgentTownBuilderFootprintGrid(context, rect, blocked, time) {
   const phase = Math.floor(time / 180) % 2;
   context.fillStyle = blocked ? "rgba(255, 90, 90, 0.27)" : "rgba(61, 157, 255, 0.34)";
@@ -18304,6 +19284,8 @@ function drawAgentTownBuilderPlacementGhost(context, placement, rect, time) {
   };
   if (plugin && getPluginBuildingShape(plugin) === "portal") {
     drawVisualGamePortalBuilding(context, [], building, time);
+  } else if (plugin && getPluginBuildingShape(plugin) === "lab") {
+    drawVisualGameLabBuilding(context, [], building, time);
   } else {
     drawVisualGameBuilding(context, [], building);
   }
@@ -18699,7 +19681,82 @@ function drawVisualGamePortalBuilding(context, hitAreas, building, time = 0) {
   pushAgentTownPlaceHit(hitAreas, { ...building, rect, baseRect: building.baseRect || rect }, action);
 }
 
-function drawAgentTownInstalledPluginBuildings(context, hitAreas, time = 0) {
+function drawVisualGameLabPod(context, pod, { occupied = false, time = 0, index = 0, screen = "#b8f4f2", trim = "#163b3f" } = {}) {
+  const glow = occupied ? 0.24 + Math.sin(time / 220 + index) * 0.08 : 0.08;
+  context.fillStyle = "rgba(8, 18, 25, 0.34)";
+  context.fillRect(pod.x + 2, pod.y + pod.height - 2, pod.width, 5);
+  context.fillStyle = `rgba(184, 244, 242, ${occupied ? 0.28 : 0.14})`;
+  context.fillRect(pod.x, pod.y + 5, pod.width, pod.height - 5);
+  context.strokeStyle = trim;
+  context.lineWidth = 2;
+  context.strokeRect(pod.x + 0.5, pod.y + 5.5, pod.width - 1, pod.height - 6);
+  context.fillStyle = screen;
+  context.fillRect(pod.x + 3, pod.y + 8, 4, pod.height - 12);
+  context.fillRect(pod.x + pod.width - 7, pod.y + 8, 4, pod.height - 12);
+  context.fillStyle = `rgba(255, 255, 255, ${0.22 + glow})`;
+  context.fillRect(pod.x + 8, pod.y + 8, Math.max(0, pod.width - 16), 2);
+  context.fillRect(pod.x + 8, pod.y + 18, Math.max(0, pod.width - 16), 1);
+  context.fillStyle = occupied ? "#dffcff" : "rgba(184, 244, 242, 0.34)";
+  context.fillRect(pod.x + Math.floor(pod.width / 2) - 2, pod.y + 2, 4, 5);
+}
+
+function drawVisualGameLabBuilding(context, hitAreas, building, time = 0, labAgents = []) {
+  const rect = building.rect || building;
+  const { x, y, width, height } = rect;
+  const { label, meta, body, trim, fixture, screen, action, issue } = building;
+  const labTrim = trim || "#163b3f";
+  const labScreen = screen || "#b8f4f2";
+  const activeCount = Array.isArray(labAgents) ? labAgents.length : 0;
+  const statusMeta = activeCount
+    ? `${activeCount} eval${activeCount === 1 ? "" : "s"}`
+    : meta || "sandbox";
+
+  drawVisualGameRoomFloor(context, x, y, width, height, {
+    floor: body || "#294853",
+    trim: labTrim,
+    entrance: "bottom",
+  });
+  drawVisualGameBuildingSign(context, x + 8, y + 7, Math.min(width - 16, 88), 23, label, statusMeta);
+
+  context.fillStyle = fixture || "#25343c";
+  context.fillRect(x + 10, y + height - 14, width - 20, 7);
+  context.fillStyle = "rgba(255, 232, 159, 0.2)";
+  context.fillRect(x + 13, y + height - 12, width - 26, 2);
+
+  const pods = [
+    { x: x + 12, y: y + 34, width: 26, height: Math.max(24, height - 48) },
+    { x: x + Math.round(width / 2 - 13), y: y + 31, width: 26, height: Math.max(27, height - 45) },
+    { x: x + width - 38, y: y + 34, width: 26, height: Math.max(24, height - 48) },
+  ];
+  pods.forEach((pod, index) => {
+    drawVisualGameLabPod(context, pod, {
+      occupied: index < activeCount,
+      time,
+      index,
+      screen: labScreen,
+      trim: labTrim,
+    });
+  });
+
+  const pulse = 0.18 + Math.sin(time / 260) * 0.06;
+  context.fillStyle = labScreen;
+  context.fillRect(x + width - 24, y + height - 29, 14, 9);
+  context.fillStyle = `rgba(184, 244, 242, ${pulse})`;
+  context.fillRect(x + width - 27, y + height - 32, 20, 15);
+  context.fillStyle = labTrim;
+  context.fillRect(x + width - 21, y + height - 26, 8, 3);
+
+  if (activeCount > pods.length) {
+    drawVisualGameOverflowBadge(context, x + width - 35, y + height - 20, `+${activeCount - pods.length}`);
+  }
+  if (issue) {
+    drawVisualGameBuildingIssueBadge(context, rect);
+  }
+
+  pushAgentTownPlaceHit(hitAreas, { ...building, rect, baseRect: building.baseRect || rect }, action);
+}
+
+function drawAgentTownInstalledPluginBuildings(context, hitAreas, time = 0, { harborAgents = [] } = {}) {
   for (const blueprint of getAgentTownPluginBuildingBlueprints()) {
     const building = getVisualGameTownVirtualPlace({
       ...blueprint,
@@ -18720,6 +19777,18 @@ function drawAgentTownInstalledPluginBuildings(context, hitAreas, time = 0) {
         issue: blueprint.issue,
         action: blueprint.action,
       }, time);
+      continue;
+    }
+    if (blueprint.shape === "lab") {
+      drawVisualGameLabBuilding(context, hitAreas, {
+        ...building,
+        body: blueprint.body,
+        trim: blueprint.trim,
+        fixture: blueprint.fixture,
+        screen: blueprint.screen,
+        issue: blueprint.issue,
+        action: blueprint.action,
+      }, time, blueprint.pluginId === "harbor" ? harborAgents : []);
       continue;
     }
     drawVisualGameBuilding(context, hitAreas, {
@@ -19980,6 +21049,61 @@ function drawVisualGameClaudeCodeAvatar(context, x, y, {
   }
 }
 
+function drawVisualGameOpenClawAvatar(context, x, y, {
+  color = "#e6522c",
+  dark = "#2f1815",
+  trim = "#ffd0b4",
+  legPhase = 0,
+  sleeping = false,
+  typingPhase = null,
+} = {}) {
+  const legLift = sleeping ? 0 : Math.max(0, Math.floor(legPhase) % 2);
+  const isTyping = Number.isFinite(typingPhase);
+  const tap = isTyping ? Math.max(0, Math.floor(typingPhase)) % 2 : 0;
+  const blocks = [
+    [3, 10, 7, 6],
+    [27, 10, 7, 6],
+    [7, 14, 5, 4],
+    [25, 14, 5, 4],
+    [9, 8, 19, 14],
+    [12, 20, 13, 5],
+    [5, 22 + legLift, 5, 4],
+    [12, 24 + (sleeping ? 0 : 1 - legLift), 4, 5],
+    [21, 24 + (sleeping ? 0 : 1 - legLift), 4, 5],
+    [28, 22 + legLift, 5, 4],
+  ];
+  if (isTyping) {
+    blocks.push([3, 16 + tap, 5, 4], [29, 16 + (1 - tap), 5, 4]);
+  }
+
+  context.fillStyle = "rgba(5, 6, 9, 0.38)";
+  for (const [blockX, blockY, blockWidth, blockHeight] of blocks) {
+    context.fillRect(x + blockX + 1, y + blockY + 1, blockWidth, blockHeight);
+  }
+
+  context.fillStyle = color;
+  for (const [blockX, blockY, blockWidth, blockHeight] of blocks) {
+    context.fillRect(x + blockX, y + blockY, blockWidth, blockHeight);
+  }
+
+  context.fillStyle = trim;
+  context.fillRect(x + 13, y + 10, 11, 1);
+  context.fillRect(x + 14, y + 20, 9, 1);
+
+  context.fillStyle = color;
+  context.fillRect(x + 13, y + 5, 3, 5);
+  context.fillRect(x + 22, y + 5, 3, 5);
+
+  context.fillStyle = dark;
+  if (sleeping) {
+    context.fillRect(x + 13, y + 6, 4, 1);
+    context.fillRect(x + 22, y + 6, 4, 1);
+  } else {
+    context.fillRect(x + 13, y + 5, 3, 3);
+    context.fillRect(x + 22, y + 5, 3, 3);
+  }
+}
+
 function drawVisualGameClaudeCodeAgentSprite(context, agent, time, visualDestination, {
   isStationed = false,
   isRoamingIdle = false,
@@ -20015,50 +21139,6 @@ function drawVisualGameClaudeCodeAgentSprite(context, agent, time, visualDestina
   drawVisualGameClaudeCodeAvatar(context, 0, 1, { color, legPhase, typingPhase });
 }
 
-function drawVisualGameOpenClawAvatar(context, x, y, {
-  color = "#e6522c",
-  dark = "#2f1815",
-  trim = "#ffd0b4",
-  legPhase = 0,
-  sleeping = false,
-  typingPhase = null,
-} = {}) {
-  const legLift = sleeping ? 0 : Math.max(0, Math.floor(legPhase) % 2);
-  const tap = Number.isFinite(typingPhase) ? Math.max(0, Math.floor(typingPhase)) % 2 : 0;
-
-  context.fillStyle = "rgba(5, 6, 9, 0.36)";
-  context.fillRect(x + 6, y + 12, 26, 16);
-  context.fillRect(x + 1, y + 16, 7, 7);
-  context.fillRect(x + 30, y + 16, 7, 7);
-
-  context.fillStyle = color;
-  context.fillRect(x + 7, y + 11, 24, 15);
-  context.fillRect(x + 10, y + 8, 18, 8);
-  context.fillRect(x + 1, y + 15 + tap, 8, 7);
-  context.fillRect(x + 29, y + 15 + (1 - tap), 8, 7);
-  context.fillRect(x + 5, y + 20, 5, 4);
-  context.fillRect(x + 28, y + 20, 5, 4);
-
-  context.fillStyle = trim;
-  context.fillRect(x + 11, y + 14, 16, 3);
-  context.fillRect(x + 13, y + 19, 12, 3);
-
-  context.fillStyle = dark;
-  if (sleeping) {
-    context.fillRect(x + 13, y + 10, 4, 1);
-    context.fillRect(x + 23, y + 10, 4, 1);
-  } else {
-    context.fillRect(x + 13, y + 9, 3, 4);
-    context.fillRect(x + 24, y + 9, 3, 4);
-  }
-
-  context.fillStyle = color;
-  context.fillRect(x + 8, y + 26 + legLift, 4, 5);
-  context.fillRect(x + 14, y + 26 + (1 - legLift), 4, 5);
-  context.fillRect(x + 22, y + 26 + (1 - legLift), 4, 5);
-  context.fillRect(x + 28, y + 26 + legLift, 4, 5);
-}
-
 function drawVisualGameOpenClawAgentSprite(context, agent, time, visualDestination, {
   isStationed = false,
   isRoamingIdle = false,
@@ -20066,28 +21146,28 @@ function drawVisualGameOpenClawAgentSprite(context, agent, time, visualDestinati
   step = 0,
 } = {}) {
   const color = palette?.coat || "#e6522c";
-  const dark = palette?.boots || "#2f1815";
   const trim = palette?.trim || "#ffd0b4";
+  const dark = palette?.boots || "#2f1815";
   const legPhase = isStationed || isRoamingIdle ? 0 : step;
 
   if (visualDestination === "sleep") {
     context.fillStyle = "#332519";
-    context.fillRect(1, 16, 35, 12);
+    context.fillRect(1, 15, 34, 12);
     context.fillStyle = "#5b3f29";
-    context.fillRect(3, 14, 31, 4);
+    context.fillRect(3, 13, 30, 4);
     context.fillStyle = "#2a1d15";
-    context.fillRect(3, 26, 30, 3);
+    context.fillRect(3, 25, 29, 3);
     context.fillStyle = "#f0d9ad";
-    context.fillRect(3, 11, 10, 7);
+    context.fillRect(3, 10, 9, 7);
     context.save();
     context.translate(7, 6);
-    context.scale(0.78, 0.78);
+    context.scale(0.72, 0.72);
     drawVisualGameOpenClawAvatar(context, 0, 0, { color, dark, trim, sleeping: true });
     context.restore();
     context.fillStyle = "#f7efba";
-    context.fillRect(28, 8, 2, 2);
-    context.fillRect(30, 6, 2, 2);
-    context.fillRect(32, 4, 2, 2);
+    context.fillRect(27, 8, 2, 2);
+    context.fillRect(29, 6, 2, 2);
+    context.fillRect(31, 4, 2, 2);
     return;
   }
 
@@ -20486,6 +21566,7 @@ function getVisualGameAgents(graph, time) {
   const browserIndex = { value: 0 };
   const ottoAuthIndex = { value: 0 };
   const cameraIndex = { value: 0 };
+  const harborIndex = { value: 0 };
   const sleepIndexByDorm = new Map();
   const libraryIndex = { value: 0 };
   const evidenceIndex = { value: 0 };
@@ -20512,6 +21593,9 @@ function getVisualGameAgents(graph, time) {
     } else if (destination === "camera") {
       target = getVisualGameCameraSpot(cameraIndex.value);
       cameraIndex.value += 1;
+    } else if (destination === "harbor") {
+      target = getVisualGameHarborSpot(harborIndex.value);
+      harborIndex.value += 1;
     } else if (destination === "sleep") {
       const dorm = getAgentTownDormForAgent(base);
       const dormKey = dorm?.id || "dormitory";
@@ -20567,6 +21651,10 @@ function getVisualGameAgentDestination(agent, statusClass) {
 
   if (agent.kind === "camera" && activelyGenerating && isVideoMemoryPluginInstalled()) {
     return "camera";
+  }
+
+  if (activelyGenerating && isPluginIdInstalled("harbor") && hasVisualGameHarborActivity(agent)) {
+    return "harbor";
   }
 
   if (activelyGenerating && hasVisualGameLibraryActivity(agent)) {
@@ -20632,6 +21720,30 @@ function hasVisualGameLibraryActivity(agent) {
   ];
 
   return references.some(isVisualGameLibraryReference);
+}
+
+function hasVisualGameHarborActivity(agent) {
+  const references = [
+    agent.name,
+    agent.subtitle,
+    agent.meta,
+    agent.agentType,
+    agent.source,
+    ...(Array.isArray(agent.paths) ? agent.paths : []),
+    ...(Array.isArray(agent.commands) ? agent.commands : []),
+  ];
+
+  return references.some(isVisualGameHarborReference);
+}
+
+function isVisualGameHarborReference(value) {
+  const text = String(value || "").toLowerCase();
+  return (
+    /\bharbor\b/.test(text)
+    || text.includes("harborframework")
+    || text.includes("terminal-bench")
+    || text.includes("swe-bench")
+  );
 }
 
 function isVisualGameLibraryReference(value) {
@@ -20962,6 +22074,32 @@ function getVisualGameOttoAuthSpot(index) {
 
 function getVisualGameCameraSpot(index) {
   return getVisualGamePlaceSpot("camera", index, { x: -8, y: 6 });
+}
+
+function getVisualGameHarborPlace() {
+  return getAgentTownPluginBuildingPlaces().find((place) => place.pluginId === "harbor") || null;
+}
+
+function getVisualGameHarborSpot(index) {
+  const place = getVisualGameHarborPlace();
+  if (!place?.rect) {
+    return getVisualGameDeskSpot(index);
+  }
+
+  const { x, y, width, height } = place.rect;
+  const spots = [
+    { x: x + width * 0.5, y: y + height - 14 },
+    { x: x + width * 0.28, y: y + height - 15 },
+    { x: x + width * 0.72, y: y + height - 15 },
+    { x: x + width * 0.5, y: y + height - 31 },
+  ];
+  const spot = spots[index % spots.length];
+  const row = Math.floor(index / spots.length);
+  return {
+    x: Math.round(spot.x) + row * 6,
+    y: Math.round(spot.y) + row * 5,
+    routeAnchor: getVisualGameTownPlaceAnchor(place),
+  };
 }
 
 function getVisualGameSleepSpot(agent, index) {
@@ -22090,30 +23228,34 @@ function renderTerminalPanel(activeSession) {
     return renderBrowserUseView();
   }
 
-  const agentProfilePanel = renderAgentProfilePanel(activeSession, { surface: "workspace" });
+  const agentProfileTopBar = renderAgentProfileTopBar(activeSession);
+  const hasAgentCanvas = Boolean(getAgentCanvasSignature(activeSession));
   const workspaceSplitClass = [
     "workspace-split",
+    hasAgentCanvas ? "has-agent-canvas" : "",
     state.openFileTabs.length ? "has-file-preview" : "",
-    agentProfilePanel ? "has-agent-profile" : "",
   ].filter(Boolean).join(" ");
 
   return `
     <section class="terminal-panel" ${renderMainViewAttributes("shell", `shell:${activeSession?.id || ""}`)}>
-      <div class="terminal-toolbar">
-        <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
-        <div class="terminal-copy">
-          <strong id="toolbar-title">${escapeHtml(activeSession ? activeSession.name : "new session")}</strong>
-          <div class="terminal-meta" id="toolbar-meta">${escapeHtml(
-            activeSession ? `${activeSession.providerLabel} · ${activeSession.cwd}` : state.defaultCwd,
-          )}</div>
-        </div>
-        <div class="toolbar-actions">
-          <button class="icon-button" type="button" id="refresh-sessions" aria-label="Refresh sessions" ${tooltipAttributes("Refresh sessions")}>${renderIcon(RefreshCw)}</button>
-          <button class="ghost-button toolbar-control terminal-control-button" type="button" id="tab-button" data-terminal-control aria-label="Send Tab" ${tooltipAttributes("Send Tab")} ${activeSession ? "" : "disabled"}>${renderIcon(IndentIncrease)}</button>
-          <button class="ghost-button toolbar-control terminal-control-button" type="button" id="shift-tab-button" data-terminal-control aria-label="Send Shift Tab" ${tooltipAttributes("Send Shift Tab")} ${activeSession ? "" : "disabled"}>${renderIcon(IndentDecrease)}</button>
-          <button class="ghost-button toolbar-control terminal-control-button" type="button" id="ctrl-p-button" data-terminal-control aria-label="Send Control P" ${tooltipAttributes("Send Control P")} ${activeSession ? "" : "disabled"}>${renderIcon(ArrowUp)}</button>
-          <button class="ghost-button toolbar-control terminal-control-button" type="button" id="ctrl-t-button" data-terminal-control aria-label="Send Control T" ${tooltipAttributes("Send Control T")} ${activeSession ? "" : "disabled"}>${renderIcon(Type)}</button>
-          <button class="ghost-button toolbar-control terminal-control-button" type="button" id="ctrl-c-button" data-terminal-control aria-label="Send Control C" ${tooltipAttributes("Send Control C")} ${activeSession ? "" : "disabled"}>${renderIcon(CircleStop)}</button>
+      <div class="terminal-head-stack">
+        <div class="terminal-toolbar ${agentProfileTopBar ? "has-agent-profile" : ""}">
+          <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
+          ${
+            agentProfileTopBar
+              ? agentProfileTopBar
+              : `
+                <div class="terminal-copy">
+                  <strong id="toolbar-title">${escapeHtml(activeSession ? activeSession.name : "new session")}</strong>
+                  <div class="terminal-meta" id="toolbar-meta">${escapeHtml(
+                    activeSession ? `${activeSession.providerLabel} · ${activeSession.cwd}` : state.defaultCwd,
+                  )}</div>
+                </div>
+              `
+          }
+          <div class="toolbar-actions">
+            <button class="icon-button" type="button" id="refresh-sessions" aria-label="Refresh sessions" ${tooltipAttributes("Refresh sessions")}>${renderIcon(RefreshCw)}</button>
+          </div>
         </div>
       </div>
 
@@ -22130,7 +23272,7 @@ function renderTerminalPanel(activeSession) {
             <p class="empty-state-copy">choose an agent, then start a session in the default folder</p>
           </div>
         </div>
-        ${agentProfilePanel}
+        ${renderAgentCanvasHost(activeSession)}
         ${renderWorkspaceResizeHandle()}
         ${renderFilePreviewPane()}
       </div>
@@ -23423,6 +24565,30 @@ function bindSessionEvents() {
     });
   });
 
+  document.querySelectorAll("[data-agent-town-action-open]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openAgentTownActionHref(button.getAttribute("data-agent-town-action-open") || "");
+    });
+  });
+
+  document.querySelectorAll("[data-agent-town-action-complete]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void updateAgentTownActionItemStatus(button.getAttribute("data-agent-town-action-complete") || "", "completed");
+    });
+  });
+
+  document.querySelectorAll("[data-agent-town-action-dismiss]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void updateAgentTownActionItemStatus(button.getAttribute("data-agent-town-action-dismiss") || "", "dismissed");
+    });
+  });
+
   document.querySelectorAll("[data-session-id]").forEach((element) => {
     element.addEventListener("click", (event) => {
       if (event.target.closest("[data-delete-session]")) {
@@ -23914,6 +25080,10 @@ async function createAgentAutomationFromForm(form) {
   };
 
   await saveAgentAutomations([...getAgentAutomations(), automation]);
+  void recordAgentTownEvent("automation_created", {
+    label: automation.prompt.slice(0, 120),
+    metadata: { automationId: automation.id, cadence: automation.cadence, time: automation.time },
+  });
 }
 
 async function deleteAgentAutomation(automationId) {
@@ -26438,6 +27608,10 @@ async function saveKnowledgeBaseNote() {
     await loadKnowledgeBaseIndex();
     await loadKnowledgeBaseNote(relativePath, { force: true });
     updateRoute({ view: "knowledge-base", notePath: relativePath });
+    void recordAgentTownEvent("library_note_saved", {
+      label: relativePath,
+      metadata: { path: relativePath },
+    });
     renderShell();
   } catch (error) {
     window.alert(error.message);
@@ -26554,6 +27728,62 @@ function applyAgentPromptState(payload) {
   state.agentPromptPresets = Array.isArray(payload?.presets) ? payload.presets : [];
   state.agentPromptWikiRoot = payload?.wikiRoot || state.settings.wikiRelativeRoot || WORKSPACE_LIBRARY_RELATIVE_PATH;
   state.agentPromptTargets = Array.isArray(payload?.targets) ? payload.targets : [];
+}
+
+function normalizeAgentTownActionItems(value) {
+  return Array.isArray(value)
+    ? value
+        .filter((item) => item && typeof item === "object" && item.id && item.title)
+        .map((item) => ({
+          ...item,
+          kind: ["action", "approval", "review", "setup"].includes(item.kind) ? item.kind : "action",
+          priority: ["low", "normal", "high", "urgent"].includes(item.priority) ? item.priority : "normal",
+          capabilityIds: Array.isArray(item.capabilityIds) ? item.capabilityIds : [],
+          target: item.target && typeof item.target === "object" ? item.target : null,
+        }))
+    : [];
+}
+
+function normalizeAgentTownCanvases(value) {
+  return Array.isArray(value)
+    ? value
+        .filter((canvas) => canvas && typeof canvas === "object" && canvas.id)
+        .map((canvas) => ({
+          id: String(canvas.id || ""),
+          sourceSessionId: String(canvas.sourceSessionId || canvas.sessionId || ""),
+          sourceAgentId: String(canvas.sourceAgentId || canvas.agentId || ""),
+          title: String(canvas.title || "Agent canvas"),
+          caption: String(canvas.caption || canvas.detail || ""),
+          alt: String(canvas.alt || canvas.title || "Agent canvas"),
+          imagePath: String(canvas.imagePath || canvas.path || ""),
+          imageUrl: String(canvas.imageUrl || canvas.url || ""),
+          href: String(canvas.href || ""),
+          createdAt: String(canvas.createdAt || ""),
+          updatedAt: String(canvas.updatedAt || canvas.createdAt || ""),
+        }))
+    : [];
+}
+
+function applyAgentTownState(payload) {
+  const agentTown = payload?.agentTown || payload || {};
+  const layoutSummary = agentTown.layoutSummary || {};
+  state.agentTown = {
+    actionItems: normalizeAgentTownActionItems(agentTown.actionItems),
+    canvases: normalizeAgentTownCanvases(agentTown.canvases),
+    events: Array.isArray(agentTown.events) ? agentTown.events : [],
+    layoutSummary: {
+      cosmeticCount: Number(layoutSummary.cosmeticCount) || 0,
+      functionalCount: Number(layoutSummary.functionalCount) || 0,
+      functionalIds: Array.isArray(layoutSummary.functionalIds) ? layoutSummary.functionalIds : [],
+      pendingFunctionalIds: Array.isArray(layoutSummary.pendingFunctionalIds) ? layoutSummary.pendingFunctionalIds : [],
+      themeId: layoutSummary.themeId || AGENT_TOWN_DEFAULT_THEME_ID,
+    },
+    signals: {
+      agentClickedCount: Number(agentTown.signals?.agentClickedCount) || 0,
+      automationCreatedCount: Number(agentTown.signals?.automationCreatedCount) || 0,
+      libraryNoteSavedCount: Number(agentTown.signals?.libraryNoteSavedCount) || 0,
+    },
+  };
 }
 
 function applySettingsState(payload) {
@@ -27440,6 +28670,7 @@ function bindShellEvents() {
   bindLineNumberEditors();
   ensureSessionProviderPickerGlobalListeners();
   bindSessionProviderPicker();
+  bindAgentCanvasWindowDrag();
   bindFolderPickerDragEvents();
   bindLayoutResizeEvents();
   bindWorkspaceTabEvents();
@@ -29585,6 +30816,7 @@ async function bootstrapApp() {
   state.portsLoadedAt = Date.now();
   state.preferredBaseUrl = payload.preferredUrl ? new URL(payload.preferredUrl).origin : "";
   applyAgentPromptState(payload.agentPrompt);
+  applyAgentTownState(payload.agentTown);
 
   if (maybeRedirectToPreferredOrigin()) {
     return;
@@ -29594,6 +30826,7 @@ async function bootstrapApp() {
   state.filesRootOverride = route.root || null;
   state.activeSessionId = payload.sessions[0]?.id ?? null;
   syncFilesRoot({ force: true });
+  await loadAgentTownState({ refreshUi: false });
 
   if (route.view === "file" && !isBrainSetupRequired() && !isAgentSetupRequired()) {
     setOpenFileSelection(route.path, {
@@ -29622,6 +30855,9 @@ async function bootstrapApp() {
   }
   if (isVisualInterfaceView()) {
     void openVisualInterface({ refresh: true });
+  }
+  if (isAgentTownLayoutCustomized()) {
+    void mirrorAgentTownState({ refreshUi: false });
   }
   void loadVideoMemoryStatus({ renderOnComplete: state.currentView === "plugins" || state.currentView === "settings" });
   void loadUpdateStatus();
@@ -29665,6 +30901,7 @@ async function bootstrapApp() {
 
   state.pollTimer = window.setInterval(() => {
     loadSessions();
+    void loadAgentTownState({ refreshUi: true });
     if (isLocalhostAppsEnabled() && Date.now() - state.portsLoadedAt > PORTS_BACKGROUND_REFRESH_MS) {
       loadPorts();
     }

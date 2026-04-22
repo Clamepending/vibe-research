@@ -27,6 +27,7 @@ test("building registry exposes core building manifests", () => {
   assert.ok(ids.includes("sora"));
   assert.ok(ids.includes("nano-banana"));
   assert.ok(ids.includes("wandb"));
+  assert.ok(ids.includes("harbor"));
   assert.ok(ids.includes("system"));
   assert.ok(ids.includes("occupations"));
   assert.ok(ids.includes("phone-imessage"));
@@ -119,6 +120,14 @@ test("building registry exposes core building manifests", () => {
   assert.equal(wandb.visual.shape, "studio");
   assert.match(wandb.access.detail, /WANDB_API_KEY/i);
   assert.ok(wandb.onboarding.steps.some((step) => step.completeWhen?.type === "installed"));
+
+  const harbor = BUILDING_CATALOG.find((building) => building.id === "harbor");
+  assert.equal(harbor.category, "Evals");
+  assert.equal(harbor.visual.shape, "lab");
+  assert.equal(harbor.status, "CLI install required");
+  assert.match(harbor.access.detail, /harbor CLI/i);
+  assert.ok(harbor.agentGuide.commands.some((command) => command.command.includes("harbor run")));
+  assert.ok(harbor.agentGuide.docs.some((doc) => doc.url.includes("harborframework.com")));
 
   const occupations = BUILDING_CATALOG.find((building) => building.id === "occupations");
   assert.equal(occupations.install.system, true);

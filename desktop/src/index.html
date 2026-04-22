@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vibe Research</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="installer-shell">
+      <section class="hero" aria-live="polite">
+        <div class="mark" aria-hidden="true">VR</div>
+        <p class="eyebrow">Vibe Research</p>
+        <h1 id="title">Starting Vibe Research</h1>
+        <p id="detail">Preparing the local desktop app.</p>
+        <div class="progress" aria-hidden="true">
+          <span id="progress-bar"></span>
+        </div>
+        <div class="actions">
+          <button id="retry" type="button" hidden>Try again</button>
+          <button id="open-browser" type="button">Open in browser</button>
+          <button id="quit" type="button">Quit</button>
+        </div>
+      </section>
+      <section class="log-panel" aria-label="Installer log">
+        <div class="log-header">
+          <span>Setup log</span>
+          <span id="phase">checking</span>
+        </div>
+        <pre id="log"></pre>
+      </section>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

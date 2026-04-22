@@ -6,6 +6,7 @@
   "type": "module",
   "bin": {
     "vibe-research": "./bin/vibe-research",
+    "vr-agent-canvas": "./bin/vr-agent-canvas",
     "vr-agentmail-reply": "./bin/vr-agentmail-reply",
     "vr-browser": "./bin/vr-browser",
     "vr-browser-use": "./bin/vr-browser-use",
@@ -16,6 +17,7 @@
     "vr-telegram-reply": "./bin/vr-telegram-reply",
     "vr-videomemory": "./bin/vr-videomemory",
     "rv-browser": "./bin/rv-browser",
+    "rv-agent-canvas": "./bin/rv-agent-canvas",
     "rv-agentmail-reply": "./bin/rv-agentmail-reply",
     "rv-browser-use": "./bin/rv-browser-use",
     "rv-mailwatch": "./bin/rv-mailwatch",
@@ -39,6 +41,10 @@
     "release:patch": "node scripts/release.mjs patch",
     "release:minor": "node scripts/release.mjs minor",
     "release:major": "node scripts/release.mjs major",
+    "desktop:install": "npm --prefix desktop install",
+    "desktop:dev": "npm --prefix desktop run dev",
+    "desktop:pack": "npm --prefix desktop run pack",
+    "desktop:dist": "npm --prefix desktop run dist",
     "test": "npm run build && node --test test/*.test.js"
   },
   "dependencies": {

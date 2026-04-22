@@ -170,13 +170,17 @@ function getMessageFromEvent(event) {
   return candidates.find((candidate) => candidate && typeof candidate === "object") || null;
 }
 
+function isClaudeProviderId(providerId) {
+  return ["claude", "claude-ollama"].includes(String(providerId || "").trim().toLowerCase());
+}
+
 function providerHasReadyHint(providerId, buffer) {
   const text = normalizeTerminalText(buffer);
   if (!text.trim()) {
     return false;
   }
 
-  if (providerId === "claude") {
+  if (isClaudeProviderId(providerId)) {
     if (hasClaudeWorkspaceTrustPrompt(text)) {
       return false;
     }
@@ -1029,7 +1033,7 @@ export class AgentMailService {
       return true;
     };
     const writePrompt = () => {
-      if (providerId === "claude") {
+      if (isClaudeProviderId(providerId)) {
         const pasted = this.sessionManager.write(sessionId, prompt);
         if (!pasted) {
           return failPromptDelivery("Email agent session exited before Vibe Research could send the prompt.");
@@ -1073,7 +1077,7 @@ export class AgentMailService {
       const elapsedMs = now - startedAt;
       const idleMs = now - lastOutputAt;
 
-      if (providerId === "claude" && !answeredWorkspaceTrust && hasClaudeWorkspaceTrustPrompt(session.buffer)) {
+      if (isClaudeProviderId(providerId) && !answeredWorkspaceTrust && hasClaudeWorkspaceTrustPrompt(session.buffer)) {
         answeredWorkspaceTrust = true;
         const ok = this.sessionManager.write(sessionId, "1\r");
         if (!ok) {

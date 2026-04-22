@@ -53,13 +53,17 @@ function hasClaudeWorkspaceTrustPrompt(buffer) {
   return /Quick\s*safety\s*check|Yes,\s*I\s*trust\s*this\s*folder|Claude\s*Code'll\s*be\s*able\s*to\s*read/i.test(text);
 }
 
+function isClaudeProviderId(providerId) {
+  return ["claude", "claude-ollama"].includes(String(providerId || "").trim().toLowerCase());
+}
+
 function providerHasReadyHint(providerId, buffer) {
   const text = normalizeTerminalText(buffer);
   if (!text.trim()) {
     return false;
   }
 
-  if (providerId === "claude") {
+  if (isClaudeProviderId(providerId)) {
     if (hasClaudeWorkspaceTrustPrompt(text)) {
       return false;
     }
@@ -535,7 +539,7 @@ export class TelegramService {
       return true;
     };
     const writePrompt = () => {
-      if (providerId === "claude") {
+      if (isClaudeProviderId(providerId)) {
         const pasted = this.sessionManager.write(sessionId, prompt);
         if (!pasted) {
           return failPromptDelivery("Telegram agent session exited before Vibe Research could send the prompt.");
@@ -579,7 +583,7 @@ export class TelegramService {
       const elapsedMs = now - startedAt;
       const idleMs = now - lastOutputAt;
 
-      if (providerId === "claude" && !answeredWorkspaceTrust && hasClaudeWorkspaceTrustPrompt(session.buffer)) {
+      if (isClaudeProviderId(providerId) && !answeredWorkspaceTrust && hasClaudeWorkspaceTrustPrompt(session.buffer)) {
         answeredWorkspaceTrust = true;
         const ok = this.sessionManager.write(sessionId, "1\r");
         if (!ok) {

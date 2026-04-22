@@ -19,6 +19,14 @@ const fakeAgentProviders = [
     launchCommand: "claude",
   },
   {
+    id: "claude-ollama",
+    label: "Local Claude Code (Ollama)",
+    command: "claude",
+    defaultName: "Local Claude",
+    available: true,
+    launchCommand: "claude",
+  },
+  {
     id: "codex",
     label: "Codex",
     command: "codex",
@@ -49,6 +57,14 @@ const fakeAgentProviders = [
     defaultName: "OpenCode",
     available: true,
     launchCommand: "opencode",
+  },
+  {
+    id: "openclaw",
+    label: "OpenClaw",
+    command: "openclaw",
+    defaultName: "OpenClaw",
+    available: true,
+    launchCommand: "openclaw",
   },
   {
     id: "ml-intern",
@@ -483,6 +499,40 @@ test("Claude sessions use a fixed session id and resume it after restart", async
     assert.equal(
       restoredLaunch.commandString,
       `${claudeWrapperCommand} '--dangerously-skip-permissions' '--resume' '11111111-2222-4333-8444-555555555555' || ${claudeWrapperCommand} '--dangerously-skip-permissions' '--session-id' '11111111-2222-4333-8444-555555555555'`,
+    );
+  } finally {
+    await cleanupManager(manager, workspaceDir, userHomeDir);
+  }
+});
+
+test("local Claude Code sessions use Ollama model args and resume like Claude", async () => {
+  const { manager, workspaceDir, userHomeDir } = await createManager({
+    env: {
+      ...process.env,
+      VIBE_RESEARCH_CLAUDE_OLLAMA_MODEL: "qwen2.5-coder:7b",
+    },
+  });
+
+  try {
+    const provider = manager.getProvider("claude-ollama");
+    const session = manager.buildSessionRecord({
+      id: "22222222-3333-4444-8555-666666666666",
+      providerId: "claude-ollama",
+      providerLabel: "Local Claude Code (Ollama)",
+      name: "Local Claude 1",
+      cwd: workspaceDir,
+    });
+
+    const firstLaunch = await manager.prepareProviderLaunch(session, provider, { restored: false });
+    assert.equal(
+      firstLaunch.commandString,
+      `${claudeWrapperCommand} '--model' 'qwen2.5-coder:7b' '--dangerously-skip-permissions' '--session-id' '22222222-3333-4444-8555-666666666666'`,
+    );
+
+    const restoredLaunch = await manager.prepareProviderLaunch(session, provider, { restored: true });
+    assert.equal(
+      restoredLaunch.commandString,
+      `${claudeWrapperCommand} '--model' 'qwen2.5-coder:7b' '--dangerously-skip-permissions' '--resume' '22222222-3333-4444-8555-666666666666' || ${claudeWrapperCommand} '--model' 'qwen2.5-coder:7b' '--dangerously-skip-permissions' '--session-id' '22222222-3333-4444-8555-666666666666'`,
     );
   } finally {
     await cleanupManager(manager, workspaceDir, userHomeDir);

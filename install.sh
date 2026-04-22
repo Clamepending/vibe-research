@@ -329,9 +329,41 @@ is_root() {
   [ "$(id -u)" -eq 0 ]
 }
 
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+applescript_string_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+run_as_root_with_macos_prompt() {
+  if [ "$(uname -s 2>/dev/null || true)" != "Darwin" ] || ! has_command osascript; then
+    return 1
+  fi
+
+  case "${VIBE_RESEARCH_MACOS_ADMIN_PROMPT:-${REMOTE_VIBES_MACOS_ADMIN_PROMPT:-1}}" in
+    0 | false | False | FALSE | no | No | NO | off | Off | OFF)
+      return 1
+      ;;
+  esac
+
+  local command_string arg
+  command_string=""
+  for arg in "$@"; do
+    command_string="${command_string:+$command_string }$(shell_quote "$arg")"
+  done
+
+  osascript -e "do shell script \"$(applescript_string_escape "$command_string")\" with administrator privileges"
+}
+
 run_as_root() {
   if is_root; then
     "$@"
+    return
+  fi
+
+  if [ ! -t 0 ] && run_as_root_with_macos_prompt "$@"; then
     return
   fi
 
@@ -349,6 +381,10 @@ run_as_root_preserving_env() {
     return
   fi
 
+  if [ ! -t 0 ] && run_as_root_with_macos_prompt "$@"; then
+    return
+  fi
+
   if has_command sudo; then
     sudo -E "$@"
     return
@@ -360,6 +396,10 @@ run_as_root_preserving_env() {
 try_run_as_root() {
   if is_root; then
     "$@"
+    return
+  fi
+
+  if [ ! -t 0 ] && run_as_root_with_macos_prompt "$@"; then
     return
   fi
 

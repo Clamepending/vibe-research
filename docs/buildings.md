@@ -2,6 +2,8 @@
 
 Buildings are the extension unit for Vibe Research integrations. A building gives an integration a visible home, install state, onboarding checklist, settings variables, and optional Agent Town behavior.
 
+For the broader visual operating-system contract that buildings plug into, see `docs/visual-os-foundation.md`.
+
 ## Files
 
 - `src/client/building-sdk.js` owns the manifest primitives: `defineBuilding`, `createBuildingRegistry`, and `normalizeBuildingId`.
@@ -103,6 +105,7 @@ export default defineBuilding({
 - `agentGuide.commands` are declarative setup or inspection commands for agents to try when appropriate. They are not automatically executed by the catalog.
 - `agentGuide.env` should name runtime environment variables and credential expectations without including secret values.
 - Secrets should use a redacted public setting such as `exampleApiKeyConfigured`; the raw secret should not be returned to the browser.
+- Sensitive building actions should create Agent Inbox approval cards with capability tags before they spend money, send messages, publish work, use credentials, delete user content, control devices, or expose private data.
 
 ## BuildingHub
 
