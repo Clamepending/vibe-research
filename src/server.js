@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { createRemoteVibesApp } from "./create-app.js";
+import { createVibeResearchApp } from "./create-app.js";
 import { buildStartupOutput } from "./startup-output.js";
 
-const configuredHost = process.env.REMOTE_VIBES_HOST || "0.0.0.0";
-const configuredPort = Number(process.env.REMOTE_VIBES_PORT || 4123);
+const configuredHost = process.env.VIBE_RESEARCH_HOST || process.env.REMOTE_VIBES_HOST || "0.0.0.0";
+const configuredPort = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4123);
 
 function relaunchCurrentServer() {
   const child = spawn(process.execPath, process.argv.slice(1), {
@@ -16,10 +16,10 @@ function relaunchCurrentServer() {
   child.unref();
 }
 
-let remoteVibes;
+let vibeResearch;
 
 try {
-  remoteVibes = await createRemoteVibesApp({
+  vibeResearch = await createVibeResearchApp({
     host: configuredHost,
     port: configuredPort,
     onTerminate: async ({ relaunch = false } = {}) => {
@@ -33,7 +33,7 @@ try {
 } catch (error) {
   if (error?.code === "EADDRINUSE") {
     console.error(
-      `Remote Vibes could not bind ${configuredHost}:${configuredPort}. Stop the other server or relaunch with REMOTE_VIBES_PORT=<free-port>.`,
+      `Vibe Research could not bind ${configuredHost}:${configuredPort}. Stop the other server or relaunch with VIBE_RESEARCH_PORT=<free-port>.`,
     );
     process.exit(1);
   }
@@ -43,12 +43,12 @@ try {
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, async () => {
-    await remoteVibes.terminate();
+    await vibeResearch.terminate();
   });
 }
 
 process.on("SIGHUP", () => {
-  console.log("[remote-vibes] Ignoring SIGHUP; use terminate, SIGINT, or SIGTERM to stop.");
+  console.log("[vibe-research] Ignoring SIGHUP; use terminate, SIGINT, or SIGTERM to stop.");
 });
 
-console.log(buildStartupOutput(remoteVibes.config));
+console.log(buildStartupOutput(vibeResearch.config));

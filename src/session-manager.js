@@ -1,6 +1,18 @@
 import { execFile, execFileSync } from "node:child_process";
 import os from "node:os";
-import { closeSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { open, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -10,7 +22,7 @@ import pty from "node-pty";
 import { AGENT_PROMPT_FILENAME } from "./agent-prompt-store.js";
 import { AgentRunTracker } from "./agent-run-tracker.js";
 import { SessionStore } from "./session-store.js";
-import { getLegacyWorkspaceStateDir, getRemoteVibesStateDir, getRemoteVibesSystemDir } from "./state-paths.js";
+import { getLegacyWorkspaceStateDir, getVibeResearchStateDir, getVibeResearchSystemDir } from "./state-paths.js";
 
 const MAX_BUFFER_LENGTH = 2_000_000;
 const STARTUP_DELAY_MS = 180;
@@ -19,7 +31,9 @@ const SESSION_PERSIST_THROTTLE_MS = 180;
 const SESSION_NAME_MAX_LENGTH = 64;
 const SESSION_AUTO_NAME_MAX_WORDS = 6;
 const SESSION_AUTO_NAME_BUFFER_LIMIT = 240;
-const SESSION_ACTIVITY_IDLE_MS = Number(process.env.REMOTE_VIBES_SESSION_ACTIVITY_IDLE_MS || 15_000);
+const SESSION_ACTIVITY_IDLE_MS = Number(
+  process.env.VIBE_RESEARCH_SESSION_ACTIVITY_IDLE_MS || process.env.REMOTE_VIBES_SESSION_ACTIVITY_IDLE_MS || 15_000,
+);
 const PROVIDER_SESSION_LIST_LIMIT = 50;
 const PROVIDER_SESSION_CAPTURE_ATTEMPTS = 16;
 const PROVIDER_SESSION_CAPTURE_INTERVAL_MS = 250;
@@ -33,8 +47,9 @@ const CLAUDE_BACKGROUND_TASK_TAIL_BYTES = 900_000;
 const CLAUDE_BACKGROUND_TASK_STALE_MS = 24 * 60 * 60 * 1000;
 const CLAUDE_BACKGROUND_TASK_GRACE_MS = 30_000;
 const CLAUDE_SKIP_PERMISSIONS_ARG = "--dangerously-skip-permissions";
-const PERSISTENT_TERMINAL_PROVIDER_IDS = new Set(["claude", "codex", "gemini", "opencode", "shell"]);
+const PERSISTENT_TERMINAL_PROVIDER_IDS = new Set(["claude", "codex", "gemini", "ml-intern", "opencode", "shell"]);
 const IDLE_TERMINAL_COMMANDS = new Set(["bash", "csh", "dash", "fish", "ksh", "login", "sh", "tcsh", "zsh"]);
+const PROVIDER_CREDENTIAL_ENV_KEYS = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "OPENAI_API_KEY", "HF_TOKEN"];
 const TMUX_SESSION_ENV_KEYS = new Set([
   "CODEX_HOME",
   "HOME",
@@ -65,6 +80,7 @@ const SWARM_GRAPH_GIT_TIMEOUT_MS = 2_500;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRootDir = path.resolve(__dirname, "..");
 const helperBinDir = path.join(appRootDir, "bin");
+const mlInternHandoffPromptPath = path.join(appRootDir, "templates", "ml-intern-vibe-research-move.md");
 const preferredCliBinDirs = [helperBinDir, "/opt/homebrew/bin", "/usr/local/bin"];
 const execFileAsync = promisify(execFile);
 const claudeBackgroundTaskSummaryCache = new Map();
@@ -83,13 +99,34 @@ function isDisabledFlag(value) {
   return /^(?:0|false|no|off)$/i.test(String(value ?? "").trim());
 }
 
+function resolveExecutableCommand(command, env = process.env) {
+  const rawCommand = String(command || "").trim();
+  if (!rawCommand || path.isAbsolute(rawCommand) || rawCommand.includes(path.sep)) {
+    return rawCommand;
+  }
+
+  try {
+    const resolved = execFileSync("/bin/sh", ["-lc", 'command -v -- "$1"', "sh", rawCommand], {
+      encoding: "utf8",
+      env,
+      timeout: 1_500,
+    })
+      .split("\n")[0]
+      .trim();
+
+    return resolved || rawCommand;
+  } catch {
+    return rawCommand;
+  }
+}
+
 function getTmuxCommand(env = process.env) {
-  return env?.REMOTE_VIBES_TMUX_COMMAND || "tmux";
+  return resolveExecutableCommand(env?.VIBE_RESEARCH_TMUX_COMMAND || env?.REMOTE_VIBES_TMUX_COMMAND || "tmux", env);
 }
 
 function getTmuxSessionName(session) {
   const safeId = String(session?.id || randomUUID()).replace(/[^A-Za-z0-9_-]/g, "-");
-  return `remote-vibes-${safeId}`.slice(0, 80);
+  return `vibe-research-${safeId}`.slice(0, 80);
 }
 
 function getTmuxEnvironmentArgs(env = process.env) {
@@ -98,7 +135,7 @@ function getTmuxEnvironmentArgs(env = process.env) {
     value != null &&
     value !== "" &&
     /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
-    (TMUX_SESSION_ENV_KEYS.has(key) || key.startsWith("REMOTE_VIBES_"))
+    (TMUX_SESSION_ENV_KEYS.has(key) || key.startsWith("VIBE_RESEARCH_") || key.startsWith("REMOTE_VIBES_"))
   ));
 
   for (const [key, value] of entries) {
@@ -303,11 +340,11 @@ function getManagedProviderLaunchCommand(provider) {
 }
 
 function getDefaultAgentThreadLimit(env) {
-  if (isDisabledFlag(env?.REMOTE_VIBES_AGENT_THREAD_LIMIT)) {
+  if (isDisabledFlag(env?.VIBE_RESEARCH_AGENT_THREAD_LIMIT || env?.REMOTE_VIBES_AGENT_THREAD_LIMIT)) {
     return null;
   }
 
-  const configuredLimit = Number(env?.REMOTE_VIBES_AGENT_THREAD_LIMIT);
+  const configuredLimit = Number(env?.VIBE_RESEARCH_AGENT_THREAD_LIMIT || env?.REMOTE_VIBES_AGENT_THREAD_LIMIT);
   if (Number.isInteger(configuredLimit) && configuredLimit > 0) {
     return String(configuredLimit);
   }
@@ -354,12 +391,12 @@ export function buildSessionEnv(
   const resolvedStateDir =
     stateDir ||
     (Array.isArray(providersOrWorkspaceRoot)
-      ? getRemoteVibesStateDir({ cwd: resolvedWorkspaceRoot, env })
+      ? getVibeResearchStateDir({ cwd: resolvedWorkspaceRoot, env })
       : getLegacyWorkspaceStateDir(resolvedWorkspaceRoot));
   const resolvedWikiRootPath = wikiRootPath || path.join(resolvedStateDir, "wiki");
   const resolvedSystemRootPath = path.resolve(
     resolvedWorkspaceRoot,
-    systemRootPath || getRemoteVibesSystemDir({
+    systemRootPath || getVibeResearchSystemDir({
       cwd: resolvedWorkspaceRoot,
       env,
       stateDir: resolvedStateDir,
@@ -377,18 +414,43 @@ export function buildSessionEnv(
     LANG: "en_US.UTF-8",
     LC_ALL: "en_US.UTF-8",
     PATH: prependPathEntries(env.PATH, preferredCliBinDirs),
-    PWCLI: "rv-playwright",
+    PWCLI: "vr-playwright",
+    VIBE_RESEARCH_APP_ROOT: appRootDir,
+    VIBE_RESEARCH_BROWSER_COMMAND: "vr-playwright",
+    VIBE_RESEARCH_BROWSER_FALLBACK_COMMAND: "vr-browser",
+    VIBE_RESEARCH_BROWSER_USE_COMMAND: "vr-browser-use",
+    VIBE_RESEARCH_VIDEOMEMORY_COMMAND: "vr-videomemory",
+    VIBE_RESEARCH_BROWSER_DESCRIBE:
+      "vr-browser describe 4173 --prompt \"What visual issues stand out in the rendered UI?\"",
+    VIBE_RESEARCH_BROWSER_HELP: "vr-playwright open http://127.0.0.1:4173 && vr-playwright snapshot",
+    VIBE_RESEARCH_BROWSER_RUN_HELP:
+      "vr-playwright open http://127.0.0.1:4173 && vr-playwright snapshot && vr-playwright click eX",
+    VIBE_RESEARCH_BROWSER_IMAGE_HELP:
+      "vr-browser describe-file results/chart.png --prompt \"What does this output show and what should improve?\"",
+    VIBE_RESEARCH_ML_INTERN_HANDOFF_PROMPT: mlInternHandoffPromptPath,
+    VIBE_RESEARCH_ML_INTERN_HELP: "ml-intern \"$(cat \\\"$VIBE_RESEARCH_ML_INTERN_HANDOFF_PROMPT\\\")\"",
+    VIBE_RESEARCH_PLAYWRIGHT_COMMAND: "vr-playwright",
+    VIBE_RESEARCH_PLAYWRIGHT_SKILL: path.join(appRootDir, "skills", "playwright", "SKILL.md"),
+    VIBE_RESEARCH_REAL_CLAUDE_COMMAND: getResolvedProviderCommand(providers, "claude") || "",
+    VIBE_RESEARCH_REAL_CODEX_COMMAND: getResolvedProviderCommand(providers, "codex") || "",
+    VIBE_RESEARCH_ROOT: resolvedStateDir,
+    VIBE_RESEARCH_SYSTEM_DIR: resolvedSystemRootPath,
+    VIBE_RESEARCH_AGENT_PROMPT_PATH: path.join(resolvedStateDir, AGENT_PROMPT_FILENAME),
+    VIBE_RESEARCH_PROVIDER: providerId,
+    VIBE_RESEARCH_SESSION_ID: sessionId,
+    VIBE_RESEARCH_WIKI_DIR: resolvedWikiRootPath,
+    VIBE_RESEARCH_COMMS_DIR: commsDir,
+    VIBE_RESEARCH_AGENT_DIR: agentDir,
+    VIBE_RESEARCH_AGENT_ENV_FILE: path.join(agentDir, "env.sh"),
+    VIBE_RESEARCH_AGENT_INBOX: path.join(agentDir, "inbox"),
+    VIBE_RESEARCH_AGENT_PROCESSED_DIR: path.join(agentDir, "processed"),
+    VIBE_RESEARCH_AGENTMAIL_REPLY_COMMAND: "vr-agentmail-reply",
+    VIBE_RESEARCH_MAIL_WATCHER: "vr-mailwatch",
     REMOTE_VIBES_APP_ROOT: appRootDir,
     REMOTE_VIBES_BROWSER_COMMAND: "rv-playwright",
     REMOTE_VIBES_BROWSER_FALLBACK_COMMAND: "rv-browser",
     REMOTE_VIBES_BROWSER_USE_COMMAND: "rv-browser-use",
-    REMOTE_VIBES_BROWSER_DESCRIBE:
-      "rv-browser describe 4173 --prompt \"What visual issues stand out in the rendered UI?\"",
-    REMOTE_VIBES_BROWSER_HELP: "rv-playwright open http://127.0.0.1:4173 && rv-playwright snapshot",
-    REMOTE_VIBES_BROWSER_RUN_HELP:
-      "rv-playwright open http://127.0.0.1:4173 && rv-playwright snapshot && rv-playwright click eX",
-    REMOTE_VIBES_BROWSER_IMAGE_HELP:
-      "rv-browser describe-file results/chart.png --prompt \"What does this output show and what should improve?\"",
+    REMOTE_VIBES_VIDEOMEMORY_COMMAND: "rv-videomemory",
     REMOTE_VIBES_PLAYWRIGHT_COMMAND: "rv-playwright",
     REMOTE_VIBES_PLAYWRIGHT_SKILL: path.join(appRootDir, "skills", "playwright", "SKILL.md"),
     REMOTE_VIBES_REAL_CLAUDE_COMMAND: getResolvedProviderCommand(providers, "claude") || "",
@@ -401,6 +463,7 @@ export function buildSessionEnv(
     REMOTE_VIBES_WIKI_DIR: resolvedWikiRootPath,
     REMOTE_VIBES_COMMS_DIR: commsDir,
     REMOTE_VIBES_AGENT_DIR: agentDir,
+    REMOTE_VIBES_AGENT_ENV_FILE: path.join(agentDir, "env.sh"),
     REMOTE_VIBES_AGENT_INBOX: path.join(agentDir, "inbox"),
     REMOTE_VIBES_AGENT_PROCESSED_DIR: path.join(agentDir, "processed"),
     REMOTE_VIBES_AGENTMAIL_REPLY_COMMAND: "rv-agentmail-reply",
@@ -421,7 +484,7 @@ export function resolveCwd(inputCwd, fallbackCwd) {
 }
 
 function buildPersistedExitMessage(message) {
-  return `\r\n\u001b[1;31m[remote-vibes]\u001b[0m ${message}\r\n`;
+  return `\r\n\u001b[1;31m[vibe-research]\u001b[0m ${message}\r\n`;
 }
 
 function shellQuote(value) {
@@ -436,6 +499,45 @@ function shellQuote(value) {
 
 function buildShellCommand(command, args = []) {
   return [command, ...args].map((part) => shellQuote(part)).join(" ");
+}
+
+function getProviderCredentialEntries(env) {
+  return PROVIDER_CREDENTIAL_ENV_KEYS
+    .map((key) => [key, env?.[key]])
+    .filter(([, value]) => value != null && String(value) !== "");
+}
+
+function writeProviderCredentialEnvFile(env) {
+  const envFilePath = String(env?.VIBE_RESEARCH_AGENT_ENV_FILE || "").trim();
+  const entries = getProviderCredentialEntries(env);
+
+  if (!envFilePath) {
+    return;
+  }
+
+  if (!entries.length) {
+    rmSync(envFilePath, { force: true });
+    return;
+  }
+
+  const body = [
+    "# Vibe Research agent credentials. Local file; do not commit.",
+    ...entries.map(([key, value]) => `export ${key}=${shellQuote(value)}`),
+    "",
+  ].join("\n");
+
+  mkdirSync(path.dirname(envFilePath), { recursive: true });
+  writeFileSync(envFilePath, body, { encoding: "utf8", mode: 0o600 });
+  chmodSync(envFilePath, 0o600);
+}
+
+function withProviderCredentialEnvFile(commandString, env) {
+  const envFilePath = String(env?.VIBE_RESEARCH_AGENT_ENV_FILE || "").trim();
+  if (!commandString || !envFilePath || !getProviderCredentialEntries(env).length) {
+    return commandString;
+  }
+
+  return `. ${shellQuote(envFilePath)}; ${commandString}`;
 }
 
 function delay(ms) {
@@ -1580,11 +1682,11 @@ export class SessionManager {
     providers,
     persistSessions = true,
     env = process.env,
-    stateDir = getRemoteVibesStateDir({ cwd, env }),
+    stateDir = getVibeResearchStateDir({ cwd, env }),
     wikiRootPath = path.join(stateDir, "wiki"),
-    systemRootPath = getRemoteVibesSystemDir({ cwd, env, stateDir }),
+    systemRootPath = getVibeResearchSystemDir({ cwd, env, stateDir }),
     agentRunStore = null,
-    runIdleTimeoutMs = Number(process.env.REMOTE_VIBES_RUN_IDLE_MS || 15_000),
+    runIdleTimeoutMs = Number(process.env.VIBE_RESEARCH_RUN_IDLE_MS || process.env.REMOTE_VIBES_RUN_IDLE_MS || 15_000),
     sessionActivityIdleMs = SESSION_ACTIVITY_IDLE_MS,
     persistentTerminals = true,
     extraSubagentsProvider = null,
@@ -1626,6 +1728,11 @@ export class SessionManager {
 
   setWikiRootPath(wikiRootPath) {
     this.wikiRootPath = wikiRootPath;
+  }
+
+  setEnvironment(env = process.env) {
+    this.env = env && typeof env === "object" ? { ...env } : { ...process.env };
+    this.tmuxAvailable = null;
   }
 
   setSystemRootPath(systemRootPath) {
@@ -1890,6 +1997,19 @@ export class SessionManager {
     }
   }
 
+  shouldRevivePersistentTerminal(session) {
+    if (session?.restoreOnStartup || session?.providerState?.terminalBackend !== "tmux") {
+      return false;
+    }
+
+    const tmuxSessionName = session.providerState?.tmuxSessionName;
+    if (!tmuxSessionName) {
+      return false;
+    }
+
+    return this.tmuxSessionExists(tmuxSessionName, this.buildSessionEnvironment(session));
+  }
+
   tmuxSessionHasForegroundProvider(sessionName, env) {
     if (!sessionName || !this.isTmuxAvailable(env)) {
       return false;
@@ -1954,6 +2074,8 @@ export class SessionManager {
   shouldUsePersistentTerminal(provider, env) {
     if (
       !this.persistentTerminals ||
+      isDisabledFlag(this.env.VIBE_RESEARCH_PERSISTENT_TERMINALS) ||
+      isDisabledFlag(this.env.VIBE_RESEARCH_PERSISTENT_TERMINAL) ||
       isDisabledFlag(this.env.REMOTE_VIBES_PERSISTENT_TERMINALS) ||
       isDisabledFlag(this.env.REMOTE_VIBES_PERSISTENT_TERMINAL) ||
       !PERSISTENT_TERMINAL_PROVIDER_IDS.has(provider.id)
@@ -2025,14 +2147,74 @@ export class SessionManager {
     this.killTmuxSessionByName(tmuxSessionName, env);
   }
 
+  listTmuxPaneProcessRoots(session) {
+    const tmuxSessionName = session?.providerState?.tmuxSessionName;
+    if (session?.providerState?.terminalBackend !== "tmux" || !tmuxSessionName) {
+      return [];
+    }
+
+    const env = this.buildSessionEnvironment(session);
+    if (!this.isTmuxAvailable(env)) {
+      return [];
+    }
+
+    try {
+      const output = execFileSync(getTmuxCommand(env), [
+        "list-panes",
+        "-t",
+        tmuxSessionName,
+        "-F",
+        "#{pane_pid}",
+      ], {
+        encoding: "utf8",
+        env,
+        timeout: 1_500,
+      });
+
+      return output
+        .split(/\r?\n/)
+        .map((entry) => Number(entry.trim()))
+        .filter((pid) => Number.isInteger(pid) && pid > 0)
+        .map((pid) => ({
+          sessionId: session.id,
+          providerId: session.providerId,
+          pid,
+          source: "tmux-pane",
+        }));
+    } catch {
+      return [];
+    }
+  }
+
   listAgentProcessRoots() {
-    return Array.from(this.sessions.values())
-      .filter((session) => session.status === "running" && session.pty?.pid)
-      .map((session) => ({
-        sessionId: session.id,
-        providerId: session.providerId,
-        pid: Number(session.pty.pid),
-      }));
+    const roots = [];
+
+    for (const session of this.sessions.values()) {
+      if (session.status !== "running") {
+        continue;
+      }
+
+      if (session.pty?.pid) {
+        roots.push({
+          sessionId: session.id,
+          providerId: session.providerId,
+          pid: Number(session.pty.pid),
+          source: "pty",
+        });
+      }
+
+      roots.push(...this.listTmuxPaneProcessRoots(session));
+    }
+
+    const seen = new Set();
+    return roots.filter((root) => {
+      if (!Number.isInteger(root.pid) || root.pid <= 0 || seen.has(root.pid)) {
+        return false;
+      }
+
+      seen.add(root.pid);
+      return true;
+    });
   }
 
   createSession({ providerId, name, cwd }) {
@@ -2164,10 +2346,10 @@ export class SessionManager {
       providerState: forkProviderState,
       restoreOnStartup: true,
       buffer: [
-        `\u001b[1;36m[remote-vibes]\u001b[0m forked from: ${sourceSession.name}`,
+        `\u001b[1;36m[vibe-research]\u001b[0m forked from: ${sourceSession.name}`,
         sharesProviderMemory
-          ? `\u001b[1;36m[remote-vibes]\u001b[0m resuming the source agent memory in the same cwd`
-          : `\u001b[1;36m[remote-vibes]\u001b[0m started in the same cwd; no provider memory id was available to resume`,
+          ? `\u001b[1;36m[vibe-research]\u001b[0m resuming the source agent memory in the same cwd`
+          : `\u001b[1;36m[vibe-research]\u001b[0m started in the same cwd; no provider memory id was available to resume`,
         "",
       ].join("\r\n"),
       autoRenameEnabled: sourceSession.providerId !== "shell",
@@ -2466,7 +2648,7 @@ export class SessionManager {
     }
 
     task.catch((error) => {
-      console.warn("[remote-vibes] failed to record agent run", error);
+      console.warn("[vibe-research] failed to record agent run", error);
     });
   }
 
@@ -2517,7 +2699,7 @@ export class SessionManager {
         const provided = this.extraSubagentsProvider(session);
         extraSubagents = Array.isArray(provided) ? provided : [];
       } catch (error) {
-        console.warn("[remote-vibes] failed to list extra subagents", error);
+        console.warn("[vibe-research] failed to list extra subagents", error);
       }
     }
     const subagents = [...claudeSubagents, ...extraSubagents]
@@ -2979,7 +3161,7 @@ export class SessionManager {
     };
   }
 
-  async launchProvider(session, provider, ptyProcess, launchContextPromise) {
+  async launchProvider(session, provider, ptyProcess, launchContextPromise, sessionEnv = null) {
     let launchContext = null;
 
     try {
@@ -2992,7 +3174,10 @@ export class SessionManager {
       return;
     }
 
-    const commandString = launchContext?.commandString || buildShellCommand(provider.launchCommand);
+    const commandString = withProviderCredentialEnvFile(
+      launchContext?.commandString || buildShellCommand(provider.launchCommand),
+      sessionEnv || this.buildSessionEnvironment(session, provider.id),
+    );
 
     if (!commandString) {
       return;
@@ -3120,6 +3305,7 @@ export class SessionManager {
     const sessionCwd = resolveCwd(session.cwd, this.cwd);
     session.cwd = sessionCwd;
     const sessionEnv = this.buildSessionEnvironment(session, provider.id);
+    writeProviderCredentialEnvFile(sessionEnv);
     const terminalLaunch = this.getTerminalLaunch(session, provider, sessionEnv, sessionCwd);
 
     const ptyProcess = pty.spawn(terminalLaunch.command, terminalLaunch.args, {
@@ -3148,37 +3334,37 @@ export class SessionManager {
     const bannerLines = restored
       ? [
           "",
-          `\u001b[1;36m[remote-vibes]\u001b[0m session restored after restart`,
-          `\u001b[1;36m[remote-vibes]\u001b[0m cwd: ${sessionCwd}`,
+          `\u001b[1;36m[vibe-research]\u001b[0m session restored after restart`,
+          `\u001b[1;36m[vibe-research]\u001b[0m cwd: ${sessionCwd}`,
           terminalLaunch.backend === "tmux"
-            ? `\u001b[1;36m[remote-vibes]\u001b[0m persistent terminal: ${terminalLaunch.attachedExisting ? "reattached" : "created"} ${terminalLaunch.tmuxSessionName}`
+            ? `\u001b[1;36m[vibe-research]\u001b[0m persistent terminal: ${terminalLaunch.attachedExisting ? "reattached" : "created"} ${terminalLaunch.tmuxSessionName}`
             : null,
           provider.launchCommand
             ? terminalLaunch.attachedExisting
               ? terminalLaunch.providerRunning
-                ? `\u001b[1;36m[remote-vibes]\u001b[0m provider is still running inside the persistent terminal`
-                : `\u001b[1;36m[remote-vibes]\u001b[0m persistent terminal reattached without relaunching, so shell jobs and monitors survive`
-              : `\u001b[1;36m[remote-vibes]\u001b[0m relaunching: ${provider.launchCommand}`
-            : `\u001b[1;36m[remote-vibes]\u001b[0m vanilla shell restored`,
+                ? `\u001b[1;36m[vibe-research]\u001b[0m provider is still running inside the persistent terminal`
+                : `\u001b[1;36m[vibe-research]\u001b[0m persistent terminal reattached without relaunching, so shell jobs and monitors survive`
+              : `\u001b[1;36m[vibe-research]\u001b[0m relaunching: ${provider.launchCommand}`
+            : `\u001b[1;36m[vibe-research]\u001b[0m vanilla shell restored`,
           "",
         ].filter(Boolean)
       : [
-          `\u001b[1;36m[remote-vibes]\u001b[0m ${provider.label} session ready`,
-          `\u001b[1;36m[remote-vibes]\u001b[0m cwd: ${sessionCwd}`,
+          `\u001b[1;36m[vibe-research]\u001b[0m ${provider.label} session ready`,
+          `\u001b[1;36m[vibe-research]\u001b[0m cwd: ${sessionCwd}`,
           terminalLaunch.backend === "tmux"
-            ? `\u001b[1;36m[remote-vibes]\u001b[0m persistent terminal: ${terminalLaunch.attachedExisting ? "reattached" : "created"} ${terminalLaunch.tmuxSessionName}`
+            ? `\u001b[1;36m[vibe-research]\u001b[0m persistent terminal: ${terminalLaunch.attachedExisting ? "reattached" : "created"} ${terminalLaunch.tmuxSessionName}`
             : null,
-          '\u001b[1;36m[remote-vibes]\u001b[0m browser skill: export PWCLI="${PWCLI:-rv-playwright}"; "$PWCLI" open http://127.0.0.1:4173',
-          '\u001b[1;36m[remote-vibes]\u001b[0m inspect UI: "$PWCLI" snapshot; use fresh refs with click/fill/type/press',
-          '\u001b[1;36m[remote-vibes]\u001b[0m save artifacts: "$PWCLI" screenshot --filename output/playwright/current.png',
-          '\u001b[1;36m[remote-vibes]\u001b[0m visual fallback: rv-browser describe-file results/chart.png --prompt "What should improve?"',
+          '\u001b[1;36m[vibe-research]\u001b[0m browser skill: export PWCLI="${PWCLI:-vr-playwright}"; "$PWCLI" open http://127.0.0.1:4173',
+          '\u001b[1;36m[vibe-research]\u001b[0m inspect UI: "$PWCLI" snapshot; use fresh refs with click/fill/type/press',
+          '\u001b[1;36m[vibe-research]\u001b[0m save artifacts: "$PWCLI" screenshot --filename output/playwright/current.png',
+          '\u001b[1;36m[vibe-research]\u001b[0m visual fallback: vr-browser describe-file results/chart.png --prompt "What should improve?"',
           provider.launchCommand
             ? terminalLaunch.attachedExisting
               ? terminalLaunch.providerRunning
-                ? `\u001b[1;36m[remote-vibes]\u001b[0m provider is already running inside the persistent terminal`
-                : `\u001b[1;36m[remote-vibes]\u001b[0m persistent terminal reattached without launching, so shell jobs and monitors survive`
-              : `\u001b[1;36m[remote-vibes]\u001b[0m launching: ${provider.launchCommand}`
-            : `\u001b[1;36m[remote-vibes]\u001b[0m vanilla shell active`,
+                ? `\u001b[1;36m[vibe-research]\u001b[0m provider is already running inside the persistent terminal`
+                : `\u001b[1;36m[vibe-research]\u001b[0m persistent terminal reattached without launching, so shell jobs and monitors survive`
+              : `\u001b[1;36m[vibe-research]\u001b[0m launching: ${provider.launchCommand}`
+            : `\u001b[1;36m[vibe-research]\u001b[0m vanilla shell active`,
           "",
         ].filter(Boolean);
 
@@ -3212,7 +3398,7 @@ export class SessionManager {
         session.updatedAt = new Date().toISOString();
         this.pushOutput(
           session,
-          `\r\n\u001b[1;36m[remote-vibes]\u001b[0m persistent terminal detached; reattaching ${tmuxSessionName}\r\n`,
+          `\r\n\u001b[1;36m[vibe-research]\u001b[0m persistent terminal detached; reattaching ${tmuxSessionName}\r\n`,
         );
         this.scheduleSessionMetaBroadcast(session, { immediate: true });
         this.schedulePersist({ immediate: true });
@@ -3237,7 +3423,7 @@ export class SessionManager {
 
       this.pushOutput(
         session,
-        `\r\n\u001b[1;31m[remote-vibes]\u001b[0m session exited (code ${exitCode}${signal ? `, signal ${signal}` : ""})\r\n`,
+        `\r\n\u001b[1;31m[vibe-research]\u001b[0m session exited (code ${exitCode}${signal ? `, signal ${signal}` : ""})\r\n`,
       );
       this.queueAgentRunTracking(this.agentRunTracker?.handleSessionExit(session));
       this.scheduleSessionMetaBroadcast(session, { immediate: true });
@@ -3247,7 +3433,7 @@ export class SessionManager {
     if (provider.launchCommand && !terminalLaunch.attachedExisting) {
       setTimeout(() => {
         if (session.status === "running" && session.pty === ptyProcess) {
-          void this.launchProvider(session, provider, ptyProcess, launchContextPromise);
+          void this.launchProvider(session, provider, ptyProcess, launchContextPromise, sessionEnv);
         }
       }, STARTUP_DELAY_MS);
     }
@@ -3280,7 +3466,9 @@ export class SessionManager {
 
     this.sessions.set(session.id, session);
 
-    if (!session.restoreOnStartup) {
+    const revivePersistentTerminal = this.shouldRevivePersistentTerminal(session);
+
+    if (!session.restoreOnStartup && !revivePersistentTerminal) {
       return;
     }
 
@@ -3300,6 +3488,15 @@ export class SessionManager {
         `${provider.label} is not available on this host, so this session could not be relaunched.`,
       );
       return;
+    }
+
+    if (revivePersistentTerminal) {
+      session.restoreOnStartup = true;
+      session.status = "running";
+      this.pushOutput(
+        session,
+        `\r\n\u001b[1;36m[vibe-research]\u001b[0m persistent terminal still exists; reattaching ${session.providerState.tmuxSessionName}\r\n`,
+      );
     }
 
     try {
@@ -3348,7 +3545,7 @@ export class SessionManager {
       }
 
       void this.persistNow().catch((error) => {
-        console.warn("[remote-vibes] failed to persist sessions", error);
+        console.warn("[vibe-research] failed to persist sessions", error);
       });
       return;
     }
@@ -3360,7 +3557,7 @@ export class SessionManager {
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
       void this.persistNow().catch((error) => {
-        console.warn("[remote-vibes] failed to persist sessions", error);
+        console.warn("[vibe-research] failed to persist sessions", error);
       });
     }, SESSION_PERSIST_THROTTLE_MS);
   }
@@ -3376,7 +3573,7 @@ export class SessionManager {
         .map((session) => this.serializePersistedSession(session))
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     } catch (error) {
-      console.warn("[remote-vibes] failed to serialize sessions", error);
+      console.warn("[vibe-research] failed to serialize sessions", error);
       return;
     }
 
@@ -3384,7 +3581,7 @@ export class SessionManager {
       .catch(() => {})
       .then(() => this.sessionStore.save(sessions))
       .catch((error) => {
-        console.warn("[remote-vibes] failed to persist sessions", error);
+        console.warn("[vibe-research] failed to persist sessions", error);
       });
 
     await this.persistPromise;

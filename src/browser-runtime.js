@@ -60,7 +60,7 @@ async function isExecutable(targetPath) {
 }
 
 function isBrowserDetourWrapper(candidatePath, env = process.env) {
-  const appRoot = String(env.REMOTE_VIBES_APP_ROOT || "").trim();
+  const appRoot = String(env.VIBE_RESEARCH_APP_ROOT || env.REMOTE_VIBES_APP_ROOT || "").trim();
   if (!appRoot) {
     return false;
   }
@@ -144,7 +144,7 @@ export function ensureLocalBrowserTarget(target) {
   if (!isLocalBrowserHostname(url.hostname)) {
     throw createBrowserError(
       "TARGET_NOT_LOCAL",
-      `rv-browser only connects to localhost targets. Use 127.0.0.1, localhost, or a bare port instead of ${url.hostname}.`,
+      `vr-browser only connects to localhost targets. Use 127.0.0.1, localhost, or a bare port instead of ${url.hostname}.`,
     );
   }
 
@@ -153,6 +153,7 @@ export function ensureLocalBrowserTarget(target) {
 
 export async function resolveBrowserExecutablePath({ env = process.env } = {}) {
   const overrideCandidates = [
+    env.VIBE_RESEARCH_BROWSER_EXECUTABLE_PATH,
     env.REMOTE_VIBES_BROWSER_EXECUTABLE_PATH,
     env.CHROME_EXECUTABLE_PATH,
     env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
@@ -209,7 +210,7 @@ export async function inspectBrowserRuntime({ env = process.env } = {}) {
 }
 
 export async function ensureBrowserArtifactsDir({ cwd = process.cwd(), env = process.env } = {}) {
-  const stateDir = env.REMOTE_VIBES_ROOT || getLegacyWorkspaceStateDir(cwd);
+  const stateDir = env.VIBE_RESEARCH_ROOT || env.REMOTE_VIBES_ROOT || getLegacyWorkspaceStateDir(cwd);
   const artifactsDir = path.resolve(stateDir, "browser");
   await mkdir(artifactsDir, { recursive: true });
   return artifactsDir;

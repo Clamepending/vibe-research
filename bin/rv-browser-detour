@@ -1,6 +1,3 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-tool_name="$(basename "$0")"
-printf '[remote-vibes] %s is blocked for localhost UI work. Use rv-playwright open <port-or-url>, rv-playwright snapshot, explicit click/fill/type/press commands, and rv-playwright screenshot instead. If rv-playwright fails for a concrete reason, fall back to rv-browser.\n' "$tool_name" >&2
-exit 64
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+exec "$SCRIPT_DIR/vr-browser-detour" "$@"

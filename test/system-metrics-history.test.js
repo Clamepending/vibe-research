@@ -47,7 +47,7 @@ function createSystemSample(checkedAt, utilizationPercent) {
 }
 
 test("SystemMetricsHistoryStore records, persists, and filters hour/day/week ranges", async () => {
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-system-history-"));
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-system-history-"));
   const base = Date.parse("2026-04-18T00:00:00.000Z");
   let now = base + 2 * 60_000;
   const store = new SystemMetricsHistoryStore({
@@ -90,7 +90,7 @@ test("SystemMetricsHistoryStore records, persists, and filters hour/day/week ran
 });
 
 test("SystemMetricsHistoryStore downsamples long ranges for the API", async () => {
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-system-history-downsample-"));
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-system-history-downsample-"));
   const base = Date.parse("2026-04-18T00:00:00.000Z");
   const store = new SystemMetricsHistoryStore({
     maxApiSamples: 5,

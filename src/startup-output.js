@@ -23,7 +23,7 @@ export function renderQrCode(url) {
 }
 
 export function buildStartupOutput(config) {
-  const lines = ["", "Remote Vibes is live.", `Workspace: ${config.cwd}`, "Available URLs:"];
+  const lines = ["", "Vibe Research is live.", `Workspace: ${config.cwd}`, "Available URLs:"];
 
   if (config.stateDir) {
     lines.splice(3, 0, `State: ${config.stateDir}`);
@@ -52,13 +52,13 @@ export function buildStartupOutput(config) {
   lines.push("- localhost-only ports can be exposed with Tailscale Serve from the ports panel");
   lines.push("- proxy fallback: /proxy/<port>/");
   lines.push("Agent browser skill:");
-  lines.push("- export PWCLI=\"${PWCLI:-rv-playwright}\"");
+  lines.push("- export PWCLI=\"${PWCLI:-vr-playwright}\"");
   lines.push("- \"$PWCLI\" open http://127.0.0.1:4173");
   lines.push("- \"$PWCLI\" snapshot");
   lines.push("- interact with fresh refs: \"$PWCLI\" click e3, fill e5, type text, press Enter");
   lines.push("- \"$PWCLI\" screenshot --filename output/playwright/current.png");
   lines.push(
-    "- visual fallback: rv-browser describe-file results/chart.png --prompt \"What does this output show and what should improve?\"",
+    "- visual fallback: vr-browser describe-file results/chart.png --prompt \"What does this output show and what should improve?\"",
   );
   lines.push("");
   lines.push(`${ANSI_GREEN}running${ANSI_RESET}`);

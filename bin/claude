@@ -2,12 +2,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLAYWRIGHT_SKILL_PATH="${REMOTE_VIBES_PLAYWRIGHT_SKILL:-$SCRIPT_DIR/../skills/playwright/SKILL.md}"
-GUIDANCE="Remote Vibes provides two browser paths. Browser Use plugin: for delegated web/browser fulfillment, or when the user says \"use plugin\", run rv-browser-use --task \"<goal>\" --wait --json (add --url <url> and --max-steps <n> when useful). This creates a clickable Browser Use child under the current Remote Vibes session; do not spawn an internal Agent for this kind of request. Playwright CLI browser skill at ${PLAYWRIGHT_SKILL_PATH}: for browser work you are directly controlling yourself, prefer rv-playwright or \$PWCLI over curl, HTML-only inspection, Chrome app scripting, Selenium, or rv-browser. First check command -v npx >/dev/null 2>&1. Then use the CLI-first loop: \$PWCLI open <url-or-localhost-port>, \$PWCLI snapshot, interact with fresh element refs via click/fill/type/press, snapshot again after UI changes, and save artifacts under output/playwright/. Always snapshot before using refs like e12. Prefer explicit Playwright CLI commands over eval/run-code unless needed. If rv-playwright cannot run because npx or the Playwright browser runtime is unavailable, report the concrete failure and fall back to rv-browser. For qualitative visual critique of generated images, rv-browser describe-file <image-path> --provider claude --prompt \"...\" remains available as a fallback so the visual pass stays on Claude."
+PLAYWRIGHT_SKILL_PATH="${VIBE_RESEARCH_PLAYWRIGHT_SKILL:-${REMOTE_VIBES_PLAYWRIGHT_SKILL:-$SCRIPT_DIR/../skills/playwright/SKILL.md}}"
+GUIDANCE="Vibe Research provides two browser paths. Browser Use plugin: for delegated web/browser fulfillment, or when the user says \"use plugin\", run vr-browser-use --task \"<goal>\" --wait --json (add --url <url> and --max-steps <n> when useful). This creates a clickable Browser Use child under the current Vibe Research session; do not spawn an internal Agent for this kind of request. Playwright CLI browser skill at ${PLAYWRIGHT_SKILL_PATH}: for browser work you are directly controlling yourself, prefer vr-playwright or \$PWCLI over curl, HTML-only inspection, Chrome app scripting, Selenium, or vr-browser. First check command -v npx >/dev/null 2>&1. Then use the CLI-first loop: \$PWCLI open <url-or-localhost-port>, \$PWCLI snapshot, interact with fresh element refs via click/fill/type/press, snapshot again after UI changes, and save artifacts under output/playwright/. Always snapshot before using refs like e12. Prefer explicit Playwright CLI commands over eval/run-code unless needed. If vr-playwright cannot run because npx or the Playwright browser runtime is unavailable, report the concrete failure and fall back to vr-browser. For qualitative visual critique of generated images, vr-browser describe-file <image-path> --provider claude --prompt \"...\" remains available as a fallback so the visual pass stays on Claude."
 
 read_agent_prompt() {
   local prompt_path
-  prompt_path="${REMOTE_VIBES_AGENT_PROMPT_PATH:-}"
+  prompt_path="${VIBE_RESEARCH_AGENT_PROMPT_PATH:-${REMOTE_VIBES_AGENT_PROMPT_PATH:-}}"
 
   if [ -n "$prompt_path" ] && [ -f "$prompt_path" ]; then
     cat "$prompt_path"
@@ -30,6 +30,7 @@ find_real_claude() {
   local candidate
 
   for candidate in \
+    "${VIBE_RESEARCH_REAL_CLAUDE_COMMAND:-}" \
     "${REMOTE_VIBES_REAL_CLAUDE_COMMAND:-}" \
     "${HOME:-}/.local/bin/claude" \
     /opt/homebrew/bin/claude \
@@ -46,11 +47,12 @@ find_real_claude() {
 
 REAL_CLAUDE="$(find_real_claude || true)"
 if [ -z "$REAL_CLAUDE" ]; then
-  printf '[remote-vibes] Could not find the real claude executable for the wrapper.\n' >&2
+  printf '[vibe-research] Could not find the real claude executable for the wrapper.\n' >&2
   exit 1
 fi
 
-export REMOTE_VIBES_PROVIDER="claude"
+export VIBE_RESEARCH_PROVIDER="claude"
+export REMOTE_VIBES_PROVIDER="${REMOTE_VIBES_PROVIDER:-claude}"
 
 COMBINED_GUIDANCE="$(build_combined_guidance)"
 

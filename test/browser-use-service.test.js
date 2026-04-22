@@ -8,7 +8,7 @@ import { PassThrough } from "node:stream";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { BrowserUseService } from "../src/browser-use-service.js";
-import { createRemoteVibesApp } from "../src/create-app.js";
+import { createVibeResearchApp } from "../src/create-app.js";
 import { SleepPreventionService } from "../src/sleep-prevention.js";
 
 const execFileAsync = promisify(execFile);
@@ -197,12 +197,12 @@ async function waitForBrowserUseStatus(baseUrl, sessionId, status, timeoutMs = 4
 }
 
 test("browser-use plugin launches a local OttoAuth-compatible worker session under the caller", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-browser-use-"));
-  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-browser-use-"));
+  const stateDir = path.join(workspaceDir, ".vibe-research");
   const workerRoot = await createFakeWorkerRoot(workspaceDir);
   const workerCalls = [];
 
-  const app = await createRemoteVibesApp({
+  const app = await createVibeResearchApp({
     host: "127.0.0.1",
     port: 0,
     cwd: workspaceDir,
@@ -263,7 +263,7 @@ test("browser-use plugin launches a local OttoAuth-compatible worker session und
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-remote-vibes-browser-use-token": serverInfo.browserUseToken,
+        "x-vibe-research-browser-use-token": serverInfo.browserUseToken,
       },
       body: JSON.stringify({
         callerSessionId: parentSession.id,
@@ -313,7 +313,7 @@ test("browser-use plugin launches a local OttoAuth-compatible worker session und
     const { stdout: helperStdout } = await execFileAsync(
       process.execPath,
       [
-        path.join(process.cwd(), "bin", "rv-browser-use"),
+        path.join(process.cwd(), "bin", "vr-browser-use"),
         "--task",
         "Open https://example.com and report success.",
         "--title",
@@ -327,8 +327,8 @@ test("browser-use plugin launches a local OttoAuth-compatible worker session und
         cwd: workspaceDir,
         env: {
           ...process.env,
-          REMOTE_VIBES_ROOT: stateDir,
-          REMOTE_VIBES_SESSION_ID: parentSession.id,
+          VIBE_RESEARCH_ROOT: stateDir,
+          VIBE_RESEARCH_SESSION_ID: parentSession.id,
         },
         timeout: 8_000,
       },
@@ -347,12 +347,12 @@ test("browser-use plugin launches a local OttoAuth-compatible worker session und
 });
 
 test("browser-use sessions can be terminated and deleted from under the caller", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-browser-use-delete-"));
-  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-browser-use-delete-"));
+  const stateDir = path.join(workspaceDir, ".vibe-research");
   const workerRoot = await createFakeWorkerRoot(workspaceDir);
   const workerCalls = [];
 
-  const app = await createRemoteVibesApp({
+  const app = await createVibeResearchApp({
     host: "127.0.0.1",
     port: 0,
     cwd: workspaceDir,
@@ -400,7 +400,7 @@ test("browser-use sessions can be terminated and deleted from under the caller",
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-remote-vibes-browser-use-token": serverInfo.browserUseToken,
+        "x-vibe-research-browser-use-token": serverInfo.browserUseToken,
       },
       body: JSON.stringify({
         callerSessionId: parentSession.id,

@@ -9,7 +9,7 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } fro
 import { promisify } from "node:util";
 import { chromium } from "playwright-core";
 import { WebSocket } from "ws";
-import { createRemoteVibesApp } from "../src/create-app.js";
+import { createVibeResearchApp } from "../src/create-app.js";
 import { resolveBrowserExecutablePath } from "../src/browser-runtime.js";
 import { buildSessionEnv } from "../src/session-manager.js";
 import { SleepPreventionService } from "../src/sleep-prevention.js";
@@ -31,8 +31,8 @@ const GIF_FIXTURE = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAE
 
 async function startApp(options = {}) {
   const cwd = options.cwd || process.cwd();
-  const stateDir = options.stateDir || path.join(cwd, ".remote-vibes");
-  const app = await createRemoteVibesApp({
+  const stateDir = options.stateDir || path.join(cwd, ".vibe-research");
+  const app = await createVibeResearchApp({
     host: "127.0.0.1",
     port: 0,
     cwd,
@@ -57,6 +57,21 @@ async function createTempWorkspace(prefix) {
   return mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
+async function removeTempWorkspace(workspaceDir) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await rm(workspaceDir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (error?.code !== "ENOTEMPTY" || attempt === 4) {
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+}
+
 async function waitForWikiBackupRun(baseUrl, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
 
@@ -76,7 +91,7 @@ async function waitForWikiBackupRun(baseUrl, timeoutMs = 5_000) {
 }
 
 async function writePersistedSessions(workspaceDir, sessions) {
-  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  const stateDir = path.join(workspaceDir, ".vibe-research");
   await mkdir(stateDir, { recursive: true });
   await writeFile(
     path.join(stateDir, "sessions.json"),
@@ -116,9 +131,9 @@ async function createBrainGitRemote(workspaceDir, name = "mac-brain") {
     "-C",
     sourceDir,
     "-c",
-    "user.name=Remote Vibes Test",
+    "user.name=Vibe Research Test",
     "-c",
-    "user.email=remote-vibes@example.test",
+    "user.email=vibe-research@example.test",
     "commit",
     "-m",
     "seed brain",
@@ -142,7 +157,7 @@ async function waitForShutdown(baseUrl) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
-  throw new Error("Remote Vibes never shut down.");
+  throw new Error("Vibe Research never shut down.");
 }
 
 async function waitForValue(check, expectedValue) {
@@ -199,7 +214,7 @@ async function waitForAttachmentFiles(root, expectedCount) {
 }
 
 test("state is available without authentication", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-state-");
+  const workspaceDir = await createTempWorkspace("vibe-research-state-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
 
   try {
@@ -207,7 +222,7 @@ test("state is available without authentication", async () => {
     assert.equal(response.status, 200);
 
     const state = await response.json();
-    assert.equal(state.appName, "Remote Vibes");
+    assert.equal(state.appName, "Vibe Research");
     const expectedDefaultProviderId = state.providers.some(
       (provider) => provider.id === "claude" && provider.available,
     )
@@ -220,8 +235,8 @@ test("state is available without authentication", async () => {
     assert.equal(typeof state.preferredUrl, "string");
     assert.ok(state.urls.some((entry) => entry.url === state.preferredUrl));
     assert.equal(typeof state.agentPrompt.prompt, "string");
-    assert.equal(state.agentPrompt.promptPath, ".remote-vibes/agent-prompt.md");
-    assert.equal(state.agentPrompt.wikiRoot, ".remote-vibes/wiki");
+    assert.equal(state.agentPrompt.promptPath, ".vibe-research/agent-prompt.md");
+    assert.equal(state.agentPrompt.wikiRoot, ".vibe-research/wiki");
     assert.ok(Array.isArray(state.agentPrompt.targets));
     assert.equal(state.settings.preventSleepEnabled, true);
     assert.equal(state.settings.sleepPrevention.enabled, true);
@@ -232,7 +247,7 @@ test("state is available without authentication", async () => {
     assert.equal(state.settings.wikiGitRemoteName, "origin");
     assert.equal(state.settings.wikiGitRemoteUrl, "");
     assert.equal(state.settings.wikiBackupIntervalMs, 5 * 60 * 1000);
-    assert.equal(state.settings.wikiRelativeRoot, ".remote-vibes/wiki");
+    assert.equal(state.settings.wikiRelativeRoot, ".vibe-research/wiki");
     assert.equal(typeof state.settings.wikiPath, "string");
     assert.equal(state.settings.wikiPathConfigured, false);
     assert.deepEqual(state.settings.agentAutomations, []);
@@ -243,13 +258,13 @@ test("state is available without authentication", async () => {
     assert.equal(gpuResponse.status, 404);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
-test("image attachments are saved under the Remote Vibes state directory", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-attachment-workspace-");
-  const stateDir = await createTempWorkspace("remote-vibes-attachment-state-");
+test("image attachments are saved under the Vibe Research state directory", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-attachment-workspace-");
+  const stateDir = await createTempWorkspace("vibe-research-attachment-state-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
 
   try {
@@ -335,8 +350,8 @@ test("terminal paste and drop insert safe saved image markdown references", asyn
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-terminal-attachment-workspace-");
-  const stateDir = await createTempWorkspace("remote-vibes-terminal-attachment-state-");
+  const workspaceDir = await createTempWorkspace("vibe-research-terminal-attachment-workspace-");
+  const stateDir = await createTempWorkspace("vibe-research-terminal-attachment-state-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
   let browser = null;
 
@@ -501,7 +516,7 @@ test("terminal paste and drop insert safe saved image markdown references", asyn
     assert.match(terminalText, /!\[dropped image: wireframe-[^\]]+\.gif\]\(/);
     assert.doesNotMatch(terminalText, /(?:^|[\r\n])!\[(?:pasted|dropped) image:/);
     assert.ok(terminalText.includes(path.join(stateDir, "attachments", "sessions", session.id)));
-    assert.ok(!terminalText.includes(path.join(workspaceDir, ".remote-vibes", "attachments")));
+    assert.ok(!terminalText.includes(path.join(workspaceDir, ".vibe-research", "attachments")));
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
@@ -511,7 +526,7 @@ test("terminal paste and drop insert safe saved image markdown references", asyn
 });
 
 test("settings api persists simple agent automations", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-agent-automations-");
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-automations-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
 
   try {
@@ -555,12 +570,12 @@ test("settings api persists simple agent automations", async () => {
     ]);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
 test("settings api persists installed plugin ids", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-installed-plugins-");
+  const workspaceDir = await createTempWorkspace("vibe-research-installed-plugins-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
 
   try {
@@ -598,9 +613,114 @@ test("settings api persists installed plugin ids", async () => {
   }
 });
 
+test("settings api stores agent credentials redacted and injects them into new sessions", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-credentials-");
+  const stateDir = await createTempWorkspace("vibe-research-agent-credentials-state-");
+  const recorderPath = path.join(workspaceDir, "record-agent-env.sh");
+  const capturePath = path.join(stateDir, "agent-env.txt");
+  await writeFile(
+    recorderPath,
+    `#!/bin/sh
+{
+  printf 'anthropic=%s\\n' "$ANTHROPIC_API_KEY"
+  printf 'claude=%s\\n' "$CLAUDE_API_KEY"
+  printf 'openai=%s\\n' "$OPENAI_API_KEY"
+  printf 'hf=%s\\n' "$HF_TOKEN"
+} > "$VIBE_RESEARCH_ROOT/agent-env.txt"
+`,
+    "utf8",
+  );
+  await chmod(recorderPath, 0o755);
+  const { app, baseUrl } = await startApp({
+    cwd: workspaceDir,
+    stateDir,
+    providers: [
+      {
+        id: "env-agent",
+        label: "Env Agent",
+        command: recorderPath,
+        launchCommand: recorderPath,
+        defaultName: "Env Agent",
+        available: true,
+      },
+      {
+        id: "shell",
+        label: "Vanilla Shell",
+        command: null,
+        launchCommand: null,
+        defaultName: "Shell",
+        available: true,
+      },
+    ],
+  });
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        agentAnthropicApiKey: "sk-ant-test-agent",
+        agentOpenAiApiKey: "sk-openai-test-agent",
+        agentHfToken: "hf_test_agent",
+      }),
+    });
+
+    assert.equal(settingsResponse.status, 200);
+    const settingsPayload = await settingsResponse.json();
+    assert.equal(settingsPayload.settings.agentAnthropicApiKey, "");
+    assert.equal(settingsPayload.settings.agentOpenAiApiKey, "");
+    assert.equal(settingsPayload.settings.agentHfToken, "");
+    assert.equal(settingsPayload.settings.agentAnthropicApiKeyConfigured, true);
+    assert.equal(settingsPayload.settings.agentOpenAiApiKeyConfigured, true);
+    assert.equal(settingsPayload.settings.agentHfTokenConfigured, true);
+
+    const persistedSettings = JSON.parse(await readFile(path.join(stateDir, "settings.json"), "utf8"));
+    assert.equal(persistedSettings.settings.agentAnthropicApiKey, "sk-ant-test-agent");
+    assert.equal(persistedSettings.settings.agentOpenAiApiKey, "sk-openai-test-agent");
+    assert.equal(persistedSettings.settings.agentHfToken, "hf_test_agent");
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId: "env-agent",
+        name: "Env Agent",
+        cwd: workspaceDir,
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+
+    let capturedEnv = "";
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      try {
+        capturedEnv = await readFile(capturePath, "utf8");
+        break;
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+
+    assert.match(capturedEnv, /anthropic=sk-ant-test-agent/);
+    assert.match(capturedEnv, /claude=sk-ant-test-agent/);
+    assert.match(capturedEnv, /openai=sk-openai-test-agent/);
+    assert.match(capturedEnv, /hf=hf_test_agent/);
+  } finally {
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("saved wiki paths from existing installs count as configured", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-existing-wiki-");
-  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  const workspaceDir = await createTempWorkspace("vibe-research-existing-wiki-");
+  const stateDir = path.join(workspaceDir, ".vibe-research");
   const wikiDir = path.join(workspaceDir, "mac-brain");
   await mkdir(wikiDir, { recursive: true });
   await mkdir(stateDir, { recursive: true });
@@ -625,7 +745,7 @@ test("saved wiki paths from existing installs count as configured", async () => 
 });
 
 test("wiki clone endpoint sets the brain from an existing git repo", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-clone-brain-");
+  const workspaceDir = await createTempWorkspace("vibe-research-clone-brain-");
   const { remoteDir } = await createBrainGitRemote(workspaceDir, "mac-brain");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
 
@@ -660,20 +780,20 @@ test("wiki clone endpoint sets the brain from an existing git repo", async () =>
 });
 
 test("wiki clone endpoint replaces the installer mac-brain scaffold automatically", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-clone-scaffold-");
+  const workspaceDir = await createTempWorkspace("vibe-research-clone-scaffold-");
   const { remoteDir } = await createBrainGitRemote(workspaceDir, "mac-brain");
   const scaffoldDir = path.join(workspaceDir, "mac-brain");
   await mkdir(scaffoldDir, { recursive: true });
   await execFileAsync("git", ["-C", scaffoldDir, "init"]);
   await writeFile(
     path.join(scaffoldDir, "README.md"),
-    `# mac-brain\n\nLocal wiki for this Mac.\n\nRemote Vibes settings live in:\n\n\`\`\`\n${path.join(workspaceDir, ".remote-vibes")}\n\`\`\`\n`,
+    `# mac-brain\n\nLocal wiki for this Mac.\n\nVibe Research settings live in:\n\n\`\`\`\n${path.join(workspaceDir, ".vibe-research")}\n\`\`\`\n`,
     "utf8",
   );
   await writeFile(path.join(scaffoldDir, ".gitignore"), ".DS_Store\n", "utf8");
   const { app, baseUrl } = await startApp({
-    cwd: path.join(workspaceDir, ".remote-vibes", "app"),
-    stateDir: path.join(workspaceDir, ".remote-vibes"),
+    cwd: path.join(workspaceDir, ".vibe-research", "app"),
+    stateDir: path.join(workspaceDir, ".vibe-research"),
   });
 
   try {
@@ -690,7 +810,7 @@ test("wiki clone endpoint replaces the installer mac-brain scaffold automaticall
     const clonePayload = await cloneResponse.json();
     const canonicalBrainDir = await realpath(scaffoldDir);
     assert.equal(clonePayload.clone.action, "clone");
-    assert.match(clonePayload.clone.backupPath, /mac-brain\.remote-vibes-scaffold-/);
+    assert.match(clonePayload.clone.backupPath, /mac-brain\.vibe-research-scaffold-/);
     assert.equal(clonePayload.settings.wikiPath, canonicalBrainDir);
     assert.equal(clonePayload.settings.wikiPathConfigured, true);
     assert.equal(clonePayload.settings.wikiGitRemoteUrl, remoteDir);
@@ -707,7 +827,7 @@ test("wiki clone endpoint replaces the installer mac-brain scaffold automaticall
 });
 
 test("update endpoints report status and schedule restart", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-update-");
+  const workspaceDir = await createTempWorkspace("vibe-research-update-");
   const updatePayload = {
     status: "available",
     updateAvailable: true,
@@ -755,7 +875,7 @@ test("update endpoints report status and schedule restart", async () => {
 });
 
 test("system endpoint reports host storage and utilization metrics", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-system-");
+  const workspaceDir = await createTempWorkspace("vibe-research-system-");
   const checkedAt = new Date().toISOString();
   const systemPayload = {
     checkedAt,
@@ -807,7 +927,7 @@ test("system endpoint reports host storage and utilization metrics", async () =>
     assert.equal(response.status, 200);
     const systemResponse = await response.json();
     assert.deepEqual(systemResponse, { system: systemPayload });
-    assert.equal(systemResponse.system.agentUsage.source, "remote-vibes-local");
+    assert.equal(systemResponse.system.agentUsage.source, "vibe-research-local");
     assert.equal(systemResponse.system.agentUsage.providers[0].id, "codex");
     const historyResponse = await fetch(`${baseUrl}/api/system/history?range=1h`);
     assert.equal(historyResponse.status, 200);
@@ -825,7 +945,7 @@ test("system endpoint reports host storage and utilization metrics", async () =>
 });
 
 test("agent prompt api creates wiki scaffold and managed instruction files", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-agent-prompt-");
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-prompt-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
 
   try {
@@ -833,28 +953,28 @@ test("agent prompt api creates wiki scaffold and managed instruction files", asy
     assert.equal(stateResponse.status, 200);
     const statePayload = await stateResponse.json();
 
-    assert.match(statePayload.agentPrompt.prompt, /Remote Vibes Agent Prompt/);
+    assert.match(statePayload.agentPrompt.prompt, /Vibe Research Agent Prompt/);
     assert.equal(statePayload.agentPrompt.targets.length, 3);
     assert.ok(statePayload.agentPrompt.targets.every((target) => target.status !== "conflict"));
 
     const managedAgents = await readFile(path.join(workspaceDir, "AGENTS.md"), "utf8");
     const managedClaude = await readFile(path.join(workspaceDir, "CLAUDE.md"), "utf8");
-    const promptSource = await readFile(path.join(workspaceDir, ".remote-vibes", "agent-prompt.md"), "utf8");
-    const wikiIndex = await readFile(path.join(workspaceDir, ".remote-vibes", "wiki", "index.md"), "utf8");
+    const promptSource = await readFile(path.join(workspaceDir, ".vibe-research", "agent-prompt.md"), "utf8");
+    const wikiIndex = await readFile(path.join(workspaceDir, ".vibe-research", "wiki", "index.md"), "utf8");
 
-    assert.match(managedAgents, /remote-vibes:managed-agent-prompt/);
-    assert.match(managedClaude, /remote-vibes:managed-agent-prompt/);
-    assert.match(managedAgents, /Edit this from Remote Vibes or \.remote-vibes\/agent-prompt\.md/);
-    assert.match(promptSource, /Remote Vibes Agent Prompt/);
+    assert.match(managedAgents, /vibe-research:managed-agent-prompt/);
+    assert.match(managedClaude, /vibe-research:managed-agent-prompt/);
+    assert.match(managedAgents, /Edit this from Vibe Research or \.vibe-research\/agent-prompt\.md/);
+    assert.match(promptSource, /Vibe Research Agent Prompt/);
     assert.match(promptSource, /You are a research agent/);
     assert.match(promptSource, /Always take QUEUE row 1/);
-    assert.match(promptSource, /remote-vibes:wiki-v2-protocol:v2/);
+    assert.match(promptSource, /vibe-research:wiki-v2-protocol:v2/);
     assert.match(promptSource, /Treat links as traversal hints, not decoration/);
     assert.match(promptSource, /Start with the directly named files, notes, messages, or artifacts/);
     assert.doesNotMatch(promptSource, /\/Users\/mark\/mac-brain/);
-    assert.doesNotMatch(promptSource, /remote-vibes:agent-mailbox-protocol/);
+    assert.doesNotMatch(promptSource, /vibe-research:agent-mailbox-protocol/);
     assert.doesNotMatch(promptSource, /Agent Mailboxes/);
-    assert.doesNotMatch(promptSource, /rv-mailwatch/);
+    assert.doesNotMatch(promptSource, /vr-mailwatch/);
     assert.doesNotMatch(promptSource, /from_name/);
     assert.match(wikiIndex, /Wiki Index/);
 
@@ -864,23 +984,23 @@ test("agent prompt api creates wiki scaffold and managed instruction files", asy
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        prompt: "# Custom Prompt\n\nAlways log experiment changes in `.remote-vibes/wiki/log.md`.",
+        prompt: "# Custom Prompt\n\nAlways log experiment changes in `.vibe-research/wiki/log.md`.",
       }),
     });
 
     assert.equal(updateResponse.status, 200);
     const updatedPayload = await updateResponse.json();
     assert.match(updatedPayload.prompt, /Custom Prompt/);
-    assert.match(updatedPayload.prompt, /remote-vibes:wiki-v2-protocol:v2/);
+    assert.match(updatedPayload.prompt, /vibe-research:wiki-v2-protocol:v2/);
     assert.match(updatedPayload.prompt, /Prefer fewer, better notes/);
-    assert.doesNotMatch(updatedPayload.prompt, /remote-vibes:agent-mailbox-protocol/);
+    assert.doesNotMatch(updatedPayload.prompt, /vibe-research:agent-mailbox-protocol/);
     assert.doesNotMatch(updatedPayload.prompt, /Agent Mailboxes/);
 
     const updatedManagedAgents = await readFile(path.join(workspaceDir, "AGENTS.md"), "utf8");
     assert.match(updatedManagedAgents, /Custom Prompt/);
     assert.match(updatedManagedAgents, /Knowledge Model/);
     assert.doesNotMatch(updatedManagedAgents, /Agent Mailboxes/);
-    assert.doesNotMatch(updatedManagedAgents, /rv-mailwatch/);
+    assert.doesNotMatch(updatedManagedAgents, /vr-mailwatch/);
   } finally {
     await app.close();
     await rm(workspaceDir, { recursive: true, force: true });
@@ -888,14 +1008,14 @@ test("agent prompt api creates wiki scaffold and managed instruction files", asy
 });
 
 test("agent prompt save preserves edits inside the current wiki protocol section", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-agent-prompt-save-");
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-prompt-save-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
 
   try {
     const response = await fetch(`${baseUrl}/api/agent-prompt`);
     assert.equal(response.status, 200);
     const payload = await response.json();
-    assert.match(payload.prompt, /remote-vibes:wiki-v2-protocol:v2/);
+    assert.match(payload.prompt, /vibe-research:wiki-v2-protocol:v2/);
     assert.match(payload.prompt, /Prefer fewer, better notes/);
 
     const editedPrompt = payload.prompt.replace(
@@ -913,7 +1033,7 @@ test("agent prompt save preserves edits inside the current wiki protocol section
     assert.doesNotMatch(updatedPayload.prompt, /Prefer fewer, better notes\./);
 
     const savedPrompt = await readFile(
-      path.join(workspaceDir, ".remote-vibes", "agent-prompt.md"),
+      path.join(workspaceDir, ".vibe-research", "agent-prompt.md"),
       "utf8",
     );
     assert.match(savedPrompt, /Prefer fewer, better durable notes/);
@@ -927,8 +1047,8 @@ test("agent prompt save preserves edits inside the current wiki protocol section
 });
 
 test("existing prompt files are upgraded with the current built-in wiki protocol only", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-agent-prompt-upgrade-");
-  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-prompt-upgrade-");
+  const stateDir = path.join(workspaceDir, ".vibe-research");
   await mkdir(stateDir, { recursive: true });
   await writeFile(
     path.join(stateDir, "agent-prompt.md"),
@@ -944,13 +1064,13 @@ test("existing prompt files are upgraded with the current built-in wiki protocol
 
     const payload = await response.json();
     assert.match(payload.prompt, /Custom Prompt/);
-    assert.match(payload.prompt, /remote-vibes:wiki-v2-protocol:v2/);
+    assert.match(payload.prompt, /vibe-research:wiki-v2-protocol:v2/);
     assert.match(payload.prompt, /Search And Traversal/);
     assert.match(payload.prompt, /specific exchange or artifact/);
-    assert.doesNotMatch(payload.prompt, /remote-vibes:agent-mailbox-protocol/);
+    assert.doesNotMatch(payload.prompt, /vibe-research:agent-mailbox-protocol/);
     assert.doesNotMatch(payload.prompt, /Agent Mailboxes/);
-    assert.doesNotMatch(payload.prompt, /rv-mailwatch/);
-    assert.doesNotMatch(payload.prompt, /REMOTE_VIBES_SESSION_ID/);
+    assert.doesNotMatch(payload.prompt, /vr-mailwatch/);
+    assert.doesNotMatch(payload.prompt, /VIBE_RESEARCH_SESSION_ID/);
 
     const savedPrompt = await readFile(path.join(stateDir, "agent-prompt.md"), "utf8");
     assert.match(savedPrompt, /Custom Prompt/);
@@ -968,8 +1088,8 @@ test("existing prompt files are upgraded with the current built-in wiki protocol
 });
 
 test("legacy built-in prompt sections are replaced with the current versions", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-agent-prompt-legacy-upgrade-");
-  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-prompt-legacy-upgrade-");
+  const stateDir = path.join(workspaceDir, ".vibe-research");
   await mkdir(stateDir, { recursive: true });
   await writeFile(
     path.join(stateDir, "agent-prompt.md"),
@@ -977,13 +1097,13 @@ test("legacy built-in prompt sections are replaced with the current versions", a
 
 Keep a crisp research log.
 
-<!-- remote-vibes:wiki-v2-protocol:v1 -->
+<!-- vibe-research:wiki-v2-protocol:v1 -->
 
 ## Old Wiki Section
 
 Old guidance.
 
-<!-- remote-vibes:agent-mailbox-protocol:v1 -->
+<!-- vibe-research:agent-mailbox-protocol:v1 -->
 
 ## Old Mailbox Section
 
@@ -1000,19 +1120,19 @@ Old mailbox guidance.
 
     const payload = await response.json();
     assert.match(payload.prompt, /Custom Prompt/);
-    assert.doesNotMatch(payload.prompt, /remote-vibes:wiki-v2-protocol:v1/);
-    assert.doesNotMatch(payload.prompt, /remote-vibes:agent-mailbox-protocol/);
-    assert.match(payload.prompt, /remote-vibes:wiki-v2-protocol:v2/);
+    assert.doesNotMatch(payload.prompt, /vibe-research:wiki-v2-protocol:v1/);
+    assert.doesNotMatch(payload.prompt, /vibe-research:agent-mailbox-protocol/);
+    assert.match(payload.prompt, /vibe-research:wiki-v2-protocol:v2/);
     assert.match(payload.prompt, /Knowledge Model/);
     assert.doesNotMatch(payload.prompt, /Agent Mailboxes/);
     assert.doesNotMatch(payload.prompt, /from_name/);
-    assert.doesNotMatch(payload.prompt, /rv-mailwatch/);
+    assert.doesNotMatch(payload.prompt, /vr-mailwatch/);
     assert.doesNotMatch(payload.prompt, /Old Wiki Section/);
     assert.doesNotMatch(payload.prompt, /Old Mailbox Section/);
 
     const savedPrompt = await readFile(path.join(stateDir, "agent-prompt.md"), "utf8");
-    assert.doesNotMatch(savedPrompt, /remote-vibes:wiki-v2-protocol:v1/);
-    assert.doesNotMatch(savedPrompt, /remote-vibes:agent-mailbox-protocol/);
+    assert.doesNotMatch(savedPrompt, /vibe-research:wiki-v2-protocol:v1/);
+    assert.doesNotMatch(savedPrompt, /vibe-research:agent-mailbox-protocol/);
     assert.match(savedPrompt, /Knowledge Model/);
   } finally {
     await app.close();
@@ -1020,8 +1140,59 @@ Old mailbox guidance.
   }
 });
 
+test("remote vibes managed prompt files are adopted during rebrand migration", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-prompt-remote-vibes-upgrade-");
+  const stateDir = path.join(workspaceDir, ".vibe-research");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(
+    path.join(stateDir, "agent-prompt.md"),
+    `# Custom Remote Vibes Prompt
+
+Keep the experiment queue moving.
+
+<!-- remote-vibes:wiki-v2-protocol:v1 -->
+
+## Old Remote Vibes Wiki Section
+
+Old guidance.
+`,
+    "utf8",
+  );
+  await Promise.all(
+    ["AGENTS.md", "CLAUDE.md", "GEMINI.md"].map((filename) =>
+      writeFile(
+        path.join(workspaceDir, filename),
+        "<!-- remote-vibes:managed-agent-prompt -->\n# Remote Vibes Agent Prompt\n",
+        "utf8",
+      ),
+    ),
+  );
+
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+
+  try {
+    const response = await fetch(`${baseUrl}/api/agent-prompt`);
+    assert.equal(response.status, 200);
+
+    const payload = await response.json();
+    assert.ok(payload.targets.every((target) => target.status !== "conflict"));
+    assert.match(payload.prompt, /Custom Remote Vibes Prompt/);
+    assert.match(payload.prompt, /vibe-research:wiki-v2-protocol:v2/);
+    assert.doesNotMatch(payload.prompt, /remote-vibes:wiki-v2-protocol/);
+    assert.doesNotMatch(payload.prompt, /Old Remote Vibes Wiki Section/);
+
+    const managedAgents = await readFile(path.join(workspaceDir, "AGENTS.md"), "utf8");
+    assert.match(managedAgents, /vibe-research:managed-agent-prompt/);
+    assert.match(managedAgents, /Edit this from Vibe Research/);
+    assert.doesNotMatch(managedAgents, /remote-vibes:managed-agent-prompt/);
+  } finally {
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("agent prompt sync does not overwrite unmanaged instruction files", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-agent-conflict-");
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-conflict-");
   await writeFile(path.join(workspaceDir, "AGENTS.md"), "# User-owned instructions\n", "utf8");
 
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
@@ -1042,8 +1213,8 @@ test("agent prompt sync does not overwrite unmanaged instruction files", async (
 });
 
 test("knowledge base api indexes markdown notes and linked note content", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-knowledge-base-");
-  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+  const workspaceDir = await createTempWorkspace("vibe-research-knowledge-base-");
+  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
   const topicsDir = path.join(wikiDir, "topics");
 
   await mkdir(topicsDir, { recursive: true });
@@ -1070,7 +1241,7 @@ test("knowledge base api indexes markdown notes and linked note content", async 
     assert.equal(indexResponse.status, 200);
     const indexPayload = await indexResponse.json();
 
-    assert.equal(indexPayload.relativeRoot, ".remote-vibes/wiki");
+    assert.equal(indexPayload.relativeRoot, ".vibe-research/wiki");
     assert.deepEqual(
       indexPayload.notes.map((note) => note.relativePath),
       ["index.md", "log.md", "topics/topic-a.md"],
@@ -1108,8 +1279,8 @@ test("knowledge base api indexes markdown notes and linked note content", async 
 });
 
 test("knowledge base api skips inaccessible and system directories", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-knowledge-base-skip-");
-  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+  const workspaceDir = await createTempWorkspace("vibe-research-knowledge-base-skip-");
+  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
   const trashDir = path.join(wikiDir, ".Trash");
   const hiddenToolsDir = path.join(wikiDir, ".antigravity", "extensions", "example");
   const modulesDir = path.join(wikiDir, "node_modules", "pkg");
@@ -1145,9 +1316,9 @@ test("knowledge base api skips inaccessible and system directories", async () =>
   }
 });
 
-test("knowledge base api narrows broad roots to nested remote vibes wiki", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-knowledge-base-nested-");
-  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+test("knowledge base api narrows broad roots to nested vibe research wiki", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-knowledge-base-nested-");
+  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
   await mkdir(wikiDir, { recursive: true });
   const canonicalWikiDir = await realpath(wikiDir);
 
@@ -1171,7 +1342,7 @@ test("knowledge base api narrows broad roots to nested remote vibes wiki", async
     const indexPayload = await indexResponse.json();
 
     assert.equal(indexPayload.rootPath, canonicalWikiDir);
-    assert.equal(indexPayload.relativeRoot, ".remote-vibes/wiki");
+    assert.equal(indexPayload.relativeRoot, ".vibe-research/wiki");
     assert.deepEqual(
       indexPayload.notes.map((note) => note.relativePath),
       ["index.md", "log.md"],
@@ -1189,8 +1360,8 @@ test("knowledge base search ranks prefix markdown notes with BM25", async (t) =>
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-knowledge-search-");
-  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+  const workspaceDir = await createTempWorkspace("vibe-research-knowledge-search-");
+  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
   await mkdir(wikiDir, { recursive: true });
   await writeFile(path.join(wikiDir, "index.md"), "# Wiki Index\n\nStart here.\n", "utf8");
   await writeFile(path.join(wikiDir, "install-guide.md"), "# Install Guide\n\nUse this for setup.\n", "utf8");
@@ -1241,8 +1412,8 @@ test("knowledge base graph highlights linked notes on hover and can pulse physic
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-knowledge-graph-");
-  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+  const workspaceDir = await createTempWorkspace("vibe-research-knowledge-graph-");
+  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
   await mkdir(wikiDir, { recursive: true });
   await writeFile(path.join(wikiDir, "index.md"), "# Wiki Index\n\nSee [[topic-a]].\n", "utf8");
   await writeFile(path.join(wikiDir, "topic-a.md"), "# Topic A\n\nBack to [[index]] and next [[topic-b]].\n", "utf8");
@@ -1293,6 +1464,27 @@ test("knowledge base graph highlights linked notes on hover and can pulse physic
     assert.equal(graphState.pulseLabel, "Pulse graph physics");
     assert.equal(graphState.topicBConnected, true);
     assert.ok(graphState.connectedEdges >= 1);
+
+    await page.locator('[data-kb-graph-node="topic-a.md"] circle').click();
+    await page.waitForFunction(() => {
+      return (
+        new URL(window.location.href).searchParams.get("note") === "topic-a.md" &&
+        document.querySelector('[data-kb-graph-node="topic-a.md"]')?.classList.contains("is-selected")
+      );
+    }, null, { timeout: 10_000 });
+
+    const graphBox = await page.locator("#knowledge-base-graph").boundingBox();
+    assert.ok(graphBox, "knowledge graph should be visible");
+    await page.mouse.click(graphBox.x + 8, graphBox.y + 8);
+
+    await page.waitForFunction(() => {
+      return (
+        !new URL(window.location.href).searchParams.has("note") &&
+        !document.querySelector(".knowledge-base-note-row.is-active") &&
+        !document.querySelector("[data-kb-graph-node].is-selected") &&
+        document.querySelector(".knowledge-base-note-card")?.textContent?.includes("select a note")
+      );
+    }, null, { timeout: 10_000 });
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
@@ -1307,8 +1499,8 @@ test("knowledge base graph keeps dense replay inside the viewport", async (t) =>
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-knowledge-graph-fit-");
-  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+  const workspaceDir = await createTempWorkspace("vibe-research-knowledge-graph-fit-");
+  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
   await mkdir(wikiDir, { recursive: true });
 
   const noteLinks = [];
@@ -1569,6 +1761,100 @@ test("knowledge base graph keeps dense replay inside the viewport", async (t) =>
   }
 });
 
+test("visual graph empty canvas click closes the selected session panel", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for the visual graph smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("vibe-research-visual-graph-clear-");
+  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
+  const createdAt = new Date().toISOString();
+  await mkdir(wikiDir, { recursive: true });
+  await writeFile(path.join(wikiDir, "index.md"), "# Visual Graph Brain\n", "utf8");
+  await writePersistedSessions(workspaceDir, [
+    {
+      id: "visual-session-1",
+      providerId: "shell",
+      providerLabel: "Vanilla Shell",
+      name: "Canvas Agent",
+      cwd: workspaceDir,
+      shell: process.env.SHELL || "/bin/zsh",
+      createdAt,
+      updatedAt: createdAt,
+      lastOutputAt: createdAt,
+      status: "running",
+      exitCode: null,
+      exitSignal: null,
+      cols: 90,
+      rows: 24,
+      buffer: "visual graph transcript\r\n",
+      restoreOnStartup: false,
+    },
+  ]);
+
+  const { app, baseUrl } = await startApp({
+    cwd: workspaceDir,
+    persistSessions: true,
+  });
+  let browser = null;
+
+  const clickCanvasPoint = async (page, x, y) => {
+    const box = await page.locator("#visual-game-canvas").boundingBox();
+    assert.ok(box, "visual game canvas should be visible");
+    await page.mouse.click(box.x + (x / 480) * box.width, box.y + (y / 270) * box.height);
+  };
+  const findCanvasHoverPoint = async (page, labelText) => {
+    const box = await page.locator("#visual-game-canvas").boundingBox();
+    assert.ok(box, "visual game canvas should be visible");
+
+    for (let y = 132; y <= 184; y += 8) {
+      for (let x = 48; x <= 456; x += 8) {
+        await page.mouse.move(box.x + (x / 480) * box.width, box.y + (y / 270) * box.height);
+        const label = await page.locator(".visual-game-hover").textContent();
+
+        if (label?.includes(labelText)) {
+          return { x, y };
+        }
+      }
+    }
+
+    throw new Error(`Could not find visual canvas hit area for ${labelText}.`);
+  };
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ wikiPath: wikiDir }),
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    await page.setViewportSize({ width: 1180, height: 740 });
+    await page.goto(`${baseUrl}/?view=swarm`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
+    await page.waitForTimeout(1_200);
+
+    const agentPoint = await findCanvasHoverPoint(page, "Canvas Agent");
+    await clickCanvasPoint(page, agentPoint.x, agentPoint.y);
+    await page.waitForSelector(".visual-game-session-panel", { timeout: 10_000 });
+
+    await clickCanvasPoint(page, 470, 260);
+    await page.waitForFunction(() => !document.querySelector(".visual-game-session-panel"), null, {
+      timeout: 10_000,
+    });
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("fresh browser starts on brain folder setup until a folder is chosen", async (t) => {
   const executablePath = await resolveBrowserExecutablePath({ env: process.env });
   if (!executablePath) {
@@ -1576,7 +1862,7 @@ test("fresh browser starts on brain folder setup until a folder is chosen", asyn
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-brain-setup-");
+  const workspaceDir = await createTempWorkspace("vibe-research-brain-setup-");
   const { remoteDir } = await createBrainGitRemote(workspaceDir, "brain-remote");
   const brainDir = path.join(workspaceDir, "brain-repo");
   await mkdir(brainDir, { recursive: true });
@@ -1627,7 +1913,7 @@ test("brain setup can clone an existing git brain from the browser", async (t) =
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-brain-clone-ui-");
+  const workspaceDir = await createTempWorkspace("vibe-research-brain-clone-ui-");
   const { remoteDir } = await createBrainGitRemote(workspaceDir, "existing-brain");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
   let browser = null;
@@ -1667,8 +1953,8 @@ test("brain setup remains scrollable on short viewports", async (t) => {
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-brain-scroll-ui-");
-  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  const workspaceDir = await createTempWorkspace("vibe-research-brain-scroll-ui-");
+  const stateDir = path.join(workspaceDir, ".vibe-research");
   const appDir = path.join(stateDir, "app");
   const expectedClonePath = path.join(workspaceDir, "mac-brain");
   await mkdir(appDir, { recursive: true });
@@ -1754,8 +2040,8 @@ test("knowledge base markdown viewer renders GitHub-style tables", async (t) => 
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-markdown-table-");
-  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+  const workspaceDir = await createTempWorkspace("vibe-research-markdown-table-");
+  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
   await mkdir(wikiDir, { recursive: true });
   await writeFile(path.join(wikiDir, "index.md"), "# Wiki Index\n\nSee [[leaderboard]].\n", "utf8");
   await writeFile(
@@ -1823,8 +2109,8 @@ test("knowledge base markdown viewer renders image, GIF, and video media links",
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-markdown-media-");
-  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+  const workspaceDir = await createTempWorkspace("vibe-research-markdown-media-");
+  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
   const assetsDir = path.join(wikiDir, "assets");
   const absoluteAssetsDir = path.join(workspaceDir, "absolute-assets");
   const absoluteImagePath = path.join(absoluteAssetsDir, "held-out-grid.png");
@@ -1929,7 +2215,7 @@ test("knowledge base markdown viewer renders image, GIF, and video media links",
 });
 
 test("settings api moves the wiki folder, refreshes agent instructions, and the knowledge base follows", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-custom-wiki-");
+  const workspaceDir = await createTempWorkspace("vibe-research-custom-wiki-");
   const customWikiDir = path.join(workspaceDir, "mac-brain");
   await mkdir(path.join(customWikiDir, "topics"), { recursive: true });
   const canonicalCustomWikiDir = await realpath(customWikiDir);
@@ -1998,7 +2284,7 @@ test("settings api moves the wiki folder, refreshes agent instructions, and the 
 });
 
 test("{{WIKI}} placeholder stays in source but expands in managed files and tracks wiki path changes", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-wiki-placeholder-");
+  const workspaceDir = await createTempWorkspace("vibe-research-wiki-placeholder-");
   const customWikiDir = path.join(workspaceDir, "mac-brain");
   await mkdir(customWikiDir, { recursive: true });
 
@@ -2018,7 +2304,7 @@ test("{{WIKI}} placeholder stays in source but expands in managed files and trac
     assert.equal(updateResponse.status, 200);
 
     const defaultSource = await readFile(
-      path.join(workspaceDir, ".remote-vibes", "agent-prompt.md"),
+      path.join(workspaceDir, ".vibe-research", "agent-prompt.md"),
       "utf8",
     );
     assert.match(defaultSource, /`\{\{WIKI\}\}\/experiments\/`/);
@@ -2026,8 +2312,8 @@ test("{{WIKI}} placeholder stays in source but expands in managed files and trac
 
     const defaultManaged = await readFile(path.join(workspaceDir, "CLAUDE.md"), "utf8");
     assert.ok(!defaultManaged.includes("{{WIKI}}"), "managed file should not contain raw placeholders");
-    assert.match(defaultManaged, /`\.remote-vibes\/wiki\/experiments\/`/);
-    assert.match(defaultManaged, /`\.remote-vibes\/wiki\/log\.md`/);
+    assert.match(defaultManaged, /`\.vibe-research\/wiki\/experiments\/`/);
+    assert.match(defaultManaged, /`\.vibe-research\/wiki\/log\.md`/);
 
     const moveResponse = await fetch(`${baseUrl}/api/settings`, {
       method: "PATCH",
@@ -2041,7 +2327,7 @@ test("{{WIKI}} placeholder stays in source but expands in managed files and trac
     assert.equal(moveResponse.status, 200);
 
     const movedSource = await readFile(
-      path.join(workspaceDir, ".remote-vibes", "agent-prompt.md"),
+      path.join(workspaceDir, ".vibe-research", "agent-prompt.md"),
       "utf8",
     );
     assert.match(movedSource, /`\{\{WIKI\}\}\/experiments\/`/);
@@ -2058,9 +2344,9 @@ test("{{WIKI}} placeholder stays in source but expands in managed files and trac
 });
 
 test("wiki backup endpoint initializes git and commits wiki changes", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-wiki-backup-");
+  const workspaceDir = await createTempWorkspace("vibe-research-wiki-backup-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
-  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
 
   try {
     const firstBackupResponse = await fetch(`${baseUrl}/api/wiki/backup`, {
@@ -2080,7 +2366,7 @@ test("wiki backup endpoint initializes git and commits wiki changes", async () =
     assert.equal(secondBackupPayload.backup.lastStatus, "committed");
 
     const { stdout } = await execFileAsync("git", ["-C", wikiDir, "log", "--oneline"]);
-    assert.match(stdout, /Remote Vibes wiki backup/);
+    assert.match(stdout, /Vibe Research wiki backup/);
     assert.ok(stdout.trim().split("\n").length >= 2);
   } finally {
     await app.close();
@@ -2089,10 +2375,10 @@ test("wiki backup endpoint initializes git and commits wiki changes", async () =
 });
 
 test("wiki backup endpoint can push to a configured private remote", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-wiki-remote-backup-");
+  const workspaceDir = await createTempWorkspace("vibe-research-wiki-remote-backup-");
   const remoteDir = path.join(workspaceDir, "private-wiki.git");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
-  const wikiDir = path.join(workspaceDir, ".remote-vibes", "wiki");
+  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
 
   try {
     await execFileAsync("git", ["init", "--bare", remoteDir]);
@@ -2131,7 +2417,7 @@ test("wiki backup endpoint can push to a configured private remote", async () =>
       "--oneline",
       "refs/heads/main",
     ]);
-    assert.match(stdout, /Remote Vibes wiki backup/);
+    assert.match(stdout, /Vibe Research wiki backup/);
   } finally {
     await app.close();
     await rm(workspaceDir, { recursive: true, force: true });
@@ -2139,7 +2425,7 @@ test("wiki backup endpoint can push to a configured private remote", async () =>
 });
 
 test("folder browser api lists selectable folders and supports parent navigation", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-folder-picker-");
+  const workspaceDir = await createTempWorkspace("vibe-research-folder-picker-");
   await mkdir(path.join(workspaceDir, "alpha", "nested"), { recursive: true });
   await writeFile(path.join(workspaceDir, "notes.txt"), "not a folder\n", "utf8");
   const canonicalWorkspaceDir = await realpath(workspaceDir);
@@ -2202,8 +2488,8 @@ test("folder browser api lists selectable folders and supports parent navigation
   }
 });
 
-test("remote vibes api header keeps folder picker requests out of proxied apps", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-folder-picker-referrer-");
+test("vibe research api header keeps folder picker requests out of proxied apps", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-folder-picker-referrer-");
   const proxyTarget = http.createServer((_request, response) => {
     response.writeHead(404, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ error: "proxied app handled this request" }));
@@ -2230,7 +2516,7 @@ test("remote vibes api header keeps folder picker requests out of proxied apps",
     const listResponse = await fetch(`${baseUrl}/api/folders?root=${encodeURIComponent(workspaceDir)}`, {
       headers: {
         referer: proxiedReferrer,
-        "X-Remote-Vibes-API": "1",
+        "X-Vibe-Research-API": "1",
       },
     });
     assert.equal(listResponse.status, 200);
@@ -2241,7 +2527,7 @@ test("remote vibes api header keeps folder picker requests out of proxied apps",
       headers: {
         "Content-Type": "application/json",
         referer: proxiedReferrer,
-        "X-Remote-Vibes-API": "1",
+        "X-Vibe-Research-API": "1",
       },
       body: JSON.stringify({
         root: workspaceDir,
@@ -2282,7 +2568,7 @@ test("shell session streams websocket output and honors custom cwd", async () =>
     assert.equal(session.cwd, requestedCwd);
 
     const websocket = new WebSocket(`${baseUrl.replace("http", "ws")}/ws?sessionId=${session.id}`);
-    const marker = "REMOTE_VIBES_AUTOMATED_SMOKE";
+    const marker = "VIBE_RESEARCH_AUTOMATED_SMOKE";
     const output = await new Promise((resolve, reject) => {
       let combined = "";
       let sentResize = false;
@@ -2449,7 +2735,7 @@ test("mobile terminal stays usable while the keyboard viewport resizes", async (
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-mobile-scroll-");
+  const workspaceDir = await createTempWorkspace("vibe-research-mobile-scroll-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
   let websocket = null;
   let browser = null;
@@ -2578,7 +2864,7 @@ test("terminal wheel opens a scrollable transcript history", async (t) => {
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-xterm-wheel-");
+  const workspaceDir = await createTempWorkspace("vibe-research-xterm-wheel-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
   let websocket = null;
   let browser = null;
@@ -2717,7 +3003,7 @@ test("terminal keyboard scroll chords move history without stealing plain arrows
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-keyboard-scroll-");
+  const workspaceDir = await createTempWorkspace("vibe-research-keyboard-scroll-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
   let websocket = null;
   let browser = null;
@@ -2846,7 +3132,7 @@ test("terminal wheel without xterm scrollback opens transcript instead of sendin
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("remote-vibes-transcript-wheel-");
+  const workspaceDir = await createTempWorkspace("vibe-research-transcript-wheel-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
   let websocket = null;
   let browser = null;
@@ -2989,18 +3275,18 @@ test("login shells inherit mailbox helpers and agent inbox env vars", async () =
       "-i",
       "-l",
       "-c",
-      "printf 'INBOX=%s\\n' \"$REMOTE_VIBES_AGENT_INBOX\"; printf 'WATCHER=%s\\n' \"$REMOTE_VIBES_MAIL_WATCHER\"; printf 'PWCLI=%s\\n' \"$PWCLI\"; printf 'PWSKILL=%s\\n' \"$REMOTE_VIBES_PLAYWRIGHT_SKILL\"; command -v rv-mailwatch; command -v rv-session-name; command -v rv-playwright; command -v playwright-cli",
+      "printf 'INBOX=%s\\n' \"$VIBE_RESEARCH_AGENT_INBOX\"; printf 'WATCHER=%s\\n' \"$VIBE_RESEARCH_MAIL_WATCHER\"; printf 'PWCLI=%s\\n' \"$PWCLI\"; printf 'PWSKILL=%s\\n' \"$VIBE_RESEARCH_PLAYWRIGHT_SKILL\"; command -v vr-mailwatch; command -v vr-session-name; command -v vr-playwright; command -v playwright-cli",
     ],
     { env },
   );
 
   assert.match(stdout, new RegExp(`INBOX=.*${sessionId}.*/inbox`));
-  assert.match(stdout, /WATCHER=rv-mailwatch/);
-  assert.match(stdout, /PWCLI=rv-playwright/);
+  assert.match(stdout, /WATCHER=vr-mailwatch/);
+  assert.match(stdout, /PWCLI=vr-playwright/);
   assert.match(stdout, /PWSKILL=.*skills\/playwright\/SKILL\.md/);
-  assert.match(stdout, /rv-mailwatch/);
-  assert.match(stdout, /rv-session-name/);
-  assert.match(stdout, /rv-playwright/);
+  assert.match(stdout, /vr-mailwatch/);
+  assert.match(stdout, /vr-session-name/);
+  assert.match(stdout, /vr-playwright/);
   assert.match(stdout, /playwright-cli/);
 });
 
@@ -3049,7 +3335,7 @@ test("session names can be updated after creation", async () => {
   }
 });
 
-test("rv-session-name renames the current session through server metadata", async () => {
+test("vr-session-name renames the current session through server metadata", async () => {
   const workspaceDir = process.cwd();
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
 
@@ -3068,7 +3354,7 @@ test("rv-session-name renames the current session through server metadata", asyn
     const { session } = await createResponse.json();
     const env = buildSessionEnv(session.id, "shell", workspaceDir);
 
-    const helperPath = path.join(workspaceDir, "bin", "rv-session-name");
+    const helperPath = path.join(workspaceDir, "bin", "vr-session-name");
     const { stdout } = await execFileAsync(process.execPath, [helperPath, "results reviewer"], {
       cwd: workspaceDir,
       env,
@@ -3088,8 +3374,8 @@ test("rv-session-name renames the current session through server metadata", asyn
   }
 });
 
-test("rv-session-name falls back to a filesystem request when localhost is unreachable", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-session-rename-fallback-");
+test("vr-session-name falls back to a filesystem request when localhost is unreachable", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-session-rename-fallback-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
 
   try {
@@ -3108,12 +3394,12 @@ test("rv-session-name falls back to a filesystem request when localhost is unrea
     const env = buildSessionEnv(session.id, "shell", workspaceDir);
 
     await writeFile(
-      path.join(workspaceDir, ".remote-vibes", "server.json"),
+      path.join(workspaceDir, ".vibe-research", "server.json"),
       `${JSON.stringify({ helperBaseUrl: "http://127.0.0.1:9" }, null, 2)}\n`,
       "utf8",
     );
 
-    const helperPath = path.join(process.cwd(), "bin", "rv-session-name");
+    const helperPath = path.join(process.cwd(), "bin", "vr-session-name");
     const { stdout } = await execFileAsync(process.execPath, [helperPath, "resource coordinator"], {
       cwd: workspaceDir,
       env,
@@ -3205,7 +3491,7 @@ test("sessions can be forked and report whether provider memory is resumable", a
 });
 
 test("forked Claude sessions resume source memory with a secret-word flow", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-claude-fork-memory-");
+  const workspaceDir = await createTempWorkspace("vibe-research-claude-fork-memory-");
   const fakeBinDir = path.join(workspaceDir, "fake-bin");
   const memoryDir = path.join(workspaceDir, "fake-claude-memory");
   await mkdir(fakeBinDir, { recursive: true });
@@ -3263,7 +3549,7 @@ done
 
   const { app, baseUrl } = await startApp({
     cwd: workspaceDir,
-    stateDir: path.join(workspaceDir, ".remote-vibes"),
+    stateDir: path.join(workspaceDir, ".vibe-research"),
     providers: [
       {
         id: "claude",
@@ -3361,7 +3647,7 @@ done
 });
 
 test("ports are discoverable and proxy through localhost", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-ports-");
+  const workspaceDir = await createTempWorkspace("vibe-research-ports-");
   const previewServer = http.createServer((request, response) => {
     if (request.url === "/") {
       response.writeHead(200, { "Content-Type": "text/html" });
@@ -3451,7 +3737,7 @@ test("ports are discoverable and proxy through localhost", async () => {
 });
 
 test("ports prefer direct tailnet URLs and can expose localhost-only ports with Tailscale Serve", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-tailscale-ports-");
+  const workspaceDir = await createTempWorkspace("vibe-research-tailscale-ports-");
   const exposedPorts = new Set();
   const fakeTailscaleServeManager = {
     async getStatus() {
@@ -3503,9 +3789,9 @@ test("ports prefer direct tailnet URLs and can expose localhost-only ports with 
       proxyPath: "/proxy/3200/",
     },
   ];
-  const accessUrlsProvider = async (_host, remoteVibesPort) => [
-    { label: "Local", url: `http://localhost:${remoteVibesPort}` },
-    { label: "Tailscale", url: `http://100.64.0.5:${remoteVibesPort}` },
+  const accessUrlsProvider = async (_host, vibeResearchPort) => [
+    { label: "Local", url: `http://localhost:${vibeResearchPort}` },
+    { label: "Tailscale", url: `http://100.64.0.5:${vibeResearchPort}` },
   ];
 
   const { app, baseUrl } = await startApp({
@@ -3620,7 +3906,7 @@ test("relaunch endpoint shuts down the app cleanly and requests a restart", asyn
 });
 
 test("running sessions are restored with their transcript after restart", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-persist-");
+  const workspaceDir = await createTempWorkspace("vibe-research-persist-");
   let firstApp = null;
   let secondApp = null;
 
@@ -3646,7 +3932,7 @@ test("running sessions are restored with their transcript after restart", async 
     assert.equal(createResponse.status, 201);
     const { session } = await createResponse.json();
     const websocket = new WebSocket(`${firstRun.baseUrl.replace("http", "ws")}/ws?sessionId=${session.id}`);
-    const marker = "REMOTE_VIBES_PERSISTENCE_MARKER";
+    const marker = "VIBE_RESEARCH_PERSISTENCE_MARKER";
 
     const output = await new Promise((resolve, reject) => {
       let combined = "";
@@ -3743,7 +4029,7 @@ test("running sessions are restored with their transcript after restart", async 
 });
 
 test("renamed sessions keep their updated name after restart", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-rename-persist-");
+  const workspaceDir = await createTempWorkspace("vibe-research-rename-persist-");
   let firstApp = null;
   let secondApp = null;
 
@@ -3811,9 +4097,9 @@ test("renamed sessions keep their updated name after restart", async () => {
 });
 
 test("workspace file api lists directories, edits text files, and serves image files", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-files-");
+  const workspaceDir = await createTempWorkspace("vibe-research-files-");
   const graphsDir = path.join(workspaceDir, "graphs");
-  const internalStateDir = path.join(workspaceDir, ".remote-vibes");
+  const internalStateDir = path.join(workspaceDir, ".vibe-research");
   const imagePath = path.join(graphsDir, "chart.png");
   const notePath = path.join(workspaceDir, "notes.txt");
   const internalStatePath = path.join(internalStateDir, "sessions.json");
@@ -3890,7 +4176,7 @@ test("workspace file api lists directories, edits text files, and serves image f
 });
 
 test("deleted persisted sessions do not come back after restart", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-delete-");
+  const workspaceDir = await createTempWorkspace("vibe-research-delete-");
   let firstApp = null;
   let secondApp = null;
 
@@ -3948,7 +4234,7 @@ test("deleted persisted sessions do not come back after restart", async () => {
 });
 
 test("persisted sessions with missing workspaces stay visible and show restore failure", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-missing-cwd-");
+  const workspaceDir = await createTempWorkspace("vibe-research-missing-cwd-");
   const missingCwd = path.join(workspaceDir, "missing-workspace");
   const persistedSessionId = "persisted-missing-cwd";
   const createdAt = new Date().toISOString();
@@ -4017,9 +4303,9 @@ test("persisted sessions with missing workspaces stay visible and show restore f
 });
 
 test("workspace file api rejects traversal and invalid entry types", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-files-guards-");
+  const workspaceDir = await createTempWorkspace("vibe-research-files-guards-");
   const graphsDir = path.join(workspaceDir, "graphs");
-  const internalStateDir = path.join(workspaceDir, ".remote-vibes");
+  const internalStateDir = path.join(workspaceDir, ".vibe-research");
   const imagePath = path.join(graphsDir, "chart.png");
   const notePath = path.join(workspaceDir, "notes.txt");
   const internalStatePath = path.join(internalStateDir, "sessions.json");
@@ -4052,13 +4338,13 @@ test("workspace file api rejects traversal and invalid entry types", async () =>
     assert.match((await fileAsDirectoryResponse.json()).error, /not a directory/i);
 
     const internalDirectoryResponse = await fetch(
-      `${baseUrl}/api/files?root=${encodeURIComponent(workspaceDir)}&path=${encodeURIComponent(".remote-vibes")}`,
+      `${baseUrl}/api/files?root=${encodeURIComponent(workspaceDir)}&path=${encodeURIComponent(".vibe-research")}`,
     );
     assert.equal(internalDirectoryResponse.status, 404);
     assert.match((await internalDirectoryResponse.json()).error, /not available in the workspace browser/i);
 
     const internalFileResponse = await fetch(
-      `${baseUrl}/api/files/content?root=${encodeURIComponent(workspaceDir)}&path=${encodeURIComponent(".remote-vibes/sessions.json")}`,
+      `${baseUrl}/api/files/content?root=${encodeURIComponent(workspaceDir)}&path=${encodeURIComponent(".vibe-research/sessions.json")}`,
     );
     assert.equal(internalFileResponse.status, 404);
     assert.match((await internalFileResponse.json()).error, /not available in the workspace browser/i);
@@ -4076,7 +4362,7 @@ test("workspace file api rejects traversal and invalid entry types", async () =>
       },
       body: JSON.stringify({
         root: workspaceDir,
-        path: ".remote-vibes/sessions.json",
+        path: ".vibe-research/sessions.json",
         content: "{}\n",
       }),
     });
@@ -4089,8 +4375,8 @@ test("workspace file api rejects traversal and invalid entry types", async () =>
 });
 
 test("workspace file api serves content from hidden install roots", async () => {
-  const parentDir = await createTempWorkspace("remote-vibes-hidden-root-");
-  const workspaceDir = path.join(parentDir, ".remote-vibes", "app");
+  const parentDir = await createTempWorkspace("vibe-research-hidden-root-");
+  const workspaceDir = path.join(parentDir, ".vibe-research", "app");
   const imagePath = path.join(workspaceDir, "shell.jpg");
 
   await mkdir(workspaceDir, { recursive: true });

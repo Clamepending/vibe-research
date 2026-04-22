@@ -17,6 +17,8 @@ const DEFAULT_PROJECT_STORAGE_CACHE_MS = 60_000;
 const DEFAULT_PROJECT_STORAGE_MAX_ROOTS = 32;
 const BYTES_PER_KIB = 1024;
 const MAX_VISIBLE_VOLUMES = 8;
+const LINUX_DRM_GPU_VENDORS = new Set(["0x10de", "0x1002", "0x8086"]);
+const LINUX_DRM_IGNORED_GPU_VENDORS = new Set(["0x1a03", "0x1234", "0x1b36"]);
 const wikiStorageCache = new Map();
 const projectStorageCache = new Map();
 
@@ -25,8 +27,17 @@ function clamp(value, min, max) {
 }
 
 function normalizeNumber(value) {
-  const number = Number(String(value ?? "").replace(/[^\d.-]/g, ""));
+  const normalized = String(value ?? "").replace(/[^\d.-]/g, "");
+  if (!normalized) {
+    return null;
+  }
+  const number = Number(normalized);
   return Number.isFinite(number) ? number : null;
+}
+
+function normalizePid(value) {
+  const pid = normalizeNumber(value);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
 function sleep(ms) {
@@ -249,8 +260,11 @@ function parseNvidiaCsv(stdout) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
+      const columns = line.split(",").map((value) => value.trim());
+      const hasUuidColumn = /^GPU-/i.test(columns[1] || "");
       const [
         index,
+        uuid,
         name,
         gpuUtilization,
         memoryUtilization,
@@ -259,19 +273,25 @@ function parseNvidiaCsv(stdout) {
         temperatureC,
         powerDrawW,
         powerLimitW,
-      ] = line.split(",").map((value) => value.trim());
+      ] = hasUuidColumn
+        ? columns
+        : [columns[0], "", columns[1], ...columns.slice(2)];
+      const gpuIndex = normalizeNumber(index);
+      const stableId = uuid || String(index || "").trim();
+      const memoryUsed = normalizeNumber(memoryUsedMb);
+      const memoryTotal = normalizeNumber(memoryTotalMb);
 
       return {
-        id: `nvidia-${index}`,
+        id: `nvidia-${stableId || name || "gpu"}`,
+        index: gpuIndex,
+        uuid: uuid || "",
         kind: "gpu",
         name: name || `NVIDIA GPU ${index}`,
         source: "nvidia-smi",
         utilizationPercent: normalizeNumber(gpuUtilization),
         memoryUtilizationPercent: normalizeNumber(memoryUtilization),
-        memoryUsedBytes:
-          normalizeNumber(memoryUsedMb) === null ? null : normalizeNumber(memoryUsedMb) * 1024 * 1024,
-        memoryTotalBytes:
-          normalizeNumber(memoryTotalMb) === null ? null : normalizeNumber(memoryTotalMb) * 1024 * 1024,
+        memoryUsedBytes: memoryUsed === null ? null : memoryUsed * 1024 * 1024,
+        memoryTotalBytes: memoryTotal === null ? null : memoryTotal * 1024 * 1024,
         temperatureC: normalizeNumber(temperatureC),
         powerW: normalizeNumber(powerDrawW),
         powerLimitW: normalizeNumber(powerLimitW),
@@ -279,19 +299,179 @@ function parseNvidiaCsv(stdout) {
     });
 }
 
-async function readNvidiaGpus({ execFile, timeoutMs }) {
+function parseNvidiaComputeAppsCsv(stdout) {
+  return String(stdout ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^no running processes/i.test(line))
+    .map((line) => {
+      const [gpuUuid, pidValue, processName, usedMemoryMb] = line.split(",").map((value) => value.trim());
+      const pid = normalizePid(pidValue);
+      const memoryUsed = normalizeNumber(usedMemoryMb);
+
+      if (!pid) {
+        return null;
+      }
+
+      return {
+        gpuUuid: gpuUuid || "",
+        pid,
+        processName: processName || "",
+        usedMemoryBytes: memoryUsed === null ? null : memoryUsed * 1024 * 1024,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function readNvidiaComputeApps({ execFile, timeoutMs }) {
   try {
     const { stdout } = await runCommand(
       execFile,
       "nvidia-smi",
       [
-        "--query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
+        "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory",
         "--format=csv,noheader,nounits",
       ],
       { timeoutMs },
     );
 
-    return parseNvidiaCsv(stdout);
+    return parseNvidiaComputeAppsCsv(stdout);
+  } catch {
+    return [];
+  }
+}
+
+function parseProcessTable(stdout) {
+  return String(stdout ?? "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+      if (!match) {
+        return null;
+      }
+
+      return {
+        pid: Number(match[1]),
+        ppid: Number(match[2]),
+        command: match[3].trim(),
+      };
+    })
+    .filter(Boolean);
+}
+
+async function readProcessTable({ execFile, timeoutMs }) {
+  try {
+    const { stdout } = await runCommand(execFile, "ps", ["-eo", "pid=,ppid=,comm="], { timeoutMs });
+    return parseProcessTable(stdout);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeAgentProcessRoots(agentProcessRoots) {
+  return (Array.isArray(agentProcessRoots) ? agentProcessRoots : [])
+    .map((root) => {
+      const pid = normalizePid(root?.pid);
+      if (!pid) {
+        return null;
+      }
+
+      return {
+        pid,
+        providerId: root?.providerId || "",
+        sessionId: root?.sessionId || "",
+        source: root?.source || "session",
+      };
+    })
+    .filter(Boolean);
+}
+
+function createProcessOwnerResolver(processTable, agentProcessRoots) {
+  const roots = normalizeAgentProcessRoots(agentProcessRoots);
+  const rootByPid = new Map(roots.map((root) => [root.pid, root]));
+  const parentByPid = new Map(
+    (Array.isArray(processTable) ? processTable : [])
+      .filter((entry) => normalizePid(entry?.pid) && normalizePid(entry?.ppid))
+      .map((entry) => [Number(entry.pid), Number(entry.ppid)]),
+  );
+
+  return (pidValue) => {
+    let pid = normalizePid(pidValue);
+    const seen = new Set();
+
+    while (pid && !seen.has(pid)) {
+      const root = rootByPid.get(pid);
+      if (root) {
+        return root;
+      }
+
+      seen.add(pid);
+      pid = parentByPid.get(pid);
+    }
+
+    return null;
+  };
+}
+
+function annotateNvidiaGpuProcesses({ agentProcessRoots = [], computeApps = [], nvidiaGpus = [], processTable = [] }) {
+  if (!nvidiaGpus.length) {
+    return [];
+  }
+
+  const resolveOwner = createProcessOwnerResolver(processTable, agentProcessRoots);
+  const processesByGpuUuid = new Map();
+
+  for (const app of computeApps) {
+    if (!app.gpuUuid) {
+      continue;
+    }
+
+    const owner = resolveOwner(app.pid);
+    const process = {
+      ...app,
+      ownedByUs: Boolean(owner),
+      providerId: owner?.providerId || "",
+      sessionId: owner?.sessionId || "",
+    };
+    const entries = processesByGpuUuid.get(app.gpuUuid) || [];
+    entries.push(process);
+    processesByGpuUuid.set(app.gpuUuid, entries);
+  }
+
+  return nvidiaGpus.map((gpu) => {
+    const processes = gpu.uuid ? processesByGpuUuid.get(gpu.uuid) || [] : [];
+    const ownedProcessCount = processes.filter((process) => process.ownedByUs).length;
+
+    return {
+      ...gpu,
+      activeProcessCount: processes.length,
+      ownedProcessCount,
+      processes: processes.slice(0, 8),
+      usedByUs: ownedProcessCount > 0,
+    };
+  });
+}
+
+async function readNvidiaGpus({ agentProcessRoots = [], execFile, timeoutMs }) {
+  try {
+    const { stdout } = await runCommand(
+      execFile,
+      "nvidia-smi",
+      [
+        "--query-gpu=index,uuid,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
+        "--format=csv,noheader,nounits",
+      ],
+      { timeoutMs },
+    );
+
+    const nvidiaGpus = parseNvidiaCsv(stdout);
+    const computeApps = await readNvidiaComputeApps({ execFile, timeoutMs });
+    const processTable =
+      computeApps.length && normalizeAgentProcessRoots(agentProcessRoots).length
+        ? await readProcessTable({ execFile, timeoutMs })
+        : [];
+
+    return annotateNvidiaGpuProcesses({ agentProcessRoots, computeApps, nvidiaGpus, processTable });
   } catch {
     return [];
   }
@@ -314,6 +494,62 @@ function parseLinuxDeviceName({ card, vendor, uevent }) {
   return [vendorName, driver, card, pciId].filter(Boolean).join(" ") || card;
 }
 
+function normalizeLinuxVendorId(vendor) {
+  const normalized = String(vendor || "").trim().toLowerCase();
+  return normalized.startsWith("0x") ? normalized : "";
+}
+
+function parseLinuxDeviceUevent(uevent) {
+  return {
+    driver: String(uevent || "").match(/^DRIVER=(.+)$/m)?.[1] || "",
+    pciId: String(uevent || "").match(/^PCI_ID=(.+)$/m)?.[1] || "",
+  };
+}
+
+function isUsefulLinuxDrmGpu({ busy, uevent, vendor }) {
+  const normalizedVendor = normalizeLinuxVendorId(vendor);
+  if (LINUX_DRM_IGNORED_GPU_VENDORS.has(normalizedVendor)) {
+    return false;
+  }
+
+  if (LINUX_DRM_GPU_VENDORS.has(normalizedVendor)) {
+    return true;
+  }
+
+  if (normalizedVendor) {
+    return false;
+  }
+
+  return busy !== null && /^DRIVER=(amdgpu|i915|xe|nouveau|nvidia)$/im.test(String(uevent || ""));
+}
+
+function isNvidiaLinuxDrmGpu(device) {
+  return (
+    normalizeLinuxVendorId(device?.vendor) === "0x10de" ||
+    /^10de:/i.test(String(device?.pciId || "")) ||
+    /\b10de:/i.test(String(device?.name || ""))
+  );
+}
+
+function mergeGpuDevices({ nvidiaGpus = [], linuxDrmGpus = [], macGpus = [] }) {
+  const hasNvidiaSmi = nvidiaGpus.length > 0;
+  const seenGpuIds = new Set();
+  const devices = [
+    ...nvidiaGpus,
+    ...linuxDrmGpus.filter((device) => !(hasNvidiaSmi && isNvidiaLinuxDrmGpu(device))),
+    ...macGpus,
+  ];
+
+  return devices.filter((device) => {
+    const key = `${device.source}:${device.id}`;
+    if (seenGpuIds.has(key)) {
+      return false;
+    }
+    seenGpuIds.add(key);
+    return true;
+  });
+}
+
 async function readLinuxDrmGpus({ readFile, readdir }) {
   let cards = [];
   try {
@@ -328,8 +564,13 @@ async function readLinuxDrmGpus({ readFile, readdir }) {
     const busy = normalizeNumber(await readTextFile(readFile, `${deviceRoot}/gpu_busy_percent`));
     const vendor = await readTextFile(readFile, `${deviceRoot}/vendor`);
     const uevent = await readTextFile(readFile, `${deviceRoot}/uevent`);
+    const deviceInfo = parseLinuxDeviceUevent(uevent);
 
     if (busy === null && !vendor && !uevent) {
+      continue;
+    }
+
+    if (!isUsefulLinuxDrmGpu({ busy, uevent, vendor })) {
       continue;
     }
 
@@ -339,6 +580,8 @@ async function readLinuxDrmGpus({ readFile, readdir }) {
       name: parseLinuxDeviceName({ card, vendor, uevent }),
       source: "linux-drm-sysfs",
       utilizationPercent: busy,
+      driver: deviceInfo.driver,
+      pciId: deviceInfo.pciId,
       vendor: vendor || "",
     });
   }
@@ -462,28 +705,18 @@ async function readLinuxAccelerators({ readFile, readdir }) {
   );
 }
 
-async function readDevices({ execFile, platform, readFile, readdir, timeoutMs }) {
+async function readDevices({ agentProcessRoots, execFile, platform, readFile, readdir, timeoutMs }) {
   const [nvidiaGpus, linuxDrmGpus, macGpus, macAccelerators, linuxAccelerators] = await Promise.all([
-    readNvidiaGpus({ execFile, timeoutMs }),
+    readNvidiaGpus({ agentProcessRoots, execFile, timeoutMs }),
     platform === "linux" ? readLinuxDrmGpus({ readFile, readdir }) : [],
     platform === "darwin" ? readMacGpus({ execFile, timeoutMs }) : [],
     platform === "darwin" ? readMacAccelerators({ execFile, timeoutMs }) : [],
     platform === "linux" ? readLinuxAccelerators({ readFile, readdir }) : [],
   ]);
 
-  const seenGpuIds = new Set();
-  const gpus = [...nvidiaGpus, ...linuxDrmGpus, ...macGpus].filter((device) => {
-    const key = `${device.source}:${device.id}`;
-    if (seenGpuIds.has(key)) {
-      return false;
-    }
-    seenGpuIds.add(key);
-    return true;
-  });
-
   return {
     accelerators: [...macAccelerators, ...linuxAccelerators],
-    gpus,
+    gpus: mergeGpuDevices({ nvidiaGpus, linuxDrmGpus, macGpus }),
   };
 }
 
@@ -778,6 +1011,7 @@ async function readProjectStorage({
 }
 
 export async function collectSystemMetrics({
+  agentProcessRoots = [],
   cwd = process.cwd(),
   cpus = os.cpus,
   execFile = execFileAsync,
@@ -803,7 +1037,7 @@ export async function collectSystemMetrics({
     readStorage({ cwd, execFile, platform, timeoutMs }),
     readCpu({ cpus, sampleMs }),
     Promise.resolve(readMemory({ totalmem, freemem })),
-    readDevices({ execFile, platform, readFile, readdir, timeoutMs }),
+    readDevices({ agentProcessRoots, execFile, platform, readFile, readdir, timeoutMs }),
     readWikiStorage({
       cache: wikiStorageCacheOverride,
       cacheMs: wikiStorageCacheMs,
@@ -849,4 +1083,8 @@ export const testInternals = {
   parseMacAneIoreg,
   parseMacGpuIoreg,
   parseNvidiaCsv,
+  parseNvidiaComputeAppsCsv,
+  parseProcessTable,
+  mergeGpuDevices,
+  readLinuxDrmGpus,
 };

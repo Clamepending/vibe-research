@@ -288,7 +288,7 @@ export class BrowserUseService {
     this.homeDir = homeDir;
     this.settings = settings || {};
     this.stateDir = stateDir;
-    this.systemRootPath = systemRootPath || path.join(stateDir, "remote-vibes-system");
+    this.systemRootPath = systemRootPath || path.join(stateDir, "vibe-research-system");
     this.workerSpawner = workerSpawner;
     this.sessions = new Map();
     this.storePath = path.join(stateDir, STORE_FILENAME);
@@ -303,7 +303,7 @@ export class BrowserUseService {
       payload = safeJsonParse(await readFile(this.storePath, "utf8"), null);
     } catch (error) {
       if (error?.code !== "ENOENT") {
-        console.warn("[remote-vibes] failed to load browser-use sessions", error);
+        console.warn("[vibe-research] failed to load browser-use sessions", error);
       }
     }
 
@@ -321,7 +321,7 @@ export class BrowserUseService {
       session.messages = Array.isArray(session.messages) ? session.messages : [];
       if (!isTerminalStatus(session.status)) {
         session.status = "failed";
-        session.error = session.error || "Remote Vibes restarted before this browser-use task finished.";
+        session.error = session.error || "Vibe Research restarted before this browser-use task finished.";
         session.completedAt = session.completedAt || new Date().toISOString();
         session.updatedAt = session.completedAt;
       }
@@ -346,6 +346,7 @@ export class BrowserUseService {
   resolveWorkerPath() {
     const configured = String(
       this.settings.browserUseWorkerPath ||
+      this.env.VIBE_RESEARCH_BROWSER_USE_WORKER_PATH ||
       this.env.REMOTE_VIBES_BROWSER_USE_WORKER_PATH ||
       "",
     ).trim();
@@ -355,6 +356,7 @@ export class BrowserUseService {
   resolveProfileDir() {
     const configured = String(
       this.settings.browserUseProfileDir ||
+      this.env.VIBE_RESEARCH_BROWSER_USE_PROFILE_DIR ||
       this.env.REMOTE_VIBES_BROWSER_USE_PROFILE_DIR ||
       "",
     ).trim();
@@ -419,7 +421,7 @@ export class BrowserUseService {
     return {
       activeCount,
       apiKeyConfigured,
-      command: "rv-browser-use",
+      command: "vr-browser-use",
       enabled,
       headless: normalizeBoolean(this.settings.browserUseHeadless, true),
       keepTabs: normalizeBoolean(this.settings.browserUseKeepTabs, false),
@@ -620,7 +622,7 @@ export class BrowserUseService {
       maxTurns: normalizedMaxTurns,
       headless,
       keepTabs,
-      deviceId: `remote-vibes-browser-use-${id}`,
+      deviceId: `vibe-research-browser-use-${id}`,
       latestSnapshot: null,
       result: null,
       error: null,
@@ -642,7 +644,7 @@ export class BrowserUseService {
 
   async startWorkerForSession(session) {
     if (!this.serverBaseUrl) {
-      await this.markFailed(session, "Remote Vibes server URL is not ready yet.");
+      await this.markFailed(session, "Vibe Research server URL is not ready yet.");
       return;
     }
 
@@ -651,7 +653,7 @@ export class BrowserUseService {
     await writeJsonFile(path.join(session.workerHome, "config.json"), {
       serverUrl: this.serverBaseUrl,
       deviceId: session.deviceId,
-      deviceLabel: `Remote Vibes browser-use ${session.id.slice(0, 8)}`,
+      deviceLabel: `Vibe Research browser-use ${session.id.slice(0, 8)}`,
       authToken: this.deviceToken,
       browserPath: session.browserPath || null,
       pairedAt: new Date().toISOString(),
@@ -680,6 +682,7 @@ export class BrowserUseService {
       OTTOAUTH_MAX_TURNS: String(session.maxTurns || DEFAULT_BROWSER_USE_MAX_TURNS),
       OTTOAUTH_PROFILE_DIR: session.profileDir,
       OTTOAUTH_WORKER_HOME: session.workerHome,
+      VIBE_RESEARCH_BROWSER_USE_SESSION_ID: session.id,
       REMOTE_VIBES_BROWSER_USE_SESSION_ID: session.id,
     };
 

@@ -1,0 +1,255 @@
+#!/usr/bin/env node
+
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+
+const TERMINAL_STATUSES = new Set(["completed", "failed", "canceled"]);
+
+function printHelp() {
+  process.stdout.write(`vr-browser-use
+
+Start a Vibe Research browser-use fulfillment session with the local OttoAuth worker.
+
+Usage:
+  vr-browser-use --task "Open example.com and report what you see"
+  vr-browser-use --url https://example.com --task "Find the pricing page" --wait
+  vr-browser-use --title "pricing check" --wait < task.txt
+
+Options:
+  --task, --prompt <text>   Browser task for the fulfillment agent
+  --url <url>               Preferred starting URL
+  --title <text>            Short sidebar label
+  --max-steps <n>           Stop the fulfillment agent after n turns
+  --max-turns <n>           Alias for --max-steps
+  --wait                    Poll until the task completes
+  --json                    Print machine-readable JSON
+`);
+}
+
+function parseArgs(argv) {
+  const options = {
+    json: false,
+    maxTurns: null,
+    task: "",
+    title: "",
+    url: "",
+    wait: false,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    const readValue = (name) => {
+      const inlinePrefix = `${name}=`;
+      if (arg.startsWith(inlinePrefix)) {
+        return arg.slice(inlinePrefix.length);
+      }
+
+      index += 1;
+      return argv[index] || "";
+    };
+
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+      continue;
+    }
+
+    if (arg === "--task" || arg.startsWith("--task=")) {
+      options.task = readValue("--task");
+      continue;
+    }
+
+    if (arg === "--prompt" || arg.startsWith("--prompt=")) {
+      options.task = readValue("--prompt");
+      continue;
+    }
+
+    if (arg === "--url" || arg.startsWith("--url=")) {
+      options.url = readValue("--url");
+      continue;
+    }
+
+    if (arg === "--title" || arg.startsWith("--title=")) {
+      options.title = readValue("--title");
+      continue;
+    }
+
+    if (arg === "--max-steps" || arg.startsWith("--max-steps=")) {
+      options.maxTurns = readValue("--max-steps");
+      continue;
+    }
+
+    if (arg === "--max-turns" || arg.startsWith("--max-turns=")) {
+      options.maxTurns = readValue("--max-turns");
+      continue;
+    }
+
+    if (arg === "--wait") {
+      options.wait = true;
+      continue;
+    }
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    throw new Error(`unknown argument: ${arg}`);
+  }
+
+  return options;
+}
+
+async function readStdin() {
+  if (process.stdin.isTTY) {
+    return "";
+  }
+
+  const chunks = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function readServerInfo(rootDir) {
+  const filePath = path.join(rootDir, "server.json");
+  const raw = await readFile(filePath, "utf8");
+  return JSON.parse(raw);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function summarizeSession(session) {
+  const result = session.result && typeof session.result === "object" ? session.result : null;
+  const summary =
+    (result && typeof result.summary === "string" && result.summary.trim()) ||
+    session.error ||
+    session.status;
+  return {
+    id: session.id,
+    status: session.status,
+    name: session.name,
+    summary,
+    latestUrl: session.latestUrl || "",
+    maxTurns: session.maxTurns || null,
+    result,
+    error: session.error || null,
+  };
+}
+
+async function fetchJsonOrThrow(url, options = {}) {
+  const response = await fetch(url, options);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `request failed (${response.status})`);
+  }
+  return payload;
+}
+
+async function waitForCompletion(baseUrl, sessionId) {
+  while (true) {
+    const payload = await fetchJsonOrThrow(`${baseUrl}/api/browser-use/sessions/${encodeURIComponent(sessionId)}`, {
+      cache: "no-store",
+    });
+    const session = payload.session;
+    if (TERMINAL_STATUSES.has(session.status)) {
+      return session;
+    }
+    await sleep(2_000);
+  }
+}
+
+async function main() {
+  let options;
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`vr-browser-use: ${error.message}\n`);
+    process.exit(1);
+  }
+
+  if (options.help) {
+    printHelp();
+    return;
+  }
+
+  const stdinTask = options.task || options.url ? "" : (await readStdin()).trim();
+  const task = (options.task || stdinTask).trim();
+  if (!task && !options.url) {
+    process.stderr.write("vr-browser-use: provide --task text, --url, or stdin.\n");
+    process.exit(1);
+  }
+
+  const rootDir = String(process.env.VIBE_RESEARCH_ROOT || process.env.REMOTE_VIBES_ROOT || "").trim();
+  if (!rootDir) {
+    process.stderr.write("vr-browser-use: VIBE_RESEARCH_ROOT is not set.\n");
+    process.exit(1);
+  }
+
+  let serverInfo;
+  try {
+    serverInfo = await readServerInfo(rootDir);
+  } catch (error) {
+    process.stderr.write(`vr-browser-use: could not read Vibe Research server info (${error.message}).\n`);
+    process.exit(1);
+  }
+
+  const baseUrl = String(serverInfo?.helperBaseUrl || "").trim();
+  const token = String(serverInfo?.browserUseToken || "").trim();
+  if (!baseUrl || !token) {
+    process.stderr.write("vr-browser-use: browser-use helper is not available from this session.\n");
+    process.exit(1);
+  }
+
+  const requestBody = {
+    callerSessionId: String(process.env.VIBE_RESEARCH_SESSION_ID || process.env.REMOTE_VIBES_SESSION_ID || "").trim(),
+    cwd: process.cwd(),
+    taskPrompt: task,
+    title: options.title,
+    url: options.url,
+  };
+  if (options.maxTurns != null) {
+    const parsedMaxTurns = Number(options.maxTurns);
+    if (!Number.isFinite(parsedMaxTurns) || parsedMaxTurns < 1) {
+      process.stderr.write("vr-browser-use: --max-steps must be a positive integer.\n");
+      process.exit(1);
+    }
+    requestBody.maxTurns = Math.trunc(parsedMaxTurns);
+  }
+
+  const payload = await fetchJsonOrThrow(`${baseUrl}/api/browser-use/sessions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-vibe-research-browser-use-token": token,
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  let session = payload.session;
+  if (options.wait) {
+    session = await waitForCompletion(baseUrl, session.id);
+  }
+
+  const summary = summarizeSession(session);
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(`browser-use ${summary.status}: ${summary.id}\n`);
+  if (summary.summary) {
+    process.stdout.write(`${summary.summary}\n`);
+  }
+  if (summary.latestUrl) {
+    process.stdout.write(`${summary.latestUrl}\n`);
+  }
+}
+
+void main().catch((error) => {
+  process.stderr.write(`vr-browser-use: ${error.message}\n`);
+  process.exit(1);
+});

@@ -1,7 +1,7 @@
-<!-- remote-vibes:managed-agent-prompt -->
-<!-- Edit this from Remote Vibes or ../../../../../tmp/remote-vibes-pixel-wlKOgu/agent-prompt.md. -->
+<!-- vibe-research:managed-agent-prompt -->
+<!-- Edit this from Vibe Research or ../../../.vibe-research/agent-prompt.md. -->
 
-# Remote Vibes Agent Prompt
+# Vibe Research Agent Prompt
 
 You are a research agent. You run one experiment at a time from a shared project index and write results into it so other agents can pick up where you stopped.
 
@@ -136,16 +136,16 @@ The conversation is the deliverable. No separate review doc — the record lives
 - Falsified and abandoned results still get a LOG row and keep their branch pushed as the record of what you tried.
 - LEADERBOARD capped at 5. QUEUE capped at 5 (min 1). ACTIVE unbounded but one-at-a-time. LOG unbounded, append-only.
 
-<!-- remote-vibes:wiki-v2-protocol:v2 -->
+<!-- vibe-research:wiki-v2-protocol:v2 -->
 
 ## Knowledge Model
 
-Use `.` as the workspace memory system. Treat it as a living wiki that helps future agents avoid rediscovering the same things.
+Use `/Users/mark/mac-brain` as the workspace memory system. Treat it as a living wiki that helps future agents avoid rediscovering the same things.
 
-- `./` is the synthesized knowledge layer for durable notes.
-- `./index.md` is the entrypoint, not the entire knowledge system.
-- `./log.md` is chronological and append-only.
-- Use `./raw/sources/` for exact source manifests, commands, commits, paths, and artifact pointers when provenance matters.
+- `/Users/mark/mac-brain/` is the synthesized knowledge layer for durable notes.
+- `/Users/mark/mac-brain/index.md` is the entrypoint, not the entire knowledge system.
+- `/Users/mark/mac-brain/log.md` is chronological and append-only.
+- Use `/Users/mark/mac-brain/raw/sources/` for exact source manifests, commands, commits, paths, and artifact pointers when provenance matters.
 
 Prefer promoting useful findings into durable notes over leaving them trapped in terminal output.
 
@@ -156,7 +156,7 @@ Not all information is equally durable.
 - Keep immediate session findings lightweight at first.
 - Crystallize reusable conclusions into durable notes after meaningful work.
 - Prefer updating canonical notes over creating near-duplicates.
-- Preserve exact provenance in `./raw/sources/` when it matters.
+- Preserve exact provenance in `/Users/mark/mac-brain/raw/sources/` when it matters.
 - Keep session-local scratch local unless it becomes useful to other agents.
 
 ## Note Shapes
@@ -174,8 +174,8 @@ You do not need rigid schemas everywhere, but write notes intentionally.
 ## Writing Rules
 
 - Distinguish observation from interpretation.
-- Prefer one page per experiment family under `./experiments/`.
-- Use `./topics/` for cross-cutting knowledge.
+- Prefer one page per experiment family under `/Users/mark/mac-brain/experiments/`.
+- Use `/Users/mark/mac-brain/topics/` for cross-cutting knowledge.
 - Record relevant commits, branches, run ids, output directories, artifact paths, and commands when they matter.
 - Link graphs, images, logs, notebooks, and outputs instead of pasting bulky data.
 - Prefer fewer, better notes.

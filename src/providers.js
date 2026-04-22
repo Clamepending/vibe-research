@@ -53,6 +53,20 @@ export const providerDefinitions = [
     defaultName: "Gemini",
   },
   {
+    id: "ml-intern",
+    label: "ML Intern",
+    command: "ml-intern",
+    launchCommand: "ml-intern",
+    defaultName: "ML Intern",
+    verifyArgs: ["--help"],
+    preferPathHints: true,
+    pathHints: [
+      "~/.local/bin/ml-intern",
+      "/opt/homebrew/bin/ml-intern",
+      "/usr/local/bin/ml-intern",
+    ],
+  },
+  {
     id: "shell",
     label: "Vanilla Shell",
     command: null,
@@ -121,7 +135,7 @@ async function resolveNpmPackageCommand(npmPackage, env = process.env) {
 
   try {
     const npmRoot =
-      String(env?.REMOTE_VIBES_NPM_ROOT || "").trim() ||
+      String(env?.VIBE_RESEARCH_NPM_ROOT || env?.REMOTE_VIBES_NPM_ROOT || "").trim() ||
       (
         await (async () => {
           const npmCommand = await findCommandInShell("npm", env);

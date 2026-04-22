@@ -3,10 +3,12 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 
-const MANAGED_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
-const WIKI_V2_MARKER = "<!-- remote-vibes:wiki-v2-protocol:v2 -->";
-const WIKI_V2_SECTION_MARKER_PATTERN = /<!-- remote-vibes:wiki-v2-protocol:v\d+ -->/;
-const AGENT_MAILBOX_SECTION_MARKER_PATTERN = /<!-- remote-vibes:agent-mailbox-protocol:v\d+ -->/;
+const MANAGED_MARKER = "<!-- vibe-research:managed-agent-prompt -->";
+const LEGACY_MANAGED_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
+const MANAGED_MARKERS = [MANAGED_MARKER, LEGACY_MANAGED_MARKER];
+const WIKI_V2_MARKER = "<!-- vibe-research:wiki-v2-protocol:v2 -->";
+const WIKI_V2_SECTION_MARKER_PATTERN = /<!-- (?:vibe-research|remote-vibes):wiki-v2-protocol:v\d+ -->/;
+const AGENT_MAILBOX_SECTION_MARKER_PATTERN = /<!-- (?:vibe-research|remote-vibes):agent-mailbox-protocol:v\d+ -->/;
 export const AGENT_PROMPT_FILENAME = "agent-prompt.md";
 const PROMPT_FILENAME = AGENT_PROMPT_FILENAME;
 const DEFAULT_PROMPT_TEMPLATE = readFileSync(new URL("./default-agent-prompt.md", import.meta.url), "utf8");
@@ -32,7 +34,7 @@ function stripDeprecatedPromptSections(prompt) {
   return match ? normalizePrompt(normalized.slice(0, match.index)) : normalized;
 }
 
-function getWikiV2Section({ wikiRootLabel = ".remote-vibes/wiki" } = {}) {
+function getWikiV2Section({ wikiRootLabel = ".vibe-research/wiki" } = {}) {
   return normalizePrompt(`
 ${WIKI_V2_MARKER}
 
@@ -128,7 +130,7 @@ Do not leave contradictory notes side by side without explanation.
 
 const WIKI_PLACEHOLDER_PATTERN = /\{\{\s*WIKI\s*\}\}/g;
 
-function substitutePromptPlaceholders(prompt, { wikiRootLabel = ".remote-vibes/wiki" } = {}) {
+function substitutePromptPlaceholders(prompt, { wikiRootLabel = ".vibe-research/wiki" } = {}) {
   return String(prompt ?? "").replace(WIKI_PLACEHOLDER_PATTERN, wikiRootLabel);
 }
 
@@ -160,7 +162,7 @@ function getDefaultPrompt(options = {}) {
 
 function renderManagedFile(prompt, sourcePath) {
   return `${MANAGED_MARKER}
-<!-- Edit this from Remote Vibes or ${sourcePath}. -->
+<!-- Edit this from Vibe Research or ${sourcePath}. -->
 
 ${normalizePrompt(prompt)}`;
 }
@@ -187,7 +189,11 @@ async function writeAtomic(filePath, nextContent) {
 async function ensureFile(filePath, nextContent) {
   const currentContent = await readTextIfExists(filePath);
 
-  if (currentContent !== null && currentContent.trim() && !currentContent.includes(MANAGED_MARKER)) {
+  if (
+    currentContent !== null &&
+    currentContent.trim() &&
+    !MANAGED_MARKERS.some((marker) => currentContent.includes(marker))
+  ) {
     return {
       path: filePath,
       status: "conflict",

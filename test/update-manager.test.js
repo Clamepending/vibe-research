@@ -8,19 +8,20 @@ import { promisify } from "node:util";
 import { getGitHubHttpsRemoteUrl, UpdateManager } from "../src/update-manager.js";
 
 const execFile = promisify(execFileCallback);
-const MANAGED_PROMPT_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
+const MANAGED_PROMPT_MARKER = "<!-- vibe-research:managed-agent-prompt -->";
+const LEGACY_MANAGED_PROMPT_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
 
 async function git(cwd, args) {
   return execFile("git", ["-C", cwd, ...args]);
 }
 
 async function createRepoPair() {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-update-"));
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-update-"));
   const sourceDir = path.join(tempRoot, "source");
   const checkoutDir = path.join(tempRoot, "checkout");
 
   await execFile("git", ["init", "-b", "main", sourceDir]);
-  await git(sourceDir, ["config", "user.name", "Remote Vibes Test"]);
+  await git(sourceDir, ["config", "user.name", "Vibe Research Test"]);
   await git(sourceDir, ["config", "user.email", "test@example.com"]);
   await writeFile(path.join(sourceDir, "VERSION"), "v1\n", "utf8");
   await writeFile(path.join(sourceDir, "AGENTS.md"), `${MANAGED_PROMPT_MARKER}\nInitial prompt\n`, "utf8");
@@ -41,16 +42,16 @@ async function commitSourceVersion(sourceDir, version) {
 
 test("getGitHubHttpsRemoteUrl converts GitHub SSH remotes to public HTTPS remotes", () => {
   assert.equal(
-    getGitHubHttpsRemoteUrl("git@github.com:Clamepending/remote-vibes.git"),
-    "https://github.com/Clamepending/remote-vibes.git",
+    getGitHubHttpsRemoteUrl("git@github.com:Clamepending/vibe-research.git"),
+    "https://github.com/Clamepending/vibe-research.git",
   );
   assert.equal(
-    getGitHubHttpsRemoteUrl("ssh://git@github.com/Clamepending/remote-vibes"),
-    "https://github.com/Clamepending/remote-vibes.git",
+    getGitHubHttpsRemoteUrl("ssh://git@github.com/Clamepending/vibe-research"),
+    "https://github.com/Clamepending/vibe-research.git",
   );
   assert.equal(
-    getGitHubHttpsRemoteUrl("https://github.com/Clamepending/remote-vibes"),
-    "https://github.com/Clamepending/remote-vibes.git",
+    getGitHubHttpsRemoteUrl("https://github.com/Clamepending/vibe-research"),
+    "https://github.com/Clamepending/vibe-research.git",
   );
 });
 
@@ -77,7 +78,7 @@ test("UpdateManager reports current checkouts as current", async () => {
 });
 
 test("UpdateManager reports non-git workspaces as unsupported without raw git errors", async () => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-not-git-"));
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-not-git-"));
 
   try {
     const manager = new UpdateManager({
@@ -100,7 +101,7 @@ test("UpdateManager reports non-git workspaces as unsupported without raw git er
 });
 
 test("UpdateManager rejects apply from non-git workspaces with a friendly error", async () => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-not-git-"));
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-not-git-"));
 
   try {
     const manager = new UpdateManager({
@@ -195,6 +196,30 @@ test("UpdateManager restores managed prompt file churn before updating", async (
   }
 });
 
+test("UpdateManager treats Remote Vibes managed prompt churn as generated during migration", async () => {
+  const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
+  await commitSourceVersion(sourceDir, "v2");
+  await writeFile(path.join(checkoutDir, "AGENTS.md"), `${LEGACY_MANAGED_PROMPT_MARKER}\nRuntime prompt\n`, "utf8");
+
+  try {
+    const manager = new UpdateManager({
+      cwd: checkoutDir,
+      stateDir: path.join(tempRoot, "state"),
+      cacheMs: 0,
+    });
+    const status = await manager.getStatus({ force: true });
+
+    assert.equal(status.status, "available");
+    assert.equal(status.updateAvailable, true);
+    assert.equal(status.canUpdate, true);
+    assert.equal(status.dirty, false);
+    assert.deepEqual(status.restoredManagedPromptFiles, ["AGENTS.md"]);
+    assert.equal(await readFile(path.join(checkoutDir, "AGENTS.md"), "utf8"), `${MANAGED_PROMPT_MARKER}\nInitial prompt\n`);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("UpdateManager does not block updates for generated smoke artifacts", async () => {
   const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
   await commitSourceVersion(sourceDir, "v2");
@@ -249,7 +274,7 @@ test("UpdateManager schedules a detached pull and restart for clean updates", as
     assert.match(spawnCalls[0].args[1], /git pull --ff-only 'origin' 'main'/);
     assert.match(spawnCalls[0].args[1], /http:\/\/127\.0\.0\.1:49123\/api\/terminate/);
     assert.equal(spawnCalls[0].options.detached, true);
-    assert.equal(spawnCalls[0].options.env.REMOTE_VIBES_STATE_DIR, path.join(tempRoot, "state"));
+    assert.equal(spawnCalls[0].options.env.VIBE_RESEARCH_STATE_DIR, path.join(tempRoot, "state"));
     assert.equal(await readFile(result.logPath, "utf8"), "");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
@@ -259,7 +284,7 @@ test("UpdateManager schedules a detached pull and restart for clean updates", as
 test("UpdateManager prefers GitHub Releases and schedules a tag checkout", async () => {
   const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
   const latestCommit = await commitSourceVersion(sourceDir, "v2");
-  await git(checkoutDir, ["remote", "set-url", "origin", "git@github.com:Clamepending/remote-vibes.git"]);
+  await git(checkoutDir, ["remote", "set-url", "origin", "git@github.com:Clamepending/vibe-research.git"]);
   const spawnCalls = [];
 
   try {
@@ -269,15 +294,15 @@ test("UpdateManager prefers GitHub Releases and schedules a tag checkout", async
       cacheMs: 0,
       port: 49124,
       fetch: async (url) => {
-        assert.equal(url, "https://api.github.com/repos/Clamepending/remote-vibes/releases/latest");
+        assert.equal(url, "https://api.github.com/repos/Clamepending/vibe-research/releases/latest");
         return {
           ok: true,
           status: 200,
           async json() {
             return {
               tag_name: "v2.0.0",
-              name: "Remote Vibes v2.0.0",
-              html_url: "https://github.com/Clamepending/remote-vibes/releases/tag/v2.0.0",
+              name: "Vibe Research v2.0.0",
+              html_url: "https://github.com/Clamepending/vibe-research/releases/tag/v2.0.0",
               published_at: "2026-04-16T08:00:00Z",
             };
           },
@@ -287,7 +312,7 @@ test("UpdateManager prefers GitHub Releases and schedules a tag checkout", async
         if (
           command === "git" &&
           args[2] === "ls-remote" &&
-          args[3] === "https://github.com/Clamepending/remote-vibes.git" &&
+          args[3] === "https://github.com/Clamepending/vibe-research.git" &&
           args[4] === "refs/tags/v2.0.0"
         ) {
           return Promise.resolve({
@@ -312,14 +337,14 @@ test("UpdateManager prefers GitHub Releases and schedules a tag checkout", async
     assert.equal(status.latestVersion, "v2.0.0");
     assert.equal(status.latestTag, "v2.0.0");
     assert.equal(status.latestCommit, latestCommit);
-    assert.equal(status.releaseUrl, "https://github.com/Clamepending/remote-vibes/releases/tag/v2.0.0");
+    assert.equal(status.releaseUrl, "https://github.com/Clamepending/vibe-research/releases/tag/v2.0.0");
 
     const result = await manager.scheduleUpdateAndRestart();
     assert.equal(result.scheduled, true);
     assert.equal(spawnCalls.length, 1);
     assert.match(
       spawnCalls[0].args[1],
-      /git fetch --force --depth 1 'https:\/\/github\.com\/Clamepending\/remote-vibes\.git' 'refs\/tags\/v2\.0\.0:refs\/tags\/v2\.0\.0'/,
+      /git fetch --force --depth 1 'https:\/\/github\.com\/Clamepending\/vibe-research\.git' 'refs\/tags\/v2\.0\.0:refs\/tags\/v2\.0\.0'/,
     );
     assert.match(spawnCalls[0].args[1], /git checkout --detach 'refs\/tags\/v2\.0\.0'/);
   } finally {
@@ -333,7 +358,7 @@ test("UpdateManager falls back to remote version tags for detached release check
   const currentCommit = currentCommitStdout.trim();
   const latestCommit = await commitSourceVersion(sourceDir, "v2");
   await git(checkoutDir, ["checkout", "--detach"]);
-  await git(checkoutDir, ["remote", "set-url", "origin", "git@github.com:Clamepending/remote-vibes.git"]);
+  await git(checkoutDir, ["remote", "set-url", "origin", "git@github.com:Clamepending/vibe-research.git"]);
   const spawnCalls = [];
 
   try {
@@ -351,7 +376,7 @@ test("UpdateManager falls back to remote version tags for detached release check
           command === "git" &&
           args[2] === "ls-remote" &&
           args[3] === "--tags" &&
-          args[4] === "https://github.com/Clamepending/remote-vibes.git" &&
+          args[4] === "https://github.com/Clamepending/vibe-research.git" &&
           args[5] === "refs/tags/v*"
         ) {
           return Promise.resolve({
@@ -390,7 +415,7 @@ test("UpdateManager falls back to remote version tags for detached release check
     assert.equal(spawnCalls.length, 1);
     assert.match(
       spawnCalls[0].args[1],
-      /git fetch --force --depth 1 'https:\/\/github\.com\/Clamepending\/remote-vibes\.git' 'refs\/tags\/v2\.0\.0:refs\/tags\/v2\.0\.0'/,
+      /git fetch --force --depth 1 'https:\/\/github\.com\/Clamepending\/vibe-research\.git' 'refs\/tags\/v2\.0\.0:refs\/tags\/v2\.0\.0'/,
     );
     assert.match(spawnCalls[0].args[1], /git checkout --detach 'refs\/tags\/v2\.0\.0'/);
   } finally {
@@ -403,7 +428,7 @@ test("UpdateManager does not offer to downgrade branch checkouts ahead of the la
   const releaseCommit = await commitSourceVersion(sourceDir, "v2");
   await commitSourceVersion(sourceDir, "v3");
   await git(checkoutDir, ["pull", "--ff-only"]);
-  await git(checkoutDir, ["remote", "set-url", "origin", "git@github.com:Clamepending/remote-vibes.git"]);
+  await git(checkoutDir, ["remote", "set-url", "origin", "git@github.com:Clamepending/vibe-research.git"]);
 
   try {
     const manager = new UpdateManager({
@@ -416,8 +441,8 @@ test("UpdateManager does not offer to downgrade branch checkouts ahead of the la
         async json() {
           return {
             tag_name: "v2.0.0",
-            name: "Remote Vibes v2.0.0",
-            html_url: "https://github.com/Clamepending/remote-vibes/releases/tag/v2.0.0",
+            name: "Vibe Research v2.0.0",
+            html_url: "https://github.com/Clamepending/vibe-research/releases/tag/v2.0.0",
             published_at: "2026-04-16T08:00:00Z",
           };
         },
@@ -426,7 +451,7 @@ test("UpdateManager does not offer to downgrade branch checkouts ahead of the la
         if (
           command === "git" &&
           args[2] === "ls-remote" &&
-          args[3] === "https://github.com/Clamepending/remote-vibes.git" &&
+          args[3] === "https://github.com/Clamepending/vibe-research.git" &&
           args[4] === "refs/tags/v2.0.0"
         ) {
           return Promise.resolve({

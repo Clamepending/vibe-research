@@ -126,7 +126,7 @@ async function writeCodexSessionFile(homeDir, sessionId, cwd) {
       id: sessionId,
       timestamp: new Date().toISOString(),
       cwd,
-      originator: "Remote Vibes Test",
+      originator: "Vibe Research Test",
     },
   };
 
@@ -136,7 +136,7 @@ async function writeCodexSessionFile(homeDir, sessionId, cwd) {
 }
 
 test("opencode session ids are captured and persisted for future restores", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-opencode-");
+  const workspaceDir = await createTempWorkspace("vibe-research-opencode-");
   const fakeStateDir = path.join(workspaceDir, ".fake-opencode");
   const fakeOpenCodePath = await createFakeOpenCodeCli(workspaceDir, fakeStateDir);
   const providers = buildProviders(fakeOpenCodePath);
@@ -205,7 +205,7 @@ test("opencode session ids are captured and persisted for future restores", asyn
 });
 
 test("opencode restore can best-effort reconnect older snapshots without provider state", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-opencode-legacy-");
+  const workspaceDir = await createTempWorkspace("vibe-research-opencode-legacy-");
   const fakeStateDir = path.join(workspaceDir, ".fake-opencode");
   const fakeOpenCodePath = await createFakeOpenCodeCli(workspaceDir, fakeStateDir);
   const providers = buildProviders(fakeOpenCodePath);
@@ -256,7 +256,7 @@ test("opencode restore can best-effort reconnect older snapshots without provide
 });
 
 test("claude sessions use a deterministic session id so restores pick up exactly where they left off", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-claude-");
+  const workspaceDir = await createTempWorkspace("vibe-research-claude-");
   const provider = buildClaudeProvider();
   let manager = null;
 
@@ -296,8 +296,8 @@ test("claude sessions use a deterministic session id so restores pick up exactly
 });
 
 test("claude restore can recover older snapshots by matching the workspace project directory", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-claude-legacy-");
-  const homeDir = await createTempHome("remote-vibes-claude-home-");
+  const workspaceDir = await createTempWorkspace("vibe-research-claude-legacy-");
+  const homeDir = await createTempHome("vibe-research-claude-home-");
   const provider = buildClaudeProvider();
   const expectedSessionId = "11111111-2222-4333-8444-555555555555";
   let manager = null;
@@ -347,8 +347,8 @@ test("claude restore can recover older snapshots by matching the workspace proje
 });
 
 test("codex sessions are captured and persisted for future restores", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-codex-");
-  const homeDir = await createTempHome("remote-vibes-codex-home-");
+  const workspaceDir = await createTempWorkspace("vibe-research-codex-");
+  const homeDir = await createTempHome("vibe-research-codex-home-");
   const provider = buildCodexProvider();
   const expectedSessionId = "019d9000-1111-7222-8333-444444444444";
   let manager = null;
@@ -427,8 +427,8 @@ test("codex sessions are captured and persisted for future restores", async () =
 });
 
 test("codex restore can best-effort reconnect older snapshots without provider state", async () => {
-  const workspaceDir = await createTempWorkspace("remote-vibes-codex-legacy-");
-  const homeDir = await createTempHome("remote-vibes-codex-legacy-home-");
+  const workspaceDir = await createTempWorkspace("vibe-research-codex-legacy-");
+  const homeDir = await createTempHome("vibe-research-codex-legacy-home-");
   const provider = buildCodexProvider();
   const expectedSessionId = "019d9000-aaaa-7bbb-8ccc-dddddddddddd";
   let manager = null;

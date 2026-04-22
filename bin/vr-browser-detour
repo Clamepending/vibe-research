@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tool_name="$(basename "$0")"
+printf '[vibe-research] %s is blocked for localhost UI work. Use vr-playwright open <port-or-url>, vr-playwright snapshot, explicit click/fill/type/press commands, and vr-playwright screenshot instead. If vr-playwright fails for a concrete reason, fall back to vr-browser.\n' "$tool_name" >&2
+exit 64

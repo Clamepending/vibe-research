@@ -16,6 +16,10 @@ const DEFAULT_WIKI_BACKUP_INTERVAL_MS = 5 * 60 * 1000;
 const LEGACY_WIKI_BACKUP_INTERVAL_MS = 10 * 60 * 1000;
 const execFileAsync = promisify(execFile);
 
+function normalizeSecret(value) {
+  return String(value || "").trim();
+}
+
 function expandHomePath(value, homeDir = os.homedir()) {
   const rawValue = String(value || "").trim();
 
@@ -183,15 +187,18 @@ export class SettingsStore {
 
   buildDefaults() {
     return {
+      agentAnthropicApiKey: "",
+      agentHfToken: "",
       agentMailApiKey: String(this.env.AGENTMAIL_API_KEY || "").trim(),
       agentMailClientId: "",
-      agentMailDisplayName: "Remote Vibes",
+      agentMailDisplayName: "Vibe Research",
       agentMailDomain: "",
       agentMailEnabled: false,
       agentMailInboxId: "",
       agentMailMode: "websocket",
       agentMailProviderId: "claude",
       agentMailUsername: "",
+      agentOpenAiApiKey: "",
       browserUseAnthropicApiKey: String(this.env.ANTHROPIC_API_KEY || this.env.CLAUDE_API_KEY || "").trim(),
       browserUseBrowserPath: "",
       browserUseEnabled: false,
@@ -201,6 +208,13 @@ export class SettingsStore {
       browserUseModel: "",
       browserUseProfileDir: getDefaultBrowserUseProfileDir(this.homeDir),
       browserUseWorkerPath: getDefaultBrowserUseWorkerPath(this.homeDir),
+      videoMemoryBaseUrl: String(
+        this.env.VIDEOMEMORY_BASE_URL ||
+          this.env.VIDEOMEMORY_BASE ||
+          "http://127.0.0.1:5050",
+      ).trim(),
+      videoMemoryEnabled: false,
+      videoMemoryProviderId: "claude",
       agentAutomations: [],
       installedPluginIds: [],
       preventSleepEnabled: true,
@@ -229,6 +243,14 @@ export class SettingsStore {
       (payload.wikiPathConfigured === undefined && Boolean(String(payload.wikiPath || "").trim()));
 
     return {
+      agentAnthropicApiKey:
+        payload.agentAnthropicApiKey === undefined
+          ? defaults.agentAnthropicApiKey
+          : normalizeSecret(payload.agentAnthropicApiKey),
+      agentHfToken:
+        payload.agentHfToken === undefined
+          ? defaults.agentHfToken
+          : normalizeSecret(payload.agentHfToken),
       agentMailApiKey:
         payload.agentMailApiKey === undefined
           ? defaults.agentMailApiKey
@@ -241,6 +263,10 @@ export class SettingsStore {
       agentMailMode: normalizeAgentMailMode(payload.agentMailMode || defaults.agentMailMode),
       agentMailProviderId: normalizeAgentProviderId(payload.agentMailProviderId || defaults.agentMailProviderId),
       agentMailUsername: String(payload.agentMailUsername || defaults.agentMailUsername || "").trim(),
+      agentOpenAiApiKey:
+        payload.agentOpenAiApiKey === undefined
+          ? defaults.agentOpenAiApiKey
+          : normalizeSecret(payload.agentOpenAiApiKey),
       browserUseAnthropicApiKey:
         payload.browserUseAnthropicApiKey === undefined
           ? defaults.browserUseAnthropicApiKey
@@ -262,6 +288,9 @@ export class SettingsStore {
         payload.browserUseWorkerPath || defaults.browserUseWorkerPath,
         this.homeDir,
       ),
+      videoMemoryBaseUrl: String(payload.videoMemoryBaseUrl || defaults.videoMemoryBaseUrl || "").trim(),
+      videoMemoryEnabled: normalizeBoolean(payload.videoMemoryEnabled, defaults.videoMemoryEnabled),
+      videoMemoryProviderId: normalizeAgentProviderId(payload.videoMemoryProviderId || defaults.videoMemoryProviderId),
       agentAutomations: normalizeAgentAutomations(payload.agentAutomations || defaults.agentAutomations),
       installedPluginIds: normalizePluginIds(payload.installedPluginIds || defaults.installedPluginIds),
       preventSleepEnabled: normalizeBoolean(
@@ -299,7 +328,7 @@ export class SettingsStore {
       }
     } catch (error) {
       if (error?.code !== "ENOENT") {
-        console.warn("[remote-vibes] failed to load settings", error);
+        console.warn("[vibe-research] failed to load settings", error);
       }
     }
 
@@ -427,21 +456,62 @@ export class SettingsStore {
     return this.getState();
   }
 
-  getState({ agentMailStatus = null, backupStatus = null, browserUseStatus = null, sleepStatus = null } = {}) {
+  getState({
+    agentMailStatus = null,
+    backupStatus = null,
+    browserUseStatus = null,
+    sleepStatus = null,
+    videoMemoryStatus = null,
+  } = {}) {
     return {
       ...this.settings,
+      agentAnthropicApiKey: "",
+      agentAnthropicApiKeyConfigured: Boolean(
+        this.settings.agentAnthropicApiKey ||
+          this.env.ANTHROPIC_API_KEY ||
+          this.env.CLAUDE_API_KEY,
+      ),
+      agentHfToken: "",
+      agentHfTokenConfigured: Boolean(this.settings.agentHfToken || this.env.HF_TOKEN),
       agentMailApiKey: "",
       agentMailApiKeyConfigured: Boolean(this.settings.agentMailApiKey),
       agentMailStatus,
+      agentOpenAiApiKey: "",
+      agentOpenAiApiKeyConfigured: Boolean(this.settings.agentOpenAiApiKey || this.env.OPENAI_API_KEY),
       browserUseAnthropicApiKey: "",
       browserUseAnthropicApiKeyConfigured: Boolean(this.settings.browserUseAnthropicApiKey),
       browserUseStatus,
+      videoMemoryStatus,
       wikiRelativePath: formatRelativePath(this.cwd, this.settings.wikiPath),
       wikiRelativeRoot: formatRelativePath(this.cwd, this.settings.wikiPath),
       wikiBackup: backupStatus,
       sleepPrevention: sleepStatus,
     };
   }
+}
+
+export function buildAgentCredentialEnv(settings = {}, env = process.env) {
+  const nextEnv = { ...(env && typeof env === "object" ? env : process.env) };
+  const anthropicApiKey = normalizeSecret(settings.agentAnthropicApiKey);
+  const openAiApiKey = normalizeSecret(settings.agentOpenAiApiKey);
+  const hfToken = normalizeSecret(settings.agentHfToken);
+
+  if (anthropicApiKey) {
+    nextEnv.ANTHROPIC_API_KEY = anthropicApiKey;
+    if (!nextEnv.CLAUDE_API_KEY) {
+      nextEnv.CLAUDE_API_KEY = anthropicApiKey;
+    }
+  }
+
+  if (openAiApiKey) {
+    nextEnv.OPENAI_API_KEY = openAiApiKey;
+  }
+
+  if (hfToken) {
+    nextEnv.HF_TOKEN = hfToken;
+  }
+
+  return nextEnv;
 }
 
 export { DEFAULT_WIKI_BACKUP_INTERVAL_MS };

@@ -17,6 +17,8 @@ export class SessionStore {
     this.stateDir = stateDir;
     this.filePath = path.join(stateDir, "sessions.json");
     this.tempFilePath = path.join(stateDir, "sessions.json.tmp");
+    this.saveCounter = 0;
+    this.saveQueue = Promise.resolve();
   }
 
   async load() {
@@ -38,7 +40,7 @@ export class SessionStore {
         return [];
       }
 
-      console.warn("[remote-vibes] failed to load persisted sessions", error);
+      console.warn("[vibe-research] failed to load persisted sessions", error);
       return [];
     }
   }
@@ -48,10 +50,25 @@ export class SessionStore {
       return;
     }
 
+    const snapshot = Array.isArray(sessions) ? sessions : [];
+    this.saveQueue = this.saveQueue
+      .catch(() => {})
+      .then(() => this.writeSnapshot(snapshot));
+    return this.saveQueue;
+  }
+
+  async writeSnapshot(sessions) {
     await mkdir(this.stateDir, { recursive: true });
     const payload = `${JSON.stringify(buildPayload(sessions), null, 2)}\n`;
-    await writeFile(this.tempFilePath, payload, "utf8");
-    await rename(this.tempFilePath, this.filePath);
+    this.saveCounter += 1;
+    const tempFilePath = `${this.filePath}.${process.pid}.${this.saveCounter}.tmp`;
+
+    try {
+      await writeFile(tempFilePath, payload, "utf8");
+      await rename(tempFilePath, this.filePath);
+    } finally {
+      await rm(tempFilePath, { force: true }).catch(() => {});
+    }
   }
 
   async clear() {

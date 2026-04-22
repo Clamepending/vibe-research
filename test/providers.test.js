@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, rm, writeFile, chmod } from "node:fs/promises";
 import { detectProviders, providerDefinitions, resolveProviderCommand } from "../src/providers.js";
 
 test("resolveProviderCommand falls back to executable path hints", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-provider-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-provider-"));
   const fakeCodexPath = path.join(tempDir, "codex");
 
   try {
@@ -34,7 +34,7 @@ test("resolveProviderCommand falls back to executable path hints", async () => {
 });
 
 test("detectProviders promotes a hinted executable into the launch command", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-provider-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-provider-"));
   const fakeCodexPath = path.join(tempDir, "codex");
 
   try {
@@ -63,7 +63,7 @@ test("detectProviders promotes a hinted executable into the launch command", asy
 });
 
 test("resolveProviderCommand prefers Claude native path hints over PATH shims", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-provider-native-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-provider-native-"));
   const nativeBinDir = path.join(tempDir, ".local", "bin");
   const pathShimDir = path.join(tempDir, "path-bin");
   const nativeClaudePath = path.join(nativeBinDir, "claude");
@@ -104,7 +104,7 @@ test("resolveProviderCommand prefers Claude native path hints over PATH shims", 
 });
 
 test("resolveProviderCommand falls back to a globally installed npm package bin", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-provider-npm-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-provider-npm-"));
   const fakeNpmRoot = path.join(tempDir, "npm-root");
   const packageDir = path.join(fakeNpmRoot, "@anthropic-ai", "claude-code");
   const fakeCliPath = path.join(packageDir, "cli.js");
@@ -139,7 +139,7 @@ test("resolveProviderCommand falls back to a globally installed npm package bin"
         HOME: tempDir,
         PATH: "/usr/bin:/bin",
         SHELL: "/bin/zsh",
-        REMOTE_VIBES_NPM_ROOT: fakeNpmRoot,
+        VIBE_RESEARCH_NPM_ROOT: fakeNpmRoot,
       },
     );
 
@@ -177,7 +177,7 @@ test("providerDefinitions includes Claude npm package fallback metadata", () => 
 });
 
 test("resolveProviderCommand rejects a discovered command that fails provider verification", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-provider-verify-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-provider-verify-"));
   const fakeBinDir = path.join(tempDir, "bin");
   const fakeClaudePath = path.join(fakeBinDir, "claude");
 
@@ -218,6 +218,23 @@ test("providerDefinitions includes Claude path hints for common installs", () =>
     "~/.local/bin/claude",
     "/opt/homebrew/bin/claude",
     "/usr/local/bin/claude",
+  ]);
+  assert.equal(provider.preferPathHints, true);
+});
+
+test("providerDefinitions includes ML Intern with safe help-based verification", () => {
+  const provider = providerDefinitions.find((entry) => entry.id === "ml-intern");
+
+  assert.ok(provider);
+  assert.equal(provider.label, "ML Intern");
+  assert.equal(provider.command, "ml-intern");
+  assert.equal(provider.launchCommand, "ml-intern");
+  assert.equal(provider.defaultName, "ML Intern");
+  assert.deepEqual(provider.verifyArgs, ["--help"]);
+  assert.deepEqual(provider.pathHints, [
+    "~/.local/bin/ml-intern",
+    "/opt/homebrew/bin/ml-intern",
+    "/usr/local/bin/ml-intern",
   ]);
   assert.equal(provider.preferPathHints, true);
 });

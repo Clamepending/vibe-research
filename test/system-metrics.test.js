@@ -108,6 +108,137 @@ test("collectSystemMetrics reports storage, wiki usage, per-core CPU, memory, an
   assert.equal(system.gpus[0].memoryTotalBytes, 49152 * 1024 * 1024);
 });
 
+test("Linux GPU inventory prefers nvidia-smi over DRM aliases and ignores BMC display adapters", async () => {
+  const fileContents = new Map([
+    [
+      "/sys/class/drm/card0/device/gpu_busy_percent",
+      "0\n",
+    ],
+    [
+      "/sys/class/drm/card0/device/vendor",
+      "0x1a03\n",
+    ],
+    [
+      "/sys/class/drm/card0/device/uevent",
+      "DRIVER=ast\nPCI_ID=1A03:2000\n",
+    ],
+    [
+      "/sys/class/drm/card1/device/vendor",
+      "0x10de\n",
+    ],
+    [
+      "/sys/class/drm/card1/device/uevent",
+      "DRIVER=nvidia\nPCI_ID=10DE:2684\n",
+    ],
+    [
+      "/sys/class/drm/card2/device/vendor",
+      "0x10de\n",
+    ],
+    [
+      "/sys/class/drm/card2/device/uevent",
+      "DRIVER=nvidia\nPCI_ID=10DE:2684\n",
+    ],
+  ]);
+
+  const linuxDrmGpus = await testInternals.readLinuxDrmGpus({
+    async readdir() {
+      return ["card0", "card1", "card2", "renderD128"];
+    },
+    async readFile(filePath) {
+      if (!fileContents.has(filePath)) {
+        throw new Error(`not found: ${filePath}`);
+      }
+      return fileContents.get(filePath);
+    },
+  });
+  const nvidiaGpus = testInternals.parseNvidiaCsv(
+    [
+      "0, NVIDIA GeForce RTX 4090, 37, 0, 1024, 24564, 48, 210, 450",
+      "1, NVIDIA GeForce RTX 4090, 0, 0, 0, 24564, 31, 18, 450",
+    ].join("\n"),
+  );
+
+  assert.deepEqual(
+    linuxDrmGpus.map((gpu) => gpu.name),
+    ["NVIDIA nvidia card1 10DE:2684", "NVIDIA nvidia card2 10DE:2684"],
+  );
+
+  const merged = testInternals.mergeGpuDevices({ nvidiaGpus, linuxDrmGpus, macGpus: [] });
+
+  assert.equal(merged.length, 2);
+  assert.deepEqual(
+    merged.map((gpu) => gpu.source),
+    ["nvidia-smi", "nvidia-smi"],
+  );
+  assert.deepEqual(
+    merged.map((gpu) => gpu.name),
+    ["NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 4090"],
+  );
+});
+
+test("NVIDIA GPU process ownership marks Vibe Research session usage", async () => {
+  const system = await collectSystemMetrics({
+    agentProcessRoots: [{ pid: 100, providerId: "codex", sessionId: "session-a" }],
+    cwd: "/workspace/project",
+    platform: "linux",
+    sampleMs: 1,
+    cpus: createCpuSequence(),
+    totalmem: () => 16_000,
+    freemem: () => 4_000,
+    async execFile(command, args) {
+      if (command === "df") {
+        return { stdout: DF_ALL, stderr: "" };
+      }
+
+      if (command === "nvidia-smi" && args[0].startsWith("--query-gpu=")) {
+        return {
+          stdout: [
+            "0, GPU-owned, NVIDIA GeForce RTX 4090, 91, 30, 10000, 24564, 62, 310, 450",
+            "1, GPU-external, NVIDIA GeForce RTX 4090, 88, 20, 9000, 24564, 59, 290, 450",
+          ].join("\n"),
+          stderr: "",
+        };
+      }
+
+      if (command === "nvidia-smi" && args[0].startsWith("--query-compute-apps=")) {
+        return {
+          stdout: [
+            "GPU-owned, 110, python, 10000",
+            "GPU-external, 210, python, 9000",
+          ].join("\n"),
+          stderr: "",
+        };
+      }
+
+      if (command === "ps") {
+        return {
+          stdout: [
+            "  100     1 zsh",
+            "  110   100 python",
+            "  210     1 python",
+          ].join("\n"),
+          stderr: "",
+        };
+      }
+
+      throw new Error(`unexpected command: ${command}`);
+    },
+    async readdir() {
+      return [];
+    },
+    async readFile() {
+      throw new Error("not found");
+    },
+  });
+
+  assert.equal(system.gpus.length, 2);
+  assert.equal(system.gpus[0].usedByUs, true);
+  assert.equal(system.gpus[0].ownedProcessCount, 1);
+  assert.equal(system.gpus[0].processes[0].sessionId, "session-a");
+  assert.equal(system.gpus[1].usedByUs, false);
+  assert.equal(system.gpus[1].activeProcessCount, 1);
+});
+
 test("project storage roots are deduped before measurement", () => {
   assert.deepEqual(testInternals.dedupeNestedStorageRoots(["/workspace/project/a", "/workspace/project", "/tmp/x"]), [
     "/tmp/x",

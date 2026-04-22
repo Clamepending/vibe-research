@@ -1,9 +1,9 @@
 # Playwright CLI Reference
 
-Use the Remote Vibes wrapper:
+Use the Vibe Research wrapper:
 
 ```bash
-export PWCLI="${PWCLI:-rv-playwright}"
+export PWCLI="${PWCLI:-vr-playwright}"
 "$PWCLI" --help
 ```
 
@@ -25,4 +25,4 @@ Common commands:
 "$PWCLI" close
 ```
 
-The wrapper accepts normal `playwright-cli` arguments and adds a short per-agent `-s=<session>` automatically when `REMOTE_VIBES_SESSION_ID` is set.
+The wrapper accepts normal `playwright-cli` arguments and adds a short per-agent `-s=<session>` automatically when `VIBE_RESEARCH_SESSION_ID` is set.

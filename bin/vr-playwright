@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v npx >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+[vibe-research] npx is required for vr-playwright but was not found.
+
+# Verify Node/npm are installed
+node --version
+npm --version
+
+# If missing, install Node.js/npm, then:
+npm install -g @playwright/cli@latest
+playwright-cli --help
+EOF
+  exit 127
+fi
+
+has_session_flag="false"
+for arg in "$@"; do
+  case "$arg" in
+    --session|--session=*|-s|-s=*)
+      has_session_flag="true"
+      break
+      ;;
+  esac
+done
+
+package_spec="${VIBE_RESEARCH_PLAYWRIGHT_CLI_PACKAGE:-${REMOTE_VIBES_PLAYWRIGHT_CLI_PACKAGE:-@playwright/cli}}"
+cmd=(npx --yes --package "$package_spec" playwright-cli)
+
+make_session_name() {
+  local raw_session="$1"
+  local safe_fragment
+  local session_hash
+
+  safe_fragment="$(printf '%s' "$raw_session" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-6)"
+  session_hash="$(printf '%s' "$raw_session" | cksum | awk '{print $1}')"
+  printf 'vr-%s-%s' "$session_hash" "$safe_fragment"
+}
+
+if [ "$has_session_flag" != "true" ]; then
+  if [ -n "${PLAYWRIGHT_CLI_SESSION:-}" ]; then
+    cmd+=("-s=$(make_session_name "$PLAYWRIGHT_CLI_SESSION")")
+  elif [ -n "${VIBE_RESEARCH_SESSION_ID:-${REMOTE_VIBES_SESSION_ID:-}}" ]; then
+    cmd+=("-s=$(make_session_name "${VIBE_RESEARCH_SESSION_ID:-$REMOTE_VIBES_SESSION_ID}")")
+  fi
+fi
+
+exec "${cmd[@]}" "$@"

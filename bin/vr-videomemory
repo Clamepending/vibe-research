@@ -1,0 +1,323 @@
+#!/usr/bin/env node
+
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+
+function printHelp() {
+  process.stdout.write(`vr-videomemory
+
+Create and manage VideoMemory monitors that wake Vibe Research agent sessions.
+
+Usage:
+  vr-videomemory create --io-id net0 --trigger "when a person enters" --action "summarize what changed"
+  vr-videomemory create --io-id 0 --trigger "when the print finishes" --provider codex --new-session
+  vr-videomemory list
+  vr-videomemory delete --monitor-id vm_...
+  vr-videomemory webhook-info
+
+Options:
+  --io-id <id>              VideoMemory device id from GET /api/devices
+  --trigger <text>          What VideoMemory should watch for
+  --action <text>           What the coding agent should do when the monitor fires
+  --name <text>             Short label for the sidebar
+  --provider <id>           claude, codex, gemini, opencode, ml-intern, or shell
+  --new-session             Wake a fresh agent session on the first event
+  --include-frame <bool>    Ask VideoMemory to save evidence frames (default true)
+  --include-video <bool>    Ask VideoMemory to save evidence clips (default false)
+  --json                    Print machine-readable JSON
+`);
+}
+
+function parseBoolean(value, fallback) {
+  if (value === true || value === false) {
+    return value;
+  }
+
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  throw new Error(`invalid boolean: ${value}`);
+}
+
+function parseArgs(argv) {
+  const options = {
+    action: "",
+    includeFrame: true,
+    includeVideo: false,
+    ioId: "",
+    json: false,
+    monitorId: "",
+    name: "",
+    providerId: "",
+    targetMode: "session",
+    trigger: "",
+  };
+  let command = "";
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    const readValue = (name) => {
+      const inlinePrefix = `${name}=`;
+      if (arg.startsWith(inlinePrefix)) {
+        return arg.slice(inlinePrefix.length);
+      }
+
+      index += 1;
+      return argv[index] || "";
+    };
+
+    if (!command && !arg.startsWith("-")) {
+      command = arg;
+      continue;
+    }
+
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+      continue;
+    }
+
+    if (arg === "--io-id" || arg === "--io_id" || arg.startsWith("--io-id=") || arg.startsWith("--io_id=")) {
+      options.ioId = readValue(arg.startsWith("--io_id") ? "--io_id" : "--io-id");
+      continue;
+    }
+
+    if (arg === "--trigger" || arg === "--condition" || arg.startsWith("--trigger=") || arg.startsWith("--condition=")) {
+      options.trigger = readValue(arg.startsWith("--condition") ? "--condition" : "--trigger");
+      continue;
+    }
+
+    if (arg === "--action" || arg === "--then" || arg.startsWith("--action=") || arg.startsWith("--then=")) {
+      options.action = readValue(arg.startsWith("--then") ? "--then" : "--action");
+      continue;
+    }
+
+    if (arg === "--name" || arg === "--title" || arg.startsWith("--name=") || arg.startsWith("--title=")) {
+      options.name = readValue(arg.startsWith("--title") ? "--title" : "--name");
+      continue;
+    }
+
+    if (arg === "--provider" || arg === "--provider-id" || arg.startsWith("--provider=") || arg.startsWith("--provider-id=")) {
+      options.providerId = readValue(arg.startsWith("--provider-id") ? "--provider-id" : "--provider");
+      continue;
+    }
+
+    if (arg === "--monitor-id" || arg.startsWith("--monitor-id=")) {
+      options.monitorId = readValue("--monitor-id");
+      continue;
+    }
+
+    if (arg === "--new-session") {
+      options.targetMode = "new-session";
+      continue;
+    }
+
+    if (arg === "--same-session") {
+      options.targetMode = "session";
+      continue;
+    }
+
+    if (arg === "--include-frame" || arg.startsWith("--include-frame=")) {
+      options.includeFrame = parseBoolean(readValue("--include-frame"), true);
+      continue;
+    }
+
+    if (arg === "--include-video" || arg.startsWith("--include-video=")) {
+      options.includeVideo = parseBoolean(readValue("--include-video"), false);
+      continue;
+    }
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    throw new Error(`unknown argument: ${arg}`);
+  }
+
+  return { command: command || "create", options };
+}
+
+async function readServerInfo(rootDir) {
+  const filePath = path.join(rootDir, "server.json");
+  const raw = await readFile(filePath, "utf8");
+  return JSON.parse(raw);
+}
+
+async function fetchJsonOrThrow(url, options = {}) {
+  const response = await fetch(url, options);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `request failed (${response.status})`);
+  }
+  return payload;
+}
+
+function summarizeMonitor(monitor) {
+  return {
+    id: monitor.id,
+    status: monitor.status,
+    name: monitor.name,
+    ioId: monitor.ioId,
+    taskId: monitor.taskId,
+    providerId: monitor.providerId,
+    sessionId: monitor.sessionId,
+    wakeCount: monitor.wakeCount,
+    webhookReady: true,
+  };
+}
+
+function printMonitorSummary(monitor) {
+  process.stdout.write(`videomemory monitor ${monitor.status}: ${monitor.id}\n`);
+  process.stdout.write(`${monitor.name || monitor.trigger}\n`);
+  process.stdout.write(`task ${monitor.taskId} · camera ${monitor.ioId} · agent ${monitor.providerId}\n`);
+  if (monitor.taskApiUrl) {
+    process.stdout.write(`${monitor.taskApiUrl}\n`);
+  }
+}
+
+async function main() {
+  let parsed;
+  try {
+    parsed = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`vr-videomemory: ${error.message}\n`);
+    process.exit(1);
+  }
+
+  const { command, options } = parsed;
+  if (options.help) {
+    printHelp();
+    return;
+  }
+
+  const rootDir = String(process.env.VIBE_RESEARCH_ROOT || process.env.REMOTE_VIBES_ROOT || "").trim();
+  if (!rootDir) {
+    process.stderr.write("vr-videomemory: VIBE_RESEARCH_ROOT is not set.\n");
+    process.exit(1);
+  }
+
+  let serverInfo;
+  try {
+    serverInfo = await readServerInfo(rootDir);
+  } catch (error) {
+    process.stderr.write(`vr-videomemory: could not read Vibe Research server info (${error.message}).\n`);
+    process.exit(1);
+  }
+
+  const baseUrl = String(serverInfo?.helperBaseUrl || "").trim();
+  const token = String(serverInfo?.videoMemoryToken || "").trim();
+  if (!baseUrl || !token) {
+    process.stderr.write("vr-videomemory: VideoMemory helper is not available from this session.\n");
+    process.exit(1);
+  }
+
+  if (command === "webhook-info") {
+    const payload = {
+      webhookToken: serverInfo.videoMemoryWebhookToken || "",
+      webhookUrl: serverInfo.videoMemoryWebhookUrl || `${baseUrl}/api/videomemory/webhook`,
+    };
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+      return;
+    }
+    process.stdout.write(`Webhook URL: ${payload.webhookUrl}\n`);
+    process.stdout.write(`Bearer token: ${payload.webhookToken}\n`);
+    return;
+  }
+
+  if (command === "list") {
+    const payload = await fetchJsonOrThrow(`${baseUrl}/api/videomemory/monitors`, {
+      cache: "no-store",
+    });
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+      return;
+    }
+    const monitors = Array.isArray(payload.monitors) ? payload.monitors : [];
+    if (!monitors.length) {
+      process.stdout.write("No VideoMemory monitors.\n");
+      return;
+    }
+    for (const monitor of monitors) {
+      process.stdout.write(`${monitor.id} ${monitor.status} ${monitor.ioId} ${monitor.name || monitor.trigger}\n`);
+    }
+    return;
+  }
+
+  if (command === "delete" || command === "stop") {
+    if (!options.monitorId) {
+      process.stderr.write("vr-videomemory: --monitor-id is required.\n");
+      process.exit(1);
+    }
+    const payload = await fetchJsonOrThrow(`${baseUrl}/api/videomemory/monitors/${encodeURIComponent(options.monitorId)}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "x-vibe-research-videomemory-token": token,
+      },
+    });
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+      return;
+    }
+    process.stdout.write(`videomemory monitor deleted: ${payload.monitor?.id || options.monitorId}\n`);
+    return;
+  }
+
+  if (command !== "create") {
+    process.stderr.write(`vr-videomemory: unknown command: ${command}\n`);
+    process.exit(1);
+  }
+
+  if (!options.ioId) {
+    process.stderr.write("vr-videomemory: --io-id is required.\n");
+    process.exit(1);
+  }
+  if (!options.trigger) {
+    process.stderr.write("vr-videomemory: --trigger is required.\n");
+    process.exit(1);
+  }
+
+  const requestBody = {
+    action: options.action,
+    callerSessionId: String(process.env.VIBE_RESEARCH_SESSION_ID || process.env.REMOTE_VIBES_SESSION_ID || "").trim(),
+    cwd: process.cwd(),
+    includeFrame: options.includeFrame,
+    includeVideo: options.includeVideo,
+    ioId: options.ioId,
+    name: options.name,
+    providerId: options.providerId || String(process.env.VIBE_RESEARCH_PROVIDER || process.env.REMOTE_VIBES_PROVIDER || "").trim(),
+    targetMode: options.targetMode,
+    trigger: options.trigger,
+  };
+
+  const payload = await fetchJsonOrThrow(`${baseUrl}/api/videomemory/monitors`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-vibe-research-videomemory-token": token,
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({ monitor: summarizeMonitor(payload.monitor) }, null, 2)}\n`);
+    return;
+  }
+
+  printMonitorSummary(payload.monitor);
+}
+
+void main().catch((error) => {
+  process.stderr.write(`vr-videomemory: ${error.message}\n`);
+  process.exit(1);
+});

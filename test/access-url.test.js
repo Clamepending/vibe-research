@@ -51,7 +51,7 @@ test("extracts the current machine MagicDNS name from Tailscale status", () => {
   );
 });
 
-test("detects Tailscale Serve HTTPS root for the current Remote Vibes port", () => {
+test("detects Tailscale Serve HTTPS root for the current Vibe Research port", () => {
   const serveStatus = {
     Web: {
       "home-raspi.tail8dd042.ts.net:443": {
@@ -71,7 +71,7 @@ test("detects Tailscale Serve HTTPS root for the current Remote Vibes port", () 
   assert.equal(hasTailscaleHttpsRootServe(serveStatus, "home-raspi.tail8dd042.ts.net"), true);
 });
 
-test("does not treat another HTTPS root service as Remote Vibes", () => {
+test("does not treat another HTTPS root service as Vibe Research", () => {
   const serveStatus = {
     Web: {
       "home-raspi.tail8dd042.ts.net:443": {

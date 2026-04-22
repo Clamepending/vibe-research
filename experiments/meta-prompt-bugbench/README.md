@@ -1,6 +1,6 @@
 ---
 name: Meta-Prompt Bugbench
-description: Measure whether the 45.8k-char Remote Vibes agent prompt pulls its weight against minimal-discipline controls, using a battery of small Python bug-fixes as the inner task. Successor to meta-prompt-autoresearch after that benchmark was deemed low-signal + OOM-unsafe.
+description: Measure whether the 45.8k-char Vibe Research agent prompt pulls its weight against minimal-discipline controls, using a battery of small Python bug-fixes as the inner task. Successor to meta-prompt-autoresearch after that benchmark was deemed low-signal + OOM-unsafe.
 type: experiment
 updated_at: 2026-04-19
 status: DESIGN COMPLETE, IMPLEMENTATION ~20% — paused for disk/panic constraints on the origin host. Ready for handoff to another machine.
@@ -9,7 +9,7 @@ supersedes: experiments/meta-prompt-autoresearch/README.md (partially — only t
 
 ## The question
 
-Is the ~45.8k-character Remote Vibes agent prompt (`CLAUDE.md` / mirrored into the v0 meta-prompt) pulling its weight in agentic work, or can it be trimmed substantially without losing the behaviors that matter?
+Is the ~45.8k-character Vibe Research agent prompt (`CLAUDE.md` / mirrored into the v0 meta-prompt) pulling its weight in agentic work, or can it be trimmed substantially without losing the behaviors that matter?
 
 Concrete motivation: the Claude Code harness now surfaces a performance warning at >40k characters. If a minimal prompt (v1-control, ~1.1k chars) or a no-discipline prompt (v3, ~1.1k chars) resolves the same fraction of bugs as v0, that's a strong argument for trimming the canonical prompt. If v0 meaningfully outperforms on specific bugs-by-design, that's evidence for the opposite.
 
@@ -33,7 +33,7 @@ All five were authored on origin host at `<harness-repo>/meta-prompts/<variant>.
 
 | id | variant | size | what's in it |
 |---|---|---|---|
-| v0 | full Remote Vibes | ~47k chars | the entire current `CLAUDE.md` (Identity, Core Principles, Research Mode, Autoresearch Loop, Git Discipline, Citation Rigor, Faithful Reporting, Knowledge Model…) with `{{WIKI}}` → `.remote-vibes/wiki` substitution, plus the **claude -p runtime note** (below) appended verbatim |
+| v0 | full Vibe Research | ~47k chars | the entire current `CLAUDE.md` (Identity, Core Principles, Research Mode, Autoresearch Loop, Git Discipline, Citation Rigor, Faithful Reporting, Knowledge Model…) with `{{WIKI}}` → `.vibe-research/wiki` substitution, plus the **claude -p runtime note** (below) appended verbatim |
 | v1-control | minimal | ~1.2k chars | "You are a researcher running an autoresearch loop on a small task. Read `PROMPT.md` in the current directory. Follow it." + runtime note |
 | v2-ml-priors | v0 + ML priors | ~49k chars | v0 body + a terse "ML priors" section (depth/width, LR, warmup, logit-cap, frozen data, etc.) + runtime note. *Note: for bugbench this variant is mostly a null — bugbench has no ML. Kept for experiment parity; expect it to score ≈ v0.* |
 | v3-no-priors-no-discipline | ultra-minimal | ~1.1k chars | "Read `PROMPT.md`. Do what it says. Stop when your budget is reached." + runtime note |
@@ -246,13 +246,13 @@ mkdir -p "$RESULT_DIR"
 
 KICKOFF="You are in $WORK_DIR. Read PROMPT.md and follow it exactly. Budget: ${TIMEOUT} seconds. Do NOT ask for confirmation. Begin."
 
-# CRITICAL: bypass the Remote Vibes claude wrapper — see "Wrapper bypass" section below.
+# CRITICAL: bypass the Vibe Research claude wrapper — see "Wrapper bypass" section below.
 CLAUDE_BIN="$HOME/.local/bin/claude"
 [[ -x "$CLAUDE_BIN" ]] || { echo "real claude binary not found at $CLAUDE_BIN" >&2; exit 2; }
 
 cd "$WORK_DIR"
-REMOTE_VIBES_AGENT_PROMPT_PATH="" \
-REMOTE_VIBES_PLAYWRIGHT_SKILL="" \
+VIBE_RESEARCH_AGENT_PROMPT_PATH="" \
+VIBE_RESEARCH_PLAYWRIGHT_SKILL="" \
 "$CLAUDE_BIN" \
   --model claude-sonnet-4-6 \
   --setting-sources "" \
@@ -324,13 +324,13 @@ done
 
 ## Durable learnings carried over from the sibling experiment
 
-These are host-independent and apply to any future `claude -p` meta-experiment on a Remote Vibes box. Record them in a topic page if/when it exists.
+These are host-independent and apply to any future `claude -p` meta-experiment on a Vibe Research box. Record them in a topic page if/when it exists.
 
-### 1. The Remote Vibes claude wrapper contaminates meta-prompt experiments (critical)
+### 1. The Vibe Research claude wrapper contaminates meta-prompt experiments (critical)
 
-`$PATH` on a Remote Vibes-installed machine resolves `claude` to `$REMOTE_VIBES_APP/bin/claude`, a shell wrapper that always calls the real claude with `--append-system-prompt "$GUIDANCE\n\n$(cat $REMOTE_VIBES_AGENT_PROMPT_PATH)"`. That means every `claude -p --system-prompt <meta-prompt>` call you make ends up with the Playwright guidance + the full Remote Vibes agent prompt appended to your meta-prompt. Minimal-prompt variants aren't actually minimal.
+`$PATH` on a Vibe Research-installed machine resolves `claude` to `$VIBE_RESEARCH_APP/bin/claude`, a shell wrapper that always calls the real claude with `--append-system-prompt "$GUIDANCE\n\n$(cat $VIBE_RESEARCH_AGENT_PROMPT_PATH)"`. That means every `claude -p --system-prompt <meta-prompt>` call you make ends up with the Playwright guidance + the full Vibe Research agent prompt appended to your meta-prompt. Minimal-prompt variants aren't actually minimal.
 
-**Bypass:** call the real binary directly. On a typical RV install it's at `$HOME/.local/bin/claude` (a symlink to `$HOME/.local/share/claude/versions/<version>` — a Mach-O executable, not a shell script). Defensively clear `REMOTE_VIBES_AGENT_PROMPT_PATH=""` and `REMOTE_VIBES_PLAYWRIGHT_SKILL=""` in the child env in case the real binary reads them via some other code path.
+**Bypass:** call the real binary directly. On a typical RV install it's at `$HOME/.local/bin/claude` (a symlink to `$HOME/.local/share/claude/versions/<version>` — a Mach-O executable, not a shell script). Defensively clear `VIBE_RESEARCH_AGENT_PROMPT_PATH=""` and `VIBE_RESEARCH_PLAYWRIGHT_SKILL=""` in the child env in case the real binary reads them via some other code path.
 
 **Verify bypass worked:** `ps -ef | grep claude | grep -v grep` should show the child claude cmdline with `--system-prompt` containing ONLY your meta-prompt content, no `--append-system-prompt` flag.
 
@@ -353,7 +353,7 @@ If the agent does `git add results.tsv && git commit && git reset --hard <baseli
 ## Implementation state at handoff
 
 - [x] Design finalized (this page).
-- [x] 5 meta-prompt variants authored on origin host at `<harness-repo>/meta-prompts/<variant>.md` on branch `experiment/wave1` commit `efd5292`. **Not pushed to a remote.** The v0/v2/v4 variants are the full `CLAUDE.md` + runtime note; v1/v3 are fully reproduced above. **New-host action:** either pull/push the branch, or reconstruct — v1 and v3 are in this page; v0 is `cat <repo>/CLAUDE.md | sed 's|{{WIKI}}|.remote-vibes/wiki|g'` + append the runtime note; v2 and v4 are v0 + an extra section each (see variant table above for content descriptions).
+- [x] 5 meta-prompt variants authored on origin host at `<harness-repo>/meta-prompts/<variant>.md` on branch `experiment/wave1` commit `efd5292`. **Not pushed to a remote.** The v0/v2/v4 variants are the full `CLAUDE.md` + runtime note; v1/v3 are fully reproduced above. **New-host action:** either pull/push the branch, or reconstruct — v1 and v3 are in this page; v0 is `cat <repo>/CLAUDE.md | sed 's|{{WIKI}}|.vibe-research/wiki|g'` + append the runtime note; v2 and v4 are v0 + an extra section each (see variant table above for content descriptions).
 - [x] Harness wrapper-bypass fix committed on origin host at `<harness-repo>@aeb2aa1` branch `experiment/wave1`. **Not pushed.** Script body is reproduced in "Meta-harness" section above — new host can copy it directly.
 - [x] Bugs 01 and 02 fully implemented on origin host at `<bugbench-repo>/bugs/{01_sanity,02_read_stderr}/` on branch `experiment/bugbench-v1`. **Not committed, not pushed.** All code is reproduced above — new host should `git init` and recreate from this page.
 - [ ] Bugs 03, 04, 05 designed in full above, not yet scaffolded on origin host.
@@ -366,8 +366,8 @@ If the agent does `git add results.tsv && git commit && git reset --hard <baseli
 
 A fresh agent on a new host with ≥30 GB free disk, ≥16 GB RAM, and Claude Code installed can pick this up in one session:
 
-1. **Clone `remote-vibes` with this wiki** so you can read this page on the new machine. Confirm `.remote-vibes/wiki/experiments/meta-prompt-bugbench/README.md` is this file.
-2. **Find your real claude binary.** Run `which claude` — if it points at a Remote Vibes wrapper, also run `ls -la ~/.local/bin/claude` and note the real target. The harness script in this page assumes `$HOME/.local/bin/claude` is the real binary; adjust if your install differs. Verify with `file $HOME/.local/bin/claude` — should say Mach-O or ELF executable, NOT "ASCII text" (that'd be another wrapper).
+1. **Clone `vibe-research` with this wiki** so you can read this page on the new machine. Confirm `.vibe-research/wiki/experiments/meta-prompt-bugbench/README.md` is this file.
+2. **Find your real claude binary.** Run `which claude` — if it points at a Vibe Research wrapper, also run `ls -la ~/.local/bin/claude` and note the real target. The harness script in this page assumes `$HOME/.local/bin/claude` is the real binary; adjust if your install differs. Verify with `file $HOME/.local/bin/claude` — should say Mach-O or ELF executable, NOT "ASCII text" (that'd be another wrapper).
 3. **Create two repos:**
    - `meta-prompt-harness/` — holds `meta-prompts/{v0,v1-control,v2-ml-priors,v3-no-priors-no-discipline,v4-explicit-reflect}.md`, `run_bugbench.sh`, `run_bugbench_sweep.sh`, `results-bugbench/`, `worktrees-bugbench/`.
    - `meta-prompt-bugbench/` — holds `bugs/01_sanity/`, `bugs/02_read_stderr/`, `bugs/03_seductive_fix/`, `bugs/04_offby_one/`, `bugs/05_multifile/`, each with `src/`, `tests/`, `PROMPT.md`, `EXPECTED_ROOT_CAUSE.md`.
@@ -378,7 +378,7 @@ A fresh agent on a new host with ≥30 GB free disk, ≥16 GB RAM, and Claude Co
 6. **Write both harness scripts** verbatim from this page. Adjust the absolute paths at the top of `run_bugbench.sh` (HARNESS, BUGBENCH, CLAUDE_BIN).
 7. **Sanity run:** `./run_bugbench.sh v1-control 1 01_sanity 180`. Verify: `ps -ef | grep claude` while it's running shows `--system-prompt` with ONLY the v1-control text, no `--append-system-prompt`. Verify: `results-bugbench/v1-control-run1-01_sanity/result.json` shows `"pass": true`.
 8. **Full sweep:** `./run_bugbench_sweep.sh`. Wall-clock budget ~2 h. Memory budget trivial. No GPU. Tail the aggregate log as it runs; each bug should emit a `=== <variant> run<N> <bug>: pass=<bool> ===` line.
-9. **Write synthesis** into a new section at the top of this page: resolve-rate table per variant + 3–5 sentences of qualitative observations (which bugs differentiate the variants? does v3 specifically fail bug 03/04? does v4 help on bug 05?). Then update `.remote-vibes/wiki/log.md` with a dated entry and `.remote-vibes/wiki/index.md` with a pointer if not already present.
+9. **Write synthesis** into a new section at the top of this page: resolve-rate table per variant + 3–5 sentences of qualitative observations (which bugs differentiate the variants? does v3 specifically fail bug 03/04? does v4 help on bug 05?). Then update `.vibe-research/wiki/log.md` with a dated entry and `.vibe-research/wiki/index.md` with a pointer if not already present.
 
 ## Open questions the new host should record answers to
 
@@ -391,4 +391,4 @@ A fresh agent on a new host with ≥30 GB free disk, ≥16 GB RAM, and Claude Co
 ## Related
 
 - `../meta-prompt-autoresearch/README.md` — the paused sibling experiment; has more detail on the `claude -p` and wrapper-bypass discoveries that apply here.
-- The canonical prompt under test lives at `<remote-vibes-repo>/CLAUDE.md` on this wiki's own repo.
+- The canonical prompt under test lives at `<vibe-research-repo>/CLAUDE.md` on this wiki's own repo.

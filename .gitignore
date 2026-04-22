@@ -2,6 +2,7 @@ node_modules
 public/app.js
 public/vendor
 .DS_Store
+.vibe-research
 .remote-vibes
 .claude/
 .playwright-cli/

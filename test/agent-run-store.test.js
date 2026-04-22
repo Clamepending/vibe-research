@@ -6,7 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { AgentRunStore } from "../src/agent-run-store.js";
 
 test("agent run store records, persists, and summarizes duration buckets", async () => {
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-agent-runs-"));
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-agent-runs-"));
   const store = new AgentRunStore({ stateDir });
   const base = Date.now();
 
@@ -64,7 +64,7 @@ test("agent run store records, persists, and summarizes duration buckets", async
 });
 
 test("agent run store summarizes local provider usage windows", async () => {
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-agent-usage-"));
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-agent-usage-"));
   const store = new AgentRunStore({ stateDir });
   const now = Date.parse("2026-04-18T20:00:00.000Z");
 

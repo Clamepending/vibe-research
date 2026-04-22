@@ -33,26 +33,26 @@ class UsageError extends Error {
 
 function usageText() {
   return [
-    "rv-browser lets coding agents inspect localhost web apps with a real browser.",
+    "vr-browser lets coding agents inspect localhost web apps with a real browser.",
     "",
     "Usage:",
-    "  rv-browser doctor",
-    "  rv-browser screenshot <port-or-url> [output.png] [--wait-for-selector <selector>] [--wait-for-text <text>] [--timeout <ms>] [--full-page]",
-    "  rv-browser run <port-or-url> --steps <json> [--output output.png] [--timeout <ms>] [--wait-until load|domcontentloaded|networkidle] [--width <px>] [--height <px>]",
-    "  rv-browser describe <port-or-url> [output.png] [--prompt <text>] [--provider auto|codex|claude]",
-    "  rv-browser describe-file <image-path> [--prompt <text>] [--provider auto|codex|claude]",
+    "  vr-browser doctor",
+    "  vr-browser screenshot <port-or-url> [output.png] [--wait-for-selector <selector>] [--wait-for-text <text>] [--timeout <ms>] [--full-page]",
+    "  vr-browser run <port-or-url> --steps <json> [--output output.png] [--timeout <ms>] [--wait-until load|domcontentloaded|networkidle] [--width <px>] [--height <px>]",
+    "  vr-browser describe <port-or-url> [output.png] [--prompt <text>] [--provider auto|codex|claude]",
+    "  vr-browser describe-file <image-path> [--prompt <text>] [--provider auto|codex|claude]",
     "",
     "Recommended simple `run` actions for agents:",
     "  type, click, select, wait, screenshot",
     "  Additional supported actions: press, check, uncheck, setInputFiles, goto, waitForSelector, waitForText, waitForLoadState, waitForTimeout",
     "",
     "Examples:",
-    "  rv-browser screenshot 7860",
-    "  rv-browser screenshot http://127.0.0.1:3000/ out.png --wait-for-text Ready",
-    "  rv-browser run 7860 --steps-file eval-steps.json --output final.png",
-    `  rv-browser run 7860 --steps '[{"action":"type","selector":"textarea","text":"make it cinematic"},{"action":"click","selector":"text=Generate"},{"action":"wait","text":"Done"},{"action":"screenshot","path":"result.png"}]'`,
-    "  rv-browser describe 7860 --prompt \"What visual issues do you see?\"",
-    "  rv-browser describe-file results/chart.png --prompt \"Critique this chart's readability.\"",
+    "  vr-browser screenshot 7860",
+    "  vr-browser screenshot http://127.0.0.1:3000/ out.png --wait-for-text Ready",
+    "  vr-browser run 7860 --steps-file eval-steps.json --output final.png",
+    `  vr-browser run 7860 --steps '[{"action":"type","selector":"textarea","text":"make it cinematic"},{"action":"click","selector":"text=Generate"},{"action":"wait","text":"Done"},{"action":"screenshot","path":"result.png"}]'`,
+    "  vr-browser describe 7860 --prompt \"What visual issues do you see?\"",
+    "  vr-browser describe-file results/chart.png --prompt \"Critique this chart's readability.\"",
     "",
     "The target must be localhost, 127.0.0.1, ::1, 0.0.0.0, or a bare port number.",
   ].join("\n");
@@ -518,8 +518,8 @@ async function withBrowserSession(flags, env, callback) {
     throw createBrowserError(
       "BROWSER_NOT_FOUND",
       [
-        "rv-browser could not find a Chrome/Chromium-style browser executable.",
-        "Set REMOTE_VIBES_BROWSER_EXECUTABLE_PATH to your browser binary if needed.",
+        "vr-browser could not find a Chrome/Chromium-style browser executable.",
+        "Set VIBE_RESEARCH_BROWSER_EXECUTABLE_PATH to your browser binary if needed.",
         `Looked for PATH commands: ${browserCommandHints.join(", ")}`,
         `and app bundles such as: ${browserExecutableHints.slice(0, 5).join(", ")}`,
       ].join(" "),
@@ -626,9 +626,11 @@ async function inferVisionProviderFromProcessTree(startPid = process.ppid) {
 async function resolveVisionProvider({ requestedProvider = "auto", env }) {
   const providerCandidates = {
     codex:
+      env.VIBE_RESEARCH_REAL_CODEX_COMMAND ||
       env.REMOTE_VIBES_REAL_CODEX_COMMAND ||
       (await findCommandInPath("codex", env.PATH || process.env.PATH || "")),
     claude:
+      env.VIBE_RESEARCH_REAL_CLAUDE_COMMAND ||
       env.REMOTE_VIBES_REAL_CLAUDE_COMMAND ||
       (await findCommandInPath("claude", env.PATH || process.env.PATH || "")),
   };
@@ -638,7 +640,7 @@ async function resolveVisionProvider({ requestedProvider = "auto", env }) {
     if (!command) {
       throw createBrowserError(
         "VISION_PROVIDER_NOT_FOUND",
-        `rv-browser could not find the requested ${requestedProvider} command.`,
+        `vr-browser could not find the requested ${requestedProvider} command.`,
       );
     }
 
@@ -648,7 +650,7 @@ async function resolveVisionProvider({ requestedProvider = "auto", env }) {
     };
   }
 
-  const preferredFromSession = String(env.REMOTE_VIBES_PROVIDER || "").trim().toLowerCase();
+  const preferredFromSession = String(env.VIBE_RESEARCH_PROVIDER || env.REMOTE_VIBES_PROVIDER || "").trim().toLowerCase();
   if (preferredFromSession === "codex" && providerCandidates.codex) {
     return { id: "codex", command: providerCandidates.codex };
   }
@@ -676,7 +678,7 @@ async function resolveVisionProvider({ requestedProvider = "auto", env }) {
 
   throw createBrowserError(
     "VISION_PROVIDER_NOT_FOUND",
-    "rv-browser could not find a Codex or Claude CLI for visual description.",
+    "vr-browser could not find a Codex or Claude CLI for visual description.",
   );
 }
 
@@ -728,7 +730,7 @@ async function describeImageWithProvider(imagePath, flags, cwd, env) {
     "Describe what is visible in this image and call out any obvious visual issues or strengths.";
 
   if (provider.id === "codex") {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "rv-browser-codex-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "vr-browser-codex-"));
     const outputFile = path.join(tempDir, "last-message.txt");
 
     try {

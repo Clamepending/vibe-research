@@ -6,6 +6,7 @@ import {
   ArrowUp,
   BookOpen,
   Bot,
+  Camera,
   CalendarClock,
   CalendarDays,
   ChevronDown,
@@ -106,7 +107,16 @@ const KNOWLEDGE_BASE_SEARCH_FIELD_WEIGHTS = [
   ["searchText", 1],
 ];
 const PORT_PREVIEW_TAB_PREFIX = "port:";
-const ROUTED_MAIN_VIEWS = new Set(["search", "plugins", "automations", "system", "visual-interface", "swarm", "browser-use"]);
+const ROUTED_MAIN_VIEWS = new Set([
+  "search",
+  "plugins",
+  "settings",
+  "automations",
+  "system",
+  "visual-interface",
+  "swarm",
+  "browser-use",
+]);
 const SESSION_WORKING_SPINNER_MS = 900;
 const FILE_IMAGE_MIN_ZOOM = 1;
 const FILE_IMAGE_MAX_ZOOM = 8;
@@ -119,7 +129,11 @@ const TERMINAL_KEYBOARD_SCROLL_PAGE_RATIO = 0.85;
 const VISUAL_GAME_WIDTH = 480;
 const VISUAL_GAME_HEIGHT = 270;
 const VISUAL_GAME_RENDER_SCALE = 2;
-const VISUAL_GAME_SLEEP_AFTER_MS = 60_000;
+const VISUAL_GAME_GPU_ACTIVE_THRESHOLD = 5;
+const VISUAL_GAME_MIN_ZOOM = 1;
+const VISUAL_GAME_MAX_ZOOM = 3.2;
+const VISUAL_GAME_ZOOM_STEP = 1.22;
+const VISUAL_GAME_DRAG_SLOP_PX = 5;
 const VISUAL_GAME_TILE = 16;
 const VISUAL_GAME_AGENT_SIZE = 18;
 const VISUAL_GAME_AGENT_PALETTES = [
@@ -176,16 +190,23 @@ const VISUAL_GAME_ROAM_ROUTES = [
   ],
 ];
 const VISUAL_GAME_BROWSER_SPOTS = [
-  { x: 428, y: 125 },
-  { x: 443, y: 126 },
-  { x: 415, y: 126 },
+  { x: 374, y: 106 },
+  { x: 402, y: 106 },
+  { x: 374, y: 136 },
+  { x: 402, y: 136 },
+];
+const VISUAL_GAME_CAMERA_SPOTS = [
+  { x: 374, y: 205 },
+  { x: 408, y: 205 },
+  { x: 374, y: 188 },
+  { x: 408, y: 188 },
 ];
 const VISUAL_GAME_SLEEP_SPOTS = [
-  { x: 54, y: 68 },
-  { x: 81, y: 68 },
-  { x: 108, y: 68 },
-  { x: 206, y: 63 },
-  { x: 232, y: 63 },
+  { x: 53, y: 72 },
+  { x: 79, y: 72 },
+  { x: 105, y: 72 },
+  { x: 131, y: 72 },
+  { x: 157, y: 72 },
 ];
 const VISUAL_GAME_LIBRARY_SPOTS = [
   { x: 78, y: 224 },
@@ -198,6 +219,10 @@ const VISUAL_GAME_EVIDENCE_SPOTS = [
   { x: 106, y: 192 },
   { x: 134, y: 190 },
 ];
+const VISUAL_GAME_GPU_FACTORY_COLUMNS = 4;
+const VISUAL_GAME_GPU_FACTORY_ORIGIN = { x: 158, y: 195 };
+const VISUAL_GAME_GPU_FACTORY_SIZE = { width: 54, height: 42 };
+const VISUAL_GAME_GPU_FACTORY_SPACING = { x: 58, y: 45 };
 const TERMINAL_IMAGE_PATH_EXTENSIONS = new Set([
   ".apng",
   ".avif",
@@ -291,7 +316,7 @@ const TERMINAL_TRANSCRIPT_BASIC_COLOR_NAMES = [
   "bright-cyan",
   "bright-white",
 ];
-const REMOTE_VIBES_SYSTEM_FOLDER_NAME = "remote-vibes-system";
+const VIBE_RESEARCH_SYSTEM_FOLDER_NAME = "vibe-research-system";
 const SYSTEM_CHART_WIDTH = 560;
 const SYSTEM_CHART_HEIGHT = 150;
 const SYSTEM_HISTORY_RANGES = [
@@ -344,38 +369,47 @@ const PLUGIN_CATALOG = [
   {
     id: "browser-use",
     name: "Browser Use",
-    category: "Remote Vibes",
+    category: "Vibe Research",
     description: "Start an OttoAuth browser fulfillment agent from a coding-agent session.",
     icon: Bot,
     status: "setup available",
-    source: "remote-vibes",
+    source: "vibe-research",
+  },
+  {
+    id: "videomemory",
+    name: "VideoMemory",
+    category: "Vibe Research",
+    description: "Let coding agents create video monitors that wake their own Vibe Research sessions.",
+    icon: Camera,
+    status: "setup available",
+    source: "vibe-research",
   },
   {
     id: "agentmail",
     name: "AgentMail",
     category: "Communication",
-    description: "Give Remote Vibes an email inbox and wake a Claude session when mail arrives.",
+    description: "Give Vibe Research an email inbox and wake a Claude session when mail arrives.",
     icon: Mail,
     status: "setup available",
-    source: "remote-vibes",
+    source: "vibe-research",
   },
   {
     id: "localhost-apps",
     name: "Localhost Apps",
-    category: "Remote Vibes",
+    category: "Vibe Research",
     description: "Preview web apps from discovered ports without leaving the current session.",
     icon: AppWindow,
     status: "built in",
-    source: "remote-vibes",
+    source: "vibe-research",
   },
   {
     id: "knowledge-base",
     name: "Knowledge Base",
-    category: "Remote Vibes",
+    category: "Vibe Research",
     description: "Search and edit the shared markdown wiki that agents receive in their prompt.",
     icon: BookOpen,
     status: "built in",
-    source: "remote-vibes",
+    source: "vibe-research",
   },
 ];
 const AUTOMATION_CADENCE_OPTIONS = [
@@ -520,8 +554,8 @@ const LIKELY_TEXT_FILENAMES = new Set([
   "readme",
   "readme.md",
 ]);
-const SESSION_READ_STORAGE_KEY = "remote-vibes-session-read-at-v1";
-const LAYOUT_STORAGE_KEY = "remote-vibes-layout-v1";
+const SESSION_READ_STORAGE_KEY = "vibe-research-session-read-at-v1";
+const LAYOUT_STORAGE_KEY = "vibe-research-layout-v1";
 const SIDEBAR_DEFAULT_WIDTH = 276;
 const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 520;
@@ -600,7 +634,7 @@ const state = {
   brainSetupError: "",
   agentPrompt: "",
   agentPromptPath: "",
-  agentPromptWikiRoot: ".remote-vibes/wiki",
+  agentPromptWikiRoot: ".vibe-research/wiki",
   agentPromptTargets: [],
   swarmGraph: {
     sessionId: null,
@@ -617,6 +651,7 @@ const state = {
     hitAreas: [],
     hoverLabel: "",
     agentPositions: new Map(),
+    camera: { x: 0, y: 0, zoom: 1 },
     selectedSessionId: "",
     selectedBrowserUseSessionId: "",
   },
@@ -626,10 +661,13 @@ const state = {
     error: "",
     data: null,
   },
+  videoMemoryMonitors: [],
   settings: {
+    agentAnthropicApiKeyConfigured: false,
+    agentHfTokenConfigured: false,
     agentMailApiKeyConfigured: false,
     agentMailClientId: "",
-    agentMailDisplayName: "Remote Vibes",
+    agentMailDisplayName: "Vibe Research",
     agentMailDomain: "",
     agentMailEnabled: false,
     agentMailInboxId: "",
@@ -637,6 +675,7 @@ const state = {
     agentMailProviderId: "claude",
     agentMailStatus: null,
     agentMailUsername: "",
+    agentOpenAiApiKeyConfigured: false,
     agentAutomations: [],
     browserUseAnthropicApiKeyConfigured: false,
     browserUseBrowserPath: "",
@@ -648,12 +687,16 @@ const state = {
     browserUseProfileDir: "",
     browserUseStatus: null,
     browserUseWorkerPath: "",
+    videoMemoryBaseUrl: "http://127.0.0.1:5050",
+    videoMemoryEnabled: false,
+    videoMemoryProviderId: "claude",
+    videoMemoryStatus: null,
     installedPluginIds: [],
     preventSleepEnabled: true,
     sleepPrevention: null,
     wikiPath: "",
     wikiPathConfigured: false,
-    wikiRelativeRoot: ".remote-vibes/wiki",
+    wikiRelativeRoot: ".vibe-research/wiki",
     wikiGitBackupEnabled: true,
     wikiGitRemoteBranch: "main",
     wikiGitRemoteEnabled: true,
@@ -694,7 +737,7 @@ const state = {
   openFileTabs: [],
   knowledgeBase: {
     rootPath: "",
-    relativeRoot: ".remote-vibes/wiki",
+    relativeRoot: ".vibe-research/wiki",
     notes: [],
     edges: [],
     loading: false,
@@ -899,7 +942,7 @@ function renderIconNode([tagName, attributes]) {
   return `<${escapeHtml(tagName)} ${renderIconAttributes(attributes)}></${escapeHtml(tagName)}>`;
 }
 
-function renderIcon(icon, { className = "rv-icon" } = {}) {
+function renderIcon(icon, { className = "vr-icon" } = {}) {
   if (!Array.isArray(icon)) {
     return "";
   }
@@ -1325,7 +1368,7 @@ function getPortAccessHint(port) {
     return "localhost only";
   }
 
-  return "remote vibes proxy";
+  return "vibe research proxy";
 }
 
 function setMobileSidebar(nextSidebar) {
@@ -1881,7 +1924,7 @@ function bindLineNumberEditors(root = document) {
 
 function shouldUseCanvasRenderer() {
   // The canvas addon can leave xterm viewport timers pointed at a disposed renderer
-  // when Remote Vibes swaps the terminal for another main view.
+  // when Vibe Research swaps the terminal for another main view.
   return false;
 }
 
@@ -3459,7 +3502,7 @@ function buildTerminalLinkHandler() {
   return {
     activate(_event, text) {
       if (isCoarsePointerDevice()) {
-        console.info("[remote-vibes] blocked terminal link activation on touch device", text);
+        console.info("[vibe-research] blocked terminal link activation on touch device", text);
         return;
       }
 
@@ -3537,7 +3580,7 @@ async function fetchJson(url, options = {}) {
     ...fetchOptions,
     headers: {
       "Content-Type": "application/json",
-      "X-Remote-Vibes-API": "1",
+      "X-Vibe-Research-API": "1",
       ...headers,
     },
     referrerPolicy: fetchOptions.referrerPolicy || "no-referrer",
@@ -3674,19 +3717,19 @@ function getWorkspacePathLeafName(value) {
   return parts.at(-1) || normalized;
 }
 
-function isRemoteVibesSystemFolder(entryOrPath) {
+function isVibeResearchSystemFolder(entryOrPath) {
   if (typeof entryOrPath === "string") {
-    return getWorkspacePathLeafName(entryOrPath) === REMOTE_VIBES_SYSTEM_FOLDER_NAME;
+    return getWorkspacePathLeafName(entryOrPath) === VIBE_RESEARCH_SYSTEM_FOLDER_NAME;
   }
 
   return (
-    entryOrPath?.name === REMOTE_VIBES_SYSTEM_FOLDER_NAME ||
-    getWorkspacePathLeafName(entryOrPath?.path || entryOrPath?.relativePath || "") === REMOTE_VIBES_SYSTEM_FOLDER_NAME
+    entryOrPath?.name === VIBE_RESEARCH_SYSTEM_FOLDER_NAME ||
+    getWorkspacePathLeafName(entryOrPath?.path || entryOrPath?.relativePath || "") === VIBE_RESEARCH_SYSTEM_FOLDER_NAME
   );
 }
 
 function getDirectoryIcon(entryOrPath, expanded = false) {
-  if (isRemoteVibesSystemFolder(entryOrPath)) {
+  if (isVibeResearchSystemFolder(entryOrPath)) {
     return FolderCog;
   }
 
@@ -3694,7 +3737,7 @@ function getDirectoryIcon(entryOrPath, expanded = false) {
 }
 
 function renderDirectoryIcon(entryOrPath, expanded = false) {
-  const className = isRemoteVibesSystemFolder(entryOrPath)
+  const className = isVibeResearchSystemFolder(entryOrPath)
     ? "file-icon file-icon-system"
     : "file-icon file-icon-folder";
   return `<span class="${className}" aria-hidden="true">${renderIcon(getDirectoryIcon(entryOrPath, expanded))}</span>`;
@@ -4050,7 +4093,35 @@ function getBrowserUseStatusText() {
     return `${activeCount} browser task${activeCount === 1 ? "" : "s"} running`;
   }
 
-  return "ready for rv-browser-use";
+  return "ready for vr-browser-use";
+}
+
+function getVideoMemoryStatusText() {
+  const status = state.settings.videoMemoryStatus || {};
+  if (!state.settings.videoMemoryEnabled) {
+    return state.settings.videoMemoryBaseUrl ? "configured but disabled" : "not configured";
+  }
+
+  const activeCount = Number(status.activeCount || 0);
+  if (activeCount > 0) {
+    return `${activeCount} camera monitor${activeCount === 1 ? "" : "s"} armed`;
+  }
+
+  return status.webhookUrl ? "ready for vr-videomemory" : "waiting for server URL";
+}
+
+function getAgentCredentialsStatusText() {
+  const configuredProviders = [
+    state.settings.agentAnthropicApiKeyConfigured ? "Anthropic" : "",
+    state.settings.agentOpenAiApiKeyConfigured ? "OpenAI" : "",
+    state.settings.agentHfTokenConfigured ? "HF Router" : "",
+  ].filter(Boolean);
+
+  return configuredProviders.length ? `configured: ${configuredProviders.join(", ")}` : "not configured";
+}
+
+function getSecretPlaceholder(configured, fallback) {
+  return configured ? "saved; leave blank to keep" : fallback;
 }
 
 function getWikiBackupFailureMessage(backup) {
@@ -4098,7 +4169,7 @@ function getSystemToasts() {
       message:
         isConflict && conflictFiles.length
           ? `${message || "Resolve the wiki git conflict."} Conflicts: ${conflictFiles.join(", ")}`
-          : message || "Remote Vibes could not sync the knowledge base.",
+          : message || "Vibe Research could not sync the knowledge base.",
       title: isConflict ? "Knowledge base merge conflict" : "Knowledge base sync failed",
       type: isConflict ? "conflict" : "error",
     });
@@ -4110,7 +4181,7 @@ function getSystemToasts() {
       action: "retry-update-check",
       key: `update:${state.lastUpdateError?.occurredAt || state.update?.checkedAt || ""}:${updateErrorMessage}`,
       message: updateErrorMessage,
-      title: "Remote Vibes update failed",
+      title: "Vibe Research update failed",
       type: "error",
     });
   }
@@ -4247,7 +4318,7 @@ async function createFolderFromPicker(folderName) {
   const createdPath = payload?.folder?.path || "";
 
   if (!createdPath) {
-    throw new Error("Folder was created, but Remote Vibes could not resolve its path.");
+    throw new Error("Folder was created, but Vibe Research could not resolve its path.");
   }
 
   const createdRelativePath = getFolderPickerChildRelativePath(parentPath, payload.folder.name);
@@ -4352,9 +4423,9 @@ function inferWikiPathConfigured(settings) {
 
   const relativeRoot = String(settings.wikiRelativeRoot || settings.wikiRelativePath || "");
   const defaultWikiPath = state.defaultCwd
-    ? normalizeWorkspaceRoot(`${state.defaultCwd.replace(/\/+$/, "")}/.remote-vibes/wiki`)
+    ? normalizeWorkspaceRoot(`${state.defaultCwd.replace(/\/+$/, "")}/.vibe-research/wiki`)
     : "";
-  if (relativeRoot === ".remote-vibes/wiki" || (defaultWikiPath && wikiPath === defaultWikiPath)) {
+  if (relativeRoot === ".vibe-research/wiki" || (defaultWikiPath && wikiPath === defaultWikiPath)) {
     return false;
   }
 
@@ -4501,7 +4572,7 @@ async function attachTerminalImagePlaceholderPaste(fallbackText) {
       return;
     }
   } catch (error) {
-    console.warn("[remote-vibes] clipboard image read failed", error);
+    console.warn("[vibe-research] clipboard image read failed", error);
   }
 
   pasteTextIntoTerminal(fallbackText);
@@ -4554,7 +4625,7 @@ async function uploadTerminalImageAttachment(file, source) {
     });
   } catch (error) {
     if (error?.status === 404 && /^Request failed with status 404$/i.test(error.message || "")) {
-      throw new Error("Image attachments need a Remote Vibes relaunch before they are available.");
+      throw new Error("Image attachments need a Vibe Research relaunch before they are available.");
     }
 
     throw error;
@@ -4612,7 +4683,7 @@ async function attachTerminalImageFiles(files, source) {
 
     pasteTextIntoTerminal(attachments.map(formatTerminalImageAttachmentReference).join(" "));
   } catch (error) {
-    console.error("[remote-vibes] image attachment failed", error);
+    console.error("[vibe-research] image attachment failed", error);
     window.alert(error.message || "Could not attach image.");
   }
 }
@@ -6491,7 +6562,7 @@ function createKnowledgeBaseGraphLayout(notes, edges) {
 function applyKnowledgeBaseIndexState(payload) {
   teardownKnowledgeBaseGraphInteractions();
   state.knowledgeBase.rootPath = payload?.rootPath || "";
-  state.knowledgeBase.relativeRoot = payload?.relativeRoot || ".remote-vibes/wiki";
+  state.knowledgeBase.relativeRoot = payload?.relativeRoot || ".vibe-research/wiki";
   state.knowledgeBase.notes = Array.isArray(payload?.notes) ? payload.notes : [];
   state.knowledgeBase.edges = Array.isArray(payload?.edges) ? payload.edges : [];
   state.knowledgeBase.graphLayout = createKnowledgeBaseGraphLayout(
@@ -6526,6 +6597,38 @@ function applyKnowledgeBaseNoteState(payload) {
   }
 }
 
+function clearKnowledgeBaseNoteSelection({ updateLocation = true, render = true } = {}) {
+  const hadSelection =
+    Boolean(state.knowledgeBase.selectedNotePath) ||
+    Boolean(state.knowledgeBase.selectedNoteTitle) ||
+    Boolean(state.knowledgeBase.selectedNoteContent) ||
+    Boolean(state.knowledgeBase.selectedNoteError) ||
+    state.knowledgeBase.selectedNoteEditing ||
+    state.knowledgeBase.selectedNoteLoading ||
+    state.knowledgeBase.selectedNoteSaving;
+
+  state.knowledgeBase.selectedNoteRequestId += 1;
+  state.knowledgeBase.selectedNotePath = "";
+  state.knowledgeBase.selectedNoteTitle = "";
+  state.knowledgeBase.selectedNoteContent = "";
+  state.knowledgeBase.selectedNoteDraft = "";
+  state.knowledgeBase.selectedNoteEditing = false;
+  state.knowledgeBase.selectedNoteLoading = false;
+  state.knowledgeBase.selectedNoteSaving = false;
+  state.knowledgeBase.selectedNoteError = "";
+  state.knowledgeBase.pendingGraphFocusPath = "";
+
+  if (updateLocation) {
+    updateRoute({ view: "knowledge-base", notePath: "" });
+  }
+
+  if (render && hadSelection) {
+    renderShell();
+  }
+
+  return hadSelection;
+}
+
 async function loadKnowledgeBaseIndex() {
   state.knowledgeBase.loading = true;
   state.knowledgeBase.error = "";
@@ -6544,14 +6647,7 @@ async function loadKnowledgeBaseNote(relativePath, { force = false } = {}) {
   const normalizedPath = normalizeFileTreePath(relativePath);
 
   if (!normalizedPath) {
-    state.knowledgeBase.selectedNotePath = "";
-    state.knowledgeBase.selectedNoteTitle = "";
-    state.knowledgeBase.selectedNoteContent = "";
-    state.knowledgeBase.selectedNoteDraft = "";
-    state.knowledgeBase.selectedNoteEditing = false;
-    state.knowledgeBase.selectedNoteError = "";
-    state.knowledgeBase.selectedNoteLoading = false;
-    state.knowledgeBase.selectedNoteSaving = false;
+    clearKnowledgeBaseNoteSelection({ updateLocation: false, render: false });
     return;
   }
 
@@ -7454,7 +7550,7 @@ function renderKnowledgeBaseApp() {
       <section class="knowledge-base-app-shell">
         <header class="knowledge-base-app-toolbar">
           <div class="knowledge-base-app-copy">
-            <span class="knowledge-base-app-eyebrow">Remote Vibes</span>
+            <span class="knowledge-base-app-eyebrow">Vibe Research</span>
             <strong>Knowledge Base</strong>
             <div class="knowledge-base-app-meta" data-knowledge-base-header-meta>${escapeHtml(getKnowledgeBaseHeaderMeta())}</div>
           </div>
@@ -7467,7 +7563,7 @@ function renderKnowledgeBaseApp() {
               ? `<a class="ghost-button toolbar-control" href="${escapeHtml(rawHref)}" target="_blank" rel="noreferrer">raw</a>`
               : ""}
             <button class="icon-button toolbar-control refresh-icon-button" type="button" id="refresh-knowledge-base" aria-label="Refresh knowledge base" ${tooltipAttributes("Refresh knowledge base")}>${renderIcon(RefreshCw)}</button>
-            <a class="ghost-button toolbar-control" href="${escapeHtml(getAppBaseUrl())}/">remote vibes</a>
+            <a class="ghost-button toolbar-control" href="${escapeHtml(getAppBaseUrl())}/">vibe research</a>
           </div>
         </header>
 
@@ -7899,10 +7995,13 @@ function getSubagentLabel(subagent) {
 function renderSessionSubagentCard(subagent) {
   const status = getSubagentLabel(subagent);
   const isBrowserUseSubagent = Boolean(subagent.browserUseSessionId);
+  const isVideoMemorySubagent = Boolean(subagent.videoMemoryMonitorId);
   const messageCount = Number(subagent.messageCount);
   const toolUseCount = Number(subagent.toolUseCount);
   const metaParts = [
-    isBrowserUseSubagent ? "browser use" : `${subagent.source === "claude" ? "Claude" : subagent.agentType || "agent"} subagent`,
+    isVideoMemorySubagent
+      ? "VideoMemory"
+      : isBrowserUseSubagent ? "browser use" : `${subagent.source === "claude" ? "Claude" : subagent.agentType || "agent"} subagent`,
     subagent.status && subagent.status !== "working" ? subagent.status : "",
     subagent.messageCount != null && Number.isFinite(messageCount) ? `${messageCount} msgs` : "",
     subagent.toolUseCount != null && Number.isFinite(toolUseCount) ? `${toolUseCount} tools` : "",
@@ -7910,6 +8009,8 @@ function renderSessionSubagentCard(subagent) {
   ].filter(Boolean);
   const title = isBrowserUseSubagent
     ? `Open Browser Use session: ${subagent.description || subagent.name || "Browser task"}`
+    : isVideoMemorySubagent
+      ? `VideoMemory monitor: ${subagent.description || subagent.name || "Camera monitor"}`
     : `Claude subagent: ${subagent.description || subagent.name || "subagent"}`;
 
   if (isBrowserUseSubagent) {
@@ -7932,6 +8033,22 @@ function renderSessionSubagentCard(subagent) {
         <button class="session-subagent-delete" type="button" data-delete-browser-use-session="${browserUseSessionId}" aria-label="${deleteLabel}" ${tooltipAttributes(deleteLabel)}>
           ${renderIcon(Trash2)}
         </button>
+      </div>
+    `;
+  }
+
+  if (isVideoMemorySubagent) {
+    return `
+      <div class="session-subagent-card is-videomemory" title="${escapeHtml(title)}">
+        <span class="session-activity-dot ${status.className}" role="img" aria-label="${escapeHtml(status.title)}" title="${escapeHtml(status.title)}"${getSessionActivityStyle(status)}></span>
+        <div class="session-main">
+          <div class="session-name">${escapeHtml(subagent.name || "camera monitor")}</div>
+          <div class="session-subtitle">${escapeHtml(metaParts.join(" · "))}</div>
+        </div>
+        <span class="session-subagent-trailing">
+          <span class="session-time">${relativeTime(subagent.updatedAt)}</span>
+          <span class="session-subagent-open" aria-hidden="true">${renderIcon(Camera)}</span>
+        </span>
       </div>
     `;
   }
@@ -7973,7 +8090,7 @@ function renderSessionCards() {
               aria-expanded="${expanded ? "true" : "false"}"
               title="${escapeHtml(group.cwd || group.name)}"
             >
-              <span class="session-project-icon ${isRemoteVibesSystemFolder(group.cwd || group.name) ? "is-system" : ""}" aria-hidden="true">
+              <span class="session-project-icon ${isVibeResearchSystemFolder(group.cwd || group.name) ? "is-system" : ""}" aria-hidden="true">
                 ${renderIcon(getDirectoryIcon(group.cwd || group.name, expanded))}
               </span>
               <span class="session-project-copy">
@@ -8028,6 +8145,12 @@ function renderSidebarNav() {
       icon: Plug,
       label: "Plugins",
       meta: "MCPs and integrations",
+    },
+    {
+      view: "settings",
+      icon: Settings,
+      label: "Settings",
+      meta: getAgentCredentialsStatusText(),
     },
     {
       view: "automations",
@@ -8283,7 +8406,7 @@ function renderSearchView() {
           class="main-search-input"
           type="search"
           value="${escapeHtml(state.globalSearchQuery)}"
-          placeholder="Search Remote Vibes"
+          placeholder="Search Vibe Research"
           autocomplete="off"
           autocorrect="off"
           autocapitalize="none"
@@ -8335,6 +8458,10 @@ function isPluginInstalled(plugin) {
 
   if (pluginId === "browser-use") {
     return Boolean(state.settings.browserUseEnabled);
+  }
+
+  if (pluginId === "videomemory") {
+    return Boolean(state.settings.videoMemoryEnabled);
   }
 
   return getInstalledPluginIds().has(pluginId);
@@ -8426,6 +8553,59 @@ function renderPluginCards() {
     .join("");
 }
 
+function renderAgentCredentialsSettingsPanel() {
+  return `
+    <aside class="mcp-import-card agent-credentials-card">
+      <span class="main-search-kind">agent credentials</span>
+      <strong>Model Provider Keys</strong>
+      <p>Saved keys are injected into newly started agent terminals and kept out of API responses.</p>
+      <form class="settings-form agent-credentials-form" id="agent-credentials-form">
+        <label class="field-label" for="agent-anthropic-api-key">Anthropic API key</label>
+        <input
+          class="file-root-input"
+          id="agent-anthropic-api-key"
+          name="agentAnthropicApiKey"
+          type="password"
+          placeholder="${escapeHtml(getSecretPlaceholder(state.settings.agentAnthropicApiKeyConfigured, "sk-ant-..."))}"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <label class="field-label" for="agent-openai-api-key">OpenAI API key</label>
+        <input
+          class="file-root-input"
+          id="agent-openai-api-key"
+          name="agentOpenAiApiKey"
+          type="password"
+          placeholder="${escapeHtml(getSecretPlaceholder(state.settings.agentOpenAiApiKeyConfigured, "sk-..."))}"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <label class="field-label" for="agent-hf-token">Hugging Face token</label>
+        <input
+          class="file-root-input"
+          id="agent-hf-token"
+          name="agentHfToken"
+          type="password"
+          placeholder="${escapeHtml(getSecretPlaceholder(state.settings.agentHfTokenConfigured, "hf_..."))}"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <div class="knowledge-settings-actions">
+          <button class="primary-button settings-save-button" type="submit" data-agent-credentials-action>save credentials</button>
+          <div class="settings-status" id="agent-credentials-settings-status">${escapeHtml(getAgentCredentialsStatusText())}</div>
+        </div>
+      </form>
+      <p class="mcp-import-paths"><code>ANTHROPIC_API_KEY</code> · <code>OPENAI_API_KEY</code> · <code>HF_TOKEN</code></p>
+    </aside>
+  `;
+}
+
 function renderBrowserUsePluginPanel() {
   const status = state.settings.browserUseStatus || {};
 
@@ -8433,7 +8613,7 @@ function renderBrowserUsePluginPanel() {
     <aside class="mcp-import-card browser-use-plugin-card">
       <span class="main-search-kind">browser agent</span>
       <strong>Browser Use</strong>
-      <p>Remote Vibes can launch the local OttoAuth headless worker as a browser fulfillment subagent and stream its current browser snapshot back into the session sidebar.</p>
+      <p>Vibe Research can launch the local OttoAuth headless worker as a browser fulfillment subagent and stream its current browser snapshot back into the session sidebar.</p>
       <form class="settings-form browser-use-form" id="browser-use-form">
         <label class="checkbox-row">
           <input type="checkbox" name="browserUseEnabled" ${state.settings.browserUseEnabled ? "checked" : ""} />
@@ -8515,7 +8695,95 @@ function renderBrowserUsePluginPanel() {
           <div class="settings-status" id="browser-use-settings-status">${escapeHtml(getBrowserUseStatusText())}</div>
         </div>
       </form>
-      <p class="mcp-import-paths">Tool: <code>rv-browser-use --task "..."</code> · sessions appear below their caller.</p>
+      <p class="mcp-import-paths">Tool: <code>vr-browser-use --task "..."</code> · sessions appear below their caller.</p>
+    </aside>
+  `;
+}
+
+function renderVideoMemoryMonitorRows() {
+  const monitors = Array.isArray(state.videoMemoryMonitors) ? state.videoMemoryMonitors : [];
+  const activeMonitors = monitors.filter((monitor) => monitor.status !== "deleted").slice(0, 5);
+  if (!activeMonitors.length) {
+    return `<div class="browser-use-empty-inline">no camera monitors yet</div>`;
+  }
+
+  return `
+    <div class="videomemory-monitor-list">
+      ${activeMonitors
+        .map((monitor) => {
+          const title = monitor.name || monitor.trigger || "Camera monitor";
+          const meta = [
+            monitor.status || "active",
+            monitor.ioId ? `camera ${monitor.ioId}` : "",
+            monitor.providerId || "",
+            monitor.wakeCount ? `${monitor.wakeCount} wake${monitor.wakeCount === 1 ? "" : "s"}` : "",
+          ].filter(Boolean).join(" · ");
+          return `
+            <article class="videomemory-monitor-row">
+              <span class="session-activity-dot ${monitor.status === "active" ? "working" : "read"}" aria-hidden="true"></span>
+              <div class="session-main">
+                <div class="session-name">${escapeHtml(title)}</div>
+                <div class="session-subtitle">${escapeHtml(meta)}</div>
+              </div>
+              <span class="session-time">${relativeTime(monitor.lastEventAt || monitor.updatedAt || monitor.createdAt)}</span>
+            </article>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderVideoMemoryPluginPanel() {
+  const status = state.settings.videoMemoryStatus || {};
+  const webhookUrl = status.webhookUrl || "";
+  const webhookToken = status.webhookToken || "";
+
+  return `
+    <aside class="mcp-import-card videomemory-plugin-card">
+      <span class="main-search-kind">camera agent</span>
+      <h3>VideoMemory</h3>
+      <p>Vibe Research can route VideoMemory task events into any coding-agent session and show armed monitors in the camera room.</p>
+      <form class="settings-form videomemory-form" id="videomemory-form">
+        <label class="checkbox-row browser-use-compact-checkbox">
+          <input type="checkbox" name="videoMemoryEnabled" ${state.settings.videoMemoryEnabled ? "checked" : ""} />
+          <span>enable VideoMemory monitors</span>
+        </label>
+        <label class="field-label" for="videomemory-base-url">VideoMemory URL</label>
+        <input
+          class="file-root-input"
+          id="videomemory-base-url"
+          name="videoMemoryBaseUrl"
+          type="url"
+          value="${escapeHtml(state.settings.videoMemoryBaseUrl || status.baseUrl || "http://127.0.0.1:5050")}"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <label class="field-label" for="videomemory-provider">default agent</label>
+        <select class="file-root-input" id="videomemory-provider" name="videoMemoryProviderId">
+          ${renderProviderOptions(state.settings.videoMemoryProviderId || state.defaultProviderId)}
+        </select>
+        <div class="knowledge-settings-remote-grid">
+          <label>
+            <span class="field-label">webhook URL</span>
+            <input class="file-root-input" type="text" value="${escapeHtml(webhookUrl)}" readonly />
+          </label>
+          <label>
+            <span class="field-label">bearer token</span>
+            <input class="file-root-input" type="text" value="${escapeHtml(webhookToken)}" readonly />
+          </label>
+        </div>
+        <div class="knowledge-settings-actions">
+          <button class="primary-button settings-save-button" type="submit" data-videomemory-action="setup">save VideoMemory</button>
+          <div class="settings-status" id="videomemory-settings-status">${escapeHtml(getVideoMemoryStatusText())}</div>
+        </div>
+      </form>
+      <div class="videomemory-monitor-panel">
+        ${renderVideoMemoryMonitorRows()}
+      </div>
+      <p class="mcp-import-paths">Tool: <code>vr-videomemory create --io-id net0 --trigger "..." --action "..."</code></p>
     </aside>
   `;
 }
@@ -8530,7 +8798,7 @@ function renderPluginsView() {
         <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
         <div class="dashboard-copy">
           <strong>Plugins</strong>
-          <div class="terminal-meta">a Codex-style place for MCPs, integrations, and built-in Remote Vibes tools</div>
+          <div class="terminal-meta">a Codex-style place for MCPs, integrations, and built-in Vibe Research tools</div>
         </div>
       </div>
       <div class="main-search-shell">
@@ -8551,13 +8819,39 @@ function renderPluginsView() {
       <div class="plugins-layout">
         <section class="plugin-grid" id="plugin-results">${renderPluginCards()}</section>
         <div class="plugins-side-stack">
+          ${renderAgentCredentialsSettingsPanel()}
           ${renderBrowserUsePluginPanel()}
+          ${renderVideoMemoryPluginPanel()}
           <aside class="mcp-import-card">
             <span class="main-search-kind">MCP bridge</span>
             <strong>Port the MCPs your agents already use</strong>
-            <p>Remote Vibes launches the real Codex, Claude, Gemini, and OpenCode CLIs, so their existing MCP/plugin configs still matter inside each session. This page is the first shared surface for making those tools visible from Remote Vibes itself.</p>
+            <p>Vibe Research launches the real Codex, Claude, Gemini, and OpenCode CLIs, so their existing MCP/plugin configs still matter inside each session. This page is the first shared surface for making those tools visible from Vibe Research itself.</p>
             <p class="mcp-import-paths">Common places to import from next: <code>~/.codex</code>, <code>~/.claude</code>, project MCP files, and agent-specific config folders.</p>
           </aside>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderSettingsView() {
+  return `
+    <section class="dashboard-panel main-view settings-view" ${renderMainViewAttributes("settings")}>
+      <div class="dashboard-toolbar">
+        <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
+        <div class="dashboard-copy">
+          <strong>Settings</strong>
+          <div class="terminal-meta">credentials, brain folder, and local runtime defaults</div>
+        </div>
+      </div>
+      <div class="plugins-layout settings-layout">
+        <div class="plugins-side-stack">
+          ${renderAgentCredentialsSettingsPanel()}
+          ${renderKnowledgeSettingsForm()}
+        </div>
+        <div class="plugins-side-stack">
+          ${renderBrowserUsePluginPanel()}
+          ${renderVideoMemoryPluginPanel()}
         </div>
       </div>
     </section>
@@ -8671,7 +8965,7 @@ function renderAutomationsView() {
         <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
         <div class="dashboard-copy">
           <strong>Automations</strong>
-          <div class="terminal-meta">scheduled Remote Vibes helpers live here as this grows</div>
+          <div class="terminal-meta">scheduled Vibe Research helpers live here as this grows</div>
         </div>
       </div>
       <div class="dashboard-range">
@@ -8785,6 +9079,36 @@ function buildCpuCoreChartSeries(history) {
   }));
 }
 
+function buildCpuChartSeries(history) {
+  return [
+    {
+      id: "cpu-average",
+      label: "CPU average",
+      values: history.map((sample) => {
+        const utilization = getFiniteMetricPercent(sample.cpu?.utilizationPercent);
+        if (utilization !== null) {
+          return utilization;
+        }
+
+        const cores = (sample.cpu?.cores || [])
+          .map((core) => getFiniteMetricPercent(core?.utilizationPercent))
+          .filter((value) => value !== null);
+        return cores.length ? cores.reduce((sum, value) => sum + value, 0) / cores.length : null;
+      }),
+    },
+    {
+      id: "cpu-peak-core",
+      label: "Busiest core",
+      values: history.map((sample) => {
+        const cores = (sample.cpu?.cores || [])
+          .map((core) => getFiniteMetricPercent(core?.utilizationPercent))
+          .filter((value) => value !== null);
+        return cores.length ? Math.max(...cores) : null;
+      }),
+    },
+  ];
+}
+
 function buildMemoryChartSeries(history) {
   return [
     {
@@ -8806,12 +9130,32 @@ function buildStorageChartSeries(history) {
   ];
 }
 
+function isBmcGpuHistoryEntry(gpu) {
+  const name = String(gpu?.name || "");
+  return /\bast\s+card\d+\b/i.test(name) || /\b1a03:2000\b/i.test(name);
+}
+
+function isNvidiaDrmGpuHistoryAlias(gpu) {
+  const id = String(gpu?.id || "");
+  const name = String(gpu?.name || "");
+  return (
+    id.startsWith("drm-card") && /\bnvidia\b/i.test(name)
+  ) || /\bnvidia\s+nvidia\s+card\d+\b/i.test(name) || /\b10de:/i.test(name);
+}
+
+function getRenderableGpuHistoryEntries(gpus) {
+  const entries = Array.isArray(gpus) ? gpus : [];
+  const hasNvidiaSmiEntries = entries.some((gpu) => String(gpu?.id || "").startsWith("nvidia-"));
+
+  return entries.filter((gpu) => !isBmcGpuHistoryEntry(gpu) && !(hasNvidiaSmiEntries && isNvidiaDrmGpuHistoryAlias(gpu)));
+}
+
 function buildGpuChartSeries(history) {
   const labels = new Map();
   const order = [];
 
   for (const sample of history) {
-    for (const gpu of sample.gpus || []) {
+    for (const gpu of getRenderableGpuHistoryEntries(sample.gpus)) {
       if (!labels.has(gpu.id)) {
         labels.set(gpu.id, gpu.name);
         order.push(gpu.id);
@@ -8823,7 +9167,7 @@ function buildGpuChartSeries(history) {
     id,
     label: labels.get(id) || id,
     values: history.map((sample) => {
-      const gpu = (sample.gpus || []).find((entry) => entry.id === id);
+      const gpu = getRenderableGpuHistoryEntries(sample.gpus).find((entry) => entry.id === id);
       return getFiniteMetricPercent(gpu?.utilizationPercent);
     }),
   }));
@@ -8930,13 +9274,23 @@ function getSystemChartXAxisLabels(history, range) {
   };
 }
 
-function renderUtilizationLineChart({ emptyMessage, history, range, series, showLegendValues = true, subtitle, title }) {
+function renderUtilizationLineChart({
+  emptyMessage,
+  history,
+  maxSeries = 8,
+  range,
+  series,
+  showLegendValues = true,
+  subtitle,
+  title,
+}) {
   const activeSeries = series.filter((entry) => entry.values.some((value) => getFiniteMetricPercent(value) !== null));
-  const totalPoints = Math.max(1, ...activeSeries.map((entry) => entry.values.length));
+  const plottedSeries = activeSeries.slice(0, maxSeries);
+  const totalPoints = Math.max(1, ...plottedSeries.map((entry) => entry.values.length));
   const chartContext = buildSystemChartContext(history, totalPoints);
   const xAxisLabels = getSystemChartXAxisLabels(history, range);
-  const visibleLegend = activeSeries.slice(0, 16);
-  const hiddenLegendCount = Math.max(0, activeSeries.length - visibleLegend.length);
+  const visibleLegend = plottedSeries.slice(0, 16);
+  const hiddenLegendCount = Math.max(0, activeSeries.length - plottedSeries.length);
 
   return `
     <article class="system-chart-card">
@@ -8945,14 +9299,14 @@ function renderUtilizationLineChart({ emptyMessage, history, range, series, show
         <span>${escapeHtml(subtitle)}</span>
       </div>
       ${
-        activeSeries.length
+        plottedSeries.length
           ? `
             <div class="system-line-chart-wrap">
               <svg class="system-line-chart" viewBox="0 0 ${SYSTEM_CHART_WIDTH} ${SYSTEM_CHART_HEIGHT}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(title)} utilization history over ${escapeHtml(range.title)}">
                 <line class="system-line-chart-grid" x1="0" y1="0" x2="${SYSTEM_CHART_WIDTH}" y2="0"></line>
                 <line class="system-line-chart-grid" x1="0" y1="${SYSTEM_CHART_HEIGHT / 2}" x2="${SYSTEM_CHART_WIDTH}" y2="${SYSTEM_CHART_HEIGHT / 2}"></line>
                 <line class="system-line-chart-grid" x1="0" y1="${SYSTEM_CHART_HEIGHT}" x2="${SYSTEM_CHART_WIDTH}" y2="${SYSTEM_CHART_HEIGHT}"></line>
-                ${activeSeries.map((entry, index) => renderChartSeries(entry, index, chartContext)).join("")}
+                ${plottedSeries.map((entry, index) => renderChartSeries(entry, index, chartContext)).join("")}
               </svg>
               <div class="system-line-chart-axis" aria-hidden="true">
                 <span>100%</span>
@@ -8972,7 +9326,7 @@ function renderUtilizationLineChart({ emptyMessage, history, range, series, show
                   const latestValue = getLatestSeriesValue(entry);
                   return `
                     <span class="system-chart-chip" style="--chart-color: ${escapeHtml(color)}">
-                      <i></i>${escapeHtml(entry.label)}
+                      <i></i><span>${escapeHtml(entry.label)}</span>
                       ${showLegendValues ? `<strong>${escapeHtml(formatPercent(latestValue))}</strong>` : ""}
                     </span>
                   `;
@@ -9025,12 +9379,11 @@ function renderSystemUtilizationCharts(system) {
       }
       <div class="system-chart-grid">
         ${renderUtilizationLineChart({
-          title: "CPU core history",
+          title: "CPU history",
           subtitle: state.systemHistoryLoading ? "loading history..." : sampleText,
           history,
           range,
-          series: buildCpuCoreChartSeries(history),
-          showLegendValues: false,
+          series: buildCpuChartSeries(history),
           emptyMessage: "CPU core history starts after the first sample.",
         })}
         ${renderUtilizationLineChart({
@@ -9201,12 +9554,22 @@ function renderCpuCoreGrid(cpu) {
 
 function renderDeviceCard(device) {
   const utilization = device?.utilizationPercent;
+  const usedByUs = Boolean(device?.usedByUs);
+  const activeProcessCount = Number(device?.activeProcessCount || 0);
+  const ownedProcessCount = Number(device?.ownedProcessCount || 0);
+  const visibleOwnedProcessCount = ownedProcessCount || 1;
   const memoryText =
     Number.isFinite(Number(device?.memoryUsedBytes)) && Number.isFinite(Number(device?.memoryTotalBytes))
       ? `${formatBytes(device.memoryUsedBytes)} of ${formatBytes(device.memoryTotalBytes)} memory`
       : "";
+  const processText = usedByUs
+    ? `${visibleOwnedProcessCount} Vibe Research GPU ${visibleOwnedProcessCount === 1 ? "process" : "processes"}`
+    : activeProcessCount
+      ? `${activeProcessCount} external GPU ${activeProcessCount === 1 ? "process" : "processes"}`
+      : "";
   const detailParts = [
     device?.source,
+    processText,
     Number.isFinite(Number(device?.cores)) ? `${device.cores} cores` : "",
     memoryText,
     Number.isFinite(Number(device?.temperatureC)) ? `${Math.round(device.temperatureC)}°C` : "",
@@ -9216,12 +9579,12 @@ function renderDeviceCard(device) {
   ].filter(Boolean);
 
   return `
-    <article class="system-device-card">
+    <article class="system-device-card ${usedByUs ? "is-used-by-us" : ""}">
       <div class="system-device-head">
         <strong>${escapeHtml(device?.name || "Device")}</strong>
         <span>${escapeHtml(formatPercent(utilization))}</span>
       </div>
-      ${renderMetricBar(utilization, "is-device")}
+      ${renderMetricBar(utilization, usedByUs ? "is-device is-used-by-us" : "is-device")}
       <p>${escapeHtml(detailParts.join(" · ") || "detected, but utilization is not exposed by this host")}</p>
     </article>
   `;
@@ -9229,12 +9592,16 @@ function renderDeviceCard(device) {
 
 function renderDeviceSection(title, devices, emptyMessage) {
   const entries = Array.isArray(devices) ? devices : [];
+  const usedByUsCount = entries.filter((device) => device?.usedByUs).length;
+  const summary = usedByUsCount
+    ? `${entries.length} detected · ${usedByUsCount} used by Vibe Research`
+    : `${entries.length} detected`;
 
   return `
     <section class="system-section">
       <div class="system-section-head">
         <strong>${escapeHtml(title)}</strong>
-        <span>${escapeHtml(`${entries.length} detected`)}</span>
+        <span>${escapeHtml(summary)}</span>
       </div>
       <div class="system-device-grid">
         ${entries.length ? entries.map((device) => renderDeviceCard(device)).join("") : `<div class="blank-state">${escapeHtml(emptyMessage)}</div>`}
@@ -9287,7 +9654,7 @@ function renderAgentUsageSection(system) {
         <span>${escapeHtml(usage.sourceLabel || "Local activity only")}</span>
       </div>
       <div class="agent-usage-note">${escapeHtml(
-        usage.quotaReason || "Not account quota; these bars only show activity observed by Remote Vibes.",
+        usage.quotaReason || "Not account quota; these bars only show activity observed by Vibe Research.",
       )}</div>
       <div class="system-agent-usage-grid">
         ${providers
@@ -10185,6 +10552,12 @@ function getVisualInterfaceAgents(graph) {
         timestampMs(session.updatedAt),
         timestampMs(session.createdAt),
       ),
+      activityStartedAt: session.activityStartedAt || "",
+      activityCompletedAt: session.activityCompletedAt || "",
+      backgroundActivityActive: Boolean(session.backgroundActivity?.active),
+      hasActiveSubagent: Array.isArray(session.subagents) && session.subagents.some((subagent) => subagent?.status === "working"),
+      providerId: session.providerId || "",
+      sessionStatus: session.status || "",
       sessionId: session.id,
       parentSessionId: "",
       parentName: "",
@@ -10201,25 +10574,39 @@ function getVisualInterfaceAgents(graph) {
 
       const toolUseCount = Number(subagent.toolUseCount);
       const messageCount = Number(subagent.messageCount);
+      const isVideoMemorySubagent = Boolean(subagent.videoMemoryMonitorId);
       const detail = [
-        subagent.browserUseSessionId ? "browser lab" : subagent.source === "claude" ? "Claude helper" : subagent.agentType || "helper",
+        isVideoMemorySubagent
+          ? "camera monitor"
+          : subagent.browserUseSessionId
+            ? "browser lab"
+            : subagent.source === "claude" ? "Claude helper" : subagent.agentType || "helper",
         subagent.toolUseCount != null && Number.isFinite(toolUseCount) ? `${toolUseCount} tools` : "",
         subagent.messageCount != null && Number.isFinite(messageCount) ? `${messageCount} msgs` : "",
       ].filter(Boolean).join(" · ");
 
       agents.push({
-        kind: subagent.browserUseSessionId ? "browser" : "helper",
+        kind: isVideoMemorySubagent ? "camera" : subagent.browserUseSessionId ? "browser" : "helper",
         name: subagent.name || subagent.description || "Helper agent",
         subtitle: detail,
         status: subagent.status || "idle",
         meta: relativeTime(subagent.updatedAt),
         activeAtMs: timestampMs(subagent.updatedAt),
+        activityStartedAt: "",
+        activityCompletedAt: "",
+        agentType: subagent.agentType || "",
+        backgroundActivityActive: false,
+        hasActiveSubagent: false,
+        providerId: "",
+        sessionStatus: subagent.status || "",
+        source: subagent.source || "",
         sessionId: session.id,
         parentSessionId: session.id,
         parentName: session.name || session.providerLabel || "Agent",
         familyIndex: sessionIndex,
         isSubagent: true,
         browserUseSessionId: subagent.browserUseSessionId || "",
+        videoMemoryMonitorId: subagent.videoMemoryMonitorId || "",
         paths: Array.isArray(subagent.paths) ? subagent.paths : [],
         commands: Array.isArray(subagent.commands) ? subagent.commands : [],
       });
@@ -10244,7 +10631,7 @@ function isVisualGameLiveSubagent(subagent) {
 
 function renderVisualAgentTile(agent, index) {
   const statusClass = getVisualStatusClass(agent.status);
-  const icon = agent.kind === "browser" ? AppWindow : agent.kind === "helper" ? Zap : Bot;
+  const icon = agent.kind === "camera" ? Camera : agent.kind === "browser" ? AppWindow : agent.kind === "helper" ? Zap : Bot;
   const content = `
     <span class="visual-agent-sprite visual-agent-sprite-${escapeHtml(statusClass)}" aria-hidden="true">
       ${renderIcon(icon)}
@@ -10334,12 +10721,16 @@ function renderVisualStations(graph) {
       count + (Array.isArray(session.subagents) ? session.subagents.filter((subagent) => subagent.browserUseSessionId).length : 0),
     0,
   );
-  const installedPluginCount = Array.isArray(state.settings.installedPluginIds) ? state.settings.installedPluginIds.length : 0;
+  const cameraMonitorCount = sessions.reduce(
+    (count, session) =>
+      count + (Array.isArray(session.subagents) ? session.subagents.filter((subagent) => subagent.videoMemoryMonitorId).length : 0),
+    0,
+  );
   const pathBucketCount = collectSwarmPathBuckets(graph).length;
   const stationCards = [
     { label: "Agent Desk", meta: `${sessions.length} chats`, icon: Bot },
-    { label: "Tool Shed", meta: `${installedPluginCount} plugins`, icon: Plug },
     { label: "Browser Lab", meta: browserUseCount ? `${browserUseCount} tasks` : state.settings.browserUseEnabled ? "ready" : "disabled", icon: AppWindow },
+    { label: "Camera Room", meta: cameraMonitorCount ? `${cameraMonitorCount} monitors` : state.settings.videoMemoryEnabled ? "ready" : "disabled", icon: Camera },
     { label: "Evidence Wall", meta: `${pathBucketCount} file groups`, icon: FileText },
     { label: "Port Dock", meta: isLocalhostAppsEnabled() ? `${state.ports.length} ports` : "off", icon: ServerCog },
   ];
@@ -10507,7 +10898,7 @@ function getVisualTownAgentPlacement(agent, index) {
 
 function renderVisualTownAgent(agent, index) {
   const placement = getVisualTownAgentPlacement(agent, index);
-  const icon = agent.kind === "browser" ? AppWindow : agent.kind === "helper" ? Zap : Bot;
+  const icon = agent.kind === "camera" ? Camera : agent.kind === "browser" ? AppWindow : agent.kind === "helper" ? Zap : Bot;
   const isWorking = placement.statusClass === "working";
   const label = truncateSwarmLabel(agent.name || "agent", isWorking ? 28 : 18);
   const style = [
@@ -10574,11 +10965,6 @@ function renderVisualTownWorld(graph) {
           <span class="visual-building-roof" aria-hidden="true"></span>
           <strong>Mission Board</strong>
           <em>start work</em>
-        </button>
-        <button class="visual-town-building visual-building-tools" type="button" data-open-main-view="plugins">
-          <span class="visual-building-roof" aria-hidden="true"></span>
-          <strong>Tool Shed</strong>
-          <em>${escapeHtml(`${state.settings.installedPluginIds?.length || 0} plugins`)}</em>
         </button>
         <button class="visual-town-building visual-building-evidence" type="button" data-open-main-view="knowledge-base">
           <span class="visual-building-roof" aria-hidden="true"></span>
@@ -10715,10 +11101,67 @@ function teardownVisualPixelGame() {
   state.visualGame.hoverLabel = "";
 }
 
+function clearVisualGameSelection({ render = true } = {}) {
+  const hadSelection = Boolean(state.visualGame.selectedSessionId || state.visualGame.selectedBrowserUseSessionId);
+  state.visualGame.selectedSessionId = "";
+  state.visualGame.selectedBrowserUseSessionId = "";
+
+  if (render && hadSelection) {
+    renderShell();
+  }
+
+  return hadSelection;
+}
+
+function normalizeVisualGameCamera(camera = {}) {
+  const zoom = clamp(Number(camera.zoom || 1), VISUAL_GAME_MIN_ZOOM, VISUAL_GAME_MAX_ZOOM);
+  const visibleWidth = VISUAL_GAME_WIDTH / zoom;
+  const visibleHeight = VISUAL_GAME_HEIGHT / zoom;
+  const maxX = Math.max(0, VISUAL_GAME_WIDTH - visibleWidth);
+  const maxY = Math.max(0, VISUAL_GAME_HEIGHT - visibleHeight);
+
+  return {
+    x: clamp(Number(camera.x || 0), 0, maxX),
+    y: clamp(Number(camera.y || 0), 0, maxY),
+    zoom,
+  };
+}
+
+function setVisualGameCamera(camera) {
+  state.visualGame.camera = normalizeVisualGameCamera(camera);
+  return state.visualGame.camera;
+}
+
+function getVisualGameCamera() {
+  return setVisualGameCamera(state.visualGame.camera || { x: 0, y: 0, zoom: 1 });
+}
+
+function getVisualGameCameraWorldPoint(viewportPoint) {
+  const camera = getVisualGameCamera();
+  return {
+    x: camera.x + viewportPoint.x / camera.zoom,
+    y: camera.y + viewportPoint.y / camera.zoom,
+  };
+}
+
+function zoomVisualGameCameraAt(viewportPoint, zoomFactor) {
+  const camera = getVisualGameCamera();
+  const worldPoint = getVisualGameCameraWorldPoint(viewportPoint);
+  const nextZoom = clamp(camera.zoom * zoomFactor, VISUAL_GAME_MIN_ZOOM, VISUAL_GAME_MAX_ZOOM);
+  return setVisualGameCamera({
+    x: worldPoint.x - viewportPoint.x / nextZoom,
+    y: worldPoint.y - viewportPoint.y / nextZoom,
+    zoom: nextZoom,
+  });
+}
+
 function mountVisualPixelGame() {
   teardownVisualPixelGame();
 
   const canvas = document.querySelector("#visual-game-canvas");
+  const zoomInButton = document.querySelector("#visual-game-zoom-in");
+  const zoomOutButton = document.querySelector("#visual-game-zoom-out");
+  const resetCameraButton = document.querySelector("#visual-game-reset-camera");
   const graph = state.swarmGraph.data;
   if (!(canvas instanceof HTMLCanvasElement) || !graph) {
     return;
@@ -10730,9 +11173,14 @@ function mountVisualPixelGame() {
   }
 
   context.imageSmoothingEnabled = false;
-  const gameModel = getVisualGameModel(graph);
+  if (!state.systemMetricsLoading) {
+    void loadSystemMetrics();
+  }
 
-  const getPointerPoint = (event) => {
+  let panState = null;
+  let suppressClickUntil = 0;
+
+  const getViewportPoint = (event) => {
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) {
       return null;
@@ -10742,6 +11190,11 @@ function mountVisualPixelGame() {
       x: ((event.clientX - rect.left) / rect.width) * VISUAL_GAME_WIDTH,
       y: ((event.clientY - rect.top) / rect.height) * VISUAL_GAME_HEIGHT,
     };
+  };
+
+  const getWorldPoint = (event) => {
+    const point = getViewportPoint(event);
+    return point ? getVisualGameCameraWorldPoint(point) : null;
   };
 
   const getHitAtPoint = (point) => {
@@ -10773,38 +11226,162 @@ function mountVisualPixelGame() {
   };
 
   const onPointerMove = (event) => {
-    const hit = getHitAtPoint(getPointerPoint(event));
+    if (panState?.pointerId === event.pointerId) {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        return;
+      }
+
+      const deltaX = ((event.clientX - panState.startClientX) / rect.width) * VISUAL_GAME_WIDTH;
+      const deltaY = ((event.clientY - panState.startClientY) / rect.height) * VISUAL_GAME_HEIGHT;
+      const distance = Math.hypot(event.clientX - panState.startClientX, event.clientY - panState.startClientY);
+      panState.moved = panState.moved || distance >= VISUAL_GAME_DRAG_SLOP_PX;
+      setVisualGameCamera({
+        x: panState.startCamera.x - deltaX / panState.startCamera.zoom,
+        y: panState.startCamera.y - deltaY / panState.startCamera.zoom,
+        zoom: panState.startCamera.zoom,
+      });
+      canvas.classList.toggle("is-dragging", panState.moved);
+      setHoverLabel(panState.moved ? "move map" : "");
+      event.preventDefault();
+      return;
+    }
+
+    const hit = getHitAtPoint(getWorldPoint(event));
     canvas.classList.toggle("is-actionable", Boolean(hit));
     setHoverLabel(hit?.label || "");
   };
   const onPointerLeave = () => {
-    canvas.classList.remove("is-actionable");
-    setHoverLabel("");
+    if (!panState) {
+      canvas.classList.remove("is-actionable");
+      setHoverLabel("");
+    }
+  };
+  const onPointerDown = (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const point = getViewportPoint(event);
+    if (!point) {
+      return;
+    }
+
+    panState = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startCamera: { ...getVisualGameCamera() },
+      moved: false,
+    };
+    canvas.classList.add("is-panning");
+    canvas.setPointerCapture?.(event.pointerId);
+  };
+  const endPointerPan = (event) => {
+    if (!panState || panState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    if (panState.moved) {
+      suppressClickUntil = Date.now() + 250;
+    }
+    panState = null;
+    canvas.classList.remove("is-panning", "is-dragging");
+    canvas.releasePointerCapture?.(event.pointerId);
+    const hit = getHitAtPoint(getWorldPoint(event));
+    canvas.classList.toggle("is-actionable", Boolean(hit));
+    setHoverLabel(hit?.label || "");
   };
   const onClick = (event) => {
-    const hit = getHitAtPoint(getPointerPoint(event));
+    if (Date.now() < suppressClickUntil) {
+      event.preventDefault();
+      return;
+    }
+
+    const hit = getHitAtPoint(getWorldPoint(event));
     if (hit) {
       event.preventDefault();
       void handleVisualGameHit(hit);
+      return;
+    }
+
+    if (clearVisualGameSelection()) {
+      event.preventDefault();
     }
   };
+  const onWheel = (event) => {
+    const point = getViewportPoint(event);
+    if (!point) {
+      return;
+    }
 
+    event.preventDefault();
+    const zoomFactor = Math.exp(-event.deltaY * 0.0014);
+    zoomVisualGameCameraAt(point, zoomFactor);
+    const hit = getHitAtPoint(getVisualGameCameraWorldPoint(point));
+    canvas.classList.toggle("is-actionable", Boolean(hit));
+    setHoverLabel(hit?.label || "");
+  };
+  const zoomCameraFromCenter = (zoomFactor) => {
+    zoomVisualGameCameraAt(
+      { x: VISUAL_GAME_WIDTH / 2, y: VISUAL_GAME_HEIGHT / 2 },
+      zoomFactor,
+    );
+  };
+  const resetCamera = () => {
+    setVisualGameCamera({ x: 0, y: 0, zoom: 1 });
+    setHoverLabel("agent village");
+  };
+  const onLostPointerCapture = () => {
+    panState = null;
+    canvas.classList.remove("is-panning", "is-dragging");
+  };
+  const onZoomInClick = () => zoomCameraFromCenter(VISUAL_GAME_ZOOM_STEP);
+  const onZoomOutClick = () => zoomCameraFromCenter(1 / VISUAL_GAME_ZOOM_STEP);
+
+  canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
+  canvas.addEventListener("pointerup", endPointerPan);
+  canvas.addEventListener("pointercancel", endPointerPan);
+  canvas.addEventListener("lostpointercapture", onLostPointerCapture);
   canvas.addEventListener("pointerleave", onPointerLeave);
   canvas.addEventListener("click", onClick);
+  canvas.addEventListener("wheel", onWheel, { passive: false });
+  zoomInButton?.addEventListener("click", onZoomInClick);
+  zoomOutButton?.addEventListener("click", onZoomOutClick);
+  resetCameraButton?.addEventListener("click", resetCamera);
 
   const drawFrame = (time) => {
     state.visualGame.hitAreas = [];
-    context.setTransform(VISUAL_GAME_RENDER_SCALE, 0, 0, VISUAL_GAME_RENDER_SCALE, 0, 0);
+    const camera = getVisualGameCamera();
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.setTransform(
+      VISUAL_GAME_RENDER_SCALE * camera.zoom,
+      0,
+      0,
+      VISUAL_GAME_RENDER_SCALE * camera.zoom,
+      -camera.x * VISUAL_GAME_RENDER_SCALE * camera.zoom,
+      -camera.y * VISUAL_GAME_RENDER_SCALE * camera.zoom,
+    );
     context.imageSmoothingEnabled = false;
+    const gameModel = getVisualGameModel(graph);
     drawVisualGameScene(context, graph, gameModel, time, state.visualGame.hitAreas);
     state.visualGame.frameHandle = window.requestAnimationFrame(drawFrame);
   };
 
   state.visualGame.cleanup = () => {
+    canvas.removeEventListener("pointerdown", onPointerDown);
     canvas.removeEventListener("pointermove", onPointerMove);
+    canvas.removeEventListener("pointerup", endPointerPan);
+    canvas.removeEventListener("pointercancel", endPointerPan);
+    canvas.removeEventListener("lostpointercapture", onLostPointerCapture);
     canvas.removeEventListener("pointerleave", onPointerLeave);
     canvas.removeEventListener("click", onClick);
+    canvas.removeEventListener("wheel", onWheel);
+    zoomInButton?.removeEventListener("click", onZoomInClick);
+    zoomOutButton?.removeEventListener("click", onZoomOutClick);
+    resetCameraButton?.removeEventListener("click", resetCamera);
   };
   state.visualGame.frameHandle = window.requestAnimationFrame(drawFrame);
 }
@@ -10848,38 +11425,78 @@ async function handleVisualGameHit(hit) {
 function getVisualGameModel(graph) {
   return {
     pathBucketCount: collectSwarmPathBuckets(graph).length,
-    pluginCount: state.settings.installedPluginIds?.length || 0,
     dirtyCount: Number(graph?.git?.dirtyCount || 0),
+    gpuFactories: getVisualGameGpuFactories(),
   };
+}
+
+function getVisualGameGpuFactories() {
+  const gpus = Array.isArray(state.systemMetrics?.gpus) ? state.systemMetrics.gpus : [];
+  return gpus.map((gpu, index) => {
+    const utilizationPercent = getFiniteMetricPercent(gpu?.utilizationPercent);
+    const memoryUtilizationPercent = getFiniteMetricPercent(gpu?.memoryUtilizationPercent);
+    const powerW = getFiniteVisualGameMetric(gpu?.powerW);
+    const powerLimitW = getFiniteVisualGameMetric(gpu?.powerLimitW);
+    const active = isVisualGameGpuActive({
+      utilizationPercent,
+      memoryUtilizationPercent,
+      powerW,
+      powerLimitW,
+    });
+
+    return {
+      id: String(gpu?.id || `gpu-${index}`),
+      name: gpu?.name || `GPU ${index + 1}`,
+      label: `GPU ${index + 1}`,
+      utilizationPercent,
+      memoryUtilizationPercent,
+      powerW,
+      powerLimitW,
+      active,
+    };
+  });
+}
+
+function getFiniteVisualGameMetric(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function isVisualGameGpuActive(gpu) {
+  if (Number.isFinite(gpu.utilizationPercent) && gpu.utilizationPercent >= VISUAL_GAME_GPU_ACTIVE_THRESHOLD) {
+    return true;
+  }
+
+  if (Number.isFinite(gpu.memoryUtilizationPercent) && gpu.memoryUtilizationPercent >= 10) {
+    return true;
+  }
+
+  if (Number.isFinite(gpu.powerW)) {
+    const poweredThreshold = Number.isFinite(gpu.powerLimitW) ? Math.max(10, gpu.powerLimitW * 0.08) : 10;
+    return gpu.powerW >= poweredThreshold;
+  }
+
+  return false;
 }
 
 function drawVisualGameScene(context, graph, model, time, hitAreas) {
   context.save();
   context.imageSmoothingEnabled = false;
-  context.clearRect(0, 0, VISUAL_GAME_WIDTH, VISUAL_GAME_HEIGHT);
   const agents = getVisualGameAgents(graph, time);
   const deskAgents = agents.filter((agent) => agent.destination === "desk");
   const browserAgents = agents.filter((agent) => agent.destination === "browser");
+  const cameraAgents = agents.filter((agent) => agent.destination === "camera");
   const libraryAgents = agents.filter((agent) => agent.destination === "library");
   const sleepingAgents = agents.filter((agent) => agent.destination === "sleep");
 
   drawVisualGameGround(context, time);
   drawVisualGamePaths(context);
   drawVisualGameSleepingQuarters(context, hitAreas, time, sleepingAgents);
-  drawVisualGameBuilding(context, hitAreas, {
-    x: 37,
-    y: 110,
-    width: 88,
-    height: 48,
-    label: "Tool Shed",
-    meta: `${model.pluginCount} plugins`,
-    roof: "#6f3f33",
-    body: "#75603a",
-    action: { kind: "main-view", view: "plugins", label: "Tool Shed" },
-  });
   drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents);
   drawVisualGameWorkshop(context, hitAreas, time, deskAgents);
   drawVisualGameBrowserLab(context, hitAreas, time, browserAgents);
+  drawVisualGameCameraRoom(context, hitAreas, time, cameraAgents);
+  drawVisualGameGpuFactories(context, hitAreas, model.gpuFactories, time);
   drawVisualGameDock(context);
 
   for (const agent of agents.sort((left, right) => left.y - right.y)) {
@@ -10915,11 +11532,11 @@ function drawVisualGameGround(context, time) {
 }
 
 function drawVisualGamePaths(context) {
-  drawVisualGamePathRect(context, 64, 78, 174, 24);
-  drawVisualGamePathRect(context, 210, 72, 28, 76);
-  drawVisualGamePathRect(context, 58, 148, 392, 34);
-  drawVisualGamePathRect(context, 80, 181, 28, 19);
-  drawVisualGamePathRect(context, 414, 176, 26, 28);
+  drawVisualGamePathRect(context, 62, 82, 152, 23);
+  drawVisualGamePathRect(context, 190, 84, 25, 70);
+  drawVisualGamePathRect(context, 42, 148, 404, 34);
+  drawVisualGamePathRect(context, 86, 178, 28, 22);
+  drawVisualGamePathRect(context, 372, 178, 26, 45);
 }
 
 function drawVisualGamePathRect(context, x, y, width, height) {
@@ -10985,6 +11602,30 @@ function drawVisualGameRoomFloor(context, x, y, width, height, options = {}) {
   }
 }
 
+function drawVisualGameLabConnector(context, x, y, width, height) {
+  drawVisualGameShadow(context, x + 1, y + height - 1, width, 5);
+  context.fillStyle = "#232d2d";
+  context.fillRect(x, y, width, height);
+  context.fillStyle = "rgba(255, 231, 159, 0.12)";
+  context.fillRect(x + 2, y + 4, width - 4, 2);
+  context.fillRect(x + 2, y + height - 6, width - 4, 2);
+  context.fillStyle = "#d1af63";
+  context.fillRect(x + 1, y + Math.floor(height / 2) - 2, width - 2, 4);
+}
+
+function drawVisualGameComputerStation(context, desk, occupied, time, index, screenColor = "#79bdf8") {
+  context.fillStyle = "#293841";
+  context.fillRect(desk.x - 11, desk.y - 27, 24, 16);
+  context.fillStyle = occupied ? screenColor : "#31526a";
+  context.fillRect(desk.x - 8, desk.y - 24, 18, 9);
+  if (occupied) {
+    context.fillStyle = `rgba(153, 224, 255, ${0.22 + Math.sin(time / 180 + index) * 0.08})`;
+    context.fillRect(desk.x - 10, desk.y - 26, 22, 13);
+  }
+  context.fillStyle = "#161b1e";
+  context.fillRect(desk.x - 2, desk.y - 12, 8, 2);
+}
+
 function drawVisualGameBuilding(context, hitAreas, building) {
   const { x, y, width, height, label, meta, roof, body, action } = building;
   drawVisualGameRoomFloor(context, x, y, width, height, {
@@ -11011,30 +11652,19 @@ function drawVisualGameSleepingQuarters(context, hitAreas, time, sleepingAgents)
   drawVisualGameSleepRoom(context, {
     x: 27,
     y: 25,
-    width: 100,
-    height: 54,
+    width: 142,
+    height: 58,
     label: "Dormitory",
     meta: restingCount ? `${restingCount} resting` : "quiet beds",
     beds: [
-      { x: 43, y: 55 },
-      { x: 70, y: 55 },
-      { x: 97, y: 55 },
+      { x: 42, y: 59 },
+      { x: 68, y: 59 },
+      { x: 94, y: 59 },
+      { x: 120, y: 59 },
+      { x: 146, y: 59 },
     ],
   });
-  drawVisualGameSleepRoom(context, {
-    x: 182,
-    y: 27,
-    width: 84,
-    height: 44,
-    label: "Quiet Wing",
-    meta: "idle >1m",
-    beds: [
-      { x: 198, y: 54 },
-      { x: 224, y: 54 },
-    ],
-  });
-  hitAreas.push({ x: 27, y: 25, width: 100, height: 54, kind: "main-view", view: "visual-interface", label: "Dormitory" });
-  hitAreas.push({ x: 182, y: 27, width: 84, height: 44, kind: "main-view", view: "visual-interface", label: "Quiet Wing" });
+  hitAreas.push({ x: 27, y: 25, width: 142, height: 58, kind: "main-view", view: "visual-interface", label: "Dormitory" });
 }
 
 function drawVisualGameSleepRoom(context, room) {
@@ -11059,17 +11689,17 @@ function drawVisualGameSleepRoom(context, room) {
 }
 
 function drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents) {
-  const x = 34;
-  const y = 198;
-  const width = 118;
-  const height = 48;
+  const x = 31;
+  const y = 119;
+  const width = 134;
+  const height = 58;
   const bookGlow = 0.14 + Math.sin(time / 260) * 0.04;
 
   drawVisualGameRoomFloor(context, x, y, width, height, {
     floor: "#8a6a42",
     wall: "#744034",
     trim: "#4b231d",
-    entrance: "top",
+    entrance: "bottom",
   });
   context.fillStyle = "#5f4229";
   context.fillRect(x + 9, y + 14, width - 18, 11);
@@ -11100,10 +11730,10 @@ function drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents) {
 }
 
 function drawVisualGameWorkshop(context, hitAreas, time, workingAgents) {
-  const x = 270;
-  const y = 42;
-  const width = 126;
-  const height = 104;
+  const x = 211;
+  const y = 40;
+  const width = 138;
+  const height = 106;
 
   drawVisualGameRoomFloor(context, x, y, width, height, {
     floor: "#262d2d",
@@ -11114,58 +11744,44 @@ function drawVisualGameWorkshop(context, hitAreas, time, workingAgents) {
   context.fillStyle = "#3d2c21";
   context.fillRect(x + 15, y + 56, width - 30, 9);
   context.fillRect(x + 15, y + 97, width - 30, 9);
-  drawVisualGamePaintedWallSign(context, x + 11, y + 14, 93, 23, "Workshop", `${workingAgents.length} at computers`);
+  drawVisualGamePaintedWallSign(context, x + 11, y + 14, 105, 23, "Computer Lab", `${workingAgents.length} at desks`);
 
   for (let index = 0; index < 6; index += 1) {
     const desk = getVisualGameDeskSpot(index);
-    const occupied = Boolean(workingAgents[index]);
-    context.fillStyle = "#293841";
-    context.fillRect(desk.x - 11, desk.y - 27, 24, 16);
-    context.fillStyle = occupied ? "#79bdf8" : "#31526a";
-    context.fillRect(desk.x - 8, desk.y - 24, 18, 9);
-    if (occupied) {
-      context.fillStyle = `rgba(153, 224, 255, ${0.22 + Math.sin(time / 180 + index) * 0.08})`;
-      context.fillRect(desk.x - 10, desk.y - 26, 22, 13);
-    }
-    context.fillStyle = "#161b1e";
-    context.fillRect(desk.x - 2, desk.y - 12, 8, 2);
+    drawVisualGameComputerStation(context, desk, Boolean(workingAgents[index]), time, index);
   }
 
-  hitAreas.push({ x, y, width, height, kind: "main-view", view: "visual-interface", label: "Workshop" });
+  hitAreas.push({ x, y, width, height, kind: "main-view", view: "visual-interface", label: "Computer Lab" });
 }
 
 function drawVisualGameBrowserLab(context, hitAreas, time, browserAgents) {
-  const x = 406;
-  const y = 42;
-  const width = 58;
-  const height = 104;
+  const x = 351;
+  const y = 40;
+  const width = 76;
+  const height = 106;
   drawVisualGameRoomFloor(context, x, y, width, height, {
-    floor: "#253936",
+    floor: "#253433",
     wall: "#4d795d",
     trim: "#223a2c",
     entrance: "bottom",
   });
+  drawVisualGameLabConnector(context, x - 7, y + 58, 12, 28);
   drawVisualGamePaintedWallSign(
     context,
-    x + 7,
+    x + 8,
     y + 13,
-    44,
+    52,
     24,
     "Browser",
     browserAgents.length ? `${browserAgents.length} task${browserAgents.length === 1 ? "" : "s"}` : "Lab",
   );
 
-  context.fillStyle = "#20302f";
-  context.fillRect(x + 10, y + 70, width - 20, 8);
-  context.fillStyle = browserAgents.length ? "#94d785" : "#6fa36f";
-  context.fillRect(x + 10, y + 53, width - 20, 12);
-  if (browserAgents.length) {
-    context.fillStyle = `rgba(191, 255, 176, ${0.28 + Math.sin(time / 180) * 0.08})`;
-    context.fillRect(x + 8, y + 51, width - 16, 16);
-    context.fillStyle = "#dff8d0";
-    for (let index = 0; index < Math.min(browserAgents.length, 3); index += 1) {
-      context.fillRect(x + 14 + index * 9, y + 58 + (Math.floor(time / 220 + index) % 2), 5, 1);
-    }
+  context.fillStyle = "#3d2c21";
+  context.fillRect(x + 10, y + 56, width - 20, 9);
+  context.fillRect(x + 10, y + 97, width - 20, 9);
+  for (let index = 0; index < VISUAL_GAME_BROWSER_SPOTS.length; index += 1) {
+    const desk = getVisualGameBrowserSpot(index);
+    drawVisualGameComputerStation(context, desk, Boolean(browserAgents[index]), time, index, "#94d785");
   }
   if (browserAgents[0]?.browserUseSessionId) {
     hitAreas.push({
@@ -11180,9 +11796,261 @@ function drawVisualGameBrowserLab(context, hitAreas, time, browserAgents) {
   }
 }
 
+function drawVisualGameCameraRoom(context, hitAreas, time, cameraAgents) {
+  const x = 342;
+  const y = 154;
+  const width = 88;
+  const height = 62;
+  drawVisualGameRoomFloor(context, x, y, width, height, {
+    floor: "#173744",
+    wall: "#3f8791",
+    trim: "#143743",
+    entrance: "left",
+  });
+  drawVisualGamePaintedWallSign(
+    context,
+    x + 10,
+    y + 7,
+    60,
+    22,
+    "Camera",
+    cameraAgents.length ? `${cameraAgents.length} watch${cameraAgents.length === 1 ? "" : "es"}` : "Room",
+  );
+
+  context.fillStyle = "#1a252b";
+  context.fillRect(x + 8, y + 43, width - 16, 7);
+  for (let index = 0; index < VISUAL_GAME_CAMERA_SPOTS.length; index += 1) {
+    const occupied = Boolean(cameraAgents[index]);
+    const screenX = x + 12 + index * 14;
+    const screenY = y + 35;
+
+    context.fillStyle = occupied ? "#77dce7" : "#31535a";
+    context.fillRect(screenX, screenY, 10, 7);
+    context.fillStyle = occupied ? "#d8fbff" : "#4e8e97";
+    context.fillRect(screenX + 3, screenY - 3, 5, 3);
+    context.fillStyle = "#172228";
+    context.fillRect(screenX + 4, screenY + 7, 2, 1);
+  }
+
+  hitAreas.push({
+    x,
+    y,
+    width,
+    height,
+    kind: "main-view",
+    view: "plugins",
+    label: "Camera Room",
+  });
+}
+
+function drawVisualGameGpuFactories(context, hitAreas, factories, time) {
+  if (!Array.isArray(factories) || !factories.length) {
+    return;
+  }
+
+  const columns = Math.min(VISUAL_GAME_GPU_FACTORY_COLUMNS, factories.length);
+  const rows = Math.ceil(factories.length / columns);
+  const originY = rows > 2 ? 184 : VISUAL_GAME_GPU_FACTORY_ORIGIN.y;
+  const spacingY = rows > 2 ? 36 : VISUAL_GAME_GPU_FACTORY_SPACING.y;
+  const laneWidth = (columns - 1) * VISUAL_GAME_GPU_FACTORY_SPACING.x + VISUAL_GAME_GPU_FACTORY_SIZE.width;
+  const yardHeight = (rows - 1) * spacingY + VISUAL_GAME_GPU_FACTORY_SIZE.height + 16;
+  const connectorHeight = Math.max(0, originY - 176);
+  const plazaX = VISUAL_GAME_GPU_FACTORY_ORIGIN.x - 10;
+  const plazaY = originY - 13;
+  const plazaWidth = laneWidth + 20;
+  const plazaHeight = yardHeight + 3;
+
+  if (connectorHeight) {
+    drawVisualGamePavedArea(context, VISUAL_GAME_GPU_FACTORY_ORIGIN.x + 16, 176, 22, connectorHeight + 4);
+  }
+  drawVisualGamePavedArea(context, plazaX, plazaY, plazaWidth, plazaHeight);
+
+  factories.forEach((factory, index) => {
+    const spot = getVisualGameGpuFactorySpot(index, factories.length);
+    drawVisualGameGpuFactory(context, hitAreas, factory, spot.x, spot.y, index, time);
+  });
+}
+
+function drawVisualGamePavedArea(context, x, y, width, height) {
+  drawVisualGameShadow(context, x + 3, y + height - 2, width, 6);
+  context.fillStyle = "#8f7f58";
+  context.fillRect(x, y, width, height);
+  context.fillStyle = "#c4b273";
+  context.fillRect(x + 3, y + 3, width - 6, height - 6);
+  context.fillStyle = "#d3c486";
+  context.fillRect(x + 5, y + 5, width - 10, 5);
+  context.fillStyle = "#a98f55";
+  context.fillRect(x + 3, y + height - 5, width - 6, 2);
+
+  context.fillStyle = "rgba(98, 76, 42, 0.28)";
+  for (let seamY = y + 12; seamY < y + height - 7; seamY += 12) {
+    context.fillRect(x + 4, seamY, width - 8, 1);
+  }
+  for (let seamX = x + 17; seamX < x + width - 7; seamX += 18) {
+    context.fillRect(seamX, y + 5, 1, height - 10);
+  }
+
+  context.fillStyle = "rgba(255, 237, 167, 0.25)";
+  for (let index = 0; index < Math.max(2, Math.floor(width / 18)); index += 1) {
+    const chipX = x + 8 + (getVisualGameHash(index, Math.round(width)) % Math.max(8, width - 18));
+    const chipY = y + 8 + (getVisualGameHash(index, Math.round(height)) % Math.max(6, height - 16));
+    context.fillRect(chipX, chipY, 3, 2);
+  }
+}
+
+function getVisualGameGpuFactorySpot(index, total) {
+  const columns = Math.min(VISUAL_GAME_GPU_FACTORY_COLUMNS, Math.max(1, total));
+  const rows = Math.ceil(total / columns);
+  const row = Math.floor(index / columns);
+  const column = index % columns;
+  const originY = rows > 2 ? 184 : VISUAL_GAME_GPU_FACTORY_ORIGIN.y;
+  const spacingY = rows > 2 ? 36 : VISUAL_GAME_GPU_FACTORY_SPACING.y;
+
+  return {
+    x: VISUAL_GAME_GPU_FACTORY_ORIGIN.x + column * VISUAL_GAME_GPU_FACTORY_SPACING.x,
+    y: originY + row * spacingY,
+  };
+}
+
+function drawVisualGameGpuFactory(context, hitAreas, factory, x, y, index, time) {
+  const width = VISUAL_GAME_GPU_FACTORY_SIZE.width;
+  const height = VISUAL_GAME_GPU_FACTORY_SIZE.height;
+  const active = Boolean(factory.active);
+  const status = getVisualGameGpuFactoryStatus(factory);
+  const body = active ? "#53635d" : "#3b4645";
+  const bodyShade = active ? "#2f4240" : "#252e2f";
+  const metal = active ? "#7d897e" : "#56605d";
+  const accent = active ? "#c6df6a" : "#242b2b";
+  const screen = active ? "#86d8ff" : "#2d414b";
+
+  if (active) {
+    drawVisualGameGpuSmoke(context, x + 12, y - 7, index, time);
+  }
+
+  drawVisualGameShadow(context, x + 2, y + height - 1, width, 7);
+  context.fillStyle = "#252e2d";
+  context.fillRect(x - 2, y + height - 7, width + 4, 9);
+  context.fillStyle = "#62695f";
+  context.fillRect(x, y + height - 6, width, 4);
+  context.fillStyle = "#90917c";
+  context.fillRect(x + 3, y + height - 5, width - 6, 2);
+
+  context.fillStyle = active ? "#776a50" : "#4d514c";
+  context.fillRect(x + 7, y - 5, 11, 22);
+  context.fillStyle = active ? "#a08b63" : "#616a63";
+  context.fillRect(x + 5, y - 9, 15, 6);
+  context.fillStyle = "#202827";
+  context.fillRect(x + 7, y - 6, 11, 2);
+
+  context.fillStyle = "#1a2324";
+  context.fillRect(x, y + 9, width, height - 11);
+  context.fillStyle = bodyShade;
+  context.fillRect(x + 2, y + 12, width - 4, height - 16);
+  context.fillStyle = body;
+  context.fillRect(x + 5, y + 15, width - 10, height - 22);
+  context.fillStyle = metal;
+  context.fillRect(x - 2, y + 7, width + 4, 7);
+  context.fillStyle = "#202929";
+  context.fillRect(x + 2, y + 13, width - 4, 2);
+
+  context.fillStyle = "#1e2527";
+  context.fillRect(x + 7, y + 18, 18, 14);
+  context.fillStyle = screen;
+  context.fillRect(x + 10, y + 21, 12, 8);
+  if (active) {
+    context.fillStyle = `rgba(142, 224, 255, ${0.24 + Math.sin(time / 180 + index) * 0.1})`;
+    context.fillRect(x + 8, y + 19, 16, 12);
+  }
+
+  context.fillStyle = "#202827";
+  context.fillRect(x + 30, y + 18, 14, 14);
+  context.fillStyle = active ? "#8a958a" : "#454f4e";
+  context.fillRect(x + 32, y + 20, 10, 10);
+  context.fillStyle = active ? "#222c2b" : "#1b2222";
+  context.fillRect(x + 36, y + 20, 2, 10);
+  context.fillRect(x + 32, y + 24, 10, 2);
+  context.fillStyle = active ? "#b5c6aa" : "#5a6461";
+  context.fillRect(x + 36, y + 24, 2, 2);
+
+  context.fillStyle = active ? "#c99145" : "#4b4f49";
+  for (let vent = 0; vent < 4; vent += 1) {
+    context.fillRect(x + 29 + vent * 5, y + 35, 3, 2);
+  }
+
+  context.fillStyle = "#202827";
+  context.fillRect(x + width - 14, y + 10, 8, 8);
+  context.fillStyle = accent;
+  context.fillRect(x + width - 12, y + 12, 4, 4);
+  context.fillStyle = active ? "#d9ff9c" : "#15191a";
+  context.fillRect(x + width - 11, y + 13, 2, 2);
+
+  context.fillStyle = "#1b2424";
+  context.fillRect(x + 26, y + 11, 24, 9);
+  context.fillStyle = "#3a4742";
+  context.fillRect(x + 27, y + 12, 22, 7);
+  drawVisualGameText(context, getVisualGameGpuFactoryShortLabel(factory), x + 29, y + 18, active ? "#fff2c6" : "#c8cec3", 6);
+
+  context.fillStyle = "#1b2424";
+  context.fillRect(x + 29, y + 27, 21, 10);
+  context.fillStyle = active ? "#324733" : "#2d3433";
+  context.fillRect(x + 30, y + 28, 19, 8);
+  drawVisualGameText(context, status, x + 32, y + 35, active ? "#c8ff9c" : "#96a098", 6);
+
+  hitAreas.push({
+    x: x - 3,
+    y: y - 9,
+    width: width + 6,
+    height: height + 11,
+    kind: "main-view",
+    view: "system",
+    label: `${factory.label}: ${factory.name} - ${status}`,
+  });
+}
+
+function drawVisualGameGpuSmoke(context, x, y, index, time) {
+  context.save();
+  for (let puff = 0; puff < 4; puff += 1) {
+    const phase = (time / 950 + index * 0.19 + puff * 0.22) % 1;
+    const size = 4 + Math.floor(phase * 5);
+    const puffX = Math.round(x + Math.sin(time / 340 + index + puff) * 4);
+    const puffY = Math.round(y - 2 - phase * 22);
+    context.globalAlpha = 0.68 * (1 - phase * 0.72);
+    context.fillStyle = puff % 2 ? "#f2ecd0" : "#c9c9ba";
+    context.fillRect(puffX, puffY, size, size);
+    context.fillRect(puffX + 1, puffY - 2, Math.max(2, size - 1), 3);
+    context.fillRect(puffX - 1, puffY + 1, 2, Math.max(2, size - 2));
+  }
+  context.restore();
+}
+
+function getVisualGameGpuFactoryStatus(factory) {
+  if (!factory.active) {
+    return "off";
+  }
+
+  if (factory.utilizationPercent !== null) {
+    return formatPercent(factory.utilizationPercent);
+  }
+
+  if (factory.memoryUtilizationPercent !== null) {
+    return `M${Math.round(factory.memoryUtilizationPercent)}%`;
+  }
+
+  if (factory.powerW !== null) {
+    return `${Math.round(factory.powerW)}W`;
+  }
+
+  return "busy";
+}
+
+function getVisualGameGpuFactoryShortLabel(factory) {
+  const index = Number(String(factory.label || "").match(/\d+/)?.[0] || 0);
+  return index > 0 ? `GPU${index}` : "GPU";
+}
+
 function drawVisualGameDock(context) {
-  const x = 390;
-  const y = 193;
+  const x = 395;
+  const y = 218;
   const width = 64;
   const height = 42;
   drawVisualGameShadow(context, x + 3, y + height - 1, width, 7);
@@ -11210,32 +12078,60 @@ function drawVisualGameForeground(context, time) {
 function drawVisualGameAgent(context, agent, time, hitAreas) {
   const scale = agent.scale || 1;
   const palette = VISUAL_GAME_AGENT_PALETTES[(agent.familyIndex ?? agent.index) % VISUAL_GAME_AGENT_PALETTES.length];
-  const isStationed = agent.destination === "desk" || agent.destination === "browser" || agent.destination === "library" || agent.destination === "sleep";
+  const isStationed =
+    agent.destination === "desk" ||
+    agent.destination === "browser" ||
+    agent.destination === "camera" ||
+    agent.destination === "library" ||
+    agent.destination === "sleep";
   const bob = isStationed ? Math.floor(Math.sin(time / 190 + agent.index) * 1) : Math.floor(Math.sin(time / 150 + agent.index) * 2);
   const step = Math.floor(time / 180 + agent.index) % 4;
   const spriteWidth = VISUAL_GAME_AGENT_SIZE * scale;
+  const spriteTopOffset = agent.destination === "sleep" ? 17 : 25;
   const x = Math.round(agent.x - spriteWidth / 2);
-  const y = Math.round(agent.y - 25 * scale + bob);
+  const y = Math.round(agent.y - spriteTopOffset * scale + bob);
 
-  drawVisualGameShadow(context, x + 2 * scale, y + 27 * scale, 15 * scale, Math.max(3, 4 * scale));
+  drawVisualGameShadow(
+    context,
+    x + 1 * scale,
+    y + (agent.destination === "sleep" ? 24 : 27) * scale,
+    (agent.destination === "sleep" ? 22 : 15) * scale,
+    Math.max(3, 4 * scale),
+  );
   context.save();
   context.translate(x, y);
   context.scale(scale, scale);
 
   if (agent.destination === "sleep") {
-    context.fillStyle = "#3c2d24";
-    context.fillRect(0, 17, 19, 10);
+    context.fillStyle = "#332519";
+    context.fillRect(0, 13, 23, 13);
+    context.fillStyle = "#5b3f29";
+    context.fillRect(1, 11, 21, 4);
+    context.fillStyle = "#2a1d15";
+    context.fillRect(2, 24, 19, 3);
     context.fillStyle = "#f0d9ad";
-    context.fillRect(2, 14, 7, 5);
-    context.fillStyle = "#6e8aa9";
-    context.fillRect(7, 17, 10, 9);
+    context.fillRect(2, 10, 8, 7);
     context.fillStyle = palette.skin;
-    context.fillRect(3, 10, 7, 5);
+    context.fillRect(4, 8, 8, 7);
+    context.fillStyle = palette.hair;
+    context.fillRect(3, 7, 9, 3);
+    context.fillRect(2, 10, 3, 4);
+    context.fillStyle = "#3a241d";
+    context.fillRect(9, 11, 2, 1);
+    context.fillStyle = palette.skin;
+    context.fillRect(10, 16, 4, 3);
+    context.fillStyle = "#6e8aa9";
+    context.fillRect(8, 14, 13, 10);
+    context.fillStyle = "#8fb0ce";
+    context.fillRect(10, 15, 9, 3);
+    context.fillStyle = "#5b7695";
+    context.fillRect(8, 22, 13, 2);
     context.fillStyle = palette.hat;
-    context.fillRect(2, 7, 10, 4);
+    context.fillRect(4, 5, 7, 2);
     context.fillStyle = "#f7efba";
-    context.fillRect(14, 7, 2, 2);
-    context.fillRect(16, 5, 2, 2);
+    context.fillRect(16, 7, 2, 2);
+    context.fillRect(18, 5, 2, 2);
+    context.fillRect(20, 3, 2, 2);
   } else if (agent.destination === "desk") {
     context.fillStyle = "#2b2018";
     context.fillRect(2, 18, 15, 11);
@@ -11248,6 +12144,13 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
     context.fillRect(4, 18, 10, 5);
     context.fillStyle = "#8e5646";
     context.fillRect(9, 18, 1, 5);
+  } else if (agent.destination === "camera") {
+    context.fillStyle = "#27343c";
+    context.fillRect(2, 19, 15, 8);
+    context.fillStyle = "#6ec7d6";
+    context.fillRect(5, 16, 9, 6);
+    context.fillStyle = "#1e262d";
+    context.fillRect(8, 17, 3, 3);
   }
 
   if (agent.destination !== "sleep") {
@@ -11282,7 +12185,12 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
       const tap = Math.floor(time / 140 + agent.index) % 2;
       context.fillRect(1, 16 + tap, 4, 3);
       context.fillRect(14, 16 + (1 - tap), 4, 3);
-      context.fillStyle = agent.destination === "browser" ? "#bfffb0" : agent.destination === "library" ? "#f0cf72" : "#79bdf8";
+      context.fillStyle =
+        agent.destination === "browser"
+          ? "#bfffb0"
+          : agent.destination === "camera"
+            ? "#7ce7f0"
+            : agent.destination === "library" ? "#f0cf72" : "#79bdf8";
       context.fillRect(3, 22, 13, 1);
     } else {
       context.fillRect(1, 15 + (step % 2), 3, 7);
@@ -11297,7 +12205,12 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
     context.fillStyle = "#9ad67f";
     context.fillRect(14, 0, 4, 4);
   } else if (agent.statusClass === "working") {
-    context.fillStyle = agent.destination === "browser" ? "#bfffb0" : agent.destination === "library" ? "#f0cf72" : "#79bdf8";
+    context.fillStyle =
+      agent.destination === "browser"
+        ? "#bfffb0"
+        : agent.destination === "camera"
+          ? "#7ce7f0"
+          : agent.destination === "library" ? "#f0cf72" : "#79bdf8";
     context.fillRect(14, 0, 4, 4);
   }
 
@@ -11308,7 +12221,7 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
 
   context.restore();
 
-  if (agent.destination === "desk" || agent.destination === "browser") {
+  if (agent.destination === "desk" || agent.destination === "browser" || agent.destination === "camera") {
     drawVisualGameNameplate(context, truncateSwarmLabel(agent.name, agent.isSubagent ? 12 : 14), x + 9 * scale, y + 34 * scale, scale);
   }
   hitAreas.push({
@@ -11325,11 +12238,15 @@ function drawVisualGameAgent(context, agent, time, hitAreas) {
 
 function getVisualGameAgentHoverLabel(agent) {
   if (agent.destination === "browser") {
-    return `${agent.name} - browser lab`;
+    return `${agent.name} - at browser lab computer`;
+  }
+
+  if (agent.destination === "camera") {
+    return `${agent.name} - camera room`;
   }
 
   if (agent.destination === "sleep") {
-    return `${agent.name} - resting in sleeping quarters`;
+    return `${agent.name} - sleeping in beds`;
   }
 
   if (agent.destination === "desk") {
@@ -11423,6 +12340,7 @@ function drawVisualGameShadow(context, x, y, width, height) {
 function getVisualGameAgents(graph, time) {
   const deskIndex = { value: 0 };
   const browserIndex = { value: 0 };
+  const cameraIndex = { value: 0 };
   const sleepIndex = { value: 0 };
   const libraryIndex = { value: 0 };
   const evidenceIndex = { value: 0 };
@@ -11443,6 +12361,9 @@ function getVisualGameAgents(graph, time) {
     if (destination === "browser") {
       target = getVisualGameBrowserSpot(browserIndex.value);
       browserIndex.value += 1;
+    } else if (destination === "camera") {
+      target = getVisualGameCameraSpot(cameraIndex.value);
+      cameraIndex.value += 1;
     } else if (destination === "sleep") {
       target = getVisualGameSleepSpot(sleepIndex.value);
       sleepIndex.value += 1;
@@ -11466,32 +12387,70 @@ function getVisualGameAgents(graph, time) {
 }
 
 function getVisualGameAgentDestination(agent, statusClass) {
+  const activelyGenerating = isVisualGameActivelyGenerating(agent, statusClass);
+
   if (agent.kind === "browser" && statusClass === "working") {
     return "browser";
   }
 
-  if (isVisualGameSleepyAgent(agent, statusClass)) {
-    return "sleep";
+  if (agent.kind === "camera" && activelyGenerating) {
+    return "camera";
   }
 
-  if (hasVisualGameLibraryActivity(agent)) {
+  if (activelyGenerating && hasVisualGameLibraryActivity(agent)) {
     return "library";
   }
 
-  if (statusClass === "working") {
+  if (activelyGenerating) {
     return "desk";
   }
 
-  return "roam";
-}
-
-function isVisualGameSleepyAgent(agent, statusClass) {
-  if (statusClass === "working") {
-    return false;
+  if (hasVisualGamePassiveWork(agent, statusClass)) {
+    return "roam";
   }
 
-  const activeAtMs = Number(agent.activeAtMs || 0);
-  return activeAtMs > 0 && Date.now() - activeAtMs >= VISUAL_GAME_SLEEP_AFTER_MS;
+  return "sleep";
+}
+
+function isVisualGameActivelyGenerating(agent, statusClass) {
+  if (statusClass === "working") {
+    if (agent.kind === "browser") {
+      return true;
+    }
+
+    if (isVisualGamePassiveMonitor(agent)) {
+      return false;
+    }
+
+    if (agent.isSubagent) {
+      return true;
+    }
+
+    const startedAtMs = timestampMs(agent.activityStartedAt);
+    const completedAtMs = timestampMs(agent.activityCompletedAt);
+    if (startedAtMs > 0 && (!completedAtMs || startedAtMs > completedAtMs)) {
+      return true;
+    }
+
+    return !agent.backgroundActivityActive && !agent.hasActiveSubagent;
+  }
+
+  return false;
+}
+
+function hasVisualGamePassiveWork(agent, statusClass) {
+  return (
+    (agent.providerId === "shell" && agent.sessionStatus === "running")
+    || Boolean(agent.backgroundActivityActive)
+    || isVisualGamePassiveMonitor(agent)
+    || (statusClass === "working" && !isVisualGameActivelyGenerating(agent, statusClass))
+  );
+}
+
+function isVisualGamePassiveMonitor(agent) {
+  const source = String(agent.source || "").toLowerCase();
+  const agentType = String(agent.agentType || "").toLowerCase();
+  return source === "videomemory" || agentType.includes("monitor");
 }
 
 function hasVisualGameLibraryActivity(agent) {
@@ -11506,22 +12465,17 @@ function hasVisualGameLibraryActivity(agent) {
 function isVisualGameLibraryReference(value) {
   const text = String(value || "").toLowerCase();
   return (
-    text.includes(".remote-vibes/wiki")
+    text.includes(".vibe-research/wiki")
     || text.includes("/wiki/")
-    || text.includes("knowledge")
-    || text.includes("library")
-    || text.includes("/docs/")
-    || text.includes("readme.md")
-    || text.includes("agents.md")
-    || text.includes("claude.md")
-    || text.includes("gemini.md")
-    || text.endsWith(".md")
+    || text.includes("knowledge-base")
+    || text.includes("knowledge_base")
   );
 }
 
 function getVisualGameAgentKey(agent, index) {
   return [
     agent.browserUseSessionId || "",
+    agent.videoMemoryMonitorId || "",
     agent.sessionId || "",
     agent.parentSessionId || "",
     agent.kind || "",
@@ -11574,8 +12528,8 @@ function getVisualGameDeskSpot(index) {
   const column = index % 3;
   const row = Math.floor(index / 3) % 2;
   return {
-    x: 290 + column * 38 + (index >= 6 ? (index % 2) * 8 : 0),
-    y: 108 + row * 29 + (index >= 6 ? 6 : 0),
+    x: 242 + column * 39 + (index >= 6 ? (index % 2) * 8 : 0),
+    y: 106 + row * 30 + (index >= 6 ? 6 : 0),
   };
 }
 
@@ -11584,6 +12538,15 @@ function getVisualGameBrowserSpot(index) {
   const row = Math.floor(index / VISUAL_GAME_BROWSER_SPOTS.length);
   return {
     x: spot.x - row * 7,
+    y: spot.y + row * 6,
+  };
+}
+
+function getVisualGameCameraSpot(index) {
+  const spot = VISUAL_GAME_CAMERA_SPOTS[index % VISUAL_GAME_CAMERA_SPOTS.length];
+  const row = Math.floor(index / VISUAL_GAME_CAMERA_SPOTS.length);
+  return {
+    x: spot.x - row * 8,
     y: spot.y + row * 6,
   };
 }
@@ -11672,6 +12635,15 @@ function renderSwarmGraphView() {
           <div class="terminal-meta">visual interface · ${escapeHtml(meta)}</div>
         </div>
         <div class="dashboard-actions">
+          ${
+            graph
+              ? `
+                <button class="icon-button toolbar-control" type="button" id="visual-game-zoom-out" aria-label="Zoom out map" ${tooltipAttributes("Zoom out map")}>${renderIcon(ZoomOut)}</button>
+                <button class="icon-button toolbar-control" type="button" id="visual-game-reset-camera" aria-label="Reset map view" ${tooltipAttributes("Reset map view")}>${renderIcon(RefreshCw)}</button>
+                <button class="icon-button toolbar-control" type="button" id="visual-game-zoom-in" aria-label="Zoom in map" ${tooltipAttributes("Zoom in map")}>${renderIcon(ZoomIn)}</button>
+              `
+              : ""
+          }
           <button class="ghost-button toolbar-control" type="button" id="swarm-back-to-session">terminal</button>
           <button class="icon-button toolbar-control refresh-icon-button ${state.swarmGraph.loading ? "is-loading" : ""}" type="button" id="refresh-swarm-graph" aria-label="${escapeHtml(refreshLabel)}" ${tooltipAttributes(refreshLabel)} ${state.swarmGraph.loading || !canRefreshSwarm ? "disabled" : ""}>${renderIcon(RefreshCw)}</button>
         </div>
@@ -12054,6 +13026,10 @@ function renderTerminalPanel(activeSession) {
     return renderPluginsView();
   }
 
+  if (state.currentView === "settings") {
+    return renderSettingsView();
+  }
+
   if (state.currentView === "automations") {
     return renderAutomationsView();
   }
@@ -12160,7 +13136,7 @@ function renderAgentPromptView() {
       </div>
       <div class="dashboard-range agent-prompt-summary">
         <span class="dashboard-range-label">source</span>
-        <span class="agent-prompt-source">${escapeHtml(state.agentPromptPath || ".remote-vibes/agent-prompt.md")}</span>
+        <span class="agent-prompt-source">${escapeHtml(state.agentPromptPath || ".vibe-research/agent-prompt.md")}</span>
         <span class="dashboard-updated">${escapeHtml(getAgentPromptTargetSummary())}</span>
       </div>
       <div class="agent-prompt-grid">
@@ -12454,7 +13430,7 @@ function renderUpdateBanner() {
     return `
       <section class="update-card is-applying">
         <div class="update-copy">
-          <strong>updating remote vibes</strong>
+          <strong>updating vibe research</strong>
           <span>installing the latest version, then restarting...</span>
         </div>
         <button class="ghost-button update-button" type="button" disabled>working</button>
@@ -12495,21 +13471,21 @@ function renderUpdateBanner() {
 }
 
 function renderBrainSetupScreen() {
-  document.title = "Set Brain Folder · Remote Vibes";
+  document.title = "Set Brain Folder · Vibe Research";
 
   app.innerHTML = `
     <main class="screen brain-setup-screen">
       <section class="brain-setup-card" aria-labelledby="brain-setup-title">
-        <span class="brain-setup-eyebrow">Remote Vibes</span>
+        <span class="brain-setup-eyebrow">Vibe Research</span>
         <h1 id="brain-setup-title">Choose your brain</h1>
         <p>
-          Remote Vibes needs one markdown wiki folder for shared memory. Select an
+          Vibe Research needs one markdown wiki folder for shared memory. Select an
           existing local folder, or clone one from GitHub.
         </p>
         <div class="brain-setup-picker">
           <h2>Select a brain folder</h2>
           <p>
-            If the folder is already a git repo, Remote Vibes will detect its origin
+            If the folder is already a git repo, Vibe Research will detect its origin
             remote and use it for private backups.
           </p>
           <label class="field-label" for="brain-folder-input">Brain folder</label>
@@ -12535,7 +13511,7 @@ function renderBrainSetupScreen() {
           <div>
             <h2>Insert GitHub URL</h2>
             <p>
-              Paste a GitHub repo URL and Remote Vibes will clone it locally, set it
+              Paste a GitHub repo URL and Vibe Research will clone it locally, set it
               as the active brain, and use its origin remote for backups.
             </p>
           </div>
@@ -12604,17 +13580,18 @@ function renderShell() {
   }
 
   const viewTitles = {
-    "knowledge-base": "Knowledge Base · Remote Vibes",
-    "agent-prompt": "Agent Prompt · Remote Vibes",
-    search: "Search · Remote Vibes",
-    plugins: "Plugins · Remote Vibes",
-    automations: "Automations · Remote Vibes",
-    system: "System · Remote Vibes",
-    "visual-interface": "Visual Interface · Remote Vibes",
-    swarm: "Visual Interface · Remote Vibes",
-    "browser-use": "Browser Use · Remote Vibes",
+    "knowledge-base": "Knowledge Base · Vibe Research",
+    "agent-prompt": "Agent Prompt · Vibe Research",
+    search: "Search · Vibe Research",
+    plugins: "Plugins · Vibe Research",
+    settings: "Settings · Vibe Research",
+    automations: "Automations · Vibe Research",
+    system: "System · Vibe Research",
+    "visual-interface": "Visual Interface · Vibe Research",
+    swarm: "Visual Interface · Vibe Research",
+    "browser-use": "Browser Use · Vibe Research",
   };
-  document.title = viewTitles[state.currentView] || "Remote Vibes";
+  document.title = viewTitles[state.currentView] || "Vibe Research";
 
   const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) || null;
 
@@ -12843,6 +13820,10 @@ function flushDeferredSelectableRefreshes({ force = false } = {}) {
 
   if (refreshes.has("browser-use")) {
     refreshBrowserUsePluginUi({ force: true });
+  }
+
+  if (refreshes.has("videomemory")) {
+    refreshVideoMemoryPluginUi({ force: true });
   }
 }
 
@@ -13342,6 +14323,10 @@ async function setPluginInstalled(pluginId, installed) {
       body.browserUseEnabled = installed;
     }
 
+    if (pluginId === "videomemory") {
+      body.videoMemoryEnabled = installed;
+    }
+
     const [payload] = await Promise.all([
       fetchJson("/api/settings", {
         method: "PATCH",
@@ -13370,6 +14355,7 @@ async function setPluginInstalled(pluginId, installed) {
     refreshPluginSearchUi();
 
     refreshBrowserUsePluginUi({ force: true });
+    refreshVideoMemoryPluginUi({ force: true });
   } catch (error) {
     delete state.pluginInstallActions[pluginId];
     refreshPluginSearchUi();
@@ -13526,6 +14512,27 @@ function refreshBrowserUsePluginUi({ force = false } = {}) {
 
   card.outerHTML = renderBrowserUsePluginPanel();
   bindBrowserUseForm();
+  bindAgentCredentialsForm();
+}
+
+function refreshVideoMemoryPluginUi({ force = false } = {}) {
+  const card = document.querySelector(".videomemory-plugin-card");
+  if (!card) {
+    return;
+  }
+
+  if (shouldDeferSelectableRefresh({ force })) {
+    deferSelectableRefresh("videomemory");
+    return;
+  }
+
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLElement && activeElement.closest("#videomemory-form")) {
+    return;
+  }
+
+  card.outerHTML = renderVideoMemoryPluginPanel();
+  bindVideoMemoryForm();
 }
 
 function bindBrowserUseForm() {
@@ -13551,6 +14558,62 @@ function bindBrowserUseForm() {
       if (button instanceof HTMLButtonElement) {
         button.disabled = false;
         button.textContent = "save browser use";
+      }
+    }
+  });
+}
+
+function bindVideoMemoryForm() {
+  document.querySelector("#videomemory-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+
+    const button = form.querySelector("[data-videomemory-action]");
+    if (button instanceof HTMLButtonElement) {
+      button.disabled = true;
+      button.textContent = "saving...";
+    }
+
+    try {
+      await setupVideoMemoryFromForm(form);
+      renderShell();
+    } catch (error) {
+      window.alert(error.message);
+      if (button instanceof HTMLButtonElement) {
+        button.disabled = false;
+        button.textContent = "save VideoMemory";
+      }
+    }
+  });
+}
+
+function bindAgentCredentialsForm() {
+  document.querySelector("#agent-credentials-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+
+    const button = form.querySelector("[data-agent-credentials-action]");
+    if (button instanceof HTMLButtonElement) {
+      button.disabled = true;
+      button.textContent = "saving...";
+    }
+
+    try {
+      await saveAgentCredentialsFromForm(form);
+      renderShell();
+    } catch (error) {
+      window.alert(error.message);
+      if (button instanceof HTMLButtonElement) {
+        button.disabled = false;
+        button.textContent = "save credentials";
       }
     }
   });
@@ -13879,8 +14942,13 @@ function bindKnowledgeBaseGraphInteractions() {
     }
 
     if (layout.panState?.pointerId === event.pointerId) {
+      const { moved, startedOnGraphSurface } = layout.panState;
       clearInteractionState();
       syncKnowledgeBaseGraphDom();
+
+      if (!moved && startedOnGraphSurface) {
+        clearKnowledgeBaseNoteSelection();
+      }
     }
   };
 
@@ -13942,6 +15010,7 @@ function bindKnowledgeBaseGraphInteractions() {
         startSvgY: svgPoint.y,
         originOffsetX: layout.offsetX,
         originOffsetY: layout.offsetY,
+        startedOnGraphSurface: target === svg || target.hasAttribute("data-kb-graph-surface"),
         moved: false,
       };
       svg.classList.add("is-panning");
@@ -15061,8 +16130,8 @@ function scheduleSessionsRefresh() {
 
 function applyAgentPromptState(payload) {
   state.agentPrompt = payload?.prompt || "";
-  state.agentPromptPath = payload?.promptPath || ".remote-vibes/agent-prompt.md";
-  state.agentPromptWikiRoot = payload?.wikiRoot || state.settings.wikiRelativeRoot || ".remote-vibes/wiki";
+  state.agentPromptPath = payload?.promptPath || ".vibe-research/agent-prompt.md";
+  state.agentPromptWikiRoot = payload?.wikiRoot || state.settings.wikiRelativeRoot || ".vibe-research/wiki";
   state.agentPromptTargets = Array.isArray(payload?.targets) ? payload.targets : [];
 }
 
@@ -15072,14 +16141,23 @@ function applySettingsState(payload) {
   const sleepPrevention = settings.sleepPrevention || settings.sleep || state.settings.sleepPrevention;
   const agentMailStatus = settings.agentMailStatus || settings.agentMail || state.settings.agentMailStatus;
   const browserUseStatus = settings.browserUseStatus || settings.browserUse || state.settings.browserUseStatus;
+  const videoMemoryStatus = settings.videoMemoryStatus || settings.videoMemory || state.settings.videoMemoryStatus;
 
   state.settings = {
+    agentAnthropicApiKeyConfigured:
+      settings.agentAnthropicApiKeyConfigured === undefined
+        ? state.settings.agentAnthropicApiKeyConfigured
+        : Boolean(settings.agentAnthropicApiKeyConfigured),
+    agentHfTokenConfigured:
+      settings.agentHfTokenConfigured === undefined
+        ? state.settings.agentHfTokenConfigured
+        : Boolean(settings.agentHfTokenConfigured),
     agentMailApiKeyConfigured:
       settings.agentMailApiKeyConfigured === undefined
         ? state.settings.agentMailApiKeyConfigured
         : Boolean(settings.agentMailApiKeyConfigured),
     agentMailClientId: settings.agentMailClientId || state.settings.agentMailClientId || "",
-    agentMailDisplayName: settings.agentMailDisplayName || state.settings.agentMailDisplayName || "Remote Vibes",
+    agentMailDisplayName: settings.agentMailDisplayName || state.settings.agentMailDisplayName || "Vibe Research",
     agentMailDomain:
       settings.agentMailDomain === undefined ? state.settings.agentMailDomain || "" : String(settings.agentMailDomain || ""),
     agentMailEnabled:
@@ -15093,6 +16171,10 @@ function applySettingsState(payload) {
     agentMailStatus: agentMailStatus || null,
     agentMailUsername:
       settings.agentMailUsername === undefined ? state.settings.agentMailUsername || "" : String(settings.agentMailUsername || ""),
+    agentOpenAiApiKeyConfigured:
+      settings.agentOpenAiApiKeyConfigured === undefined
+        ? state.settings.agentOpenAiApiKeyConfigured
+        : Boolean(settings.agentOpenAiApiKeyConfigured),
     agentAutomations: Array.isArray(settings.agentAutomations)
       ? settings.agentAutomations
       : state.settings.agentAutomations || [],
@@ -15131,6 +16213,17 @@ function applySettingsState(payload) {
       settings.browserUseWorkerPath === undefined
         ? state.settings.browserUseWorkerPath || ""
         : String(settings.browserUseWorkerPath || ""),
+    videoMemoryBaseUrl:
+      settings.videoMemoryBaseUrl === undefined
+        ? state.settings.videoMemoryBaseUrl || "http://127.0.0.1:5050"
+        : String(settings.videoMemoryBaseUrl || ""),
+    videoMemoryEnabled:
+      settings.videoMemoryEnabled === undefined
+        ? state.settings.videoMemoryEnabled
+        : Boolean(settings.videoMemoryEnabled),
+    videoMemoryProviderId:
+      settings.videoMemoryProviderId || state.settings.videoMemoryProviderId || "claude",
+    videoMemoryStatus: videoMemoryStatus || null,
     installedPluginIds: Array.isArray(settings.installedPluginIds)
       ? settings.installedPluginIds.map((pluginId) => String(pluginId || "")).filter(Boolean)
       : state.settings.installedPluginIds || [],
@@ -15145,7 +16238,7 @@ function applySettingsState(payload) {
       settings.wikiRelativeRoot ||
       settings.wikiRelativePath ||
       state.settings.wikiRelativeRoot ||
-      ".remote-vibes/wiki",
+      ".vibe-research/wiki",
     wikiGitBackupEnabled:
       settings.wikiGitBackupEnabled === undefined
         ? state.settings.wikiGitBackupEnabled
@@ -15491,6 +16584,23 @@ async function deleteBrowserUseSession(browserUseSessionId) {
   refreshSessionsList({ force: true });
 }
 
+async function loadVideoMemoryStatus({ renderOnComplete = false } = {}) {
+  try {
+    const payload = await fetchJson("/api/videomemory/status", {
+      cache: "no-store",
+    });
+    if (payload.videoMemory) {
+      applySettingsState({ videoMemoryStatus: payload.videoMemory });
+    }
+    state.videoMemoryMonitors = Array.isArray(payload.monitors) ? payload.monitors : [];
+    if (renderOnComplete) {
+      refreshVideoMemoryPluginUi({ force: true });
+    }
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 function closeSessionProviderPicker() {
   const picker = document.querySelector("[data-session-provider-picker]");
   const trigger = document.querySelector("[data-session-provider-trigger]");
@@ -15803,9 +16913,7 @@ function bindShellEvents() {
   }
 
   document.querySelector("#visual-game-close-session")?.addEventListener("click", () => {
-    state.visualGame.selectedSessionId = "";
-    state.visualGame.selectedBrowserUseSessionId = "";
-    renderShell();
+    clearVisualGameSelection();
   });
 
   document.querySelector("#refresh-swarm-graph")?.addEventListener("click", () => {
@@ -15936,6 +17044,7 @@ function bindShellEvents() {
     }
   });
   bindBrowserUseForm();
+  bindVideoMemoryForm();
   document.querySelector("#backup-wiki-now")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     if (button instanceof HTMLButtonElement) {
@@ -16013,7 +17122,7 @@ function bindShellEvents() {
       return;
     }
 
-    if (!window.confirm("Relaunch Remote Vibes on this laptop? Live sessions will be restored if persistence is enabled.")) {
+    if (!window.confirm("Relaunch Vibe Research on this laptop? Live sessions will be restored if persistence is enabled.")) {
       return;
     }
 
@@ -16030,7 +17139,7 @@ function bindShellEvents() {
       closeWebsocket();
       const recovered = await waitForAppRecovery();
       if (!recovered) {
-        throw new Error("Remote Vibes did not come back yet. Try refreshing in a moment.");
+        throw new Error("Vibe Research did not come back yet. Try refreshing in a moment.");
       }
       window.location.reload();
     } catch (error) {
@@ -16048,7 +17157,7 @@ function bindShellEvents() {
       return;
     }
 
-    if (!window.confirm("Terminate Remote Vibes on this laptop?")) {
+    if (!window.confirm("Terminate Vibe Research on this laptop?")) {
       return;
     }
 
@@ -16201,7 +17310,7 @@ function disposeTerminal() {
     try {
       state.canvasAddon.dispose();
     } catch (error) {
-      console.warn("[remote-vibes] canvas renderer disposal failed", error);
+      console.warn("[vibe-research] canvas renderer disposal failed", error);
     }
     state.canvasAddon = null;
   }
@@ -16210,7 +17319,7 @@ function disposeTerminal() {
     try {
       state.fitAddon.dispose();
     } catch (error) {
-      console.warn("[remote-vibes] fit addon disposal failed", error);
+      console.warn("[vibe-research] fit addon disposal failed", error);
     }
   }
   state.fitAddon = null;
@@ -16219,7 +17328,7 @@ function disposeTerminal() {
     try {
       state.terminal.dispose();
     } catch (error) {
-      console.warn("[remote-vibes] terminal disposal failed", error);
+      console.warn("[vibe-research] terminal disposal failed", error);
     }
     state.terminal = null;
   }
@@ -16259,7 +17368,7 @@ function loadCanvasRenderer() {
     state.terminal.loadAddon(canvasAddon);
     state.canvasAddon = canvasAddon;
   } catch (error) {
-    console.warn("[remote-vibes] canvas renderer unavailable", error);
+    console.warn("[vibe-research] canvas renderer unavailable", error);
   }
 }
 
@@ -16735,7 +17844,7 @@ function connectToSession(sessionId) {
     }
 
     if (payload.type === "error") {
-      const errorLine = `\r\n[remote-vibes] ${payload.message}\r\n`;
+      const errorLine = `\r\n[vibe-research] ${payload.message}\r\n`;
       appendTerminalTranscriptOutput(errorLine, { scrollToBottom: true });
       state.terminal.write(errorLine);
       if (/session not found/i.test(payload.message || "")) {
@@ -16985,6 +18094,9 @@ async function loadSettingsStatus() {
     if (state.currentView === "plugins") {
       refreshPluginSearchUi();
       refreshBrowserUsePluginUi();
+      void loadVideoMemoryStatus({ renderOnComplete: true });
+    } else if (state.currentView === "settings") {
+      void loadVideoMemoryStatus({ renderOnComplete: true });
     }
     refreshSystemToastsUi();
   } catch (error) {
@@ -17228,6 +18340,7 @@ async function loadFolderPickerTreePath(relativePath = "", { force = false } = {
 
 async function saveSettingsFromForm(form) {
   const formData = new FormData(form);
+  const wikiPath = String(formData.get("wikiPath") || "");
   const payload = await fetchJson("/api/settings", {
     method: "PATCH",
     body: JSON.stringify({
@@ -17237,8 +18350,8 @@ async function saveSettingsFromForm(form) {
       wikiGitRemoteEnabled: formData.get("wikiGitRemoteEnabled") === "on",
       wikiGitRemoteName: String(formData.get("wikiGitRemoteName") || "origin"),
       wikiGitRemoteUrl: String(formData.get("wikiGitRemoteUrl") || ""),
-      wikiPath: String(formData.get("wikiPath") || ""),
-      wikiPathConfigured: Boolean(String(formData.get("wikiPath") || "").trim()),
+      wikiPath,
+      wikiPathConfigured: Boolean(wikiPath.trim()),
     }),
   });
 
@@ -17252,6 +18365,23 @@ async function saveSettingsFromForm(form) {
     await loadKnowledgeBaseIndex();
     await ensureKnowledgeBaseSelectionLoaded({ force: true });
   }
+}
+
+async function saveAgentCredentialsFromForm(form) {
+  const formData = new FormData(form);
+  const agentAnthropicApiKey = String(formData.get("agentAnthropicApiKey") || "").trim();
+  const agentOpenAiApiKey = String(formData.get("agentOpenAiApiKey") || "").trim();
+  const agentHfToken = String(formData.get("agentHfToken") || "").trim();
+  const payload = await fetchJson("/api/settings", {
+    method: "PATCH",
+    body: JSON.stringify({
+      agentAnthropicApiKey: agentAnthropicApiKey || undefined,
+      agentOpenAiApiKey: agentOpenAiApiKey || undefined,
+      agentHfToken: agentHfToken || undefined,
+    }),
+  });
+
+  applySettingsState(payload.settings);
 }
 
 async function saveBrainFolderSelection(selectedPath) {
@@ -17322,6 +18452,22 @@ async function setupBrowserUseFromForm(form) {
   applySettingsState(payload.settings);
 }
 
+async function setupVideoMemoryFromForm(form) {
+  const formData = new FormData(form);
+  const enabled = formData.get("videoMemoryEnabled") === "on";
+  const payload = await fetchJson("/api/videomemory/setup", {
+    method: "POST",
+    body: JSON.stringify({
+      baseUrl: String(formData.get("videoMemoryBaseUrl") || ""),
+      enabled,
+      installedPluginIds: getUpdatedInstalledPluginIds("videomemory", enabled),
+      providerId: String(formData.get("videoMemoryProviderId") || state.defaultProviderId || "claude"),
+    }),
+  });
+  applySettingsState(payload.settings);
+  state.videoMemoryMonitors = Array.isArray(payload.monitors) ? payload.monitors : state.videoMemoryMonitors;
+}
+
 async function backupWikiNow() {
   const payload = await fetchJson("/api/wiki/backup", {
     method: "POST",
@@ -17344,8 +18490,8 @@ async function updateWikiBackupAutomation(enabled) {
 
 function renderFileEditorPage() {
   document.title = state.openFileName
-    ? `${state.openFileName} · Remote Vibes`
-    : "File Editor · Remote Vibes";
+    ? `${state.openFileName} · Vibe Research`
+    : "File Editor · Vibe Research";
 
   app.innerHTML = `
     <main class="screen file-editor-screen">
@@ -17381,7 +18527,7 @@ async function bootstrapApp() {
       navigator.virtualKeyboard.overlaysContent = false;
     }
   } catch (error) {
-    console.warn("[remote-vibes] virtual keyboard API unavailable", error);
+    console.warn("[vibe-research] virtual keyboard API unavailable", error);
   }
 
   syncViewportMetrics();
@@ -17436,6 +18582,7 @@ async function bootstrapApp() {
   if (isVisualInterfaceView()) {
     void openVisualInterface({ refresh: true });
   }
+  void loadVideoMemoryStatus({ renderOnComplete: state.currentView === "plugins" || state.currentView === "settings" });
   void loadUpdateStatus();
 
   if (state.updateTimer) {
@@ -17480,7 +18627,7 @@ async function bootstrapApp() {
     if (isLocalhostAppsEnabled() && Date.now() - state.portsLoadedAt > PORTS_BACKGROUND_REFRESH_MS) {
       loadPorts();
     }
-    if (state.currentView === "system") {
+    if ((state.currentView === "system" || isVisualInterfaceView()) && !state.systemMetricsLoading) {
       void loadSystemMetrics();
     }
   }, 3000);

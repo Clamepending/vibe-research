@@ -1,0 +1,103 @@
+#!/usr/bin/env node
+
+import path from "node:path";
+import process from "node:process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+
+function printHelp() {
+  process.stdout.write(`vr-session-name
+
+Rename the current Vibe Research session to a short human-readable task label.
+
+Usage:
+  vr-session-name <new name>
+
+Examples:
+  vr-session-name "fib coordinator"
+  vr-session-name checkpoint worker
+`);
+}
+
+async function readServerInfo(rootDir) {
+  const filePath = path.join(rootDir, "server.json");
+  const raw = await readFile(filePath, "utf8");
+  return JSON.parse(raw);
+}
+
+async function writeRenameRequest(rootDir, sessionId, name) {
+  const requestDir = path.join(rootDir, "session-name-requests");
+  const requestPath = path.join(requestDir, `${sessionId}.json`);
+  await mkdir(requestDir, { recursive: true });
+  await writeFile(
+    requestPath,
+    `${JSON.stringify({ sessionId, name, requestedAt: new Date().toISOString() }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+
+  if (!args.length || args[0] === "--help" || args[0] === "-h") {
+    printHelp();
+    process.exit(args.length ? 0 : 1);
+  }
+
+  const sessionId = String(process.env.VIBE_RESEARCH_SESSION_ID || process.env.REMOTE_VIBES_SESSION_ID || "").trim();
+  if (!sessionId) {
+    process.stderr.write("vr-session-name: VIBE_RESEARCH_SESSION_ID is not set.\n");
+    process.exit(1);
+  }
+
+  const rootDir = String(process.env.VIBE_RESEARCH_ROOT || process.env.REMOTE_VIBES_ROOT || "").trim();
+  if (!rootDir) {
+    process.stderr.write("vr-session-name: VIBE_RESEARCH_ROOT is not set.\n");
+    process.exit(1);
+  }
+
+  const nextName = args.join(" ").trim();
+  if (!nextName) {
+    process.stderr.write("vr-session-name: provide a non-empty session name.\n");
+    process.exit(1);
+  }
+
+  let serverInfo = null;
+  try {
+    serverInfo = await readServerInfo(rootDir);
+  } catch {
+    serverInfo = null;
+  }
+
+  const baseUrl = String(serverInfo?.helperBaseUrl || "").trim();
+
+  if (baseUrl) {
+    try {
+      const response = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ name: nextName }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok) {
+        process.stdout.write(`${payload?.session?.name || nextName}\n`);
+        return;
+      }
+    } catch {
+      // Fall back to a filesystem request for sandboxed agents that cannot reach localhost.
+    }
+  }
+
+  try {
+    await writeRenameRequest(rootDir, sessionId, nextName);
+  } catch (error) {
+    process.stderr.write(`vr-session-name: failed to queue rename request (${error.message}).\n`);
+    process.exit(1);
+  }
+
+  process.stdout.write(`${nextName}\n`);
+}
+
+void main();

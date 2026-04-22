@@ -359,7 +359,7 @@ export class AgentRunStore {
           label: provider.label,
           available: provider.available !== false,
           quotaAvailable: false,
-          quotaReason: "Not account quota; Remote Vibes only sees local session activity.",
+          quotaReason: "Not account quota; Vibe Research only sees local session activity.",
           sessionCount: sessionsForProvider.length,
           runningSessionCount: sessionsForProvider.filter((session) => session.status === "running").length,
           workingSessionCount: sessionsForProvider.filter((session) => session.activityStatus === "working").length,
@@ -369,10 +369,10 @@ export class AgentRunStore {
 
     return {
       checkedAt: new Date(now).toISOString(),
-      source: "remote-vibes-local",
+      source: "vibe-research-local",
       sourceLabel: "Local activity only",
       quotaAvailable: false,
-      quotaReason: "This is not Anthropic/OpenAI account usage. Claude Code and Codex do not expose remaining plan quota through their local CLIs, so these cards only summarize work Remote Vibes observed locally.",
+      quotaReason: "This is not Anthropic/OpenAI account usage. Claude Code and Codex do not expose remaining plan quota through their local CLIs, so these cards only summarize work Vibe Research observed locally.",
       providers: entries,
     };
   }

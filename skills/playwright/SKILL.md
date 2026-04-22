@@ -1,11 +1,11 @@
 ---
 name: "playwright"
-description: "Use when the task requires automating a real browser from a Remote Vibes session: navigation, form filling, snapshots, screenshots, UI-flow debugging, or webapp inspection via rv-playwright/playwright-cli."
+description: "Use when the task requires automating a real browser from a Vibe Research session: navigation, form filling, snapshots, screenshots, UI-flow debugging, or webapp inspection via vr-playwright/playwright-cli."
 ---
 
 # Playwright CLI Skill
 
-Drive a real browser from the terminal using Remote Vibes' `rv-playwright` wrapper. This is the preferred browser automation path for agents in Remote Vibes.
+Drive a real browser from the terminal using Vibe Research's `vr-playwright` wrapper. This is the preferred browser automation path for agents in Vibe Research.
 
 Treat this as CLI-first browser automation. Do not pivot to Playwright test specs unless the user explicitly asks for test files.
 
@@ -29,25 +29,25 @@ npm install -g @playwright/cli@latest
 playwright-cli --help
 ```
 
-Once `npx` is present, proceed with the Remote Vibes wrapper. A global install of `playwright-cli` is optional.
+Once `npx` is present, proceed with the Vibe Research wrapper. A global install of `playwright-cli` is optional.
 
 ## Skill Path
 
-Remote Vibes sets this in agent sessions:
+Vibe Research sets this in agent sessions:
 
 ```bash
-export PWCLI="${PWCLI:-rv-playwright}"
+export PWCLI="${PWCLI:-vr-playwright}"
 ```
 
 You can use either command:
 
 ```bash
 "$PWCLI" --help
-rv-playwright --help
+vr-playwright --help
 playwright-cli --help
 ```
 
-`rv-playwright` runs `npx --package @playwright/cli playwright-cli`, so it works without a global `playwright-cli` install. It also scopes browser sessions by a short hash of `REMOTE_VIBES_SESSION_ID` unless you pass your own `-s=<session>`.
+`vr-playwright` runs `npx --package @playwright/cli playwright-cli`, so it works without a global `playwright-cli` install. It also scopes browser sessions by a short hash of `VIBE_RESEARCH_SESSION_ID` unless you pass your own `-s=<session>`.
 
 ## Quick Start
 
@@ -55,7 +55,7 @@ playwright-cli --help
 "$PWCLI" open http://127.0.0.1:4173
 "$PWCLI" snapshot
 "$PWCLI" click e15
-"$PWCLI" type "hello from Remote Vibes"
+"$PWCLI" type "hello from Vibe Research"
 "$PWCLI" press Enter
 "$PWCLI" screenshot --filename output/playwright/final.png
 ```
@@ -116,11 +116,11 @@ If a snapshot returns an empty tree right after `open`, wait a moment and run `"
 "$PWCLI" snapshot
 ```
 
-## Remote Vibes Fallbacks
+## Vibe Research Fallbacks
 
-Prefer `rv-playwright` for browser interaction. If it fails because `npx` or the Playwright browser runtime is unavailable, fall back to `rv-browser` and report the concrete failure.
+Prefer `vr-playwright` for browser interaction. If it fails because `npx` or the Playwright browser runtime is unavailable, fall back to `vr-browser` and report the concrete failure.
 
-Use `rv-browser describe` or `rv-browser describe-file` only when you specifically need Codex/Claude to turn a screenshot or local image into textual visual feedback.
+Use `vr-browser describe` or `vr-browser describe-file` only when you specifically need Codex/Claude to turn a screenshot or local image into textual visual feedback.
 
 ## Guardrails
 

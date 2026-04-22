@@ -43,6 +43,14 @@ const fakeAgentProviders = [
     launchCommand: "opencode",
   },
   {
+    id: "ml-intern",
+    label: "ML Intern",
+    command: "ml-intern",
+    defaultName: "ML Intern",
+    available: true,
+    launchCommand: "ml-intern",
+  },
+  {
     id: "shell",
     label: "Vanilla Shell",
     command: null,
@@ -53,14 +61,14 @@ const fakeAgentProviders = [
 ];
 
 async function createManager({ cwd, ...managerOptions } = {}) {
-  const workspaceDir = cwd || await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-manager-"));
-  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-home-"));
+  const workspaceDir = cwd || await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-manager-"));
+  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-home-"));
   const manager = new SessionManager({
     cwd: workspaceDir,
     providers: fakeAgentProviders,
     persistentTerminals: false,
     persistSessions: false,
-    stateDir: path.join(workspaceDir, ".remote-vibes"),
+    stateDir: path.join(workspaceDir, ".vibe-research"),
     userHomeDir,
     ...managerOptions,
   });
@@ -283,14 +291,14 @@ test("custom session names are left alone after the first prompt", async () => {
 });
 
 test("agent sessions expose working and done activity states", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-manager-"));
-  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-home-"));
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-manager-"));
+  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-home-"));
   const pendingTimers = new Set();
   const manager = new SessionManager({
     cwd: workspaceDir,
     providers: fakeAgentProviders,
     persistSessions: false,
-    stateDir: path.join(workspaceDir, ".remote-vibes"),
+    stateDir: path.join(workspaceDir, ".vibe-research"),
     userHomeDir,
     sessionActivityIdleMs: 1,
     setTimeoutFn: (callback) => {
@@ -389,9 +397,9 @@ test("Claude sessions use a fixed session id and resume it after restart", async
 });
 
 test("agent sessions reattach to persistent tmux terminals after manager restart", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-tmux-workspace-"));
-  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-tmux-home-"));
-  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-tmux-workspace-"));
+  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-tmux-home-"));
+  const stateDir = path.join(workspaceDir, ".vibe-research");
   const fakeTmuxPath = path.join(userHomeDir, "fake-tmux");
   const tmuxStatePath = path.join(userHomeDir, "tmux-session-alive");
   const tmuxProviderPath = path.join(userHomeDir, "tmux-provider-alive");
@@ -472,7 +480,7 @@ exit 0
     cwd: workspaceDir,
     env: {
       ...process.env,
-      REMOTE_VIBES_TMUX_COMMAND: fakeTmuxPath,
+      VIBE_RESEARCH_TMUX_COMMAND: fakeTmuxPath,
     },
     persistentTerminals: true,
     persistSessions: true,
@@ -498,7 +506,7 @@ exit 0
 
     await firstManager.shutdown({ preserveSessions: true });
     const shutdownLog = await waitForLog((contents) => contents.includes("args:detach-client"));
-    assert.match(shutdownLog, /args:detach-client -s remote-vibes-/);
+    assert.match(shutdownLog, /args:detach-client -s vibe-research-/);
 
     secondManager = new SessionManager(managerOptions);
     await secondManager.initialize();
@@ -516,9 +524,9 @@ exit 0
 });
 
 test("shell sessions reattach to persistent tmux terminals after manager restart", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-shell-tmux-workspace-"));
-  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-shell-tmux-home-"));
-  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-shell-tmux-workspace-"));
+  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-shell-tmux-home-"));
+  const stateDir = path.join(workspaceDir, ".vibe-research");
   const fakeTmuxPath = path.join(userHomeDir, "fake-tmux");
   const tmuxStatePath = path.join(userHomeDir, "tmux-session-alive");
   const tmuxLogPath = path.join(userHomeDir, "tmux.log");
@@ -590,7 +598,7 @@ exit 0
     cwd: workspaceDir,
     env: {
       ...process.env,
-      REMOTE_VIBES_TMUX_COMMAND: fakeTmuxPath,
+      VIBE_RESEARCH_TMUX_COMMAND: fakeTmuxPath,
     },
     persistentTerminals: true,
     persistSessions: true,
@@ -614,7 +622,7 @@ exit 0
 
     await firstManager.shutdown({ preserveSessions: true });
     const shutdownLog = await waitForLog((contents) => contents.includes("args:detach-client"));
-    assert.match(shutdownLog, /args:detach-client -s remote-vibes-/);
+    assert.match(shutdownLog, /args:detach-client -s vibe-research-/);
 
     secondManager = new SessionManager(managerOptions);
     await secondManager.initialize();
@@ -631,14 +639,14 @@ exit 0
 });
 
 test("agent sessions preserve idle persistent tmux terminals after manager restart", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-idle-tmux-workspace-"));
-  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-idle-tmux-home-"));
-  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-idle-tmux-workspace-"));
+  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-idle-tmux-home-"));
+  const stateDir = path.join(workspaceDir, ".vibe-research");
   const fakeTmuxPath = path.join(userHomeDir, "fake-tmux");
   const tmuxStatePath = path.join(userHomeDir, "tmux-session-alive");
   const tmuxProviderPath = path.join(userHomeDir, "tmux-provider-alive");
   const tmuxLogPath = path.join(userHomeDir, "tmux.log");
-  const tmuxSessionName = "remote-vibes-idle-claude";
+  const tmuxSessionName = "vibe-research-idle-claude";
   let manager = null;
 
   const waitForLog = async (predicate) => {
@@ -741,7 +749,7 @@ exit 0
       cwd: workspaceDir,
       env: {
         ...process.env,
-        REMOTE_VIBES_TMUX_COMMAND: fakeTmuxPath,
+        VIBE_RESEARCH_TMUX_COMMAND: fakeTmuxPath,
       },
       persistentTerminals: true,
       persistSessions: true,
@@ -756,10 +764,137 @@ exit 0
       contents.includes("args:attach-session"),
     );
     assert.match(logContents, /args:list-panes/);
-    assert.match(logContents, /args:attach-session -t remote-vibes-idle-claude/);
+    assert.match(logContents, /args:attach-session -t vibe-research-idle-claude/);
     assert.doesNotMatch(logContents, /args:kill-session/);
     assert.doesNotMatch(logContents, /args:new-session/);
     assert.doesNotMatch(logContents, /stdin:.*--resume' 'claude-session-to-resume'/);
+  } finally {
+    await manager?.shutdown({ preserveSessions: false });
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(userHomeDir, { recursive: true, force: true });
+  }
+});
+
+test("exited records reattach when their persistent tmux terminal is still alive", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-exited-tmux-workspace-"));
+  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-exited-tmux-home-"));
+  const stateDir = path.join(workspaceDir, ".vibe-research");
+  const fakeTmuxPath = path.join(userHomeDir, "fake-tmux");
+  const tmuxStatePath = path.join(userHomeDir, "tmux-session-alive");
+  const tmuxLogPath = path.join(userHomeDir, "tmux.log");
+  const tmuxSessionName = "vibe-research-exited-but-alive";
+  let manager = null;
+
+  const waitForLog = async (predicate) => {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      let contents = "";
+      try {
+        contents = await readFile(tmuxLogPath, "utf8");
+      } catch {
+        contents = "";
+      }
+
+      if (predicate(contents)) {
+        return contents;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    return readFile(tmuxLogPath, "utf8");
+  };
+
+  await createExecutableScript(
+    fakeTmuxPath,
+    `#!/bin/sh
+STATE_FILE=${shellQuote(tmuxStatePath)}
+LOG_FILE=${shellQuote(tmuxLogPath)}
+printf 'args:%s\\n' "$*" >> "$LOG_FILE"
+case "$1" in
+  -V)
+    printf 'tmux 3.4\\n'
+    exit 0
+    ;;
+  has-session)
+    [ -f "$STATE_FILE" ]
+    exit $?
+    ;;
+  list-panes)
+    printf 'claude\\n'
+    exit 0
+    ;;
+  attach-session)
+    while IFS= read -r line; do
+      printf 'attach-stdin:%s\\n' "$line" >> "$LOG_FILE"
+    done
+    ;;
+  new-session)
+    : > "$STATE_FILE"
+    while IFS= read -r line; do
+      printf 'stdin:%s\\n' "$line" >> "$LOG_FILE"
+    done
+    ;;
+  kill-session)
+    rm -f "$STATE_FILE"
+    exit 0
+    ;;
+esac
+exit 0
+`,
+  );
+
+  try {
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(tmuxStatePath, "alive\n", "utf8");
+    await writeFile(
+      path.join(stateDir, "sessions.json"),
+      `${JSON.stringify({
+        version: 1,
+        savedAt: new Date().toISOString(),
+        sessions: [
+          {
+            id: "33333333-4444-4555-8666-777777777777",
+            providerId: "claude",
+            providerLabel: "Claude Code",
+            name: "Revived Claude",
+            cwd: workspaceDir,
+            shell: "/bin/zsh",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            status: "exited",
+            restoreOnStartup: false,
+            providerState: {
+              sessionId: "claude-session-to-revive",
+              terminalBackend: "tmux",
+              tmuxSessionName,
+            },
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+
+    manager = new SessionManager({
+      cwd: workspaceDir,
+      env: {
+        ...process.env,
+        VIBE_RESEARCH_TMUX_COMMAND: fakeTmuxPath,
+      },
+      persistentTerminals: true,
+      persistSessions: true,
+      providers: fakeAgentProviders,
+      stateDir,
+      userHomeDir,
+    });
+    await manager.initialize();
+
+    const logContents = await waitForLog((contents) => contents.includes("args:attach-session"));
+    assert.match(logContents, /args:attach-session -t vibe-research-exited-but-alive/);
+    assert.doesNotMatch(logContents, /args:new-session/);
+    assert.doesNotMatch(logContents, /stdin:.*--resume/);
+
+    const [session] = manager.listSessions();
+    assert.equal(session.status, "running");
   } finally {
     await manager?.shutdown({ preserveSessions: false });
     await rm(workspaceDir, { recursive: true, force: true });
@@ -780,7 +915,7 @@ test("forked sessions reuse provider memory without inheriting the parent's tmux
       providerState: {
         sessionId: "claude-session-123",
         terminalBackend: "tmux",
-        tmuxSessionName: "remote-vibes-parent",
+        tmuxSessionName: "vibe-research-parent",
       },
     });
 
@@ -1013,7 +1148,7 @@ test("session swarm graph includes git worktree, fork, subagent, and touched pat
 
   try {
     await execFileAsync("git", ["init", "-b", "main"], { cwd: workspaceDir });
-    await execFileAsync("git", ["config", "user.name", "Remote Vibes Test"], { cwd: workspaceDir });
+    await execFileAsync("git", ["config", "user.name", "Vibe Research Test"], { cwd: workspaceDir });
     await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: workspaceDir });
     await writeFile(path.join(workspaceDir, "README.md"), "# Swarm\n", "utf8");
     await execFileAsync("git", ["add", "README.md"], { cwd: workspaceDir });
@@ -1073,7 +1208,7 @@ test("project swarm graph is keyed by repository folder instead of a focus sessi
 
   try {
     await execFileAsync("git", ["init", "-b", "main"], { cwd: workspaceDir });
-    await execFileAsync("git", ["config", "user.name", "Remote Vibes Test"], { cwd: workspaceDir });
+    await execFileAsync("git", ["config", "user.name", "Vibe Research Test"], { cwd: workspaceDir });
     await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: workspaceDir });
     await writeFile(path.join(workspaceDir, "README.md"), "# Swarm\n", "utf8");
     await execFileAsync("git", ["add", "README.md"], { cwd: workspaceDir });
@@ -1112,8 +1247,8 @@ test("project swarm graph is keyed by repository folder instead of a focus sessi
 });
 
 test("Claude and Codex provider launches use the managed wrapper command when a real binary path is resolved", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-manager-"));
-  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-home-"));
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-manager-"));
+  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-home-"));
   const manager = new SessionManager({
     cwd: workspaceDir,
     providers: [
@@ -1135,7 +1270,7 @@ test("Claude and Codex provider launches use the managed wrapper command when a 
       },
     ],
     persistSessions: false,
-    stateDir: path.join(workspaceDir, ".remote-vibes"),
+    stateDir: path.join(workspaceDir, ".vibe-research"),
     userHomeDir,
   });
 
@@ -1245,6 +1380,72 @@ test("forked provider launches resume the source provider session when available
       { restored: false },
     );
     assert.equal(openCodeLaunch.commandString, "'opencode' '--session' 'source-opencode-session'");
+  } finally {
+    await cleanupManager(manager, workspaceDir, userHomeDir);
+  }
+});
+
+test("ML Intern launches as a generic provider without unsupported session capture", async () => {
+  const { manager, workspaceDir, userHomeDir } = await createManager();
+
+  try {
+    const session = manager.buildSessionRecord({
+      providerId: "ml-intern",
+      providerLabel: "ML Intern",
+      name: "ML Intern 1",
+      cwd: workspaceDir,
+    });
+    const launch = await manager.prepareProviderLaunch(session, manager.getProvider("ml-intern"), { restored: false });
+
+    assert.equal(launch.commandString, "'ml-intern'");
+    assert.equal(launch.afterLaunch, null);
+    assert.equal(session.pendingProviderCapture, null);
+  } finally {
+    await cleanupManager(manager, workspaceDir, userHomeDir);
+  }
+});
+
+test("ML Intern is eligible for persistent tmux terminals", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-ml-intern-tmux-workspace-"));
+  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-ml-intern-tmux-home-"));
+  const fakeTmuxPath = path.join(userHomeDir, "fake-tmux");
+  const manager = new SessionManager({
+    cwd: workspaceDir,
+    env: {
+      ...process.env,
+      VIBE_RESEARCH_TMUX_COMMAND: fakeTmuxPath,
+    },
+    persistentTerminals: true,
+    persistSessions: false,
+    providers: fakeAgentProviders,
+    stateDir: path.join(workspaceDir, ".vibe-research"),
+    userHomeDir,
+  });
+
+  await createExecutableScript(
+    fakeTmuxPath,
+    `#!/bin/sh
+case "$1" in
+  -V)
+    printf 'tmux 3.4\\n'
+    exit 0
+    ;;
+esac
+exit 0
+`,
+  );
+  await manager.initialize();
+
+  try {
+    const session = manager.buildSessionRecord({
+      providerId: "ml-intern",
+      providerLabel: "ML Intern",
+      name: "ML Intern 1",
+      cwd: workspaceDir,
+    });
+    const provider = manager.getProvider("ml-intern");
+
+    assert.equal(manager.shouldUsePersistentTerminal(provider, manager.buildSessionEnvironment(session)), true);
   } finally {
     await cleanupManager(manager, workspaceDir, userHomeDir);
   }
@@ -1565,7 +1766,7 @@ test("Gemini sessions capture the project session id and resume it after restart
     assert.equal(firstLaunch.commandString, "'gemini'");
 
     const geminiSessionId = "11111111-2222-4333-8444-555555555555";
-    await writeGeminiSessions(userHomeDir, workspaceDir, "remote-vibes", [
+    await writeGeminiSessions(userHomeDir, workspaceDir, "vibe-research", [
       {
         id: geminiSessionId,
         fileName: "session-2026-04-15T21-05-00-11111111.json",
@@ -1588,8 +1789,8 @@ test("Gemini sessions capture the project session id and resume it after restart
 });
 
 test("Codex session capture matches canonical workspace paths", async () => {
-  const realWorkspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-real-"));
-  const linkRootDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-link-"));
+  const realWorkspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-real-"));
+  const linkRootDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-link-"));
   const linkedWorkspaceDir = path.join(linkRootDir, "workspace");
   await symlink(realWorkspaceDir, linkedWorkspaceDir);
 
@@ -1634,8 +1835,8 @@ test("Codex session capture matches canonical workspace paths", async () => {
 });
 
 test("Gemini session capture matches canonical workspace paths", async () => {
-  const realWorkspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-real-"));
-  const linkRootDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-link-"));
+  const realWorkspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-real-"));
+  const linkRootDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-link-"));
   const linkedWorkspaceDir = path.join(linkRootDir, "workspace");
   await symlink(realWorkspaceDir, linkedWorkspaceDir);
 
@@ -1657,7 +1858,7 @@ test("Gemini session capture matches canonical workspace paths", async () => {
     const firstLaunch = await manager.prepareProviderLaunch(session, provider, { restored: false });
     const geminiSessionId = "22222222-3333-4444-8555-666666666666";
 
-    await writeGeminiSessions(userHomeDir, realWorkspaceDir, "remote-vibes-symlink", [
+    await writeGeminiSessions(userHomeDir, realWorkspaceDir, "vibe-research-symlink", [
       {
         id: geminiSessionId,
         fileName: "session-2026-04-15T22-05-00-22222222.json",
@@ -1676,8 +1877,8 @@ test("Gemini session capture matches canonical workspace paths", async () => {
 });
 
 test("OpenCode session capture matches canonical workspace paths", async () => {
-  const realWorkspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-real-"));
-  const linkRootDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-link-"));
+  const realWorkspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-real-"));
+  const linkRootDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-link-"));
   const linkedWorkspaceDir = path.join(linkRootDir, "workspace");
   await symlink(realWorkspaceDir, linkedWorkspaceDir);
 

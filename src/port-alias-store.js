@@ -38,7 +38,7 @@ export class PortAliasStore {
         return {};
       }
 
-      console.warn("[remote-vibes] failed to load persisted port aliases", error);
+      console.warn("[vibe-research] failed to load persisted port aliases", error);
       return {};
     }
   }

@@ -1,0 +1,392 @@
+#!/usr/bin/env node
+
+import path from "node:path";
+import process from "node:process";
+import { watch } from "node:fs";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
+
+function printHelp() {
+  process.stdout.write(`vr-mailwatch
+
+Watch a Vibe Research agent inbox and emit a concise notification when new mail arrives.
+
+Usage:
+  vr-mailwatch [--inbox PATH] [--interval SECONDS] [--once] [--timeout SECONDS] [--from SESSION_ID] [--after ISO_TIMESTAMP] [--print-path] [--quiet] [--no-bell]
+
+Options:
+  --inbox PATH         Inbox directory to watch. Defaults to VIBE_RESEARCH_AGENT_INBOX.
+  --interval SECONDS   Poll fallback interval in seconds. Defaults to 5.
+  --once               Exit after the first new-mail notification.
+  --timeout SECONDS    Maximum time to wait before exiting. Useful with --once.
+  --from SESSION_ID    Only notify for messages whose frontmatter \`from\` matches this value.
+  --after TIMESTAMP    Only notify for messages sent after this ISO-8601 timestamp.
+  --print-path         Print the matching file path to stdout when a notification is emitted.
+  --quiet              Suppress the startup banner and only print new-mail notifications.
+  --bell               Ring the terminal bell on new mail. Enabled by default.
+  --no-bell            Disable the terminal bell on new mail.
+  --help               Show this help text.
+`);
+}
+
+function parseTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function parseArgs(argv) {
+  const options = {
+    inbox: String(process.env.VIBE_RESEARCH_AGENT_INBOX || process.env.REMOTE_VIBES_AGENT_INBOX || "").trim(),
+    intervalSeconds: 5,
+    once: false,
+    timeoutSeconds: null,
+    from: "",
+    after: "",
+    quiet: false,
+    bell: true,
+    printPath: false,
+    pollOnly: /^(1|true|yes)$/i.test(
+      String(process.env.VIBE_RESEARCH_MAILWATCH_POLL_ONLY || process.env.REMOTE_VIBES_MAILWATCH_POLL_ONLY || "").trim(),
+    ),
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+
+    if (arg === "--help" || arg === "-h") {
+      printHelp();
+      process.exit(0);
+    }
+
+    if (arg === "--quiet") {
+      options.quiet = true;
+      continue;
+    }
+
+    if (arg === "--once") {
+      options.once = true;
+      continue;
+    }
+
+    if (arg === "--bell") {
+      options.bell = true;
+      continue;
+    }
+
+    if (arg === "--no-bell") {
+      options.bell = false;
+      continue;
+    }
+
+    if (arg === "--inbox") {
+      options.inbox = String(argv[index + 1] || "").trim();
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--interval") {
+      options.intervalSeconds = Number(argv[index + 1]);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--timeout") {
+      options.timeoutSeconds = Number(argv[index + 1]);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--from") {
+      options.from = String(argv[index + 1] || "").trim();
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--after") {
+      options.after = String(argv[index + 1] || "").trim();
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--print-path") {
+      options.printPath = true;
+      continue;
+    }
+
+    process.stderr.write(`vr-mailwatch: unknown argument: ${arg}\n`);
+    process.exit(1);
+  }
+
+  if (!options.inbox) {
+    process.stderr.write("vr-mailwatch: missing inbox path. Pass --inbox or set VIBE_RESEARCH_AGENT_INBOX.\n");
+    process.exit(1);
+  }
+
+  if (!Number.isFinite(options.intervalSeconds) || options.intervalSeconds <= 0) {
+    process.stderr.write("vr-mailwatch: --interval must be a positive number of seconds.\n");
+    process.exit(1);
+  }
+
+  if (
+    options.timeoutSeconds !== null &&
+    (!Number.isFinite(options.timeoutSeconds) || options.timeoutSeconds <= 0)
+  ) {
+    process.stderr.write("vr-mailwatch: --timeout must be a positive number of seconds.\n");
+    process.exit(1);
+  }
+
+  if (options.after && parseTimestamp(options.after) === null) {
+    process.stderr.write("vr-mailwatch: --after must be a valid ISO-8601 timestamp.\n");
+    process.exit(1);
+  }
+
+  options.inbox = path.resolve(options.inbox);
+  options.intervalMs = Math.max(250, Math.round(options.intervalSeconds * 1000));
+  options.timeoutMs = options.timeoutSeconds === null
+    ? null
+    : Math.max(250, Math.round(options.timeoutSeconds * 1000));
+  options.afterMs = parseTimestamp(options.after);
+  return options;
+}
+
+async function listMarkdownFiles(inboxPath) {
+  try {
+    const entries = await readdir(inboxPath, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".md"))
+      .map((entry) => path.join(inboxPath, entry.name))
+      .sort();
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return [];
+    }
+
+    throw error;
+  }
+}
+
+function parseFrontmatter(content) {
+  if (!content.startsWith("---\n")) {
+    return {};
+  }
+
+  const closingIndex = content.indexOf("\n---\n", 4);
+  if (closingIndex === -1) {
+    return {};
+  }
+
+  const header = content.slice(4, closingIndex).split("\n");
+  const fields = {};
+
+  for (const line of header) {
+    const separatorIndex = line.indexOf(":");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+
+    const key = line.slice(0, separatorIndex).trim();
+    const value = line.slice(separatorIndex + 1).trim();
+    if (key) {
+      fields[key] = value;
+    }
+  }
+
+  return fields;
+}
+
+async function readNotification(filePath) {
+  try {
+    const fileStats = await stat(filePath);
+    if (!fileStats.isFile() || fileStats.size === 0) {
+      return null;
+    }
+
+    const content = await readFile(filePath, "utf8");
+    if (!content.trim()) {
+      return null;
+    }
+
+    const frontmatter = parseFrontmatter(content);
+    return {
+      filePath,
+      relativePath: path.relative(process.cwd(), filePath) || filePath,
+      from: frontmatter.from || "",
+      fromName: frontmatter.from_name || frontmatter.from || "unknown sender",
+      subject: frontmatter.subject || path.basename(filePath),
+      sentAt: frontmatter.sent_at || "",
+      sentAtMs: parseTimestamp(frontmatter.sent_at),
+      modifiedAtMs: Number(fileStats.mtimeMs) || 0,
+    };
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+function formatNotification(notification) {
+  const sentAtSuffix = notification.sentAt ? ` @ ${notification.sentAt}` : "";
+  return `[vibe-research-mail] ${notification.subject} <- ${notification.fromName}${sentAtSuffix} (${notification.relativePath})`;
+}
+
+function matchesNotification(notification, options) {
+  if (options.from && notification.from !== options.from) {
+    return false;
+  }
+
+  if (options.afterMs !== null) {
+    const compareMs = notification.sentAtMs ?? notification.modifiedAtMs;
+    if (!Number.isFinite(compareMs) || compareMs < options.afterMs) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  await mkdir(options.inbox, { recursive: true });
+
+  const announced = new Set();
+  let watcher = null;
+  let debounceTimer = null;
+  let scanInFlight = false;
+  let scanQueued = false;
+  let timeoutTimer = null;
+
+  if (!options.quiet) {
+    process.stderr.write(`[vibe-research-mail] watching ${path.relative(process.cwd(), options.inbox) || options.inbox}\n`);
+  }
+
+  function shutdown(exitCode = 0) {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = null;
+    }
+
+    clearInterval(interval);
+    watcher?.close();
+    process.exit(exitCode);
+  }
+
+  async function scanInbox() {
+    if (scanInFlight) {
+      scanQueued = true;
+      return;
+    }
+
+    scanInFlight = true;
+
+    try {
+      do {
+        scanQueued = false;
+        const currentFiles = await listMarkdownFiles(options.inbox);
+
+        for (const filePath of currentFiles) {
+          if (announced.has(filePath)) {
+            continue;
+          }
+
+          const notification = await readNotification(filePath);
+          announced.add(filePath);
+
+          if (!notification || !matchesNotification(notification, options)) {
+            continue;
+          }
+
+          process.stderr.write(`${options.bell ? "\u0007" : ""}${formatNotification(notification)}\n`);
+
+          if (options.printPath) {
+            process.stdout.write(`${notification.filePath}\n`);
+          }
+
+          if (options.once) {
+            shutdown(0);
+            return;
+          }
+        }
+
+        const currentSet = new Set(currentFiles);
+        for (const knownFile of Array.from(announced)) {
+          if (!currentSet.has(knownFile)) {
+            announced.delete(knownFile);
+          }
+        }
+      } while (scanQueued);
+    } finally {
+      scanInFlight = false;
+    }
+  }
+
+  function scheduleScan(delayMs = 150) {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
+
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      void scanInbox();
+    }, delayMs);
+  }
+
+  function disableWatcher(reason = null) {
+    if (watcher) {
+      watcher.close();
+      watcher = null;
+    }
+
+    if (reason && !options.quiet) {
+      process.stderr.write(`[vibe-research-mail] falling back to polling (${reason})\n`);
+    }
+  }
+
+  if (!options.pollOnly) {
+    try {
+      watcher = watch(options.inbox, () => {
+        scheduleScan();
+      });
+      watcher.on("error", (error) => {
+        disableWatcher(error?.code || error?.message || "watch-error");
+      });
+    } catch (error) {
+      disableWatcher(error?.code || error?.message || "watch-error");
+    }
+  }
+
+  const interval = setInterval(() => {
+    void scanInbox();
+  }, options.intervalMs);
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  if (options.timeoutMs !== null) {
+    timeoutTimer = setTimeout(() => {
+      if (!options.quiet) {
+        process.stderr.write("[vibe-research-mail] timed out waiting for new mail\n");
+      }
+      shutdown(124);
+    }, options.timeoutMs);
+  }
+
+  if (options.afterMs === null) {
+    for (const filePath of await listMarkdownFiles(options.inbox)) {
+      announced.add(filePath);
+    }
+  }
+
+  await scanInbox();
+}
+
+await main();

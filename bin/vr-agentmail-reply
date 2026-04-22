@@ -1,0 +1,161 @@
+#!/usr/bin/env node
+
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+
+function printHelp() {
+  process.stdout.write(`vr-agentmail-reply
+
+Send a plain-text reply to an AgentMail message through the local Vibe Research server.
+
+Usage:
+  vr-agentmail-reply --inbox-id <inbox> --message-id <message> [--text <reply>]
+  vr-agentmail-reply --inbox-id <inbox> --message-id <message> < reply.txt
+
+Examples:
+  vr-agentmail-reply --inbox-id agent@agentmail.to --message-id '<msg@example>' <<'EOF'
+  Thanks, I will take a look.
+  EOF
+`);
+}
+
+function parseArgs(argv) {
+  const options = {
+    html: "",
+    inboxId: "",
+    messageId: "",
+    text: "",
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    const readValue = (name) => {
+      const inlinePrefix = `${name}=`;
+      if (arg.startsWith(inlinePrefix)) {
+        return arg.slice(inlinePrefix.length);
+      }
+
+      index += 1;
+      return argv[index] || "";
+    };
+
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+      continue;
+    }
+
+    if (arg === "--inbox-id" || arg.startsWith("--inbox-id=")) {
+      options.inboxId = readValue("--inbox-id");
+      continue;
+    }
+
+    if (arg === "--message-id" || arg.startsWith("--message-id=")) {
+      options.messageId = readValue("--message-id");
+      continue;
+    }
+
+    if (arg === "--text" || arg.startsWith("--text=")) {
+      options.text = readValue("--text");
+      continue;
+    }
+
+    if (arg === "--html" || arg.startsWith("--html=")) {
+      options.html = readValue("--html");
+      continue;
+    }
+
+    throw new Error(`unknown argument: ${arg}`);
+  }
+
+  return options;
+}
+
+async function readStdin() {
+  if (process.stdin.isTTY) {
+    return "";
+  }
+
+  const chunks = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function readServerInfo(rootDir) {
+  const filePath = path.join(rootDir, "server.json");
+  const raw = await readFile(filePath, "utf8");
+  return JSON.parse(raw);
+}
+
+async function main() {
+  let options;
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`vr-agentmail-reply: ${error.message}\n`);
+    process.exit(1);
+  }
+
+  if (options.help) {
+    printHelp();
+    return;
+  }
+
+  if (!options.inboxId || !options.messageId) {
+    process.stderr.write("vr-agentmail-reply: --inbox-id and --message-id are required.\n");
+    process.exit(1);
+  }
+
+  const text = options.text || (await readStdin()).trim();
+  if (!text && !options.html) {
+    process.stderr.write("vr-agentmail-reply: provide reply text via --text or stdin.\n");
+    process.exit(1);
+  }
+
+  const rootDir = String(process.env.VIBE_RESEARCH_ROOT || process.env.REMOTE_VIBES_ROOT || "").trim();
+  if (!rootDir) {
+    process.stderr.write("vr-agentmail-reply: VIBE_RESEARCH_ROOT is not set.\n");
+    process.exit(1);
+  }
+
+  let serverInfo;
+  try {
+    serverInfo = await readServerInfo(rootDir);
+  } catch (error) {
+    process.stderr.write(`vr-agentmail-reply: could not read Vibe Research server info (${error.message}).\n`);
+    process.exit(1);
+  }
+
+  const baseUrl = String(serverInfo?.helperBaseUrl || "").trim();
+  const token = String(serverInfo?.agentMailReplyToken || "").trim();
+  if (!baseUrl || !token) {
+    process.stderr.write("vr-agentmail-reply: AgentMail reply helper is not available from this session.\n");
+    process.exit(1);
+  }
+
+  const response = await fetch(`${baseUrl}/api/agentmail/reply`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-vibe-research-agentmail-token": token,
+    },
+    body: JSON.stringify({
+      html: options.html,
+      inboxId: options.inboxId,
+      messageId: options.messageId,
+      text,
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    process.stderr.write(`vr-agentmail-reply: ${payload.error || `request failed (${response.status})`}\n`);
+    process.exit(1);
+  }
+
+  process.stdout.write(`AgentMail reply sent: ${payload.reply?.message_id || payload.reply?.messageId || "ok"}\n`);
+}
+
+void main();

@@ -1,39 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_SLUG="${REMOTE_VIBES_REPO_SLUG:-Clamepending/remote-vibes}"
-INSTALL_DIR="${REMOTE_VIBES_HOME:-$HOME/.remote-vibes/app}"
-if [ -n "${REMOTE_VIBES_REF+x}" ]; then
+REPO_SLUG="${VIBE_RESEARCH_REPO_SLUG:-${REMOTE_VIBES_REPO_SLUG:-Clamepending/vibe-research}}"
+INSTALL_DIR="${VIBE_RESEARCH_HOME:-${REMOTE_VIBES_HOME:-$HOME/.vibe-research/app}}"
+if [ -n "${VIBE_RESEARCH_REF+x}" ] || [ -n "${REMOTE_VIBES_REF+x}" ]; then
   REPO_REF_WAS_SET=1
 else
   REPO_REF_WAS_SET=0
 fi
-REPO_REF="${REMOTE_VIBES_REF:-main}"
-REPO_URL="${REMOTE_VIBES_REPO_URL:-}"
-UPDATE_CHANNEL="${REMOTE_VIBES_UPDATE_CHANNEL:-release}"
-SKIP_RUN="${REMOTE_VIBES_SKIP_RUN:-0}"
-INSTALL_SYSTEM_DEPS="${REMOTE_VIBES_INSTALL_SYSTEM_DEPS:-1}"
-INSTALL_TAILSCALE="${REMOTE_VIBES_INSTALL_TAILSCALE:-1}"
-INSTALL_SERVICE="${REMOTE_VIBES_INSTALL_SERVICE:-1}"
-TAILSCALE_UP="${REMOTE_VIBES_TAILSCALE_UP:-1}"
-TAILSCALE_COMMAND="${REMOTE_VIBES_TAILSCALE_COMMAND:-tailscale}"
-TAILSCALE_AUTHKEY="${REMOTE_VIBES_TAILSCALE_AUTHKEY:-}"
-TAILSCALE_USE_SUDO="${REMOTE_VIBES_TAILSCALE_USE_SUDO:-1}"
-TAILSCALE_DAEMON_WAIT_SECONDS="${REMOTE_VIBES_TAILSCALE_DAEMON_WAIT_SECONDS:-15}"
-TAILSCALED_LOG_FILE="${REMOTE_VIBES_TAILSCALED_LOG_FILE:-/tmp/remote-vibes-tailscaled.log}"
-SERVICE_NAME="${REMOTE_VIBES_SERVICE_NAME:-remote-vibes}"
-SYSTEMD_SERVICE_DIR="${REMOTE_VIBES_SYSTEMD_SERVICE_DIR:-/etc/systemd/system}"
-NODE_MAJOR="${REMOTE_VIBES_NODE_MAJOR:-22}"
+REPO_REF="${VIBE_RESEARCH_REF:-${REMOTE_VIBES_REF:-main}}"
+REPO_URL="${VIBE_RESEARCH_REPO_URL:-${REMOTE_VIBES_REPO_URL:-}}"
+UPDATE_CHANNEL="${VIBE_RESEARCH_UPDATE_CHANNEL:-${REMOTE_VIBES_UPDATE_CHANNEL:-release}}"
+SKIP_RUN="${VIBE_RESEARCH_SKIP_RUN:-${REMOTE_VIBES_SKIP_RUN:-0}}"
+INSTALL_SYSTEM_DEPS="${VIBE_RESEARCH_INSTALL_SYSTEM_DEPS:-${REMOTE_VIBES_INSTALL_SYSTEM_DEPS:-1}}"
+INSTALL_TAILSCALE="${VIBE_RESEARCH_INSTALL_TAILSCALE:-${REMOTE_VIBES_INSTALL_TAILSCALE:-1}}"
+INSTALL_SERVICE="${VIBE_RESEARCH_INSTALL_SERVICE:-${REMOTE_VIBES_INSTALL_SERVICE:-1}}"
+TAILSCALE_UP="${VIBE_RESEARCH_TAILSCALE_UP:-${REMOTE_VIBES_TAILSCALE_UP:-1}}"
+TAILSCALE_COMMAND="${VIBE_RESEARCH_TAILSCALE_COMMAND:-${REMOTE_VIBES_TAILSCALE_COMMAND:-tailscale}}"
+TAILSCALE_AUTHKEY="${VIBE_RESEARCH_TAILSCALE_AUTHKEY:-${REMOTE_VIBES_TAILSCALE_AUTHKEY:-}}"
+TAILSCALE_USE_SUDO="${VIBE_RESEARCH_TAILSCALE_USE_SUDO:-${REMOTE_VIBES_TAILSCALE_USE_SUDO:-1}}"
+TAILSCALE_DAEMON_WAIT_SECONDS="${VIBE_RESEARCH_TAILSCALE_DAEMON_WAIT_SECONDS:-${REMOTE_VIBES_TAILSCALE_DAEMON_WAIT_SECONDS:-15}}"
+TAILSCALED_LOG_FILE="${VIBE_RESEARCH_TAILSCALED_LOG_FILE:-${REMOTE_VIBES_TAILSCALED_LOG_FILE:-/tmp/vibe-research-tailscaled.log}}"
+SERVICE_NAME="${VIBE_RESEARCH_SERVICE_NAME:-${REMOTE_VIBES_SERVICE_NAME:-vibe-research}}"
+SYSTEMD_SERVICE_DIR="${VIBE_RESEARCH_SYSTEMD_SERVICE_DIR:-${REMOTE_VIBES_SYSTEMD_SERVICE_DIR:-/etc/systemd/system}}"
+NODE_MAJOR="${VIBE_RESEARCH_NODE_MAJOR:-${REMOTE_VIBES_NODE_MAJOR:-22}}"
 MIN_NODE_MAJOR=20
 APT_UPDATED=0
-MANAGED_PROMPT_MARKER="<!-- remote-vibes:managed-agent-prompt -->"
+MANAGED_PROMPT_MARKER="<!-- vibe-research:managed-agent-prompt -->"
+LEGACY_MANAGED_PROMPT_MARKER="<!-- remote-vibes:managed-agent-prompt -->"
 
 log() {
-  printf '[remote-vibes-install] %s\n' "$*"
+  printf '[vibe-research-install] %s\n' "$*"
 }
 
 fail() {
-  printf '[remote-vibes-install] %s\n' "$*" >&2
+  printf '[vibe-research-install] %s\n' "$*" >&2
   exit 1
 }
 
@@ -232,7 +233,7 @@ ensure_node() {
   install_nodesource_node
 
   if ! node_is_supported; then
-    fail "Node.js $(node -v 2>/dev/null || printf 'missing') is not supported. Remote Vibes needs Node.js >=${MIN_NODE_MAJOR}."
+    fail "Node.js $(node -v 2>/dev/null || printf 'missing') is not supported. Vibe Research needs Node.js >=${MIN_NODE_MAJOR}."
   fi
 
   if ! has_command npm; then
@@ -488,7 +489,7 @@ ensure_tailscale() {
   local ip_address
 
   if [ "$INSTALL_TAILSCALE" = "0" ]; then
-    log "Skipping Tailscale setup because REMOTE_VIBES_INSTALL_TAILSCALE=0"
+    log "Skipping Tailscale setup because VIBE_RESEARCH_INSTALL_TAILSCALE=0"
     return
   fi
 
@@ -509,7 +510,7 @@ ensure_tailscale() {
   fi
 
   if [ "$TAILSCALE_UP" = "0" ]; then
-    log "Skipping Tailscale login because REMOTE_VIBES_TAILSCALE_UP=0"
+    log "Skipping Tailscale login because VIBE_RESEARCH_TAILSCALE_UP=0"
     return
   fi
 
@@ -551,7 +552,7 @@ install_systemd_service() {
   local service_user state_dir wiki_dir port service_file temp_file
 
   if [ "$INSTALL_SERVICE" = "0" ]; then
-    log "Skipping service install because REMOTE_VIBES_INSTALL_SERVICE=0"
+    log "Skipping service install because VIBE_RESEARCH_INSTALL_SERVICE=0"
     return
   fi
 
@@ -570,15 +571,15 @@ install_systemd_service() {
   fi
 
   service_user="$(id -un)"
-  state_dir="${REMOTE_VIBES_STATE_DIR:-$HOME/.remote-vibes}"
-  wiki_dir="${REMOTE_VIBES_WIKI_DIR:-$HOME/mac-brain}"
-  port="${REMOTE_VIBES_PORT:-4123}"
+  state_dir="${VIBE_RESEARCH_STATE_DIR:-${REMOTE_VIBES_STATE_DIR:-$HOME/.vibe-research}}"
+  wiki_dir="${VIBE_RESEARCH_WIKI_DIR:-${REMOTE_VIBES_WIKI_DIR:-$HOME/mac-brain}}"
+  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4123}}"
   service_file="$SYSTEMD_SERVICE_DIR/${SERVICE_NAME}.service"
   temp_file="$(mktemp)"
 
   cat >"$temp_file" <<EOF
 [Unit]
-Description=Remote Vibes
+Description=Vibe Research
 After=network-online.target tailscaled.service
 Wants=network-online.target
 
@@ -586,9 +587,9 @@ Wants=network-online.target
 Type=forking
 User=$service_user
 WorkingDirectory=$INSTALL_DIR
-Environment=REMOTE_VIBES_STATE_DIR=$state_dir
-Environment=REMOTE_VIBES_WIKI_DIR=$wiki_dir
-Environment=REMOTE_VIBES_PORT=$port
+Environment=VIBE_RESEARCH_STATE_DIR=$state_dir
+Environment=VIBE_RESEARCH_WIKI_DIR=$wiki_dir
+Environment=VIBE_RESEARCH_PORT=$port
 ExecStart=$INSTALL_DIR/start.sh
 PIDFile=$state_dir/server.pid
 Restart=always
@@ -603,19 +604,19 @@ EOF
   log "Installing systemd service $SERVICE_NAME.service"
   if ! try_run_as_root install -m 0644 "$temp_file" "$service_file"; then
     rm -f "$temp_file"
-    log "Could not install systemd service; Remote Vibes is still running for this session"
+    log "Could not install systemd service; Vibe Research is still running for this session"
     return
   fi
 
   rm -f "$temp_file"
 
   if ! try_run_as_root systemctl daemon-reload; then
-    log "Could not reload systemd; Remote Vibes is still running for this session"
+    log "Could not reload systemd; Vibe Research is still running for this session"
     return
   fi
 
   if ! try_run_as_root systemctl enable --now "${SERVICE_NAME}.service"; then
-    log "Could not enable systemd service; Remote Vibes is still running for this session"
+    log "Could not enable systemd service; Vibe Research is still running for this session"
     return
   fi
 
@@ -695,12 +696,12 @@ clone_repo() {
 restore_managed_prompt_file() {
   local file="$1"
 
-  if [ -f "$file" ] && grep -Fq "$MANAGED_PROMPT_MARKER" "$file"; then
+  if [ -f "$file" ] && grep -Fq -e "$MANAGED_PROMPT_MARKER" -e "$LEGACY_MANAGED_PROMPT_MARKER" "$file"; then
     git checkout -- "$file" >/dev/null 2>&1 || true
     return
   fi
 
-  if git show "HEAD:$file" 2>/dev/null | grep -Fq "$MANAGED_PROMPT_MARKER"; then
+  if git show "HEAD:$file" 2>/dev/null | grep -Fq -e "$MANAGED_PROMPT_MARKER" -e "$LEGACY_MANAGED_PROMPT_MARKER"; then
     git checkout -- "$file" >/dev/null 2>&1 || true
   fi
 }
@@ -786,7 +787,7 @@ main() {
   fi
 
   if [ -d "$INSTALL_DIR/bin" ]; then
-    for helper in rv-browser rv-browser-detour rv-session-name codex claude open osascript google-chrome chrome chromium chromium-browser firefox; do
+    for helper in vr-browser vr-browser-detour vr-browser-use vr-mailwatch vr-playwright vr-session-name vr-agentmail-reply vr-videomemory rv-browser rv-browser-detour rv-browser-use rv-mailwatch rv-playwright rv-session-name rv-agentmail-reply rv-videomemory codex claude open osascript google-chrome chrome chromium chromium-browser firefox; do
       if [ -f "$INSTALL_DIR/bin/$helper" ] && [ ! -x "$INSTALL_DIR/bin/$helper" ]; then
         chmod +x "$INSTALL_DIR/bin/$helper"
       fi
@@ -794,7 +795,7 @@ main() {
   fi
 
   if [ "$SKIP_RUN" = "1" ]; then
-    log "Skipping launch because REMOTE_VIBES_SKIP_RUN=1"
+    log "Skipping launch because VIBE_RESEARCH_SKIP_RUN=1"
     return
   fi
 

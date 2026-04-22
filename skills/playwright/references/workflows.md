@@ -3,7 +3,7 @@
 ## Inspect A Local App
 
 ```bash
-export PWCLI="${PWCLI:-rv-playwright}"
+export PWCLI="${PWCLI:-vr-playwright}"
 "$PWCLI" open http://127.0.0.1:4173
 "$PWCLI" snapshot
 ```

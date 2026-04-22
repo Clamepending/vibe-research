@@ -28,7 +28,7 @@ test("pickScanUrl prefers a 100.x address even without a Tailscale label", () =>
 
 test("buildStartupOutput includes a terminal QR block for the preferred phone URL", () => {
   const output = buildStartupOutput({
-    cwd: "/tmp/remote-vibes",
+    cwd: "/tmp/vibe-research",
     urls: [
       { label: "Local", url: "http://localhost:4123" },
       { label: "Tailscale", url: "http://100.106.229.117:4123" },

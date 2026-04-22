@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { WebSocket } from "ws";
-import { createRemoteVibesApp } from "../src/create-app.js";
+import { createVibeResearchApp } from "../src/create-app.js";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60_000;
 
@@ -214,17 +214,17 @@ async function waitForSnapshot(websocket, timeoutMs) {
 function buildPrompt(demoPort, provider) {
   return [
     `A test UI is running at http://127.0.0.1:${demoPort}.`,
-    "Use ONLY rv-browser for browser work. Do not use curl, open, osascript, Chrome, Playwright, or HTML inspection.",
-    "Create eval/steps.json with a JSON array that uses only these rv-browser run actions: type, click, select, wait, screenshot.",
-    "Use rv-browser run with that steps file to do this exact flow:",
+    "Use ONLY vr-browser for browser work. Do not use curl, open, osascript, Chrome, Playwright, or HTML inspection.",
+    "Create eval/steps.json with a JSON array that uses only these vr-browser run actions: type, click, select, wait, screenshot.",
+    "Use vr-browser run with that steps file to do this exact flow:",
     '- type "session eval prompt" into the prompt textarea',
     '- select mode "qa"',
     "- click Generate",
     '- wait until the page shows "Generated (qa, pending): session eval prompt"',
     "- save a screenshot to eval/final.png",
-    `Then run rv-browser describe-file eval/final.png --provider ${provider} --prompt "Briefly say whether the UI interaction succeeded and what is visible."`,
+    `Then run vr-browser describe-file eval/final.png --provider ${provider} --prompt "Briefly say whether the UI interaction succeeded and what is visible."`,
     "Write eval/report.md with these exact headings:",
-    "Used rv-browser:",
+    "Used vr-browser:",
     "Used step actions:",
     "Result text:",
     "Visual summary:",
@@ -237,7 +237,7 @@ async function main() {
   const flags = parseArgs(process.argv.slice(2));
   await assertProviderAvailable(flags.provider);
 
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-live-codex-"));
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-live-codex-"));
   const evalDir = path.join(workspaceDir, "eval");
   await mkdir(evalDir, { recursive: true });
 
@@ -249,14 +249,14 @@ async function main() {
 
   const demoServer = await startDemoServer();
   const demoPort = demoServer.address().port;
-  const remoteVibes = await createRemoteVibesApp({
+  const vibeResearch = await createVibeResearchApp({
     host: "127.0.0.1",
     port: 0,
     cwd: workspaceDir,
-    stateDir: path.join(workspaceDir, ".remote-vibes"),
+    stateDir: path.join(workspaceDir, ".vibe-research"),
     persistSessions: false,
   });
-  const baseUrl = `http://127.0.0.1:${remoteVibes.config.port}`;
+  const baseUrl = `http://127.0.0.1:${vibeResearch.config.port}`;
 
   await writeFile(promptPath, `${buildPrompt(demoPort, flags.provider)}\n`, "utf8");
 
@@ -330,7 +330,7 @@ async function main() {
       demoPort,
       provider: flags.provider,
       screenshotBytes: screenshotStats.size,
-      cliLogHasRvBrowser: /rv-browser/.test(cliLog),
+      cliLogHasRvBrowser: /vr-browser/.test(cliLog),
       visionProviderMatchesAgent: await waitForCliLogPattern(
         cliLogPath,
         buildVisionProviderPattern(flags.provider),
@@ -345,7 +345,7 @@ async function main() {
     console.error(error.stack || error.message);
     process.exitCode = 1;
   } finally {
-    await remoteVibes.close();
+    await vibeResearch.close();
     await new Promise((resolve) => demoServer.close(resolve));
 
     if (shouldCleanup) {

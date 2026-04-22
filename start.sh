@@ -2,23 +2,26 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-DEFAULT_REMOTE_VIBES_HOME="$HOME/.remote-vibes"
-RUNTIME_DIR="${REMOTE_VIBES_STATE_DIR:-$DEFAULT_REMOTE_VIBES_HOME}"
-LEGACY_RUNTIME_DIR="$ROOT_DIR/.remote-vibes"
-WIKI_DIR="${REMOTE_VIBES_WIKI_DIR:-$HOME/mac-brain}"
+DEFAULT_VIBE_RESEARCH_HOME="$HOME/.vibe-research"
+LEGACY_REMOTE_VIBES_HOME="$HOME/.remote-vibes"
+RUNTIME_DIR="${VIBE_RESEARCH_STATE_DIR:-${REMOTE_VIBES_STATE_DIR:-$DEFAULT_VIBE_RESEARCH_HOME}}"
+LEGACY_RUNTIME_DIR="$ROOT_DIR/.vibe-research"
+LEGACY_REMOTE_VIBES_RUNTIME_DIR="$ROOT_DIR/.remote-vibes"
+WIKI_DIR="${VIBE_RESEARCH_WIKI_DIR:-${REMOTE_VIBES_WIKI_DIR:-$HOME/mac-brain}}"
 PID_FILE="$RUNTIME_DIR/server.pid"
 LOG_FILE="$RUNTIME_DIR/server.log"
 NPM_STAMP_FILE="$RUNTIME_DIR/npm-install.stamp"
-READY_TIMEOUT_SECONDS="${REMOTE_VIBES_READY_TIMEOUT_SECONDS:-30}"
-export REMOTE_VIBES_STATE_DIR="$RUNTIME_DIR"
+READY_TIMEOUT_SECONDS="${VIBE_RESEARCH_READY_TIMEOUT_SECONDS:-${REMOTE_VIBES_READY_TIMEOUT_SECONDS:-30}}"
+export VIBE_RESEARCH_STATE_DIR="$RUNTIME_DIR"
+export REMOTE_VIBES_STATE_DIR="${REMOTE_VIBES_STATE_DIR:-$RUNTIME_DIR}"
 cd "$ROOT_DIR"
 
 log() {
-  printf '[remote-vibes] %s\n' "$*"
+  printf '[vibe-research] %s\n' "$*"
 }
 
 fail() {
-  printf '[remote-vibes] %s\n' "$*" >&2
+  printf '[vibe-research] %s\n' "$*" >&2
   exit 1
 }
 
@@ -66,45 +69,35 @@ copy_runtime_state_from_dir() {
 }
 
 migrate_legacy_runtime_dir() {
-  copy_runtime_state_from_dir "$LEGACY_RUNTIME_DIR"
-
-  if [ "$RUNTIME_DIR" = "$DEFAULT_REMOTE_VIBES_HOME" ]; then
-    copy_runtime_state_from_dir "$DEFAULT_REMOTE_VIBES_HOME/state"
-    copy_runtime_state_from_dir "$DEFAULT_REMOTE_VIBES_HOME/.remote-vibes"
+  if [ "$RUNTIME_DIR" = "$DEFAULT_VIBE_RESEARCH_HOME" ]; then
+    copy_runtime_state_from_dir "$DEFAULT_VIBE_RESEARCH_HOME/state"
+    copy_runtime_state_from_dir "$DEFAULT_VIBE_RESEARCH_HOME/.vibe-research"
+    copy_runtime_state_from_dir "$LEGACY_REMOTE_VIBES_HOME"
+    copy_runtime_state_from_dir "$LEGACY_REMOTE_VIBES_HOME/state"
+    copy_runtime_state_from_dir "$LEGACY_REMOTE_VIBES_HOME/.remote-vibes"
+    copy_runtime_state_from_dir "$LEGACY_REMOTE_VIBES_HOME/app/.remote-vibes"
   fi
+
+  copy_runtime_state_from_dir "$LEGACY_RUNTIME_DIR"
+  copy_runtime_state_from_dir "$LEGACY_REMOTE_VIBES_RUNTIME_DIR"
 }
 
-looks_like_remote_vibes_checkout() {
+looks_like_vibe_research_checkout() {
   local target_dir="$1"
 
   [ -f "$target_dir/package.json" ] && [ -f "$target_dir/start.sh" ] && [ -f "$target_dir/src/server.js" ]
 }
 
-migrate_home_checkout_to_app() {
-  if [ "${REMOTE_VIBES_SKIP_HOME_CHECKOUT_MIGRATION:-0}" = "1" ]; then
-    return
-  fi
+move_checkout_contents_to_app() {
+  local source_dir="$1"
+  local app_dir="$2"
+  local label="$3"
 
-  if [ "$RUNTIME_DIR" != "$DEFAULT_REMOTE_VIBES_HOME" ] || [ "$DEFAULT_REMOTE_VIBES_HOME" = "$ROOT_DIR" ]; then
-    return
-  fi
-
-  if ! looks_like_remote_vibes_checkout "$DEFAULT_REMOTE_VIBES_HOME"; then
-    return
-  fi
-
-  local app_dir
-  app_dir="$DEFAULT_REMOTE_VIBES_HOME/app"
-
-  if looks_like_remote_vibes_checkout "$app_dir"; then
-    return
-  fi
-
-  log "Moving old Remote Vibes checkout from $DEFAULT_REMOTE_VIBES_HOME to $app_dir"
+  log "Moving old $label checkout from $source_dir to $app_dir"
   mkdir -p "$app_dir"
 
   local entry base
-  for entry in "$DEFAULT_REMOTE_VIBES_HOME"/* "$DEFAULT_REMOTE_VIBES_HOME"/.[!.]* "$DEFAULT_REMOTE_VIBES_HOME"/..?*; do
+  for entry in "$source_dir"/* "$source_dir"/.[!.]* "$source_dir"/..?*; do
     [ -e "$entry" ] || continue
 
     base="$(basename "$entry")"
@@ -121,6 +114,32 @@ migrate_home_checkout_to_app() {
 
     mv "$entry" "$app_dir/$base"
   done
+}
+
+migrate_home_checkout_to_app() {
+  if [ "${VIBE_RESEARCH_SKIP_HOME_CHECKOUT_MIGRATION:-${REMOTE_VIBES_SKIP_HOME_CHECKOUT_MIGRATION:-0}}" = "1" ]; then
+    return
+  fi
+
+  if [ "$RUNTIME_DIR" != "$DEFAULT_VIBE_RESEARCH_HOME" ] || [ "$DEFAULT_VIBE_RESEARCH_HOME" = "$ROOT_DIR" ]; then
+    return
+  fi
+
+  local app_dir
+  app_dir="$DEFAULT_VIBE_RESEARCH_HOME/app"
+
+  if looks_like_vibe_research_checkout "$app_dir"; then
+    return
+  fi
+
+  if looks_like_vibe_research_checkout "$DEFAULT_VIBE_RESEARCH_HOME"; then
+    move_checkout_contents_to_app "$DEFAULT_VIBE_RESEARCH_HOME" "$app_dir" "Vibe Research"
+    return
+  fi
+
+  if [ "$LEGACY_REMOTE_VIBES_HOME" != "$ROOT_DIR" ] && looks_like_vibe_research_checkout "$LEGACY_REMOTE_VIBES_HOME"; then
+    move_checkout_contents_to_app "$LEGACY_REMOTE_VIBES_HOME" "$app_dir" "Remote Vibes"
+  fi
 }
 
 ensure_gitignore_entry() {
@@ -151,8 +170,8 @@ ensure_git_identity() {
     return
   fi
 
-  git -C "$target_dir" config user.name >/dev/null 2>&1 || git -C "$target_dir" config user.name "Remote Vibes"
-  git -C "$target_dir" config user.email >/dev/null 2>&1 || git -C "$target_dir" config user.email "remote-vibes@local"
+  git -C "$target_dir" config user.name >/dev/null 2>&1 || git -C "$target_dir" config user.name "Vibe Research"
+  git -C "$target_dir" config user.email >/dev/null 2>&1 || git -C "$target_dir" config user.email "vibe-research@local"
 }
 
 commit_staged_changes() {
@@ -187,14 +206,14 @@ git_add_existing() {
   done
 }
 
-ensure_remote_vibes_settings_repo() {
+ensure_vibe_research_settings_repo() {
   ensure_runtime_dir
 
   if [ ! -f "$RUNTIME_DIR/README.md" ]; then
     cat >"$RUNTIME_DIR/README.md" <<EOF
-# Remote Vibes State
+# Vibe Research State
 
-This directory stores local Remote Vibes settings for this Mac.
+This directory stores local Vibe Research settings for this Mac.
 
 Tracked settings include:
 - agent-prompt.md
@@ -225,12 +244,12 @@ EOF
 
   if command -v git >/dev/null 2>&1 && [ -d "$RUNTIME_DIR/.git" ]; then
     git_add_existing "$RUNTIME_DIR" README.md .gitignore agent-prompt.md port-aliases.json
-    commit_staged_changes "$RUNTIME_DIR" "Track Remote Vibes settings"
+    commit_staged_changes "$RUNTIME_DIR" "Track Vibe Research settings"
   fi
 }
 
 ensure_mac_brain_wiki() {
-  if [ "${REMOTE_VIBES_CREATE_WIKI:-1}" = "0" ]; then
+  if [ "${VIBE_RESEARCH_CREATE_WIKI:-${REMOTE_VIBES_CREATE_WIKI:-1}}" = "0" ]; then
     return
   fi
 
@@ -242,7 +261,7 @@ ensure_mac_brain_wiki() {
 
 Local wiki for this Mac.
 
-Remote Vibes settings live in:
+Vibe Research settings live in:
 
 \`\`\`
 $RUNTIME_DIR
@@ -264,13 +283,13 @@ EOF
   fi
 }
 
-track_remote_vibes_settings() {
+track_vibe_research_settings() {
   if ! command -v git >/dev/null 2>&1 || [ ! -d "$RUNTIME_DIR/.git" ]; then
     return
   fi
 
   git_add_existing "$RUNTIME_DIR" README.md .gitignore agent-prompt.md port-aliases.json
-  commit_staged_changes "$RUNTIME_DIR" "Track Remote Vibes settings"
+  commit_staged_changes "$RUNTIME_DIR" "Track Vibe Research settings"
 }
 
 dependencies_need_install() {
@@ -332,12 +351,13 @@ is_pid_running() {
   kill -0 "$pid" >/dev/null 2>&1
 }
 
-looks_like_remote_vibes_server() {
+looks_like_vibe_research_server() {
   local pid="$1"
   local command
   command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
   case "$command" in
     *"node src/server.js"*) return 0 ;;
+    *"vibe-research"*"/src/server.js"*) return 0 ;;
     *"remote-vibes"*"/src/server.js"*) return 0 ;;
     *) return 1 ;;
   esac
@@ -368,11 +388,11 @@ stop_existing_server() {
     return
   fi
 
-  if ! looks_like_remote_vibes_server "$pid"; then
-    fail "Refusing to stop pid $pid because it does not look like a managed Remote Vibes server."
+  if ! looks_like_vibe_research_server "$pid"; then
+    fail "Refusing to stop pid $pid because it does not look like a managed Vibe Research server."
   fi
 
-  log "Stopping existing Remote Vibes server (pid $pid)"
+  log "Stopping existing Vibe Research server (pid $pid)"
   kill "$pid" >/dev/null 2>&1 || true
 
   local attempt
@@ -391,8 +411,8 @@ stop_existing_server() {
 
 healthcheck_url() {
   local host port probe_host
-  host="${REMOTE_VIBES_HOST:-0.0.0.0}"
-  port="${REMOTE_VIBES_PORT:-4123}"
+  host="${VIBE_RESEARCH_HOST:-${REMOTE_VIBES_HOST:-0.0.0.0}}"
+  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4123}}"
 
   case "$host" in
     0.0.0.0|'')
@@ -415,11 +435,22 @@ terminate_url() {
   printf '%s/api/terminate\n' "${url%/api/state}"
 }
 
+canonicalize_dir() {
+  local dir="$1"
+
+  if [ -d "$dir" ]; then
+    (cd "$dir" && pwd -P)
+    return
+  fi
+
+  printf '%s\n' "$dir"
+}
+
 healthcheck_payload() {
   curl -fsS "$(healthcheck_url)" 2>/dev/null
 }
 
-probe_running_remote_vibes_workspace() {
+probe_running_vibe_research_workspace() {
   local payload
 
   if ! payload="$(healthcheck_payload)"; then
@@ -435,7 +466,11 @@ process.stdin.on("end", () => {
   try {
     const payload = JSON.parse(source);
 
-    if (payload?.appName === "Remote Vibes" && typeof payload.cwd === "string" && payload.cwd) {
+    if (
+      (payload?.appName === "Vibe Research" || payload?.appName === "Remote Vibes") &&
+      typeof payload.cwd === "string" &&
+      payload.cwd
+    ) {
       process.stdout.write(payload.cwd);
       return;
     }
@@ -448,7 +483,7 @@ process.stdin.on("end", () => {
 '
 }
 
-probe_running_remote_vibes_state_dir() {
+probe_running_vibe_research_state_dir() {
   local payload
 
   if ! payload="$(healthcheck_payload)"; then
@@ -464,7 +499,11 @@ process.stdin.on("end", () => {
   try {
     const payload = JSON.parse(source);
 
-    if (payload?.appName === "Remote Vibes" && typeof payload.stateDir === "string" && payload.stateDir) {
+    if (
+      (payload?.appName === "Vibe Research" || payload?.appName === "Remote Vibes") &&
+      typeof payload.stateDir === "string" &&
+      payload.stateDir
+    ) {
       process.stdout.write(payload.stateDir);
       return;
     }
@@ -480,16 +519,16 @@ process.stdin.on("end", () => {
 fail_for_foreign_workspace() {
   local workspace_cwd="$1"
   local port
-  port="${REMOTE_VIBES_PORT:-4123}"
+  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4123}}"
 
-  fail "Port $port is already serving Remote Vibes from $workspace_cwd. Stop that server or relaunch with REMOTE_VIBES_PORT=<free-port>."
+  fail "Port $port is already serving Vibe Research from $workspace_cwd. Stop that server or relaunch with VIBE_RESEARCH_PORT=<free-port>."
 }
 
-terminate_running_remote_vibes() {
+terminate_running_vibe_research() {
   local port
-  port="${REMOTE_VIBES_PORT:-4123}"
+  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4123}}"
 
-  log "Stopping existing Remote Vibes server on port $port"
+  log "Stopping existing Vibe Research server on port $port"
   curl -fsS -X POST "$(terminate_url)" >/dev/null 2>&1 || true
 
   local attempt
@@ -500,12 +539,12 @@ terminate_running_remote_vibes() {
     sleep 0.2
   done
 
-  fail "Existing Remote Vibes server on port $port did not stop in time."
+  fail "Existing Vibe Research server on port $port did not stop in time."
 }
 
 wait_for_server_ready() {
   local pid="$1"
-  local workspace_cwd
+  local workspace_cwd canonical_workspace_cwd
 
   local attempt max_attempts
   max_attempts=$((READY_TIMEOUT_SECONDS * 5))
@@ -515,8 +554,9 @@ wait_for_server_ready() {
       return 1
     fi
 
-    if workspace_cwd="$(probe_running_remote_vibes_workspace)"; then
-      if [ "$workspace_cwd" = "$ROOT_DIR" ]; then
+    if workspace_cwd="$(probe_running_vibe_research_workspace)"; then
+      canonical_workspace_cwd="$(canonicalize_dir "$workspace_cwd")"
+      if [ "$canonical_workspace_cwd" = "$ROOT_DIR" ]; then
         return 0
       fi
     fi
@@ -579,25 +619,26 @@ print_startup_log() {
 ensure_runtime_dir
 migrate_legacy_runtime_dir
 migrate_home_checkout_to_app
-ensure_remote_vibes_settings_repo
+ensure_vibe_research_settings_repo
 ensure_mac_brain_wiki
 
-if workspace_cwd="$(probe_running_remote_vibes_workspace)"; then
-  if [ "$workspace_cwd" = "$ROOT_DIR" ]; then
-    running_state_dir="$(probe_running_remote_vibes_state_dir || true)"
+if workspace_cwd="$(probe_running_vibe_research_workspace)"; then
+  canonical_workspace_cwd="$(canonicalize_dir "$workspace_cwd")"
+  if [ "$canonical_workspace_cwd" = "$ROOT_DIR" ]; then
+    running_state_dir="$(probe_running_vibe_research_state_dir || true)"
 
-    if [ "$running_state_dir" = "$RUNTIME_DIR" ] && [ "${REMOTE_VIBES_FORCE_RESTART:-0}" != "1" ]; then
-      log "Remote Vibes is already running for this workspace at $(healthcheck_url)"
+    if [ "$running_state_dir" = "$RUNTIME_DIR" ] && [ "${VIBE_RESEARCH_FORCE_RESTART:-${REMOTE_VIBES_FORCE_RESTART:-0}}" != "1" ]; then
+      log "Vibe Research is already running for this workspace at $(healthcheck_url)"
       exit 0
     fi
 
     if [ -n "$running_state_dir" ]; then
-      log "Remote Vibes is running for this workspace with state $running_state_dir; relaunching with $RUNTIME_DIR"
+      log "Vibe Research is running for this workspace with state $running_state_dir; relaunching with $RUNTIME_DIR"
     else
-      log "Remote Vibes is running for this workspace; relaunching with state $RUNTIME_DIR"
+      log "Vibe Research is running for this workspace; relaunching with state $RUNTIME_DIR"
     fi
 
-    terminate_running_remote_vibes
+    terminate_running_vibe_research
   else
     fail_for_foreign_workspace "$workspace_cwd"
   fi
@@ -611,19 +652,19 @@ node scripts/build-client.mjs
 server_pid="$(start_server_in_background)"
 
 if ! wait_for_server_ready "$server_pid"; then
-  workspace_cwd="$(probe_running_remote_vibes_workspace || true)"
+  workspace_cwd="$(probe_running_vibe_research_workspace || true)"
   print_startup_log >&2
   rm -f "$PID_FILE"
 
-  if [ -n "$workspace_cwd" ] && [ "$workspace_cwd" != "$ROOT_DIR" ]; then
+  if [ -n "$workspace_cwd" ] && [ "$(canonicalize_dir "$workspace_cwd")" != "$ROOT_DIR" ]; then
     fail_for_foreign_workspace "$workspace_cwd"
   fi
 
-  fail "Remote Vibes failed to start within ${READY_TIMEOUT_SECONDS}s."
+  fail "Vibe Research failed to start within ${READY_TIMEOUT_SECONDS}s."
 fi
 
 print_startup_log
-track_remote_vibes_settings
+track_vibe_research_settings
 log "Background server pid: $server_pid"
 log "Server is detached and will keep running after this terminal closes."
 log "State directory: $RUNTIME_DIR"

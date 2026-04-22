@@ -3,7 +3,10 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const PORT_PROBE_TIMEOUT_MS = 800;
-const PORT_PROBE_CACHE_TTL_MS = Math.max(5_000, Number(process.env.REMOTE_VIBES_PORT_PROBE_TTL_MS || 60_000));
+const PORT_PROBE_CACHE_TTL_MS = Math.max(
+  5_000,
+  Number(process.env.VIBE_RESEARCH_PORT_PROBE_TTL_MS || process.env.REMOTE_VIBES_PORT_PROBE_TTL_MS || 60_000),
+);
 const portProbeCache = new Map();
 
 function parsePortNumber(value) {

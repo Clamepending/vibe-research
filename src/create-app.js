@@ -23,14 +23,15 @@ import { BrowserUseService } from "./browser-use-service.js";
 import { createFolderEntry, listFolderEntries } from "./folder-browser.js";
 import { PortAliasStore } from "./port-alias-store.js";
 import { listListeningPorts } from "./ports.js";
-import { SettingsStore } from "./settings-store.js";
+import { buildAgentCredentialEnv, SettingsStore } from "./settings-store.js";
 import { SessionManager } from "./session-manager.js";
 import { SleepPreventionService } from "./sleep-prevention.js";
-import { getRemoteVibesStateDir, getRemoteVibesSystemDir } from "./state-paths.js";
+import { getVibeResearchStateDir, getVibeResearchSystemDir } from "./state-paths.js";
 import { collectSystemMetrics } from "./system-metrics.js";
 import { SystemMetricsHistoryStore } from "./system-metrics-history.js";
 import { TailscaleServeManager } from "./tailscale-serve.js";
 import { UpdateManager } from "./update-manager.js";
+import { VideoMemoryService } from "./videomemory-service.js";
 import { WikiBackupService } from "./wiki-backup.js";
 import { detectProviders, getDefaultProviderId } from "./providers.js";
 import { listKnowledgeBase, readKnowledgeBaseNote } from "./knowledge-base.js";
@@ -45,7 +46,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, "..", "public");
 const execFileAsync = promisify(execFile);
 const SERVER_INFO_FILENAME = "server.json";
-const TAILSCALE_HTTPS_SERVE_ENABLED = process.env.REMOTE_VIBES_TAILSCALE_HTTPS !== "0";
+const TAILSCALE_HTTPS_SERVE_ENABLED =
+  (process.env.VIBE_RESEARCH_TAILSCALE_HTTPS ?? process.env.REMOTE_VIBES_TAILSCALE_HTTPS) !== "0";
 const JSON_BODY_LIMIT = "25mb";
 const ATTACHMENTS_SUBDIR = "attachments";
 const MAX_ATTACHMENT_IMAGE_BYTES = 15 * 1024 * 1024;
@@ -208,7 +210,7 @@ function normalizeGitRemoteForCompare(value) {
 
 function createCloneBackupPath(targetPath) {
   const timestamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "Z");
-  return `${targetPath}.remote-vibes-scaffold-${timestamp}`;
+  return `${targetPath}.vibe-research-scaffold-${timestamp}`;
 }
 
 function getPortFromProxyPath(pathname) {
@@ -497,11 +499,11 @@ function isDirectlyReachablePort(portEntry, tailscaleBaseUrl) {
   );
 }
 
-export async function createRemoteVibesApp({
-  host = process.env.REMOTE_VIBES_HOST || "0.0.0.0",
-  port = Number(process.env.REMOTE_VIBES_PORT || 4123),
+export async function createVibeResearchApp({
+  host = process.env.VIBE_RESEARCH_HOST || process.env.REMOTE_VIBES_HOST || "0.0.0.0",
+  port = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4123),
   cwd = process.cwd(),
-  stateDir = getRemoteVibesStateDir({ cwd }),
+  stateDir = getVibeResearchStateDir({ cwd }),
   persistSessions = true,
   listPorts = listListeningPorts,
   accessUrlsProvider = getAccessUrls,
@@ -515,6 +517,7 @@ export async function createRemoteVibesApp({
   onTerminate = null,
   agentMailServiceFactory = null,
   browserUseServiceFactory = null,
+  videoMemoryServiceFactory = null,
   systemMetricsProvider = collectSystemMetrics,
   systemMetricsSampleIntervalMs = 60_000,
   updateManager = new UpdateManager({ cwd, stateDir, port }),
@@ -522,9 +525,10 @@ export async function createRemoteVibesApp({
   const providers = Array.isArray(providerOverrides) ? providerOverrides : await detectProviders();
   const defaultProviderId = getDefaultProviderId(providers);
   const app = express();
+  const serverEnv = { ...process.env };
   const agentRunStore = new AgentRunStore({ stateDir });
-  const systemRootPath = getRemoteVibesSystemDir({ cwd, stateDir });
-  const settingsStore = new SettingsStore({ cwd, stateDir });
+  const systemRootPath = getVibeResearchSystemDir({ cwd, stateDir });
+  const settingsStore = new SettingsStore({ cwd, stateDir, env: serverEnv });
   const systemMetricsHistoryStore = new SystemMetricsHistoryStore({ stateDir });
   const portAliasStore = new PortAliasStore({ stateDir });
   await settingsStore.initialize();
@@ -548,16 +552,21 @@ export async function createRemoteVibesApp({
     wikiPath: settingsStore.settings.wikiPath,
   });
   const sleepPreventionService = sleepPreventionFactory(settingsStore.settings);
+  let videoMemoryService = null;
   const sessionManager = new SessionManager({
     cwd,
     providers,
+    env: buildAgentCredentialEnv(settingsStore.settings, serverEnv),
     persistSessions,
     persistentTerminals,
     stateDir,
     agentRunStore,
     wikiRootPath: settingsStore.settings.wikiPath,
     systemRootPath,
-    extraSubagentsProvider: (session) => browserUseService.listSubagentsForSession(session.id),
+    extraSubagentsProvider: (session) => [
+      ...browserUseService.listSubagentsForSession(session.id),
+      ...(videoMemoryService ? videoMemoryService.listSubagentsForSession(session.id) : []),
+    ],
   });
   const agentPromptStore = new AgentPromptStore({
     cwd,
@@ -574,9 +583,25 @@ export async function createRemoteVibesApp({
           stateDir,
           systemRootPath,
         });
+  videoMemoryService =
+    typeof videoMemoryServiceFactory === "function"
+      ? videoMemoryServiceFactory(settingsStore.settings, {
+          cwd,
+          defaultProviderId,
+          sessionManager,
+          stateDir,
+          systemRootPath,
+        })
+      : new VideoMemoryService({
+          defaultProviderId,
+          sessionManager,
+          settings: settingsStore.settings,
+          stateDir,
+        });
   await agentRunStore.initialize();
   await portAliasStore.initialize();
   await browserUseService.initialize();
+  await videoMemoryService.initialize();
   await sessionManager.initialize();
   await agentPromptStore.initialize();
   wikiBackupService.start();
@@ -685,6 +710,7 @@ export async function createRemoteVibesApp({
       backupStatus: wikiBackupService.getStatus(),
       browserUseStatus: browserUseService.getStatus(),
       sleepStatus: sleepPreventionService.getStatus(),
+      videoMemoryStatus: videoMemoryService.getStatus(),
     });
   }
 
@@ -711,7 +737,9 @@ export async function createRemoteVibesApp({
       enabled: settings.preventSleepEnabled,
     });
     browserUseService.restart(settingsStore.settings);
+    videoMemoryService.restart(settingsStore.settings);
     agentMailService.restart(settingsStore.settings);
+    sessionManager.setEnvironment(buildAgentCredentialEnv(settingsStore.settings, serverEnv));
     if (backupReason) {
       void wikiBackupService.runBackup({ reason: backupReason });
     }
@@ -744,7 +772,7 @@ export async function createRemoteVibesApp({
 
     try {
       const readme = await readFile(path.join(targetPath, "README.md"), "utf8");
-      return readme.includes("# mac-brain") && readme.includes("Remote Vibes settings live in:");
+      return readme.includes("# mac-brain") && readme.includes("Vibe Research settings live in:");
     } catch {
       return false;
     }
@@ -809,6 +837,7 @@ export async function createRemoteVibesApp({
 
   async function collectAndRecordSystemMetrics({ forceHistory = false } = {}) {
     const system = await systemMetricsProvider({
+      agentProcessRoots: sessionManager.listAgentProcessRoots(),
       cwd,
       projectPaths: sessionManager.listProjectPaths(),
       wikiPath: settingsStore.settings.wikiPath,
@@ -829,7 +858,7 @@ export async function createRemoteVibesApp({
 
     systemMetricsSamplePromise = collectAndRecordSystemMetrics()
       .catch((error) => {
-        console.error("[remote-vibes] system metrics history sample failed:", error);
+        console.error("[vibe-research] system metrics history sample failed:", error);
       })
       .finally(() => {
         systemMetricsSamplePromise = null;
@@ -841,7 +870,7 @@ export async function createRemoteVibesApp({
   app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
   app.use((request, response, next) => {
-    if (request.path.startsWith("/api/") && request.get("X-Remote-Vibes-API") === "1") {
+    if (request.path.startsWith("/api/") && request.get("X-Vibe-Research-API") === "1") {
       next();
       return;
     }
@@ -858,7 +887,7 @@ export async function createRemoteVibesApp({
 
   app.get("/api/state", async (_request, response) => {
     response.json({
-      appName: "Remote Vibes",
+      appName: "Vibe Research",
       agentPrompt: await agentPromptStore.getState(),
       cwd,
       defaultProviderId,
@@ -946,7 +975,7 @@ export async function createRemoteVibesApp({
       }
 
       if (!currentPort.tailscaleUrl) {
-        response.status(400).json({ error: "No Tailscale address is available for this Remote Vibes instance." });
+        response.status(400).json({ error: "No Tailscale address is available for this Vibe Research instance." });
         return;
       }
 
@@ -1016,8 +1045,10 @@ export async function createRemoteVibesApp({
 
   app.patch("/api/settings", async (request, response) => {
     try {
-      const settings = await settingsStore.update({
+      await settingsStore.update({
         agentAutomations: request.body?.agentAutomations,
+        agentAnthropicApiKey: request.body?.agentAnthropicApiKey,
+        agentHfToken: request.body?.agentHfToken,
         preventSleepEnabled: request.body?.preventSleepEnabled,
         agentMailApiKey: request.body?.agentMailApiKey,
         agentMailClientId: request.body?.agentMailClientId,
@@ -1028,6 +1059,7 @@ export async function createRemoteVibesApp({
         agentMailMode: request.body?.agentMailMode,
         agentMailProviderId: request.body?.agentMailProviderId,
         agentMailUsername: request.body?.agentMailUsername,
+        agentOpenAiApiKey: request.body?.agentOpenAiApiKey,
         browserUseAnthropicApiKey: request.body?.browserUseAnthropicApiKey,
         browserUseBrowserPath: request.body?.browserUseBrowserPath,
         browserUseEnabled: request.body?.browserUseEnabled,
@@ -1036,6 +1068,9 @@ export async function createRemoteVibesApp({
         browserUseModel: request.body?.browserUseModel,
         browserUseProfileDir: request.body?.browserUseProfileDir,
         browserUseWorkerPath: request.body?.browserUseWorkerPath,
+        videoMemoryBaseUrl: request.body?.videoMemoryBaseUrl,
+        videoMemoryEnabled: request.body?.videoMemoryEnabled,
+        videoMemoryProviderId: request.body?.videoMemoryProviderId,
         installedPluginIds: request.body?.installedPluginIds,
         wikiGitBackupEnabled: request.body?.wikiGitBackupEnabled,
         wikiGitRemoteBranch: request.body?.wikiGitRemoteBranch,
@@ -1046,7 +1081,7 @@ export async function createRemoteVibesApp({
         wikiPathConfigured: request.body?.wikiPathConfigured,
       });
 
-      await applyRuntimeSettings(settings, { backupReason: "settings" });
+      await applyRuntimeSettings(settingsStore.settings, { backupReason: "settings" });
 
       response.json({
         settings: getSettingsState(),
@@ -1087,7 +1122,7 @@ export async function createRemoteVibesApp({
 
       const wikiPath = await realpath(targetPath);
       const branch = await readBrainCloneBranch(wikiPath);
-      const settings = await settingsStore.update({
+      await settingsStore.update({
         wikiGitBackupEnabled: true,
         wikiGitRemoteBranch: branch,
         wikiGitRemoteEnabled: true,
@@ -1096,7 +1131,7 @@ export async function createRemoteVibesApp({
         wikiPath,
       });
 
-      await applyRuntimeSettings(settings, { backupReason: "clone" });
+      await applyRuntimeSettings(settingsStore.settings, { backupReason: "clone" });
 
       response.json({
         settings: getSettingsState(),
@@ -1131,7 +1166,7 @@ export async function createRemoteVibesApp({
       const apiKey = String(request.body?.apiKey || settingsStore.settings.agentMailApiKey || "").trim();
       const clientId =
         String(request.body?.clientId || settingsStore.settings.agentMailClientId || "").trim() ||
-        `remote-vibes-${randomUUID()}`;
+        `vibe-research-${randomUUID()}`;
       let inboxId = String(request.body?.inboxId || settingsStore.settings.agentMailInboxId || "").trim();
       const displayName = String(
         request.body?.displayName || request.body?.agentMailDisplayName || settingsStore.settings.agentMailDisplayName || "",
@@ -1163,7 +1198,7 @@ export async function createRemoteVibesApp({
         throw new Error("AgentMail did not return an inbox id.");
       }
 
-      const settings = await settingsStore.update({
+      await settingsStore.update({
         agentMailApiKey: request.body?.apiKey === undefined ? undefined : apiKey,
         agentMailClientId: clientId,
         agentMailDisplayName: displayName || settingsStore.settings.agentMailDisplayName,
@@ -1189,7 +1224,7 @@ export async function createRemoteVibesApp({
 
   app.post("/api/agentmail/reply", async (request, response) => {
     try {
-      const token = String(request.headers["x-remote-vibes-agentmail-token"] || request.body?.token || "").trim();
+      const token = String(request.headers["x-vibe-research-agentmail-token"] || request.body?.token || "").trim();
       if (!token || token !== agentMailService.replyToken) {
         response.status(403).json({ error: "Invalid AgentMail reply token." });
         return;
@@ -1214,7 +1249,7 @@ export async function createRemoteVibesApp({
   app.post("/api/browser-use/setup", async (request, response) => {
     try {
       const apiKey = String(request.body?.anthropicApiKey || request.body?.browserUseAnthropicApiKey || "").trim();
-      const settings = await settingsStore.update({
+      await settingsStore.update({
         browserUseAnthropicApiKey: apiKey || undefined,
         browserUseBrowserPath: request.body?.browserPath ?? request.body?.browserUseBrowserPath,
         browserUseEnabled: request.body?.enabled ?? request.body?.browserUseEnabled,
@@ -1226,7 +1261,7 @@ export async function createRemoteVibesApp({
         browserUseWorkerPath: request.body?.workerPath ?? request.body?.browserUseWorkerPath,
         installedPluginIds: request.body?.installedPluginIds,
       });
-      await applyRuntimeSettings(settings, { backupReason: false });
+      await applyRuntimeSettings(settingsStore.settings, { backupReason: false });
 
       response.json({
         browserUse: browserUseService.getStatus(),
@@ -1237,13 +1272,111 @@ export async function createRemoteVibesApp({
     }
   });
 
+  app.get("/api/videomemory/status", (_request, response) => {
+    response.json({
+      monitors: videoMemoryService.listMonitors(),
+      videoMemory: videoMemoryService.getStatus(),
+    });
+  });
+
+  app.post("/api/videomemory/setup", async (request, response) => {
+    try {
+      await settingsStore.update({
+        installedPluginIds: request.body?.installedPluginIds,
+        videoMemoryBaseUrl: request.body?.baseUrl ?? request.body?.videoMemoryBaseUrl,
+        videoMemoryEnabled: request.body?.enabled ?? request.body?.videoMemoryEnabled,
+        videoMemoryProviderId: request.body?.providerId ?? request.body?.videoMemoryProviderId,
+      });
+      await applyRuntimeSettings(settingsStore.settings, { backupReason: false });
+
+      response.json({
+        monitors: videoMemoryService.listMonitors(),
+        settings: getSettingsState(),
+        videoMemory: videoMemoryService.getStatus(),
+      });
+    } catch (error) {
+      response.status(400).json({ error: error.message || "Could not set up VideoMemory plugin." });
+    }
+  });
+
+  app.get("/api/videomemory/monitors", (_request, response) => {
+    response.json({ monitors: videoMemoryService.listMonitors() });
+  });
+
+  app.post("/api/videomemory/monitors", async (request, response) => {
+    try {
+      const token = String(
+        request.headers["x-vibe-research-videomemory-token"] ||
+          request.headers["x-vibe-research-videomemory-token"] ||
+          request.body?.token ||
+          "",
+      ).trim();
+      if (!videoMemoryService.validateCreateRequest(token)) {
+        response.status(403).json({ error: "Invalid VideoMemory token." });
+        return;
+      }
+
+      const monitor = await videoMemoryService.createMonitor(request.body);
+      response.status(201).json({
+        monitor,
+        monitors: videoMemoryService.listMonitors(),
+        videoMemory: videoMemoryService.getStatus(),
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not create VideoMemory monitor." });
+    }
+  });
+
+  app.delete("/api/videomemory/monitors/:monitorId", async (request, response) => {
+    try {
+      const token = String(
+        request.headers["x-vibe-research-videomemory-token"] ||
+          request.headers["x-vibe-research-videomemory-token"] ||
+          request.body?.token ||
+          "",
+      ).trim();
+      if (!videoMemoryService.validateCreateRequest(token)) {
+        response.status(403).json({ error: "Invalid VideoMemory token." });
+        return;
+      }
+
+      const monitor = await videoMemoryService.deleteMonitor(request.params.monitorId, {
+        stopRemoteTask: request.query.stop !== "0",
+      });
+      if (!monitor) {
+        response.status(404).json({ error: "VideoMemory monitor not found." });
+        return;
+      }
+
+      response.json({
+        monitor,
+        monitors: videoMemoryService.listMonitors(),
+        videoMemory: videoMemoryService.getStatus(),
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not delete VideoMemory monitor." });
+    }
+  });
+
+  app.post("/api/videomemory/webhook", async (request, response) => {
+    try {
+      const result = await videoMemoryService.handleWebhook({
+        body: request.body,
+        headers: request.headers,
+      });
+      response.json(result);
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not handle VideoMemory webhook." });
+    }
+  });
+
   app.get("/api/browser-use/sessions", (_request, response) => {
     response.json({ sessions: browserUseService.listSessions() });
   });
 
   app.post("/api/browser-use/sessions", async (request, response) => {
     try {
-      const token = String(request.headers["x-remote-vibes-browser-use-token"] || request.body?.token || "").trim();
+      const token = String(request.headers["x-vibe-research-browser-use-token"] || request.body?.token || "").trim();
       if (!browserUseService.validateCreateRequest(token)) {
         response.status(403).json({ error: "Invalid browser-use token." });
         return;
@@ -1726,9 +1859,13 @@ export async function createRemoteVibesApp({
   preferredUrl = pickPreferredUrl(urls)?.url ?? urls[0]?.url ?? null;
   const helperBaseUrl = getHelperBaseUrl(host, resolvedPort);
   browserUseService.setServerBaseUrl(helperBaseUrl);
+  videoMemoryService.setServerBaseUrl(helperBaseUrl);
   await writeServerInfo(stateDir, {
     agentMailReplyToken: agentMailService.replyToken,
     browserUseToken: browserUseService.requestToken,
+    videoMemoryToken: videoMemoryService.requestToken,
+    videoMemoryWebhookToken: videoMemoryService.webhookToken,
+    videoMemoryWebhookUrl: videoMemoryService.getWebhookUrl(),
     pid: process.pid,
     host,
     port: resolvedPort,
@@ -1865,7 +2002,7 @@ export async function createRemoteVibesApp({
     app,
     close,
     config: {
-      appName: "Remote Vibes",
+      appName: "Vibe Research",
       agentPrompt: await agentPromptStore.getState(),
       cwd,
       defaultProviderId,
@@ -1879,6 +2016,7 @@ export async function createRemoteVibesApp({
     },
     server,
     sessionManager,
+    videoMemoryService,
     relaunch: () => requestTerminate({ relaunch: true }),
     terminate: requestTerminate,
   };

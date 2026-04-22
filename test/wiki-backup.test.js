@@ -18,12 +18,12 @@ async function gitBare(gitDir, args) {
 }
 
 test("wiki backup creates an isolated git repo even inside another checkout", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-wiki-backup-nested-"));
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-wiki-backup-nested-"));
   const wikiDir = path.join(rootDir, "wiki");
 
   try {
     await git(rootDir, ["init", "-b", "main"]);
-    await git(rootDir, ["config", "user.name", "Remote Vibes Test"]);
+    await git(rootDir, ["config", "user.name", "Vibe Research Test"]);
     await git(rootDir, ["config", "user.email", "test@example.com"]);
     await writeFile(path.join(rootDir, "README.md"), "# Parent\n", "utf8");
     await git(rootDir, ["add", "README.md"]);
@@ -44,14 +44,14 @@ test("wiki backup creates an isolated git repo even inside another checkout", as
 
     const { stdout: parentLog } = await git(rootDir, ["log", "--oneline"]);
     assert.match(parentLog, /Parent initial/);
-    assert.doesNotMatch(parentLog, /Remote Vibes wiki backup/);
+    assert.doesNotMatch(parentLog, /Vibe Research wiki backup/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
 
 test("wiki backup pushes commits to a configured private remote", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-wiki-backup-remote-"));
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-wiki-backup-remote-"));
   const wikiDir = path.join(rootDir, "wiki");
   const remoteDir = path.join(rootDir, "private-wiki.git");
 
@@ -78,14 +78,14 @@ test("wiki backup pushes commits to a configured private remote", async () => {
     assert.equal(remoteUrl.trim(), remoteDir);
 
     const { stdout: remoteLog } = await gitBare(remoteDir, ["log", "--oneline", "refs/heads/main"]);
-    assert.match(remoteLog, /Remote Vibes wiki backup/);
+    assert.match(remoteLog, /Vibe Research wiki backup/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
 
 test("wiki backup pushes existing clean commits when a private remote is added later", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-wiki-backup-late-remote-"));
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-wiki-backup-late-remote-"));
   const wikiDir = path.join(rootDir, "wiki");
   const remoteDir = path.join(rootDir, "private-wiki.git");
 
@@ -109,14 +109,14 @@ test("wiki backup pushes existing clean commits when a private remote is added l
     assert.equal(pushStatus.lastPushStatus, "pushed");
 
     const { stdout: remoteLog } = await gitBare(remoteDir, ["log", "--oneline", "refs/heads/main"]);
-    assert.match(remoteLog, /Remote Vibes wiki backup/);
+    assert.match(remoteLog, /Vibe Research wiki backup/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
 
 test("wiki backup pulls new commits from a configured private remote", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-wiki-backup-pull-"));
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-wiki-backup-pull-"));
   const remoteDir = path.join(rootDir, "private-wiki.git");
   const seedDir = path.join(rootDir, "seed");
   const wikiDir = path.join(rootDir, "wiki");
@@ -126,7 +126,7 @@ test("wiki backup pulls new commits from a configured private remote", async () 
     await gitBare(remoteDir, ["symbolic-ref", "HEAD", "refs/heads/main"]);
     await execFileAsync("git", ["clone", remoteDir, seedDir]);
     await git(seedDir, ["checkout", "-b", "main"]);
-    await git(seedDir, ["config", "user.name", "Remote Vibes Test"]);
+    await git(seedDir, ["config", "user.name", "Vibe Research Test"]);
     await git(seedDir, ["config", "user.email", "test@example.com"]);
     await writeFile(path.join(seedDir, "index.md"), "# Private Wiki\n", "utf8");
     await git(seedDir, ["add", "index.md"]);
@@ -134,7 +134,7 @@ test("wiki backup pulls new commits from a configured private remote", async () 
     await git(seedDir, ["push", "-u", "origin", "main"]);
 
     await execFileAsync("git", ["clone", remoteDir, wikiDir]);
-    await git(wikiDir, ["config", "user.name", "Remote Vibes Test"]);
+    await git(wikiDir, ["config", "user.name", "Vibe Research Test"]);
     await git(wikiDir, ["config", "user.email", "test@example.com"]);
 
     await writeFile(path.join(seedDir, "log.md"), "# Remote log\n", "utf8");
@@ -161,7 +161,7 @@ test("wiki backup pulls new commits from a configured private remote", async () 
 });
 
 test("wiki backup reports merge conflicts from private remote sync", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-wiki-backup-conflict-"));
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-wiki-backup-conflict-"));
   const remoteDir = path.join(rootDir, "private-wiki.git");
   const seedDir = path.join(rootDir, "seed");
   const wikiDir = path.join(rootDir, "wiki");
@@ -171,7 +171,7 @@ test("wiki backup reports merge conflicts from private remote sync", async () =>
     await gitBare(remoteDir, ["symbolic-ref", "HEAD", "refs/heads/main"]);
     await execFileAsync("git", ["clone", remoteDir, seedDir]);
     await git(seedDir, ["checkout", "-b", "main"]);
-    await git(seedDir, ["config", "user.name", "Remote Vibes Test"]);
+    await git(seedDir, ["config", "user.name", "Vibe Research Test"]);
     await git(seedDir, ["config", "user.email", "test@example.com"]);
     await writeFile(path.join(seedDir, "index.md"), "# Private Wiki\n\nbase\n", "utf8");
     await git(seedDir, ["add", "index.md"]);
@@ -179,7 +179,7 @@ test("wiki backup reports merge conflicts from private remote sync", async () =>
     await git(seedDir, ["push", "-u", "origin", "main"]);
 
     await execFileAsync("git", ["clone", remoteDir, wikiDir]);
-    await git(wikiDir, ["config", "user.name", "Remote Vibes Test"]);
+    await git(wikiDir, ["config", "user.name", "Vibe Research Test"]);
     await git(wikiDir, ["config", "user.email", "test@example.com"]);
 
     await writeFile(path.join(wikiDir, "index.md"), "# Private Wiki\n\nlocal\n", "utf8");
@@ -209,7 +209,7 @@ test("wiki backup reports merge conflicts from private remote sync", async () =>
 });
 
 test("disabled wiki backup does not initialize git", async () => {
-  const wikiDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-wiki-backup-disabled-"));
+  const wikiDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-wiki-backup-disabled-"));
 
   try {
     await writeFile(path.join(wikiDir, "index.md"), "# Wiki\n", "utf8");

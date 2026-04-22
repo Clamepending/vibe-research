@@ -6,15 +6,15 @@ import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 
-test("rv-mailwatch emits a concise notification for new inbox messages", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-mailwatch-"));
-  const inboxDir = path.join(workspaceDir, ".remote-vibes", "wiki", "comms", "agents", "agent-123", "inbox");
+test("vr-mailwatch emits a concise notification for new inbox messages", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-mailwatch-"));
+  const inboxDir = path.join(workspaceDir, ".vibe-research", "wiki", "comms", "agents", "agent-123", "inbox");
 
   await mkdir(inboxDir, { recursive: true });
 
   const watcher = spawn(
     process.execPath,
-    [path.join(process.cwd(), "bin", "rv-mailwatch"), "--inbox", inboxDir, "--interval", "0.2", "--no-bell", "--quiet"],
+    [path.join(process.cwd(), "bin", "vr-mailwatch"), "--inbox", inboxDir, "--interval", "0.2", "--no-bell", "--quiet"],
     {
       cwd: process.cwd(),
       env: process.env,
@@ -53,7 +53,7 @@ I can spare 1 GPU once the current checkpoint finishes.
       }, 8_000);
 
       const poll = setInterval(() => {
-        if (combined.includes("[remote-vibes-mail]")) {
+        if (combined.includes("[vibe-research-mail]")) {
           clearTimeout(timeout);
           clearInterval(poll);
           resolve();
@@ -61,7 +61,7 @@ I can spare 1 GPU once the current checkpoint finishes.
       }, 100);
     });
 
-    assert.match(combined, /\[remote-vibes-mail\]/);
+    assert.match(combined, /\[vibe-research-mail\]/);
     assert.match(combined, /checkpoint worker/);
     assert.match(combined, /1 GPU available for ~20 min after current checkpoint/);
     assert.match(combined, /2026-04-11T21:04:00Z/);
@@ -72,20 +72,20 @@ I can spare 1 GPU once the current checkpoint finishes.
   }
 });
 
-test("rv-mailwatch falls back to polling-only mode and still emits notifications", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-mailwatch-poll-"));
-  const inboxDir = path.join(workspaceDir, ".remote-vibes", "wiki", "comms", "agents", "agent-456", "inbox");
+test("vr-mailwatch falls back to polling-only mode and still emits notifications", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-mailwatch-poll-"));
+  const inboxDir = path.join(workspaceDir, ".vibe-research", "wiki", "comms", "agents", "agent-456", "inbox");
 
   await mkdir(inboxDir, { recursive: true });
 
   const watcher = spawn(
     process.execPath,
-    [path.join(process.cwd(), "bin", "rv-mailwatch"), "--inbox", inboxDir, "--interval", "0.2", "--no-bell", "--quiet"],
+    [path.join(process.cwd(), "bin", "vr-mailwatch"), "--inbox", inboxDir, "--interval", "0.2", "--no-bell", "--quiet"],
     {
       cwd: process.cwd(),
       env: {
         ...process.env,
-        REMOTE_VIBES_MAILWATCH_POLL_ONLY: "1",
+        VIBE_RESEARCH_MAILWATCH_POLL_ONLY: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -122,7 +122,7 @@ The plot is ready for review.
       }, 8_000);
 
       const poll = setInterval(() => {
-        if (combined.includes("[remote-vibes-mail]")) {
+        if (combined.includes("[vibe-research-mail]")) {
           clearTimeout(timeout);
           clearInterval(poll);
           resolve();
@@ -130,7 +130,7 @@ The plot is ready for review.
       }, 100);
     });
 
-    assert.match(combined, /\[remote-vibes-mail\]/);
+    assert.match(combined, /\[vibe-research-mail\]/);
     assert.match(combined, /research agent/);
     assert.match(combined, /Results note/);
   } finally {
@@ -140,16 +140,16 @@ The plot is ready for review.
   }
 });
 
-test("rv-mailwatch can block once until a new message arrives", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-mailwatch-once-"));
-  const inboxDir = path.join(workspaceDir, ".remote-vibes", "wiki", "comms", "agents", "agent-once", "inbox");
+test("vr-mailwatch can block once until a new message arrives", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-mailwatch-once-"));
+  const inboxDir = path.join(workspaceDir, ".vibe-research", "wiki", "comms", "agents", "agent-once", "inbox");
 
   await mkdir(inboxDir, { recursive: true });
 
   const watcher = spawn(
     process.execPath,
     [
-      path.join(process.cwd(), "bin", "rv-mailwatch"),
+      path.join(process.cwd(), "bin", "vr-mailwatch"),
       "--inbox",
       inboxDir,
       "--interval",
@@ -194,7 +194,7 @@ You can start the run now.
 
     const [exitCode] = await once(watcher, "exit");
     assert.equal(exitCode, 0);
-    assert.match(combined, /\[remote-vibes-mail\]/);
+    assert.match(combined, /\[vibe-research-mail\]/);
     assert.match(combined, /Ready now/);
   } finally {
     watcher.kill("SIGTERM");
@@ -202,9 +202,9 @@ You can start the run now.
   }
 });
 
-test("rv-mailwatch can match an already-present peer reply using --from and --after", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-mailwatch-filtered-"));
-  const inboxDir = path.join(workspaceDir, ".remote-vibes", "wiki", "comms", "groups", "resource-hall", "inbox");
+test("vr-mailwatch can match an already-present peer reply using --from and --after", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-mailwatch-filtered-"));
+  const inboxDir = path.join(workspaceDir, ".vibe-research", "wiki", "comms", "groups", "resource-hall", "inbox");
   const baselineSentAt = "2026-04-11T21:10:00Z";
   const selfMessagePath = path.join(inboxDir, "2026-04-11T21-10-00Z-agent-self.md");
   const peerMessagePath = path.join(inboxDir, "2026-04-11T21-10-05Z-agent-peer.md");
@@ -240,7 +240,7 @@ Yes, 1 GPU is available.
   const watcher = spawn(
     process.execPath,
     [
-      path.join(process.cwd(), "bin", "rv-mailwatch"),
+      path.join(process.cwd(), "bin", "vr-mailwatch"),
       "--inbox",
       inboxDir,
       "--from",
@@ -282,9 +282,9 @@ Yes, 1 GPU is available.
   }
 });
 
-test("rv-mailwatch treats a same-second peer reply as new when filtered by sender", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-mailwatch-equal-"));
-  const inboxDir = path.join(workspaceDir, ".remote-vibes", "wiki", "comms", "groups", "resource-hall", "inbox");
+test("vr-mailwatch treats a same-second peer reply as new when filtered by sender", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-mailwatch-equal-"));
+  const inboxDir = path.join(workspaceDir, ".vibe-research", "wiki", "comms", "groups", "resource-hall", "inbox");
   const baselineSentAt = "2026-04-11T21:12:00Z";
   const peerMessagePath = path.join(inboxDir, "2026-04-11T21-12-00Z-agent-peer.md");
 
@@ -306,7 +306,7 @@ Reply landed in the same second as the request timestamp.
   const watcher = spawn(
     process.execPath,
     [
-      path.join(process.cwd(), "bin", "rv-mailwatch"),
+      path.join(process.cwd(), "bin", "vr-mailwatch"),
       "--inbox",
       inboxDir,
       "--from",

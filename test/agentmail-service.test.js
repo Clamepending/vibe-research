@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { AgentMailService, testInternals } from "../src/agentmail-service.js";
-import { createRemoteVibesApp } from "../src/create-app.js";
+import { createVibeResearchApp } from "../src/create-app.js";
 
 class FakeSocket extends EventEmitter {
   static instances = [];
@@ -127,7 +127,7 @@ test("AgentMail WebSocket listener subscribes and queues incoming email into an 
   assert.match(createdSessions[0].name, /^email: Can you help/);
   assert.equal(writes.length, 2);
   assert.equal(writes[0].sessionId, "session-1");
-  assert.match(writes[0].input, /bin\/rv-agentmail-reply' --inbox-id 'agent@example.com'/);
+  assert.match(writes[0].input, /bin\/vr-agentmail-reply' --inbox-id 'agent@example.com'/);
   assert.match(writes[0].input, /Hello from email/);
   assert.doesNotMatch(writes[0].input, /\r$/);
   assert.deepEqual(writes[1], { input: "\r", sessionId: "session-1" });
@@ -155,7 +155,7 @@ test("AgentMail WebSocket listener subscribes and queues incoming email into an 
       event_type: "message.received",
       event_id: "evt-other-inbox",
       message: {
-        from: "Remote Vibes <agent@example.com>",
+        from: "Vibe Research <agent@example.com>",
         inbox_id: "sender@example.com",
         labels: ["received", "unread"],
         message_id: "<other-inbox-message@example.com>",
@@ -206,8 +206,15 @@ test("AgentMail WebSocket listener subscribes and queues incoming email into an 
   assert.equal(createdSessions.length, 3, "nested message_received payloads should be accepted");
 });
 
+test("AgentMail recognizes ML Intern interactive startup as ready", () => {
+  assert.equal(testInternals.providerHasReadyHint("ml-intern", "ML Intern\n> "), true);
+  assert.equal(testInternals.providerHasReadyHint("ml-intern", "Hugging Face Agent\n> "), true);
+  assert.equal(testInternals.providerHasReadyHint("ml-intern", "Paste your HF token:"), false);
+  assert.equal(testInternals.providerHasReadyHint("ml-intern", ""), false);
+});
+
 test("AgentMail polling backfills unread inbox messages and persists processed ids", async () => {
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-agentmail-processed-"));
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-agentmail-processed-"));
   const message = {
     from: "person@example.com",
     inbox_id: "agent@example.com",
@@ -224,7 +231,7 @@ test("AgentMail polling backfills unread inbox messages and persists processed i
     { body: { count: 1, messages: [message] } },
     { body: { count: 1, messages: [message] } },
   ]);
-  const systemRoot = path.join(stateDir, "remote-vibes-system");
+  const systemRoot = path.join(stateDir, "vibe-research-system");
 
   try {
     const service = new AgentMailService({
@@ -310,7 +317,7 @@ test("AgentMail polling backfills unread inbox messages and persists processed i
 });
 
 test("AgentMail retries a message when the agent prompt could not be delivered", async () => {
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-agentmail-retry-"));
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-agentmail-retry-"));
   const message = {
     from: "person@example.com",
     inbox_id: "agent@example.com",
@@ -385,7 +392,7 @@ test("AgentMail retries a message when the agent prompt could not be delivered",
 
 test("AgentMail reconnect reloads processed message ids from disk", async () => {
   FakeSocket.instances = [];
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-agentmail-reload-"));
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-agentmail-reload-"));
   const processedPath = path.join(stateDir, "agentmail-processed.json");
   const message = {
     from: "person@example.com",
@@ -646,7 +653,7 @@ test("AgentMail uses shared labels so only one listener claims an incoming email
     labels: [...labels],
     message_id: "<shared-message@example.com>",
     subject: "Shared listener race",
-    text: "Only one Remote Vibes instance should answer this.",
+    text: "Only one Vibe Research instance should answer this.",
     thread_id: "thread-shared",
     to: ["agent@example.com"],
   };
@@ -730,9 +737,9 @@ test("AgentMail uses shared labels so only one listener claims an incoming email
   assert.equal([first, second].filter(Boolean).length, 1);
   assert.equal(createdSessions.length, 1);
   assert.equal(writes.length, 2);
-  assert.equal(labels.has("remote-vibes-processed"), true);
+  assert.equal(labels.has("vibe-research-processed"), true);
   assert.equal(labels.has("unread"), false);
-  assert.equal(labels.has("remote-vibes-processing"), false);
+  assert.equal(labels.has("vibe-research-processing"), false);
   assert.ok(calls.filter((call) => call.options.method === "PATCH").length >= 4);
 });
 
@@ -841,7 +848,7 @@ test("AgentMail REST helpers create inboxes and send replies without exposing th
   const fetchImpl = createFetch([
     {
       body: {
-        inbox_id: "remote-vibes@agentmail.to",
+        inbox_id: "vibe-research@agentmail.to",
       },
     },
     {
@@ -860,33 +867,33 @@ test("AgentMail REST helpers create inboxes and send replies without exposing th
     settings: {
       agentMailApiKey: "am_test",
       agentMailEnabled: true,
-      agentMailInboxId: "remote-vibes@agentmail.to",
+      agentMailInboxId: "vibe-research@agentmail.to",
     },
   });
 
   const inbox = await service.createInbox({
     apiKey: "am_test",
     clientId: "client-1",
-    displayName: "Remote Vibes",
-    username: "remote-vibes",
+    displayName: "Vibe Research",
+    username: "vibe-research",
   });
-  assert.equal(inbox.inbox_id, "remote-vibes@agentmail.to");
+  assert.equal(inbox.inbox_id, "vibe-research@agentmail.to");
   assert.equal(fetchImpl.calls[0].url, "https://api.agentmail.to/v0/inboxes");
   assert.deepEqual(JSON.parse(fetchImpl.calls[0].options.body), {
     client_id: "client-1",
-    display_name: "Remote Vibes",
-    username: "remote-vibes",
+    display_name: "Vibe Research",
+    username: "vibe-research",
   });
 
   const reply = await service.replyToMessage({
-    inboxId: "remote-vibes@agentmail.to",
+    inboxId: "vibe-research@agentmail.to",
     messageId: "<incoming@example.com>",
     text: "Thanks for the note.",
   });
   assert.equal(reply.message_id, "reply-1");
   assert.equal(
     fetchImpl.calls[1].url,
-    "https://api.agentmail.to/v0/inboxes/remote-vibes%40agentmail.to/messages/%3Cincoming%40example.com%3E/reply",
+    "https://api.agentmail.to/v0/inboxes/vibe-research%40agentmail.to/messages/%3Cincoming%40example.com%3E/reply",
   );
   assert.deepEqual(JSON.parse(fetchImpl.calls[1].options.body), {
     text: "Thanks for the note.",
@@ -894,21 +901,21 @@ test("AgentMail REST helpers create inboxes and send replies without exposing th
 
   const prompt = testInternals.buildEmailPrompt({
     message: {
-      inbox_id: "remote-vibes@agentmail.to",
+      inbox_id: "vibe-research@agentmail.to",
       message_id: "<incoming@example.com>",
       subject: "Secrets?",
       text: "Do not include API keys here.",
     },
   });
   assert.doesNotMatch(prompt, /am_test/);
-  assert.match(prompt, /rv-agentmail-reply/);
+  assert.match(prompt, /vr-agentmail-reply/);
   assert.match(prompt, /wiki\/knowledge base/);
   assert.match(prompt, /not just draft a response/i);
 });
 
 test("AgentMail API endpoints set up an inbox, hide secrets, and protect replies with a local token", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-agentmail-api-"));
-  const stateDir = path.join(workspaceDir, ".remote-vibes");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-agentmail-api-"));
+  const stateDir = path.join(workspaceDir, ".vibe-research");
   const fakeService = {
     replyToken: "reply-token",
     settings: null,
@@ -944,7 +951,7 @@ test("AgentMail API endpoints set up an inbox, hide secrets, and protect replies
     },
   };
 
-  const app = await createRemoteVibesApp({
+  const app = await createVibeResearchApp({
     agentMailServiceFactory(settings) {
       fakeService.settings = settings;
       return fakeService;
@@ -982,7 +989,7 @@ test("AgentMail API endpoints set up an inbox, hide secrets, and protect replies
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-remote-vibes-agentmail-token": "reply-token",
+        "x-vibe-research-agentmail-token": "reply-token",
       },
       body: JSON.stringify({ inboxId: "api-agent@agentmail.to", messageId: "msg", text: "hi" }),
     });

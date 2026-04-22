@@ -200,8 +200,8 @@ export class WikiBackupService {
       }
     }
 
-    await this.ensureGitConfig("user.name", "Remote Vibes");
-    await this.ensureGitConfig("user.email", "remote-vibes@local");
+    await this.ensureGitConfig("user.name", "Vibe Research");
+    await this.ensureGitConfig("user.email", "vibe-research@local");
   }
 
   async ensureGitConfig(key, fallbackValue) {
@@ -408,7 +408,7 @@ export class WikiBackupService {
       let committedChanges = false;
 
       if (stdout.trim()) {
-        await this.git(["commit", "-m", `Remote Vibes wiki backup ${timestamp}`]);
+        await this.git(["commit", "-m", `Vibe Research wiki backup ${timestamp}`]);
         committedChanges = true;
       }
 

@@ -31,12 +31,12 @@ function run(command, args, { capture = false, allowFailure = false } = {}) {
 }
 
 function fail(message) {
-  console.error(`[remote-vibes-release] ${message}`);
+  console.error(`[vibe-research-release] ${message}`);
   process.exit(1);
 }
 
 function log(message) {
-  console.log(`[remote-vibes-release] ${message}`);
+  console.log(`[vibe-research-release] ${message}`);
 }
 
 function readJson(filePath) {
@@ -166,7 +166,7 @@ if (fs.existsSync(packageLockPath)) {
 
 run("git", ["add", "package.json", "package-lock.json"]);
 run("git", ["commit", "-m", `Release ${tag}`]);
-run("git", ["tag", "-a", tag, "-m", `Remote Vibes ${tag}`]);
+run("git", ["tag", "-a", tag, "-m", `Vibe Research ${tag}`]);
 log(`Created ${tag}.`);
 
 if (noPush) {
@@ -191,7 +191,7 @@ run("gh", [
   "--repo",
   repoSlug,
   "--title",
-  `Remote Vibes ${tag}`,
+  `Vibe Research ${tag}`,
   "--generate-notes",
 ]);
 log(`Published GitHub Release ${tag}.`);

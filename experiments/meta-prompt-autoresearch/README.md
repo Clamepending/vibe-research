@@ -27,7 +27,7 @@ The durable learnings from this setup (wrapper bypass, `claude -p` semantics, co
 
 ## The question
 
-Can we hill-climb an agent *system prompt* the same way you hill-climb `train.py`? The validation loop (R1-R7+) already demonstrated the v3 Remote Vibes prompt produces disciplined autoresearch behavior on *prompt-tuning* tasks. The next question: is that discipline the *best* prompt, or just *a* prompt that works? The only way to know is to hill-climb it against a concrete downstream metric.
+Can we hill-climb an agent *system prompt* the same way you hill-climb `train.py`? The validation loop (R1-R7+) already demonstrated the v3 Vibe Research prompt produces disciplined autoresearch behavior on *prompt-tuning* tasks. The next question: is that discipline the *best* prompt, or just *a* prompt that works? The only way to know is to hill-climb it against a concrete downstream metric.
 
 **Karpathy's autoresearch-mlx** gives us exactly the right shape of task: a fresh, frozen, reproducible benchmark (`val_bpb` on 5 minutes of MLX pretraining) where the task-agent's job is agentic research (modify `train.py`, run it, read results, iterate). That means:
 
@@ -69,7 +69,7 @@ For each meta-prompt variant `vN`, run M=2 independent replicates:
 
 ### The meta-prompt variants to try
 
-- **v0** — the current Remote Vibes v3 prompt (prompt-tuning-validated baseline). Hypothesis: the discipline transfers to pretraining-research with val_bpb as metric.
+- **v0** — the current Vibe Research v3 prompt (prompt-tuning-validated baseline). Hypothesis: the discipline transfers to pretraining-research with val_bpb as metric.
 - **v1-control** — a stripped-down "just do what program.md says" prompt. Hypothesis: most of v3 is dead weight for this task; simpler does equally well.
 - **v2-ml-priors** — v0 + a terse ML-priors section ("gradient accumulation trades memory for step size; depth/width tradeoff; learning-rate warmup matters"). Hypothesis: priming task-specific knowledge beats generic discipline.
 - **v3-no-priors-no-discipline** — minimal. "Read program.md. Do it. Exit when done." Negative control.
@@ -85,7 +85,7 @@ Secondary metrics: keep-count (how often did the agent's changes improve), cycle
 - v0 vs v2-ml-priors answers: **task-specific knowledge vs. general meta-skill — which matters more?**
 - v0 vs v4-explicit-reflect answers: **can we get an ablation-sized improvement from one micro-intervention?**
 
-If v1-control ties v0, that's a valuable negative: most of the Remote Vibes scaffolding is not doing the work on this task. If v2-ml-priors wins, the next direction is task-specific priming rather than general discipline. If v4-explicit-reflect wins, that's the next addition to v3 of the main prompt.
+If v1-control ties v0, that's a valuable negative: most of the Vibe Research scaffolding is not doing the work on this task. If v2-ml-priors wins, the next direction is task-specific priming rather than general discipline. If v4-explicit-reflect wins, that's the next addition to v3 of the main prompt.
 
 ### Falsifiers
 
@@ -105,7 +105,7 @@ If v1-control ties v0, that's a valuable negative: most of the Remote Vibes scaf
 
 ## Extra motivation (2026-04-19)
 
-User noted the CLAUDE.md (= mirrored v3 Remote Vibes prompt) is 45.8k chars and the Claude Code harness now flags it as large enough to hurt performance. This is a direct, task-adjacent reason the v1-control ("strip to minimum") and v3-no-discipline variants matter: if either ties v0 on `val_bpb` / keep-count, we have a concrete basis for trimming the canonical prompt. In other words, this experiment is no longer just "can the discipline transfer" — it's also "is the current length pulling its weight."
+User noted the CLAUDE.md (= mirrored v3 Vibe Research prompt) is 45.8k chars and the Claude Code harness now flags it as large enough to hurt performance. This is a direct, task-adjacent reason the v1-control ("strip to minimum") and v3-no-discipline variants matter: if either ties v0 on `val_bpb` / keep-count, we have a concrete basis for trimming the canonical prompt. In other words, this experiment is no longer just "can the discipline transfer" — it's also "is the current length pulling its weight."
 
 ## Open questions
 
@@ -150,7 +150,7 @@ The first v1-control attempt (before `5e0dd01`) failed with a zero-commit exit a
 
 This is a harness-level constraint, not a meta-prompt preference. Every variant needs a "run training FOREGROUND with `timeout: 600000`" directive at the top, or it hits the same failure regardless of how much discipline the rest of the prompt asks for. The one-shot runtime note is now appended verbatim to all 5 variants. Sanity-check attempt 4 (with the note) shows the agent correctly used `run_in_background: false, timeout: 600000`.
 
-Generalization: if the v3 Remote Vibes prompt is ever run via `claude -p` for agentic loops, it also needs this kind of runtime note. It's not in the main prompt today because the canonical invocation is interactive Claude Code where Monitor-based backgrounding is correct. This is a two-world problem: the same prompt works differently under interactive vs. one-shot harnesses.
+Generalization: if the v3 Vibe Research prompt is ever run via `claude -p` for agentic loops, it also needs this kind of runtime note. It's not in the main prompt today because the canonical invocation is interactive Claude Code where Monitor-based backgrounding is correct. This is a two-world problem: the same prompt works differently under interactive vs. one-shot harnesses.
 
 ## Handoff
 

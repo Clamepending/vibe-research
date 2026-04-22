@@ -16,7 +16,7 @@ const IMAGE_EXTENSIONS = new Set([
   ".tiff",
   ".webp",
 ]);
-const INTERNAL_PATH_SEGMENTS = new Set([".remote-vibes"]);
+const INTERNAL_PATH_SEGMENTS = new Set([".vibe-research", ".remote-vibes"]);
 const MANAGED_WORKSPACE_FILES = new Set(["AGENTS.md", "CLAUDE.md", "GEMINI.md"]);
 const MAX_EDITABLE_FILE_BYTES = 1024 * 1024;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });

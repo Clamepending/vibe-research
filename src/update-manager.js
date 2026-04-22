@@ -7,12 +7,14 @@ const execFileAsync = promisify(execFileCallback);
 const DEFAULT_CACHE_MS = 5 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 8_000;
 const DEFAULT_UPDATE_CHANNEL = "release";
-const MANAGED_PROMPT_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
+const MANAGED_PROMPT_MARKER = "<!-- vibe-research:managed-agent-prompt -->";
+const LEGACY_MANAGED_PROMPT_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
+const MANAGED_PROMPT_MARKERS = [MANAGED_PROMPT_MARKER, LEGACY_MANAGED_PROMPT_MARKER];
 const MANAGED_PROMPT_FILES = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
 const MANAGED_PROMPT_FILE_SET = new Set(MANAGED_PROMPT_FILES);
 const GENERATED_DIRTY_PATHS = new Set([".playwright-cli", ".playwright-cli/", "output", "output/"]);
 const NON_GIT_CHECKOUT_REASON =
-  "Automatic updates are unavailable because Remote Vibes is not running from a git checkout.";
+  "Automatic updates are unavailable because Vibe Research is not running from a git checkout.";
 
 function trim(value) {
   return String(value ?? "").trim();
@@ -190,17 +192,22 @@ function isNotGitRepositoryError(error) {
 export class UpdateManager {
   constructor({
     cwd = process.cwd(),
-    stateDir = path.join(cwd, ".remote-vibes"),
-    remote = process.env.REMOTE_VIBES_UPDATE_REMOTE || "origin",
-    branch = process.env.REMOTE_VIBES_UPDATE_BRANCH || process.env.REMOTE_VIBES_REF || "main",
+    stateDir = path.join(cwd, ".vibe-research"),
+    remote = process.env.VIBE_RESEARCH_UPDATE_REMOTE || process.env.REMOTE_VIBES_UPDATE_REMOTE || "origin",
+    branch =
+      process.env.VIBE_RESEARCH_UPDATE_BRANCH ||
+      process.env.REMOTE_VIBES_UPDATE_BRANCH ||
+      process.env.VIBE_RESEARCH_REF ||
+      process.env.REMOTE_VIBES_REF ||
+      "main",
     cacheMs = DEFAULT_CACHE_MS,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     execFile = execFileAsync,
     spawn = spawnCallback,
     fetch: fetchImpl = globalThis.fetch?.bind(globalThis),
     env = process.env,
-    port = Number(process.env.REMOTE_VIBES_PORT || 4123),
-    channel = env.REMOTE_VIBES_UPDATE_CHANNEL || DEFAULT_UPDATE_CHANNEL,
+    port = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4123),
+    channel = env.VIBE_RESEARCH_UPDATE_CHANNEL || env.REMOTE_VIBES_UPDATE_CHANNEL || DEFAULT_UPDATE_CHANNEL,
   } = {}) {
     this.cwd = cwd;
     this.stateDir = stateDir;
@@ -460,7 +467,8 @@ export class UpdateManager {
     const absolutePath = path.join(this.cwd, filePath);
 
     try {
-      if (fs.readFileSync(absolutePath, "utf8").includes(MANAGED_PROMPT_MARKER)) {
+      const content = fs.readFileSync(absolutePath, "utf8");
+      if (MANAGED_PROMPT_MARKERS.some((marker) => content.includes(marker))) {
         return true;
       }
     } catch {
@@ -469,7 +477,7 @@ export class UpdateManager {
 
     try {
       const result = await this.git(["show", `HEAD:${filePath}`]);
-      return result.stdout.includes(MANAGED_PROMPT_MARKER);
+      return MANAGED_PROMPT_MARKERS.some((marker) => result.stdout.includes(marker));
     } catch {
       return false;
     }
@@ -568,7 +576,7 @@ export class UpdateManager {
 
     const headers = {
       Accept: "application/vnd.github+json",
-      "User-Agent": "remote-vibes-updater",
+      "User-Agent": "vibe-research-updater",
     };
     const token = this.env.GITHUB_TOKEN || this.env.GH_TOKEN;
     if (token) {
@@ -699,7 +707,7 @@ export class UpdateManager {
     }
 
     if (!status.updateAvailable) {
-      const error = new Error("Remote Vibes is already up to date.");
+      const error = new Error("Vibe Research is already up to date.");
       error.statusCode = 409;
       error.update = status;
       throw error;
@@ -726,8 +734,8 @@ export class UpdateManager {
       detached: true,
       env: {
         ...this.env,
-        REMOTE_VIBES_PORT: String(this.port),
-        REMOTE_VIBES_STATE_DIR: this.stateDir,
+        VIBE_RESEARCH_PORT: String(this.port),
+        VIBE_RESEARCH_STATE_DIR: this.stateDir,
       },
       stdio: ["ignore", logFd, logFd],
     });
@@ -747,14 +755,14 @@ export class UpdateManager {
     const cwd = shellQuote(this.cwd);
     const remote = shellQuote(updateSource);
     const branch = shellQuote(this.branch);
-    const managedPromptMarker = shellQuote(MANAGED_PROMPT_MARKER);
+    const managedPromptMarkers = MANAGED_PROMPT_MARKERS.map((marker) => shellQuote(marker)).join(" ");
     const managedPromptFiles = MANAGED_PROMPT_FILES.map((filePath) => shellQuote(filePath)).join(" ");
     const stateUrl = shellQuote(`http://127.0.0.1:${this.port}/api/state`);
     const terminateUrl = shellQuote(`http://127.0.0.1:${this.port}/api/terminate`);
     const updateCommand =
       targetType === "release" && latestTag
         ? [
-            `echo "[remote-vibes-update] fetching release ${latestTag}"`,
+            `echo "[vibe-research-update] fetching release ${latestTag}"`,
             `git fetch --force --depth 1 ${remote} ${shellQuote(`refs/tags/${latestTag}:refs/tags/${latestTag}`)}`,
             `git checkout --detach ${shellQuote(`refs/tags/${latestTag}`)}`,
           ].join("\n")
@@ -762,16 +770,26 @@ export class UpdateManager {
 
     return `
 set -euo pipefail
-echo "[remote-vibes-update] starting $(date)"
+echo "[vibe-research-update] starting $(date)"
 cd ${cwd}
+has_managed_prompt_marker() {
+  local source="$1"
+  local marker
+  for marker in ${managedPromptMarkers}; do
+    if printf '%s' "$source" | grep -Fq "$marker"; then
+      return 0
+    fi
+  done
+  return 1
+}
 restore_managed_prompt_file() {
   local file="$1"
-  if [ -f "$file" ] && grep -Fq ${managedPromptMarker} "$file"; then
+  if [ -f "$file" ] && has_managed_prompt_marker "$(cat "$file")"; then
     git checkout -- "$file" >/dev/null 2>&1 || true
     return
   fi
 
-  if git show "HEAD:$file" 2>/dev/null | grep -Fq ${managedPromptMarker}; then
+  if has_managed_prompt_marker "$(git show "HEAD:$file" 2>/dev/null || true)"; then
     git checkout -- "$file" >/dev/null 2>&1 || true
   fi
 }
@@ -779,7 +797,7 @@ for file in ${managedPromptFiles}; do
   restore_managed_prompt_file "$file"
 done
 ${updateCommand}
-echo "[remote-vibes-update] update pulled; stopping current server"
+echo "[vibe-research-update] update pulled; stopping current server"
 curl -fsS -X POST ${terminateUrl} >/dev/null 2>&1 || true
 for attempt in $(seq 1 100); do
   if ! curl -fsS ${stateUrl} >/dev/null 2>&1; then
@@ -787,7 +805,7 @@ for attempt in $(seq 1 100); do
   fi
   sleep 0.2
 done
-echo "[remote-vibes-update] restarting"
+echo "[vibe-research-update] restarting"
 exec ./start.sh
 `;
   }

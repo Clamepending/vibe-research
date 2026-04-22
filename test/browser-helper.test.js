@@ -9,14 +9,14 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocket } from "ws";
-import { createRemoteVibesApp } from "../src/create-app.js";
+import { createVibeResearchApp } from "../src/create-app.js";
 import { SleepPreventionService } from "../src/sleep-prevention.js";
 
 const execFile = promisify(execFileCallback);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
-const browserHelperPath = path.join(rootDir, "bin", "rv-browser");
-const playwrightHelperPath = path.join(rootDir, "bin", "rv-playwright");
+const browserHelperPath = path.join(rootDir, "bin", "vr-browser");
+const playwrightHelperPath = path.join(rootDir, "bin", "vr-playwright");
 const browserTestEnv = {
   ...process.env,
   PATH: ["/opt/homebrew/bin", "/usr/local/bin", process.env.PATH].filter(Boolean).join(path.delimiter),
@@ -195,13 +195,13 @@ async function startDemoServer() {
   return server;
 }
 
-async function startRemoteVibes(options = {}) {
+async function startVibeResearch(options = {}) {
   const appCwd = options.cwd ?? process.cwd();
-  const app = await createRemoteVibesApp({
+  const app = await createVibeResearchApp({
     host: "127.0.0.1",
     port: 0,
     cwd: appCwd,
-    stateDir: options.stateDir ?? path.join(appCwd, ".remote-vibes"),
+    stateDir: options.stateDir ?? path.join(appCwd, ".vibe-research"),
     persistSessions: false,
     sleepPreventionFactory: (settings) =>
       new SleepPreventionService({
@@ -217,7 +217,7 @@ async function startRemoteVibes(options = {}) {
   };
 }
 
-test("rv-browser doctor resolves a usable local browser", async () => {
+test("vr-browser doctor resolves a usable local browser", async () => {
   const result = await execFile(browserHelperPath, ["doctor"], {
     cwd: rootDir,
     env: browserTestEnv,
@@ -230,7 +230,7 @@ test("rv-browser doctor resolves a usable local browser", async () => {
   assert.ok(payload.browser.executablePath.length > 0);
 });
 
-test("rv-browser doctor ignores detour wrappers when repo bin is first on PATH", async () => {
+test("vr-browser doctor ignores detour wrappers when repo bin is first on PATH", async () => {
   const result = await execFile(browserHelperPath, ["doctor"], {
     cwd: rootDir,
     env: {
@@ -246,8 +246,8 @@ test("rv-browser doctor ignores detour wrappers when repo bin is first on PATH",
   assert.notEqual(payload.browser.executablePath, path.join(rootDir, "bin", "google-chrome"));
 });
 
-test("rv-playwright wraps playwright-cli through npx with per-session isolation", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-playwright-wrapper-"));
+test("vr-playwright wraps playwright-cli through npx with per-session isolation", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-playwright-wrapper-"));
 
   try {
     const fakeBinDir = await mkdtemp(path.join(workspaceDir, "bin-"));
@@ -271,7 +271,7 @@ printf 'fake playwright cli\\n'
         ...browserTestEnv,
         CAPTURED_ARGS_PATH: capturedArgsPath,
         PATH: [fakeBinDir, "/usr/bin", "/bin"].join(path.delimiter),
-        REMOTE_VIBES_SESSION_ID: "session:abc",
+        VIBE_RESEARCH_SESSION_ID: "session:abc",
       },
     });
     const capturedArgs = (await readFile(capturedArgsPath, "utf8")).trim().split("\n");
@@ -282,7 +282,7 @@ printf 'fake playwright cli\\n'
       "--package",
       "@playwright/cli",
       "playwright-cli",
-      "-s=rv-476412420-sessio",
+      "-s=vr-476412420-sessio",
       "snapshot",
     ]);
   } finally {
@@ -290,8 +290,8 @@ printf 'fake playwright cli\\n'
   }
 });
 
-test("rv-browser run can drive a localhost app, upload files, and save screenshots", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-browser-"));
+test("vr-browser run can drive a localhost app, upload files, and save screenshots", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-browser-"));
   const demoServer = await startDemoServer();
   const demoPort = demoServer.address().port;
 
@@ -346,7 +346,7 @@ test("rv-browser run can drive a localhost app, upload files, and save screensho
   }
 });
 
-test("rv-browser rejects non-local targets", async () => {
+test("vr-browser rejects non-local targets", async () => {
   await assert.rejects(
     execFile(browserHelperPath, ["screenshot", "https://example.com"], {
       cwd: rootDir,
@@ -361,8 +361,8 @@ test("rv-browser rejects non-local targets", async () => {
   );
 });
 
-test("rv-browser describe can capture a localhost page and pass it through a codex-style vision provider", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-describe-"));
+test("vr-browser describe can capture a localhost page and pass it through a codex-style vision provider", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-describe-"));
   const demoServer = await startDemoServer();
   const demoPort = demoServer.address().port;
 
@@ -384,7 +384,7 @@ test("rv-browser describe can capture a localhost page and pass it through a cod
         cwd: workspaceDir,
         env: {
           ...browserTestEnv,
-          REMOTE_VIBES_REAL_CODEX_COMMAND: fakeCodexPath,
+          VIBE_RESEARCH_REAL_CODEX_COMMAND: fakeCodexPath,
         },
       },
     );
@@ -401,8 +401,8 @@ test("rv-browser describe can capture a localhost page and pass it through a cod
   }
 });
 
-test("rv-browser describe-file can use a claude-style vision provider", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-describe-file-"));
+test("vr-browser describe-file can use a claude-style vision provider", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-describe-file-"));
 
   try {
     const imagePath = path.join(workspaceDir, "fixture.png");
@@ -423,7 +423,7 @@ test("rv-browser describe-file can use a claude-style vision provider", async ()
         cwd: workspaceDir,
         env: {
           ...browserTestEnv,
-          REMOTE_VIBES_REAL_CLAUDE_COMMAND: fakeClaudePath,
+          VIBE_RESEARCH_REAL_CLAUDE_COMMAND: fakeClaudePath,
         },
       },
     );
@@ -446,7 +446,7 @@ test("browser detour wrappers redirect agents toward the Playwright skill", asyn
     }),
     (error) => {
       assert.equal(error.code, 64);
-      assert.match(error.stderr, /Use rv-playwright open <port-or-url>/);
+      assert.match(error.stderr, /Use vr-playwright open <port-or-url>/);
       assert.match(error.stderr, /click\/fill\/type\/press/);
       return true;
     },
@@ -459,22 +459,22 @@ test("browser detour wrappers redirect agents toward the Playwright skill", asyn
     }),
     (error) => {
       assert.equal(error.code, 64);
-      assert.match(error.stderr, /Use rv-playwright open <port-or-url>/);
+      assert.match(error.stderr, /Use vr-playwright open <port-or-url>/);
       return true;
     },
   );
 });
 
-test("shell sessions can invoke rv-browser against localhost apps", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-session-browser-"));
+test("shell sessions can invoke vr-browser against localhost apps", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-browser-"));
   const demoServer = await startDemoServer();
-  const remoteVibes = await startRemoteVibes({
+  const vibeResearch = await startVibeResearch({
     cwd: workspaceDir,
   });
 
   try {
     const demoPort = demoServer.address().port;
-    const createResponse = await fetch(`${remoteVibes.baseUrl}/api/sessions`, {
+    const createResponse = await fetch(`${vibeResearch.baseUrl}/api/sessions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -488,12 +488,12 @@ test("shell sessions can invoke rv-browser against localhost apps", async () => 
     assert.equal(createResponse.status, 201);
 
     const { session } = await createResponse.json();
-    const websocket = new WebSocket(`${remoteVibes.baseUrl.replace("http", "ws")}/ws?sessionId=${session.id}`);
-    const commandPath = path.join(workspaceDir, "rv-browser-command.txt");
-    const jsonPath = path.join(workspaceDir, "rv-browser-session.json");
-    const screenshotPath = path.join(workspaceDir, "rv-browser-session.png");
+    const websocket = new WebSocket(`${vibeResearch.baseUrl.replace("http", "ws")}/ws?sessionId=${session.id}`);
+    const commandPath = path.join(workspaceDir, "vr-browser-command.txt");
+    const jsonPath = path.join(workspaceDir, "vr-browser-session.json");
+    const screenshotPath = path.join(workspaceDir, "vr-browser-session.png");
     const stepsFilePath = path.join(workspaceDir, "session-steps.json");
-    const donePath = path.join(workspaceDir, "rv-browser-session.done");
+    const donePath = path.join(workspaceDir, "vr-browser-session.done");
 
     await writeFile(
       stepsFilePath,
@@ -542,8 +542,8 @@ test("shell sessions can invoke rv-browser against localhost apps", async () => 
         type: "input",
         data:
           [
-            `command -v rv-browser > ${shellQuote(commandPath)}`,
-            `rv-browser run ${demoPort} --steps-file ${shellQuote(path.basename(stepsFilePath))} --output ${shellQuote(
+            `command -v vr-browser > ${shellQuote(commandPath)}`,
+            `vr-browser run ${demoPort} --steps-file ${shellQuote(path.basename(stepsFilePath))} --output ${shellQuote(
               path.basename(screenshotPath),
             )} > ${shellQuote(jsonPath)}`,
             `touch ${shellQuote(donePath)}`,
@@ -559,7 +559,7 @@ test("shell sessions can invoke rv-browser against localhost apps", async () => 
     await once(websocket, "close");
 
     const resolvedCommand = (await readFile(commandPath, "utf8")).trim();
-    assert.match(resolvedCommand, /rv-browser$/);
+    assert.match(resolvedCommand, /vr-browser$/);
 
     const payload = JSON.parse(await readFile(jsonPath, "utf8"));
     assert.equal(payload.ok, true);
@@ -568,14 +568,14 @@ test("shell sessions can invoke rv-browser against localhost apps", async () => 
     assert.equal(await realpath(payload.outputPath), await realpath(screenshotPath));
     assert.ok((await stat(screenshotPath)).size > 0);
   } finally {
-    await remoteVibes.app.close();
+    await vibeResearch.app.close();
     await new Promise((resolve) => demoServer.close(resolve));
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });
 
 test("agent wrappers inject Playwright skill guidance and the managed agent prompt for Codex and Claude", async () => {
-  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remote-vibes-agent-wrapper-"));
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-agent-wrapper-"));
 
   try {
     const captureScriptPath = path.join(workspaceDir, "capture-argv.sh");
@@ -585,10 +585,10 @@ test("agent wrappers inject Playwright skill guidance and the managed agent prom
 
     await writeFile(
       agentPromptPath,
-      `# Remote Vibes Agent Prompt
+      `# Vibe Research Agent Prompt
 
-Remote Vibes provides \`rv-session-name\` on your session \`PATH\`.
-- Run \`rv-session-name "<short task label>"\` at the start of meaningful work.
+Vibe Research provides \`vr-session-name\` on your session \`PATH\`.
+- Run \`vr-session-name "<short task label>"\` at the start of meaningful work.
 `,
       "utf8",
     );
@@ -597,7 +597,7 @@ Remote Vibes provides \`rv-session-name\` on your session \`PATH\`.
       captureScriptPath,
       `#!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$REMOTE_VIBES_PROVIDER" > "$CAPTURED_PROVIDER_PATH"
+printf '%s\n' "$VIBE_RESEARCH_PROVIDER" > "$CAPTURED_PROVIDER_PATH"
 printf '%s\n' "$@" > "$CAPTURED_ARGS_PATH"
 `,
       "utf8",
@@ -610,25 +610,25 @@ printf '%s\n' "$@" > "$CAPTURED_ARGS_PATH"
         ...browserTestEnv,
         CAPTURED_ARGS_PATH: capturedArgsPath,
         CAPTURED_PROVIDER_PATH: capturedProviderPath,
-        REMOTE_VIBES_AGENT_PROMPT_PATH: agentPromptPath,
-        REMOTE_VIBES_REAL_CODEX_COMMAND: captureScriptPath,
+        VIBE_RESEARCH_AGENT_PROMPT_PATH: agentPromptPath,
+        VIBE_RESEARCH_REAL_CODEX_COMMAND: captureScriptPath,
       },
     });
     const codexArgs = await readFile(capturedArgsPath, "utf8");
     const codexProvider = await readFile(capturedProviderPath, "utf8");
     assert.match(codexArgs, /developer_instructions=/);
     assert.match(codexArgs, /Browser Use plugin/);
-    assert.match(codexArgs, /rv-browser-use --task/);
+    assert.match(codexArgs, /vr-browser-use --task/);
     assert.match(codexArgs, /--max-steps <n>/);
     assert.match(codexArgs, /do not spawn an internal Agent/);
     assert.match(codexArgs, /Playwright CLI browser skill/);
     assert.match(codexArgs, /skills\/playwright\/SKILL\.md/);
-    assert.match(codexArgs, /rv-playwright/);
+    assert.match(codexArgs, /vr-playwright/);
     assert.match(codexArgs, /snapshot/);
     assert.match(codexArgs, /click\/fill\/type\/press/);
-    assert.match(codexArgs, /rv-browser describe-file/);
+    assert.match(codexArgs, /vr-browser describe-file/);
     assert.match(codexArgs, /--provider codex/);
-    assert.match(codexArgs, /rv-session-name/);
+    assert.match(codexArgs, /vr-session-name/);
     assert.equal(codexProvider.trim(), "codex");
 
     await execFile(path.join(rootDir, "bin", "claude"), ["--print", "hello"], {
@@ -637,25 +637,25 @@ printf '%s\n' "$@" > "$CAPTURED_ARGS_PATH"
         ...browserTestEnv,
         CAPTURED_ARGS_PATH: capturedArgsPath,
         CAPTURED_PROVIDER_PATH: capturedProviderPath,
-        REMOTE_VIBES_AGENT_PROMPT_PATH: agentPromptPath,
-        REMOTE_VIBES_REAL_CLAUDE_COMMAND: captureScriptPath,
+        VIBE_RESEARCH_AGENT_PROMPT_PATH: agentPromptPath,
+        VIBE_RESEARCH_REAL_CLAUDE_COMMAND: captureScriptPath,
       },
     });
     const claudeArgs = await readFile(capturedArgsPath, "utf8");
     const claudeProvider = await readFile(capturedProviderPath, "utf8");
     assert.match(claudeArgs, /--append-system-prompt/);
     assert.match(claudeArgs, /Browser Use plugin/);
-    assert.match(claudeArgs, /rv-browser-use --task/);
+    assert.match(claudeArgs, /vr-browser-use --task/);
     assert.match(claudeArgs, /--max-steps <n>/);
     assert.match(claudeArgs, /do not spawn an internal Agent/);
     assert.match(claudeArgs, /Playwright CLI browser skill/);
     assert.match(claudeArgs, /skills\/playwright\/SKILL\.md/);
-    assert.match(claudeArgs, /rv-playwright/);
+    assert.match(claudeArgs, /vr-playwright/);
     assert.match(claudeArgs, /snapshot/);
     assert.match(claudeArgs, /click\/fill\/type\/press/);
-    assert.match(claudeArgs, /rv-browser describe-file/);
+    assert.match(claudeArgs, /vr-browser describe-file/);
     assert.match(claudeArgs, /--provider claude/);
-    assert.match(claudeArgs, /rv-session-name/);
+    assert.match(claudeArgs, /vr-session-name/);
     assert.equal(claudeProvider.trim(), "claude");
   } finally {
     await rm(workspaceDir, { recursive: true, force: true });
