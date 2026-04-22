@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildStartupOutput, pickScanUrl, renderQrCode } from "../src/startup-output.js";
+import { buildStartupOutput, pickScanUrl, renderQrCode, renderTerminalLink } from "../src/startup-output.js";
 
 function stripAnsi(value) {
   return value.replace(/\u001b\[[0-9;]*m/g, "");
@@ -33,12 +33,29 @@ test("buildStartupOutput includes a terminal QR block for the preferred phone UR
       { label: "Local", url: "http://localhost:4123" },
       { label: "Tailscale", url: "http://100.106.229.117:4123" },
     ],
+    defaultSessionCwd: "/home/friend/vibe-projects",
     providers: [{ label: "Claude Code", available: true }],
   });
 
   assert.match(output, /Scan on phone: http:\/\/100\.106\.229\.117:4123/);
+  assert.match(output, /Open the clickable URL above/);
+  assert.match(output, /Tap New Agent/);
+  assert.match(output, /default agent folder: \/home\/friend\/vibe-projects/);
+  assert.match(output, /If Claude asks you to sign in/);
+  assert.match(output, /Remote access is optional/);
   assert.match(output, /\u001b\[47m/);
-  assert.match(output, /\u001b\[32mrunning\u001b\[0m$/);
+  assert.match(output, /OPEN VIBE RESEARCH/);
+  assert.match(output, /Click this link: \u001b]8;;http:\/\/100\.106\.229\.117:4123\u0007http:\/\/100\.106\.229\.117:4123\u001b]8;;\u0007/);
+  assert.match(output, /This laptop: \u001b]8;;http:\/\/localhost:4123\u0007http:\/\/localhost:4123\u001b]8;;\u0007/);
+  assert.match(output, /\u001b\[32mrunning\u001b\[0m\n\n/);
+  assert.match(output, /\u001b\[1m\u001b\[36m============================================================\u001b\[0m$/);
+});
+
+test("renderTerminalLink emits an OSC 8 clickable terminal link", () => {
+  assert.equal(
+    renderTerminalLink("http://localhost:4123", "Open Vibe Research"),
+    "\u001b]8;;http://localhost:4123\u0007Open Vibe Research\u001b]8;;\u0007",
+  );
 });
 
 test("renderQrCode uses a square ANSI QR that is easier to scan", () => {

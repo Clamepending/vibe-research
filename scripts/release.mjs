@@ -119,6 +119,7 @@ if (dirtyTrackedLines.length > 0) {
 
 const packagePath = path.join(rootDir, "package.json");
 const packageLockPath = path.join(rootDir, "package-lock.json");
+const releaseChannelPath = path.join(rootDir, "release-channel.json");
 const packageJson = readJson(packagePath);
 const version = nextVersion(packageJson.version, bump);
 const tag = `v${version}`;
@@ -164,10 +165,30 @@ if (fs.existsSync(packageLockPath)) {
   writeJson(packageLockPath, packageLock);
 }
 
-run("git", ["add", "package.json", "package-lock.json"]);
+writeJson(releaseChannelPath, {
+  schemaVersion: 1,
+  name: "Vibe Research",
+  repository: "https://github.com/Clamepending/vibe-research",
+  website: "https://vibe-research.net",
+  channel: "stable",
+  version,
+  tag,
+  releaseUrl: `https://github.com/Clamepending/vibe-research/releases/tag/${tag}`,
+  installer: `https://raw.githubusercontent.com/Clamepending/vibe-research/${tag}/install.sh`,
+});
+
+run("git", ["add", "package.json", "package-lock.json", "release-channel.json"]);
 run("git", ["commit", "-m", `Release ${tag}`]);
 run("git", ["tag", "-a", tag, "-m", `Vibe Research ${tag}`]);
 log(`Created ${tag}.`);
+
+const releaseAssetsDir = run(process.execPath, [path.join(rootDir, "scripts", "build-release-assets.mjs"), tag], {
+  capture: true,
+});
+const releaseAssets = ["install.sh", "release.json", "SHASUMS256.txt"].map((fileName) =>
+  path.join(releaseAssetsDir, fileName),
+);
+log(`Built release assets in ${path.relative(rootDir, releaseAssetsDir)}.`);
 
 if (noPush) {
   log("Skipping push because --no-push was passed.");
@@ -188,6 +209,7 @@ run("gh", [
   "release",
   "create",
   tag,
+  ...releaseAssets,
   "--repo",
   repoSlug,
   "--title",

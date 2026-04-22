@@ -191,6 +191,40 @@ export function getVisualGamePlaceAnchor(place) {
   return point((placeCell.column + placeCell.width * offset) * VISUAL_GAME_CELL_SIZE, (placeCell.row + placeCell.height) * VISUAL_GAME_CELL_SIZE);
 }
 
+export function getVisualGameAgentIdentityKey(agent, index = 0) {
+  const scopedIds = [
+    ["browser", agent?.browserUseSessionId],
+    ["ottoauth", agent?.ottoAuthSessionId || agent?.ottoAuthTaskId],
+    ["videomemory", agent?.videoMemoryMonitorId || agent?.videoMemoryTaskId],
+    ["subagent", agent?.subagentId],
+    ["session", agent?.sessionId],
+  ];
+
+  for (const [scope, value] of scopedIds) {
+    const normalized = normalizeIdentityKeyPart(value);
+    if (normalized) {
+      return `${scope}:${normalized}`;
+    }
+  }
+
+  const agentId = normalizeIdentityKeyPart(agent?.agentId);
+  if (agentId) {
+    const parentSessionId = normalizeIdentityKeyPart(agent?.parentSessionId);
+    return `subagent:${parentSessionId ? `${parentSessionId}:` : ""}${agentId}`;
+  }
+
+  const fallbackParts = [
+    agent?.parentSessionId,
+    agent?.kind,
+    agent?.source,
+    agent?.agentType,
+    agent?.name,
+    index,
+  ].map(normalizeIdentityKeyPart).filter(Boolean);
+
+  return `agent:${fallbackParts.join(":") || normalizeIdentityKeyPart(index) || "unknown"}`;
+}
+
 export function getVisualGameRoadRects(layout = VISUAL_GAME_MAP_LAYOUT) {
   return (layout.roads || []).flatMap((road) =>
     (road.cells || []).map((cell) => ({
@@ -199,6 +233,11 @@ export function getVisualGameRoadRects(layout = VISUAL_GAME_MAP_LAYOUT) {
       rect: cellRect(cell),
     })),
   );
+}
+
+function normalizeIdentityKeyPart(value) {
+  const text = String(value ?? "").trim();
+  return text || "";
 }
 
 export function findVisualGameRoadRoute(start, target, roadRects, options = {}) {

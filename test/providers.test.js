@@ -62,6 +62,42 @@ test("detectProviders promotes a hinted executable into the launch command", asy
   }
 });
 
+test("provider definitions include one-command installer hints for onboarding", () => {
+  const installers = Object.fromEntries(
+    providerDefinitions
+      .filter((provider) => provider.installCommand)
+      .map((provider) => [provider.id, provider.installCommand]),
+  );
+
+  assert.equal(installers.claude, "curl -fsSL https://claude.ai/install.sh | bash");
+  assert.equal(installers.codex, "npm install -g @openai/codex");
+  assert.equal(installers.gemini, "npm install -g @google/gemini-cli");
+  assert.equal(installers.opencode, "curl -fsSL https://opencode.ai/install | bash");
+  assert.match(installers["ml-intern"], /github\.com\/huggingface\/ml-intern/);
+  assert.match(installers["ml-intern"], /uv tool install -e \./);
+});
+
+test("provider definitions include real auth entrypoints for onboarding", () => {
+  const authCommands = Object.fromEntries(
+    providerDefinitions
+      .filter((provider) => provider.authCommand)
+      .map((provider) => [provider.id, provider.authCommand]),
+  );
+
+  assert.equal(authCommands.claude, "claude auth login");
+  assert.equal(authCommands.codex, "codex login --device-auth");
+  assert.equal(authCommands.gemini, "gemini");
+  assert.equal(authCommands.opencode, "opencode auth login");
+  assert.equal(authCommands["ml-intern"], "ml-intern");
+});
+
+test("Codex onboarding uses device auth so remote browsers avoid localhost callback failures", () => {
+  const provider = providerDefinitions.find((entry) => entry.id === "codex");
+
+  assert.ok(provider);
+  assert.equal(provider.authCommand, "codex login --device-auth");
+});
+
 test("resolveProviderCommand prefers Claude native path hints over PATH shims", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-provider-native-"));
   const nativeBinDir = path.join(tempDir, ".local", "bin");
@@ -231,6 +267,8 @@ test("providerDefinitions includes ML Intern with safe help-based verification",
   assert.equal(provider.launchCommand, "ml-intern");
   assert.equal(provider.defaultName, "ML Intern");
   assert.deepEqual(provider.verifyArgs, ["--help"]);
+  assert.match(provider.installCommand, /astral\.sh\/uv\/install\.sh/);
+  assert.equal(provider.authCommand, "ml-intern");
   assert.deepEqual(provider.pathHints, [
     "~/.local/bin/ml-intern",
     "/opt/homebrew/bin/ml-intern",

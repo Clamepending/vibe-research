@@ -12,6 +12,10 @@ test("building registry exposes core building manifests", () => {
   const ids = BUILDING_CATALOG.map((building) => building.id);
   assert.equal(new Set(ids).size, ids.length);
   assert.ok(ids.includes("automations"));
+  assert.ok(ids.includes("agent-inbox"));
+  assert.ok(ids.includes("ci-repair-shop"));
+  assert.ok(ids.includes("toolshed"));
+  assert.ok(ids.includes("tailscale"));
   assert.ok(ids.includes("google-drive"));
   assert.ok(ids.includes("ottoauth"));
   assert.ok(ids.includes("telegram"));
@@ -20,6 +24,7 @@ test("building registry exposes core building manifests", () => {
   assert.ok(ids.includes("twitter"));
   assert.ok(ids.includes("sora"));
   assert.ok(ids.includes("nano-banana"));
+  assert.ok(ids.includes("wandb"));
   assert.ok(ids.includes("phone-imessage"));
   assert.ok(ids.includes("home-automation"));
 
@@ -38,6 +43,31 @@ test("building registry exposes core building manifests", () => {
   const github = BUILDING_CATALOG.find((building) => building.id === "github");
   assert.equal(github.install.system, true);
 
+  const agentInbox = BUILDING_CATALOG.find((building) => building.id === "agent-inbox");
+  assert.equal(agentInbox.install.system, true);
+  assert.equal(agentInbox.ui.mode, "workspace");
+  assert.equal(agentInbox.ui.workspaceView, "agent-inbox");
+  assert.match(agentInbox.access.detail, /session state/i);
+
+  const ciRepairShop = BUILDING_CATALOG.find((building) => building.id === "ci-repair-shop");
+  assert.equal(ciRepairShop.install.system, true);
+  assert.equal(ciRepairShop.category, "Coding");
+  assert.match(ciRepairShop.access.detail, /GitHub connector|gh authentication/i);
+
+  const toolshed = BUILDING_CATALOG.find((building) => building.id === "toolshed");
+  assert.equal(toolshed.install.system, true);
+  assert.equal(toolshed.category, "Vibe Research");
+  assert.match(toolshed.description, /BuildingHub/i);
+  assert.match(toolshed.access.detail, /Building SDK|BuildingHub/i);
+
+  const tailscale = BUILDING_CATALOG.find((building) => building.id === "tailscale");
+  assert.equal(tailscale.install.system, true);
+  assert.equal(tailscale.category, "Networking");
+  assert.equal(tailscale.visual.shape, "portal");
+  assert.match(tailscale.access.detail, /Tailscale Serve/i);
+  assert.match(tailscale.agentGuide.summary, /tailnet URLs/i);
+  assert.ok(tailscale.agentGuide.commands.some((command) => command.command === "tailscale status"));
+
   const sora = BUILDING_CATALOG.find((building) => building.id === "sora");
   assert.equal(sora.category, "Generative Media");
   assert.equal(sora.visual.shape, "studio");
@@ -50,6 +80,12 @@ test("building registry exposes core building manifests", () => {
   assert.equal(nanoBanana.visual.shape, "studio");
   assert.equal(nanoBanana.status, "connector-ready");
   assert.match(nanoBanana.access.detail, /Gemini/i);
+
+  const wandb = BUILDING_CATALOG.find((building) => building.id === "wandb");
+  assert.equal(wandb.category, "Observability");
+  assert.equal(wandb.visual.shape, "studio");
+  assert.match(wandb.access.detail, /WANDB_API_KEY/i);
+  assert.ok(wandb.onboarding.steps.some((step) => step.completeWhen?.type === "installed"));
 
   const externalConnectorIds = ["discord", "moltbook", "twitter", "phone-imessage", "home-automation"];
   for (const connectorId of externalConnectorIds) {
@@ -81,6 +117,12 @@ test("building registry exposes core building manifests", () => {
   for (const building of BUILDING_CATALOG) {
     assert.equal(typeof building.name, "string");
     assert.equal(typeof building.description, "string");
+    assert.ok(building.agentGuide);
+    assert.ok(Array.isArray(building.agentGuide.commands));
+    assert.ok(Array.isArray(building.agentGuide.docs));
+    assert.ok(Array.isArray(building.agentGuide.env));
+    assert.ok(Array.isArray(building.agentGuide.setup));
+    assert.ok(Array.isArray(building.agentGuide.useCases));
     assert.ok(building.onboarding);
     assert.ok(Array.isArray(building.onboarding.steps));
     assert.ok(Array.isArray(building.onboarding.variables));
@@ -106,6 +148,17 @@ test("custom building manifests normalize through the registry sdk", () => {
       shape: "Market",
       specialTownPlace: true,
     },
+    agentGuide: {
+      commands: [
+        "example-commerce status",
+        { name: "Dry run", example: "example-commerce --dry-run", description: "Preview the request." },
+      ],
+      docs: ["https://example.com/docs"],
+      env: ["EXAMPLE_COMMERCE_API_KEY"],
+      setup: ["Confirm the API key is configured."],
+      summary: "Use this building for commerce dry runs.",
+      useCases: ["Preview checkout requests."],
+    },
   });
 
   assert.equal(normalizeBuildingId("Example Commerce!"), "example-commerce");
@@ -115,6 +168,20 @@ test("custom building manifests normalize through the registry sdk", () => {
   assert.equal(building.install.storedFallback, false);
   assert.equal(building.ui.mode, "panel");
   assert.equal(building.visual.shape, "market");
+  assert.deepEqual(building.agentGuide.commands[0], {
+    command: "example-commerce status",
+    label: "",
+    detail: "",
+  });
+  assert.deepEqual(building.agentGuide.commands[1], {
+    command: "example-commerce --dry-run",
+    label: "Dry run",
+    detail: "Preview the request.",
+  });
+  assert.deepEqual(building.agentGuide.docs, [{ label: "", url: "https://example.com/docs" }]);
+  assert.deepEqual(building.agentGuide.env, [{ name: "EXAMPLE_COMMERCE_API_KEY", detail: "", required: false }]);
+  assert.deepEqual(building.agentGuide.setup, ["Confirm the API key is configured."]);
+  assert.deepEqual(building.agentGuide.useCases, ["Preview checkout requests."]);
   assert.ok(registry.specialTownIds().has("example-commerce"));
   assert.equal(registry.get("example commerce"), building);
 });

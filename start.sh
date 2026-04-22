@@ -16,6 +16,10 @@ NPM_STAMP_FILE="$RUNTIME_DIR/npm-install.stamp"
 READY_TIMEOUT_SECONDS="${VIBE_RESEARCH_READY_TIMEOUT_SECONDS:-${REMOTE_VIBES_READY_TIMEOUT_SECONDS:-30}}"
 export VIBE_RESEARCH_STATE_DIR="$RUNTIME_DIR"
 export REMOTE_VIBES_STATE_DIR="${REMOTE_VIBES_STATE_DIR:-$RUNTIME_DIR}"
+if [ -n "$WIKI_DIR" ]; then
+  export VIBE_RESEARCH_WIKI_DIR="$WIKI_DIR"
+  export REMOTE_VIBES_WIKI_DIR="${REMOTE_VIBES_WIKI_DIR:-$WIKI_DIR}"
+fi
 cd "$ROOT_DIR"
 
 log() {
@@ -730,14 +734,14 @@ if ! wait_for_server_ready "$server_pid"; then
   fail "Vibe Research failed to start within ${READY_TIMEOUT_SECONDS}s."
 fi
 
-print_startup_log
 track_vibe_research_settings
 log "Background server pid: $server_pid"
 log "Server is detached and will keep running after this terminal closes."
 log "State directory: $RUNTIME_DIR"
-log "Workspace directory: $VIBE_RESEARCH_WORKSPACE_DIR"
+log "Workspace directory: ${VIBE_RESEARCH_WORKSPACE_DIR:-$DEFAULT_WORKSPACE_DIR}"
 if [ -n "$WIKI_DIR" ]; then
   log "Library directory: $WIKI_DIR"
 else
-  log "Library directory: $VIBE_RESEARCH_WORKSPACE_DIR/vibe-research/buildings/library"
+  log "Library directory: ${VIBE_RESEARCH_WORKSPACE_DIR:-$DEFAULT_WORKSPACE_DIR}/vibe-research/buildings/library"
 fi
+print_startup_log

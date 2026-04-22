@@ -258,7 +258,7 @@ test("state is available without authentication", async () => {
     assert.equal(state.settings.workspaceRootPath, workspaceDir);
     assert.equal(state.settings.wikiPath, getWorkspaceLibraryDir(workspaceDir));
     assert.equal(state.settings.agentSpawnPath, getWorkspaceAgentDir(workspaceDir));
-    assert.equal(state.defaultSessionCwd, await realpath(getWorkspaceAgentDir(workspaceDir)));
+    assert.equal(state.defaultSessionCwd, await realpath(state.settings.agentSpawnPath));
     assert.equal(state.settings.wikiRelativeRoot, "vibe-research/buildings/library");
     assert.equal(state.settings.agentSpawnRelativePath, "vibe-research/user");
     assert.equal(typeof state.settings.wikiPath, "string");
@@ -275,9 +275,42 @@ test("state is available without authentication", async () => {
   }
 });
 
+test("default session folder is separate from the app checkout when configured", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-default-session-cwd-");
+  const defaultSessionDir = path.join(workspaceDir, "vibe-projects");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, defaultSessionCwd: defaultSessionDir });
+
+  try {
+    const stateResponse = await fetch(`${baseUrl}/api/state`);
+    assert.equal(stateResponse.status, 200);
+    const state = await stateResponse.json();
+    assert.equal(state.cwd, workspaceDir);
+    assert.equal(state.defaultSessionCwd, await realpath(defaultSessionDir));
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId: "shell",
+        name: "Default Folder Shell",
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+    const { session } = await createResponse.json();
+    assert.equal(session.cwd, await realpath(defaultSessionDir));
+  } finally {
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+  }
+});
+
 test("workspace folder setting derives Library and new agent folders", async () => {
-  const workspaceDir = await createTempWorkspace("vibe-research-workspace-setting-");
+  const workspaceDir = await createTempWorkspace("vibe-research-workspace-root-");
   const selectedRoot = path.join(workspaceDir, "selected");
+  const expectedWikiDir = getWorkspaceLibraryDir(selectedRoot);
+  const expectedAgentDir = getWorkspaceAgentDir(selectedRoot);
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
 
   try {
@@ -291,28 +324,51 @@ test("workspace folder setting derives Library and new agent folders", async () 
     });
     assert.equal(settingsResponse.status, 200);
     const settingsPayload = await settingsResponse.json();
-    const expectedLibraryDir = getWorkspaceLibraryDir(selectedRoot);
-    const expectedAgentDir = getWorkspaceAgentDir(selectedRoot);
-
     assert.equal(settingsPayload.settings.workspaceRootPath, selectedRoot);
-    assert.equal(settingsPayload.settings.wikiPath, expectedLibraryDir);
+    assert.equal(settingsPayload.settings.wikiPath, expectedWikiDir);
     assert.equal(settingsPayload.settings.agentSpawnPath, expectedAgentDir);
-    assert.equal(settingsPayload.settings.wikiRelativeRoot, path.relative(workspaceDir, expectedLibraryDir));
+    assert.equal(settingsPayload.settings.wikiRelativeRoot, path.relative(workspaceDir, expectedWikiDir));
     assert.equal(settingsPayload.settings.agentSpawnRelativePath, path.relative(workspaceDir, expectedAgentDir));
-    assert.deepEqual((await readdir(expectedLibraryDir)).sort(), ["experiments", "index.md", "log.md", "raw", "topics"]);
+    assert.deepEqual((await readdir(expectedWikiDir)).sort(), ["experiments", "index.md", "log.md", "raw", "topics"]);
     assert.deepEqual(await readdir(expectedAgentDir), []);
 
     const createResponse = await fetch(`${baseUrl}/api/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ providerId: "shell", name: "default folder" }),
+      body: JSON.stringify({
+        providerId: "shell",
+        name: "Workspace Root Shell",
+      }),
     });
     assert.equal(createResponse.status, 201);
     const { session } = await createResponse.json();
-
     assert.equal(await realpath(session.cwd), await realpath(expectedAgentDir));
   } finally {
     await app.close();
+    await removeTempWorkspace(workspaceDir);
+  }
+});
+
+test("environment Library path is treated as already configured for installer starts", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-env-wiki-workspace-");
+  const stateDir = path.join(workspaceDir, "state");
+  const wikiDir = path.join(workspaceDir, "mac-brain");
+  const previousWikiDir = process.env.VIBE_RESEARCH_WIKI_DIR;
+  process.env.VIBE_RESEARCH_WIKI_DIR = wikiDir;
+
+  let app;
+  try {
+    ({ app } = await startApp({ cwd: workspaceDir, stateDir }));
+    const state = app.config.settings;
+    assert.equal(state.wikiPathConfigured, true);
+    assert.equal(state.wikiPath, wikiDir);
+  } finally {
+    if (previousWikiDir === undefined) {
+      delete process.env.VIBE_RESEARCH_WIKI_DIR;
+    } else {
+      process.env.VIBE_RESEARCH_WIKI_DIR = previousWikiDir;
+    }
+    await app?.close();
     await removeTempWorkspace(workspaceDir);
   }
 });
@@ -393,8 +449,8 @@ test("image attachments are saved under the Vibe Research state directory", asyn
     assert.equal(unsupportedTypeResponse.status, 415);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
-    await rm(stateDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
   }
 });
 
@@ -575,8 +631,8 @@ test("terminal paste and drop insert safe saved image markdown references", asyn
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
-    await rm(stateDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
   }
 });
 
@@ -664,7 +720,7 @@ test("settings api persists installed plugin ids", async () => {
     ]);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -757,7 +813,7 @@ test("Telegram building detail saves through fetch without expanding settings in
     await page.waitForFunction(() => new URL(window.location.href).searchParams.get("building") === "telegram");
     await page.getByLabel("Telegram bot token").waitFor({ timeout: 10_000 });
 
-    await page.getByRole("button", { name: "Back to Buildings", exact: true }).click();
+    await page.getByRole("button", { name: "Back to BuildingHub", exact: true }).click();
     await page.waitForFunction(() => !new URL(window.location.href).searchParams.has("building"));
     assert.equal(await page.locator("#plugin-results .communications-form").count(), 0);
     assert.equal(await page.locator(".plugin-card .plugin-onboarding").count(), 0);
@@ -834,8 +890,63 @@ test("Google Drive building opens as a host connector without fake local-agent i
     assert.equal(await page.getByRole("button", { name: "Install Google Drive" }).count(), 0);
     assert.equal(await page.getByRole("button", { name: /finish install/i }).count(), 0);
 
-    await page.getByRole("button", { name: "Back to Buildings", exact: true }).click();
+    await page.getByRole("button", { name: "Back to BuildingHub", exact: true }).click();
     await page.waitForFunction(() => !new URL(window.location.href).searchParams.has("building"));
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
+  }
+});
+
+test("BuildingHub is the catalog entry point instead of an installable detail", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for the BuildingHub catalog smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("vibe-research-buildinghub-catalog-ui-");
+  const stateDir = await createTempWorkspace("vibe-research-buildinghub-catalog-state-");
+  const wikiDir = path.join(workspaceDir, "brain");
+  await mkdir(wikiDir, { recursive: true });
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(
+    path.join(stateDir, "settings.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        settings: {
+          preventSleepEnabled: false,
+          wikiGitRemoteEnabled: false,
+          wikiPath: wikiDir,
+          wikiPathConfigured: true,
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
+  let browser = null;
+
+  try {
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    await page.goto(`${baseUrl}/?view=plugins`, { waitUntil: "domcontentloaded" });
+    await page.locator(".dashboard-copy strong").getByText("BuildingHub", { exact: true }).waitFor({ timeout: 10_000 });
+    assert.equal(await page.locator('.sidebar-primary-nav [data-open-main-view="plugins"]').count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Install BuildingHub" }).count(), 0);
+
+    await page.getByRole("button", { name: "Open BuildingHub building" }).click();
+    await page.waitForFunction(() => {
+      const url = new URL(window.location.href);
+      return url.searchParams.get("view") === "plugins" && !url.searchParams.has("building");
+    });
+    assert.equal(await page.getByRole("button", { name: "Back to BuildingHub", exact: true }).count(), 0);
+    await page.locator("#plugin-results").getByText("BuildingHub", { exact: true }).waitFor({ timeout: 10_000 });
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
@@ -914,7 +1025,7 @@ test("external connector buildings open details and install from their building 
       await page.locator(".dashboard-actions .plugin-install-button").getByText("Uninstall", { exact: true }).waitFor({ timeout: 10_000 });
       await page.locator(".plugin-detail-copy .plugin-status").getByText("installed", { exact: true }).waitFor({ timeout: 10_000 });
       assert.equal(await page.getByRole("button", { name: /finish install/i }).count(), 0);
-      await page.getByRole("button", { name: "Back to Buildings", exact: true }).click();
+      await page.getByRole("button", { name: "Back to BuildingHub", exact: true }).click();
       await page.waitForFunction(() => !new URL(window.location.href).searchParams.has("building"));
       assert.equal(await page.locator("#plugin-results .plugin-onboarding").count(), 0);
     }
@@ -1036,8 +1147,8 @@ test("settings api stores agent credentials redacted and injects them into new s
     assert.match(capturedEnv, /hf=hf_test_agent/);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
-    await rm(stateDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
   }
 });
 
@@ -1063,7 +1174,7 @@ test("saved wiki paths from existing installs count as configured", async () => 
     assert.equal(state.settings.wikiPath, wikiDir);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1098,7 +1209,7 @@ test("Library clone endpoint sets the Library from an existing git repo", async 
     assert.ok(indexPayload.notes.some((note) => note.relativePath === "log.md"));
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1145,7 +1256,7 @@ test("Library clone endpoint replaces the installer mac-brain scaffold automatic
     assert.match(clonedReadme, /Existing Library/);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1193,7 +1304,7 @@ test("update endpoints report status and schedule restart", async () => {
     assert.equal(applyCalls, 1);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1263,7 +1374,7 @@ test("system endpoint reports host storage and utilization metrics", async () =>
     assert.equal(calls, 1);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1317,7 +1428,7 @@ test("occupations api creates Library scaffold and managed instruction files", a
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        prompt: "# Custom Prompt\n\nAlways log experiment changes in `.vibe-research/wiki/log.md`.",
+        prompt: "# Custom Prompt\n\nAlways log experiment changes in `vibe-research/buildings/library/log.md`.",
       }),
     });
 
@@ -1338,7 +1449,7 @@ test("occupations api creates Library scaffold and managed instruction files", a
     assert.doesNotMatch(updatedManagedAgents, /vr-mailwatch/);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1420,7 +1531,7 @@ test("occupation presets switch active system prompts and only custom is editabl
     assert.match(researcherPayload.customPrompt, /Ship the smallest complete fix/);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1459,7 +1570,7 @@ test("occupation save preserves edits inside the current Library protocol sectio
     assert.match(managedClaude, /Prefer fewer, better durable notes/);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1500,7 +1611,7 @@ test("existing prompt files are upgraded with the current built-in Library proto
     assert.doesNotMatch(managedGemini, /reply_to/);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1553,7 +1664,7 @@ Old mailbox guidance.
     assert.match(savedPrompt, /Library Model/);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1604,7 +1715,7 @@ Old guidance.
     assert.doesNotMatch(managedAgents, /remote-vibes:managed-agent-prompt/);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1625,7 +1736,7 @@ test("occupation sync does not overwrite unmanaged instruction files", async () 
     assert.equal(await readFile(path.join(workspaceDir, "AGENTS.md"), "utf8"), "# User-owned instructions\n");
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1691,7 +1802,7 @@ test("library api indexes markdown notes and linked note content", async () => {
     assert.match((await invalidNoteResponse.json()).error, /escapes the library root/i);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1729,7 +1840,7 @@ test("library api skips inaccessible and system directories", async () => {
   } finally {
     await chmod(lockedDir, 0o700).catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1766,7 +1877,7 @@ test("library api narrows broad roots to nested Vibe Research Library", async ()
     );
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1778,7 +1889,7 @@ test("library search ranks prefix markdown notes with BM25", async (t) => {
   }
 
   const workspaceDir = await createTempWorkspace("vibe-research-knowledge-search-");
-  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
+  const wikiDir = getWorkspaceLibraryDir(workspaceDir);
   await mkdir(wikiDir, { recursive: true });
   await writeFile(path.join(wikiDir, "index.md"), "# Library Index\n\nStart here.\n", "utf8");
   await writeFile(path.join(wikiDir, "install-guide.md"), "# Install Guide\n\nUse this for setup.\n", "utf8");
@@ -1818,7 +1929,7 @@ test("library search ranks prefix markdown notes with BM25", async (t) => {
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1830,7 +1941,7 @@ test("library graph highlights linked notes on hover and can pulse physics", asy
   }
 
   const workspaceDir = await createTempWorkspace("vibe-research-knowledge-graph-");
-  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
+  const wikiDir = getWorkspaceLibraryDir(workspaceDir);
   await mkdir(wikiDir, { recursive: true });
   await writeFile(path.join(wikiDir, "index.md"), "# Library Index\n\nSee [[topic-a]].\n", "utf8");
   await writeFile(path.join(wikiDir, "topic-a.md"), "# Topic A\n\nBack to [[index]] and next [[topic-b]].\n", "utf8");
@@ -1905,7 +2016,7 @@ test("library graph highlights linked notes on hover and can pulse physics", asy
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -1917,7 +2028,7 @@ test("library graph keeps dense replay inside the viewport", async (t) => {
   }
 
   const workspaceDir = await createTempWorkspace("vibe-research-knowledge-graph-fit-");
-  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
+  const wikiDir = getWorkspaceLibraryDir(workspaceDir);
   await mkdir(wikiDir, { recursive: true });
 
   const noteLinks = [];
@@ -2174,7 +2285,7 @@ test("library graph keeps dense replay inside the viewport", async (t) => {
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -2186,7 +2297,7 @@ test("visual graph empty canvas click closes the selected session panel and dele
   }
 
   const workspaceDir = await createTempWorkspace("vibe-research-visual-graph-clear-");
-  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
+  const wikiDir = getWorkspaceLibraryDir(workspaceDir);
   const createdAt = new Date().toISOString();
   await mkdir(wikiDir, { recursive: true });
   await writeFile(path.join(wikiDir, "index.md"), "# Visual Graph Library\n", "utf8");
@@ -2362,6 +2473,8 @@ test("fresh browser starts on workspace folder setup until a folder is chosen", 
       timeout: 10_000,
     });
     const canonicalWorkspaceRoot = await realpath(selectedWorkspaceDir);
+    const expectedWikiDir = getWorkspaceLibraryDir(canonicalWorkspaceRoot);
+    const expectedAgentDir = getWorkspaceAgentDir(canonicalWorkspaceRoot);
 
     await page.click("#folder-picker-select");
     await page.waitForSelector(".app-shell", { timeout: 10_000 });
@@ -2372,13 +2485,73 @@ test("fresh browser starts on workspace folder setup until a folder is chosen", 
     const settingsPayload = await settingsResponse.json();
     assert.equal(settingsPayload.settings.wikiPathConfigured, true);
     assert.equal(settingsPayload.settings.workspaceRootPath, canonicalWorkspaceRoot);
-    assert.equal(settingsPayload.settings.wikiPath, getWorkspaceLibraryDir(canonicalWorkspaceRoot));
-    assert.equal(settingsPayload.settings.agentSpawnPath, getWorkspaceAgentDir(canonicalWorkspaceRoot));
+    assert.equal(settingsPayload.settings.wikiPath, expectedWikiDir);
+    assert.equal(settingsPayload.settings.agentSpawnPath, expectedAgentDir);
     assert.equal(settingsPayload.settings.wikiGitRemoteUrl, "");
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
+  }
+});
+
+test("New Agent starts in the configured agent folder without opening the folder picker", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for the new agent smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("vibe-research-new-agent-default-");
+  const selectedRoot = path.join(workspaceDir, "workspace-home");
+  const expectedAgentDir = getWorkspaceAgentDir(selectedRoot);
+  const { app, baseUrl } = await startApp({
+    cwd: workspaceDir,
+    providers: [
+      {
+        id: "shell",
+        label: "Vanilla Shell",
+        defaultName: "Shell",
+        available: true,
+        command: null,
+        launchCommand: null,
+      },
+    ],
+  });
+  let browser = null;
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        workspaceRootPath: selectedRoot,
+        wikiPathConfigured: true,
+      }),
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    await page.goto(baseUrl, { waitUntil: "commit", timeout: 10_000 });
+    await page.waitForSelector(".app-shell", { timeout: 10_000 });
+
+    await page.locator("[data-start-new-agent]").first().click();
+    await page.waitForFunction(async () => {
+      const response = await fetch("/api/sessions");
+      const payload = await response.json();
+      return payload.sessions.length === 1;
+    }, null, { timeout: 10_000 });
+
+    assert.equal(await page.locator(".folder-picker-modal").count(), 0);
+    const sessionsResponse = await fetch(`${baseUrl}/api/sessions`);
+    assert.equal(sessionsResponse.status, 200);
+    const sessionsPayload = await sessionsResponse.json();
+    assert.equal(await realpath(sessionsPayload.sessions[0].cwd), await realpath(expectedAgentDir));
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -2411,14 +2584,14 @@ test("Library setup can clone an existing git Library from the browser", async (
     const settingsResponse = await fetch(`${baseUrl}/api/settings`);
     assert.equal(settingsResponse.status, 200);
     const settingsPayload = await settingsResponse.json();
-    const canonicalBrainDir = await realpath(getWorkspaceLibraryDir(workspaceDir));
+    const expectedWikiDir = await realpath(path.join(workspaceDir, "vibe-research", "buildings", "library"));
     assert.equal(settingsPayload.settings.wikiPathConfigured, true);
-    assert.equal(settingsPayload.settings.wikiPath, canonicalBrainDir);
+    assert.equal(settingsPayload.settings.wikiPath, expectedWikiDir);
     assert.equal(settingsPayload.settings.wikiGitRemoteUrl, remoteDir);
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -2505,7 +2678,7 @@ test("brain setup remains scrollable on short viewports", async (t) => {
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -2517,7 +2690,7 @@ test("library markdown viewer renders GitHub-style tables", async (t) => {
   }
 
   const workspaceDir = await createTempWorkspace("vibe-research-markdown-table-");
-  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
+  const wikiDir = getWorkspaceLibraryDir(workspaceDir);
   await mkdir(wikiDir, { recursive: true });
   await writeFile(path.join(wikiDir, "index.md"), "# Library Index\n\nSee [[leaderboard]].\n", "utf8");
   await writeFile(
@@ -2574,7 +2747,7 @@ test("library markdown viewer renders GitHub-style tables", async (t) => {
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -2586,7 +2759,7 @@ test("library markdown viewer renders image, GIF, and video media links", async 
   }
 
   const workspaceDir = await createTempWorkspace("vibe-research-markdown-media-");
-  const wikiDir = path.join(workspaceDir, ".vibe-research", "wiki");
+  const wikiDir = getWorkspaceLibraryDir(workspaceDir);
   const assetsDir = path.join(wikiDir, "assets");
   const absoluteAssetsDir = path.join(workspaceDir, "absolute-assets");
   const absoluteImagePath = path.join(absoluteAssetsDir, "held-out-grid.png");
@@ -2686,7 +2859,7 @@ test("library markdown viewer renders image, GIF, and video media links", async 
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -2755,7 +2928,7 @@ test("settings api moves the Library folder, refreshes agent instructions, and t
     );
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -2815,7 +2988,7 @@ test("{{LIBRARY}} placeholder stays in source but expands in managed files and t
     assert.match(movedManaged, /`mac-brain\/log\.md`/);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -2846,7 +3019,7 @@ test("Library backup endpoint initializes git and commits Library changes", asyn
     assert.ok(stdout.trim().split("\n").length >= 2);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -2896,7 +3069,7 @@ test("Library backup endpoint can push to a configured private remote", async ()
     assert.match(stdout, /Vibe Research Library backup/);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -2960,7 +3133,7 @@ test("folder browser api lists selectable folders and supports parent navigation
     assert.match((await traversalResponse.json()).error, /single folder name/i);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -3018,7 +3191,7 @@ test("vibe research api header keeps folder picker requests out of proxied apps"
   } finally {
     await app.close();
     await new Promise((resolve) => proxyTarget.close(resolve));
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -3329,7 +3502,7 @@ test("mobile terminal stays usable while the keyboard viewport resizes", async (
     }
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -3468,7 +3641,7 @@ test("terminal wheel opens a scrollable transcript history", async (t) => {
     }
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -3597,7 +3770,7 @@ test("terminal keyboard scroll chords move history without stealing plain arrows
     }
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -3738,7 +3911,7 @@ test("terminal wheel without xterm scrollback opens transcript instead of sendin
     }
     await browser?.close().catch(() => {});
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -3892,7 +4065,7 @@ test("vr-session-name falls back to a filesystem request when localhost is unrea
     );
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -4118,7 +4291,7 @@ done
     } else {
       process.env.FAKE_CLAUDE_MEMORY_DIR = previousMemoryDir;
     }
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -4208,7 +4381,7 @@ test("ports are discoverable and proxy through localhost", async () => {
     await app.close();
     await new Promise((resolve) => previewServer.close(resolve));
     await new Promise((resolve) => forbiddenServer.close(resolve));
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -4307,7 +4480,7 @@ test("ports prefer direct tailnet URLs and can expose localhost-only ports with 
     assert.equal(exposePayload.port.preferredUrl, "http://100.64.0.5:3200/");
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -4500,7 +4673,7 @@ test("running sessions are restored with their transcript after restart", async 
       await secondApp.close();
     }
 
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -4568,7 +4741,7 @@ test("renamed sessions keep their updated name after restart", async () => {
       await secondApp.close();
     }
 
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -4648,7 +4821,7 @@ test("workspace file api lists directories, edits text files, and serves image f
     assert.equal(imageBuffer.compare(PNG_FIXTURE), 0);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -4706,7 +4879,7 @@ test("deleted persisted sessions do not come back after restart", async () => {
       await secondApp.close();
     }
 
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -4775,7 +4948,7 @@ test("persisted sessions with missing workspaces stay visible and show restore f
     await once(websocket, "close");
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -4847,7 +5020,7 @@ test("workspace file api rejects traversal and invalid entry types", async () =>
     assert.match((await internalTextResponse.json()).error, /not available in the workspace browser/i);
   } finally {
     await app.close();
-    await rm(workspaceDir, { recursive: true, force: true });
+    await removeTempWorkspace(workspaceDir);
   }
 });
 
@@ -4875,6 +5048,6 @@ test("workspace file api serves content from hidden install roots", async () => 
     assert.equal(imageBuffer.compare(PNG_FIXTURE), 0);
   } finally {
     await app.close();
-    await rm(parentDir, { recursive: true, force: true });
+    await removeTempWorkspace(parentDir);
   }
 });

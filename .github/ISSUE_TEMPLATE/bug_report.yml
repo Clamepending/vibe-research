@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible Vibe Research bug.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. Do not include API keys, tokens, private files, cookies, or secrets.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Run `cd ~/.vibe-research/app && git describe --tags --always --dirty`.
+      placeholder: v0.2.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and hardware
+      placeholder: macOS 15 on Apple Silicon, Ubuntu 24.04 x64, Raspberry Pi OS arm64
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include exact commands or UI steps.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant logs with secrets removed.
+      render: text

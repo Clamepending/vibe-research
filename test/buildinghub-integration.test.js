@@ -91,14 +91,13 @@ test("Vibe Research exposes BuildingHub catalogs through settings and state", as
       body: JSON.stringify({
         buildingHubCatalogPath: catalogDir,
         buildingHubEnabled: true,
-        installedPluginIds: ["buildinghub"],
       }),
     });
     assert.equal(settingsResponse.status, 200);
     const settingsPayload = await settingsResponse.json();
     assert.equal(settingsPayload.settings.buildingHubCatalogPath, catalogDir);
     assert.equal(settingsPayload.settings.buildingHubEnabled, true);
-    assert.ok(settingsPayload.settings.installedPluginIds.includes("buildinghub"));
+    assert.equal(settingsPayload.settings.installedPluginIds.includes("buildinghub"), false);
 
     const catalogResponse = await fetch(`${baseUrl}/api/buildinghub/catalog?force=1`);
     assert.equal(catalogResponse.status, 200);

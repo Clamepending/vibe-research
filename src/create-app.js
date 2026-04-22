@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
+import { rateLimit } from "express-rate-limit";
 import { WebSocketServer } from "ws";
 import {
   buildPortUrlFromBase,
@@ -19,8 +20,10 @@ import {
 import { AgentMailService } from "./agentmail-service.js";
 import { AgentPromptStore } from "./agent-prompt-store.js";
 import { AgentRunStore } from "./agent-run-store.js";
+import { writeBuildingAgentGuides } from "./building-agent-guides.js";
 import { BuildingHubService } from "./buildinghub-service.js";
 import { BrowserUseService } from "./browser-use-service.js";
+import { BUILDING_CATALOG } from "./client/building-registry.js";
 import { createFolderEntry, listFolderEntries } from "./folder-browser.js";
 import { OttoAuthService } from "./ottoauth-service.js";
 import { PortAliasStore } from "./port-alias-store.js";
@@ -53,6 +56,8 @@ const TAILSCALE_HTTPS_SERVE_ENABLED =
   (process.env.VIBE_RESEARCH_TAILSCALE_HTTPS ?? process.env.REMOTE_VIBES_TAILSCALE_HTTPS) !== "0";
 const DEFAULT_TAILSCALE_HTTPS_SERVE_PORTS = [443, 8443, 10000];
 const JSON_BODY_LIMIT = "25mb";
+const WIKI_CLONE_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const WIKI_CLONE_RATE_LIMIT_MAX = 5;
 const ATTACHMENTS_SUBDIR = "attachments";
 const MAX_ATTACHMENT_IMAGE_BYTES = 15 * 1024 * 1024;
 const ATTACHMENT_IMAGE_EXTENSIONS_BY_MIME_TYPE = new Map([
@@ -575,6 +580,13 @@ export async function createVibeResearchApp({
   const providers = Array.isArray(providerOverrides) ? providerOverrides : await detectProviders();
   const defaultProviderId = getDefaultProviderId(providers);
   const app = express();
+  const wikiCloneRateLimit = rateLimit({
+    windowMs: WIKI_CLONE_RATE_LIMIT_WINDOW_MS,
+    limit: WIKI_CLONE_RATE_LIMIT_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many Library clone requests. Try again shortly." },
+  });
   const serverEnv = { ...process.env };
   const agentRunStore = new AgentRunStore({ stateDir });
   const systemRootPath = getVibeResearchSystemDir({ cwd, stateDir });
@@ -694,6 +706,7 @@ export async function createVibeResearchApp({
   let systemMetricsTimer = null;
   let urls = [];
   let preferredUrl = null;
+  let helperBaseUrl = "";
   const proxyServer = httpProxy.createProxyServer({
     changeOrigin: true,
     ws: true,
@@ -795,6 +808,35 @@ export async function createVibeResearchApp({
     });
   }
 
+  function buildSessionManagerEnvironment() {
+    const resolvedPort = exposedPort || port;
+    return {
+      ...buildAgentCredentialEnv(settingsStore.settings, serverEnv),
+      REMOTE_VIBES_PORT: String(resolvedPort),
+      REMOTE_VIBES_SERVER_URL: helperBaseUrl || "",
+      REMOTE_VIBES_URL: preferredUrl || helperBaseUrl || "",
+      VIBE_RESEARCH_PORT: String(resolvedPort),
+      VIBE_RESEARCH_SERVER_URL: helperBaseUrl || "",
+      VIBE_RESEARCH_URL: preferredUrl || helperBaseUrl || "",
+    };
+  }
+
+  async function syncBuildingAgentGuides({ refreshBuildingHub = false } = {}) {
+    if (refreshBuildingHub) {
+      await buildingHubService.refresh();
+    }
+
+    try {
+      return await writeBuildingAgentGuides({
+        buildings: [...BUILDING_CATALOG, ...buildingHubService.listBuildings()],
+        systemRootPath,
+      });
+    } catch (error) {
+      console.error("[vibe-research] building guide sync failed:", error);
+      return null;
+    }
+  }
+
   async function applyRuntimeSettings(settings, { backupReason = "settings" } = {}) {
     sessionDefaultCwd = await ensureDefaultSessionCwd(settings.agentSpawnPath, cwd);
     sessionManager.setDefaultCwd(sessionDefaultCwd);
@@ -825,7 +867,8 @@ export async function createVibeResearchApp({
     telegramService.restart(settingsStore.settings);
     videoMemoryService.restart(settingsStore.settings);
     agentMailService.restart(settingsStore.settings);
-    sessionManager.setEnvironment(buildAgentCredentialEnv(settingsStore.settings, serverEnv));
+    sessionManager.setEnvironment(buildSessionManagerEnvironment());
+    await syncBuildingAgentGuides();
     if (backupReason) {
       void wikiBackupService.runBackup({ reason: backupReason });
     }
@@ -1020,6 +1063,7 @@ export async function createVibeResearchApp({
 
   app.get("/api/state", async (_request, response) => {
     await buildingHubService.refresh();
+    await syncBuildingAgentGuides();
     response.json({
       appName: "Vibe Research",
       agentPrompt: await agentPromptStore.getState(),
@@ -1043,6 +1087,7 @@ export async function createVibeResearchApp({
   app.get("/api/buildinghub/catalog", async (request, response) => {
     try {
       await buildingHubService.refresh({ force: request.query.force === "1" || request.query.force === "true" });
+      await syncBuildingAgentGuides();
       response.json({
         buildings: buildingHubService.listBuildings(),
         buildingHub: buildingHubService.getStatus(),
@@ -1258,7 +1303,7 @@ export async function createVibeResearchApp({
     }
   });
 
-  app.post("/api/wiki/clone", async (request, response) => {
+  app.post("/api/wiki/clone", wikiCloneRateLimit, async (request, response) => {
     let targetPath = "";
     let cloneTarget = null;
 
@@ -2188,7 +2233,9 @@ export async function createVibeResearchApp({
   updateManager.setRuntime?.({ port: resolvedPort });
   urls = await accessUrlsProvider(host, resolvedPort);
   preferredUrl = pickPreferredUrl(urls)?.url ?? urls[0]?.url ?? null;
-  const helperBaseUrl = getHelperBaseUrl(host, resolvedPort);
+  helperBaseUrl = getHelperBaseUrl(host, resolvedPort);
+  sessionManager.setEnvironment(buildSessionManagerEnvironment());
+  await syncBuildingAgentGuides({ refreshBuildingHub: true });
   browserUseService.setServerBaseUrl(helperBaseUrl);
   videoMemoryService.setServerBaseUrl(helperBaseUrl);
   await writeServerInfo(stateDir, {

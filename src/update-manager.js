@@ -486,13 +486,24 @@ export class UpdateManager {
 
     if (this.channel !== "branch") {
       try {
+        const channelTarget = await this.readLatestReleaseChannel(remoteUrl);
+        if (channelTarget?.commit) {
+          return channelTarget;
+        }
+        releaseCheck = "channel none";
+      } catch (error) {
+        releaseCheck = error.message || "release channel lookup failed.";
+      }
+
+      try {
         const releaseTarget = await this.readLatestGitHubRelease(remoteUrl);
         if (releaseTarget?.commit) {
           return releaseTarget;
         }
-        releaseCheck = "none";
+        releaseCheck = releaseCheck === "skipped" ? "none" : `${releaseCheck}; GitHub release none`;
       } catch (error) {
-        releaseCheck = error.message || "GitHub release lookup failed.";
+        const releaseError = error.message || "GitHub release lookup failed.";
+        releaseCheck = releaseCheck && releaseCheck !== "skipped" ? `${releaseCheck}; ${releaseError}` : releaseError;
       }
 
       try {
@@ -564,6 +575,58 @@ export class UpdateManager {
     }
 
     return null;
+  }
+
+  async readLatestReleaseChannel(remoteUrl) {
+    const repo = parseGitHubRepo(remoteUrl);
+    if (!repo || !this.fetch) {
+      return null;
+    }
+
+    const response = await this.fetch(
+      `https://raw.githubusercontent.com/${repo.owner}/${repo.repo}/${encodeURIComponent(this.branch)}/release-channel.json`,
+      {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "vibe-research-updater",
+        },
+        signal:
+          typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+            ? AbortSignal.timeout(this.timeoutMs)
+            : undefined,
+      },
+    );
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(`release channel lookup failed with HTTP ${response.status}.`);
+    }
+
+    const channel = await response.json();
+    const tag = trim(channel?.tag);
+    if (!tag || !parseVersionTag(tag)) {
+      return null;
+    }
+
+    const commit = await this.readRemoteRefCommit(remoteUrl, `refs/tags/${tag}`);
+    if (!commit) {
+      return null;
+    }
+
+    return {
+      commit,
+      source: repo.httpsUrl,
+      targetType: "release",
+      tag,
+      version: normalizeVersionTag(channel?.version || tag),
+      name: trim(channel?.name) || tag,
+      releaseUrl: trim(channel?.releaseUrl) || `https://github.com/${repo.owner}/${repo.repo}/releases/tag/${encodeURIComponent(tag)}`,
+      publishedAt: trim(channel?.publishedAt),
+      releaseCheck: "channel",
+    };
   }
 
   async readLatestGitHubRelease(remoteUrl) {

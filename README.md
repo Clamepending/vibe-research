@@ -5,35 +5,48 @@
 Minimal browser terminal to vibe code on your server/cluster/Mac/Raspberry Pi via your phone/laptop on the go.
 
 1. On the machine you want to control, run `curl -fsSL https://vibe-research.net/install.sh | bash`
-2. Install the [Tailscale app](https://tailscale.com/download) on your laptop/phone, sign into the same account, then open the Tailscale URL or scan the QR printed by step 1.
-3. Choose a workspace folder during onboarding. Vibe Research will put the shared Library in `<workspace>/vibe-research/buildings/library` and new agent work in `<workspace>/vibe-research/user`.
+2. Open the Local URL printed at the end. From another device on the same network, open the LAN URL or scan the QR code.
+3. In Vibe Research, choose a workspace folder during onboarding, then tap New Agent. The Library is created under `<workspace>/vibe-research/buildings/library`, and agents start in `<workspace>/vibe-research/user`. The first Claude Code session will ask for Claude sign-in if needed.
+
+Tailscale is optional for first setup. If it is already installed and connected, Vibe Research will print a Tailscale URL too. To have the installer install/start Tailscale onboarding for private remote access, run the quickstart with `VIBE_RESEARCH_INSTALL_TAILSCALE=1`.
+
+Vibe Research is a local control plane for your machine. Do not expose port `4123` or a Vibe Research URL to the open internet unless you add a separate authentication layer. Prefer the Local URL, trusted LAN, or private Tailscale access.
+
+## Official Sources
+
+- Website: https://vibe-research.net
+- Repository: https://github.com/Clamepending/vibe-research
+- Releases: https://github.com/Clamepending/vibe-research/releases
+- Installer: `curl -fsSL https://vibe-research.net/install.sh | bash`
+
+Do not run lookalike installers from unrelated domains, forks, package names, or social posts. Release pages include checksum assets for high-trust verification when available.
 
 ## Claude Code Install
 
-Claude Code's native installer is the recommended path. Vibe Research prefers the native `~/.local/bin/claude` binary over older npm/Homebrew shims when both are present.
+The main installer runs Claude Code's native installer by default. That is Anthropic's recommended macOS/Linux/WSL path, and Vibe Research prefers the native `~/.local/bin/claude` binary over older npm/Homebrew shims when both are present.
 
 ```bash
 curl -fsSL https://claude.ai/install.sh | bash
-npm uninstall -g @anthropic-ai/claude-code 2>/dev/null || true
-[ -x /opt/homebrew/bin/npm ] && /opt/homebrew/bin/npm uninstall -g @anthropic-ai/claude-code || true
-[ -x /usr/local/bin/npm ] && /usr/local/bin/npm uninstall -g @anthropic-ai/claude-code || true
+claude --version
 ```
+
+To skip Claude Code when installing Vibe Research for another provider, run the quickstart with `VIBE_RESEARCH_INSTALL_CLAUDE_CODE=0`.
 
 ## Details...
 
 Use the `vibe-research.net` installer URL directly. It is a small stable wrapper around the canonical installer in this repo. If a very minimal machine does not have `curl` yet, install `curl` first and rerun the quickstart command.
 
-The installer handles Tailscale, git, build tools, Node.js 22.x, Vibe Research, and startup on supported macOS/Linux/Raspberry Pi systems. Coding agents like Claude, Codex, Gemini, or OpenCode are still installed separately.
+The installer handles Claude Code, git, build tools, Node.js 22.x, Vibe Research, and startup on supported macOS/Linux/Raspberry Pi systems. It detects an already-connected Tailscale setup but does not require Tailscale login on first run. On Linux installs, `tmux` is installed too so coding-agent terminals can survive Vibe Research restarts.
 
 By default, the installer uses the latest GitHub Release when one exists, then falls back to `main` while the project is still bootstrapping. Set `VIBE_RESEARCH_UPDATE_CHANNEL=branch` or `VIBE_RESEARCH_REF=<branch-or-tag>` before running the installer if you intentionally want a dev checkout.
 
-The install command now launches Vibe Research as a background server, so it keeps running even after the SSH session or terminal closes. The app checkout lives under `~/.vibe-research/app`, and settings, logs, session history, and the managed pid live under `~/.vibe-research/`. Onboarding chooses the workspace folder where Library and agent-created files live. On Linux installs, `tmux` is installed too; coding-agent terminals use it when available so Vibe Research restarts can reattach to live agent work instead of merely replaying a transcript.
+The install command now launches Vibe Research as a background server, so it keeps running even after the SSH session or terminal closes. The app checkout lives under `~/.vibe-research/app`; onboarding chooses the workspace where the Library and agent-created files live; settings, logs, session history, and the managed pid live under `~/.vibe-research/`. Coding-agent terminals use `tmux` when available so Vibe Research restarts can reattach to live agent work instead of merely replaying a transcript.
 
-New agents start in the configured new-agent folder without asking for a folder each time. The Library folder and new-agent folder are configurable in Settings; by default, Vibe Research keeps local git backups of the Library every 10 minutes. To back the Library up off-machine, create a private Git repo, paste its SSH or credential-helper remote URL into the sidebar's private remote backup field, enable remote push, and Vibe Research will push Library backup commits there on each backup run.
+New release installs start workspace picking from `~/vibe-projects` when the app checkout is under `~/.vibe-research/app`. New agents start in the configured new-agent folder without asking for a folder each time; Settings can change both the Library folder and the new-agent folder. By default, Vibe Research keeps local git backups of the Library every 10 minutes. To back the Library up off-machine, create a private Git repo, paste its SSH or credential-helper remote URL into the sidebar's private remote backup field, enable remote push, and Vibe Research will push Library backup commits there on each backup run.
 
 ## Releases
 
-Vibe Research uses GitHub Releases as the stable update channel. Friends' installs update to release tags like `v0.2.1`, not random in-progress commits on `main`.
+Vibe Research uses GitHub Releases as the stable update channel. Friends' installs update to release tags like `v0.2.1`, not random in-progress commits on `main`. The repo also carries `release-channel.json`, a static stable-channel pointer used as a lower-rate fallback before GitHub's releases API.
 
 The safest path is the manual GitHub Actions workflow:
 
@@ -52,12 +65,13 @@ npm run release:minor
 npm run release:major
 ```
 
-Both paths bump `package.json`, commit `Release vX.Y.Z`, create an annotated git tag, push `main` and the tag, then publish a GitHub Release with generated notes. The in-app updater checks the latest GitHub Release first and only falls back to `main` if no release exists yet.
+Both paths bump `package.json`, update `release-channel.json`, commit `Release vX.Y.Z`, create an annotated git tag, push `main` and the tag, then publish a GitHub Release with generated notes plus checksum assets (`install.sh`, `release.json`, and `SHASUMS256.txt`). The in-app updater checks the static release channel and latest GitHub Release before falling back to semver tags or `main`.
 
 You can access local app ports from the sidebar. Vibe Research prefers direct
-`http://<tailscale-ip>:<port>/` links when a service is already listening on all
-interfaces, offers an `expose` button for localhost-only services via Tailscale
-Serve, and keeps `/proxy/<port>/` as the fallback.
+`http://<host-ip>:<port>/` links when a service is already listening on all
+interfaces. When Tailscale is connected, it also shows private tailnet URLs and
+offers an `expose` button for localhost-only services via Tailscale Serve. It
+keeps `/proxy/<port>/` as the fallback.
 
 Example thing I did was text my agent to fix and [pretrain GPT2-small on a 4090!](https://x.com/clamepending/status/2039185482639462763?s=20)
 

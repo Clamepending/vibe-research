@@ -19,6 +19,8 @@ export const providerDefinitions = [
       name: "@anthropic-ai/claude-code",
       bin: "claude",
     },
+    installCommand: "curl -fsSL https://claude.ai/install.sh | bash",
+    authCommand: "claude auth login",
     pathHints: [
       "~/.local/bin/claude",
       "/opt/homebrew/bin/claude",
@@ -31,6 +33,8 @@ export const providerDefinitions = [
     command: "codex",
     launchCommand: "codex",
     defaultName: "Codex",
+    installCommand: "npm install -g @openai/codex",
+    authCommand: "codex login --device-auth",
     pathHints: ["/Applications/Codex.app/Contents/Resources/codex"],
   },
   {
@@ -39,6 +43,8 @@ export const providerDefinitions = [
     command: "opencode",
     launchCommand: "opencode",
     defaultName: "OpenCode",
+    installCommand: "curl -fsSL https://opencode.ai/install | bash",
+    authCommand: "opencode auth login",
     pathHints: [
       "/Applications/OpenCode.app/Contents/MacOS/opencode-cli",
       "/opt/homebrew/bin/opencode",
@@ -51,6 +57,8 @@ export const providerDefinitions = [
     command: "gemini",
     launchCommand: "gemini",
     defaultName: "Gemini",
+    installCommand: "npm install -g @google/gemini-cli",
+    authCommand: "gemini",
   },
   {
     id: "ml-intern",
@@ -60,6 +68,9 @@ export const providerDefinitions = [
     defaultName: "ML Intern",
     verifyArgs: ["--help"],
     preferPathHints: true,
+    installCommand:
+      '(command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh) && export PATH="$HOME/.local/bin:$PATH" && repo="${XDG_DATA_HOME:-$HOME/.local/share}/vibe-research/ml-intern" && (if [ -d "$repo/.git" ]; then git -C "$repo" pull --ff-only; else mkdir -p "$(dirname "$repo")" && git clone https://github.com/huggingface/ml-intern.git "$repo"; fi) && cd "$repo" && uv sync && uv tool install -e .',
+    authCommand: "ml-intern",
     pathHints: [
       "~/.local/bin/ml-intern",
       "/opt/homebrew/bin/ml-intern",

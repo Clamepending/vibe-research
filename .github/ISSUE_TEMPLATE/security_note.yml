@@ -1,0 +1,15 @@
+name: Security question
+description: Ask a non-sensitive security question.
+title: "[Security]: "
+labels: ["security"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this is a vulnerability that could expose user machines, credentials, private files, or agent sessions, do not file a public issue. Follow SECURITY.md instead.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+    validations:
+      required: true

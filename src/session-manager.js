@@ -20,6 +20,10 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pty from "node-pty";
 import { AGENT_PROMPT_FILENAME } from "./agent-prompt-store.js";
+import {
+  getBuildingAgentGuideIndexPath,
+  getBuildingAgentGuidesDir,
+} from "./building-agent-guides.js";
 import { AgentRunTracker } from "./agent-run-tracker.js";
 import { SessionStore } from "./session-store.js";
 import { getLegacyWorkspaceStateDir, getVibeResearchStateDir, getVibeResearchSystemDir } from "./state-paths.js";
@@ -241,19 +245,73 @@ function deriveSessionNameFromPromptLine(line) {
 function consumePromptInput(buffer, input) {
   const completedLines = [];
   let nextBuffer = String(buffer ?? "");
+  let escapeState = "";
   let escapeSequenceLength = 0;
   let interrupted = false;
 
   for (const character of String(input ?? "").replace(/\r\n/g, "\r")) {
-    if (escapeSequenceLength > 0) {
+    if (escapeState) {
       escapeSequenceLength += 1;
-      if ((character >= "@" && character <= "~") || escapeSequenceLength >= 12) {
-        escapeSequenceLength = 0;
+
+      if (escapeState === "start") {
+        if (character === "[") {
+          escapeState = "control";
+          continue;
+        }
+
+        if (character === "]") {
+          escapeState = "osc";
+          continue;
+        }
+
+        if (character === "P" || character === "^" || character === "_") {
+          escapeState = "string";
+          continue;
+        }
+
+        if ((character >= "@" && character <= "~") || escapeSequenceLength >= 128) {
+          escapeState = "";
+          escapeSequenceLength = 0;
+        }
+        continue;
       }
+
+      if (escapeState === "control") {
+        if ((character >= "@" && character <= "~") || escapeSequenceLength >= 128) {
+          escapeState = "";
+          escapeSequenceLength = 0;
+        }
+        continue;
+      }
+
+      if (escapeState === "osc" || escapeState === "string") {
+        if (character === "\u0007") {
+          escapeState = "";
+          escapeSequenceLength = 0;
+        } else if (character === "\u001b") {
+          escapeState = "string-esc";
+        } else if (escapeSequenceLength >= 512) {
+          escapeState = "";
+          escapeSequenceLength = 0;
+        }
+        continue;
+      }
+
+      if (escapeState === "string-esc") {
+        if (character === "\\") {
+          escapeState = "";
+          escapeSequenceLength = 0;
+        } else {
+          escapeState = "string";
+        }
+        continue;
+      }
+
       continue;
     }
 
     if (character === "\u001b") {
+      escapeState = "start";
       escapeSequenceLength = 1;
       continue;
     }
@@ -403,6 +461,8 @@ export function buildSessionEnv(
     }),
   );
   const commsDir = path.join(resolvedSystemRootPath, "comms");
+  const buildingGuidesDir = getBuildingAgentGuidesDir(resolvedSystemRootPath);
+  const buildingGuidesIndex = getBuildingAgentGuideIndexPath(resolvedSystemRootPath);
   const agentDir = path.join(commsDir, "agents", sessionId);
   const { NO_COLOR: _noColor, ...colorCapableEnv } = env;
 
@@ -428,6 +488,10 @@ export function buildSessionEnv(
       "vr-playwright open http://127.0.0.1:4173 && vr-playwright snapshot && vr-playwright click eX",
     VIBE_RESEARCH_BROWSER_IMAGE_HELP:
       "vr-browser describe-file results/chart.png --prompt \"What does this output show and what should improve?\"",
+    VIBE_RESEARCH_BUILDING_GUIDES_DIR: buildingGuidesDir,
+    VIBE_RESEARCH_BUILDING_GUIDES_INDEX: buildingGuidesIndex,
+    VIBE_RESEARCH_BUILDING_GUIDES_HELP:
+      "sed -n '1,220p' \"$VIBE_RESEARCH_BUILDING_GUIDES_INDEX\"",
     VIBE_RESEARCH_ML_INTERN_HANDOFF_PROMPT: mlInternHandoffPromptPath,
     VIBE_RESEARCH_ML_INTERN_HELP: "ml-intern \"$(cat \\\"$VIBE_RESEARCH_ML_INTERN_HANDOFF_PROMPT\\\")\"",
     VIBE_RESEARCH_PLAYWRIGHT_COMMAND: "vr-playwright",
@@ -456,6 +520,10 @@ export function buildSessionEnv(
     REMOTE_VIBES_VIDEOMEMORY_COMMAND: "rv-videomemory",
     REMOTE_VIBES_PLAYWRIGHT_COMMAND: "rv-playwright",
     REMOTE_VIBES_PLAYWRIGHT_SKILL: path.join(appRootDir, "skills", "playwright", "SKILL.md"),
+    REMOTE_VIBES_BUILDING_GUIDES_DIR: buildingGuidesDir,
+    REMOTE_VIBES_BUILDING_GUIDES_INDEX: buildingGuidesIndex,
+    REMOTE_VIBES_BUILDING_GUIDES_HELP:
+      "sed -n '1,220p' \"$REMOTE_VIBES_BUILDING_GUIDES_INDEX\"",
     REMOTE_VIBES_REAL_CLAUDE_COMMAND: getResolvedProviderCommand(providers, "claude") || "",
     REMOTE_VIBES_REAL_CODEX_COMMAND: getResolvedProviderCommand(providers, "codex") || "",
     REMOTE_VIBES_ROOT: resolvedStateDir,
@@ -3383,6 +3451,7 @@ export class SessionManager {
           '\u001b[1;36m[vibe-research]\u001b[0m inspect UI: "$PWCLI" snapshot; use fresh refs with click/fill/type/press',
           '\u001b[1;36m[vibe-research]\u001b[0m save artifacts: "$PWCLI" screenshot --filename output/playwright/current.png',
           '\u001b[1;36m[vibe-research]\u001b[0m visual fallback: vr-browser describe-file results/chart.png --prompt "What should improve?"',
+          '\u001b[1;36m[vibe-research]\u001b[0m building guides: sed -n \'1,220p\' "$VIBE_RESEARCH_BUILDING_GUIDES_INDEX"',
           provider.launchCommand
             ? terminalLaunch.attachedExisting
               ? terminalLaunch.providerRunning

@@ -26,6 +26,7 @@ import {
   Image as ImageIcon,
   IndentDecrease,
   IndentIncrease,
+  Inbox,
   MemoryStick,
   Menu,
   MessageSquarePlus,
@@ -41,6 +42,7 @@ import {
   Trash2,
   Type,
   Waypoints,
+  Wrench,
   X,
   Zap,
   ZoomIn,
@@ -49,6 +51,7 @@ import {
 import {
   VISUAL_GAME_MAP_LAYOUT,
   findVisualGameRoadRoute,
+  getVisualGameAgentIdentityKey,
   getVisualGamePlace,
   getVisualGamePlaceAnchor,
   getVisualGamePackedItemSlots,
@@ -119,6 +122,7 @@ const KNOWLEDGE_BASE_SEARCH_FIELD_WEIGHTS = [
 ];
 const PORT_PREVIEW_TAB_PREFIX = "port:";
 const ROUTED_MAIN_VIEWS = new Set([
+  "agent-inbox",
   "search",
   "plugins",
   "settings",
@@ -990,6 +994,7 @@ const state = {
   openFileRequestId: 0,
   activeSessionId: null,
   connectedSessionId: null,
+  pendingSessionInputs: {},
   defaultCwd: "",
   stateDir: "",
   defaultProviderId: "claude",
@@ -1544,6 +1549,74 @@ function getSessionActivityStyle(status) {
 
   const delay = Date.now() % SESSION_WORKING_SPINNER_MS;
   return ` style="--session-spinner-delay: -${delay}ms"`;
+}
+
+function getAgentInboxSummary() {
+  const summary = {
+    exited: 0,
+    read: 0,
+    total: state.sessions.length,
+    unread: 0,
+    working: 0,
+  };
+
+  for (const session of state.sessions) {
+    const status = getSessionLabel(session).className;
+    if (status === "working") {
+      summary.working += 1;
+    } else if (status === "unread") {
+      summary.unread += 1;
+    } else if (status === "exited") {
+      summary.exited += 1;
+    } else {
+      summary.read += 1;
+    }
+  }
+
+  return summary;
+}
+
+function getAgentInboxNavMeta() {
+  const summary = getAgentInboxSummary();
+  if (summary.unread > 0) {
+    return `${summary.unread} to review`;
+  }
+  if (summary.working > 0) {
+    return `${summary.working} working`;
+  }
+  return `${summary.total} sessions`;
+}
+
+function getAgentInboxPriority(status) {
+  const priorities = {
+    unread: 0,
+    working: 1,
+    exited: 2,
+    read: 3,
+  };
+  return priorities[status?.className] ?? 4;
+}
+
+function getAgentInboxTimestamp(session) {
+  return Math.max(
+    getSessionUnreadAt(session),
+    timestampMs(session?.lastOutputAt),
+    timestampMs(session?.updatedAt),
+    timestampMs(session?.createdAt),
+  );
+}
+
+function getAgentInboxItems() {
+  return [...state.sessions]
+    .map((session) => ({
+      session,
+      status: getSessionLabel(session),
+      timestamp: getAgentInboxTimestamp(session),
+    }))
+    .sort((left, right) => {
+      const priorityDelta = getAgentInboxPriority(left.status) - getAgentInboxPriority(right.status);
+      return priorityDelta || right.timestamp - left.timestamp;
+    });
 }
 
 function getPortDisplayName(port) {
@@ -4112,6 +4185,48 @@ function getSelectedProvider() {
   );
 }
 
+function getProviderById(providerId) {
+  return state.providers.find((provider) => provider.id === providerId) || null;
+}
+
+function getProviderInstallCommand(provider) {
+  return String(provider?.installCommand || "").trim();
+}
+
+function getProviderAuthCommand(provider) {
+  return String(provider?.authCommand || "").trim();
+}
+
+function buildProviderInstallInput(provider) {
+  const command = getProviderInstallCommand(provider);
+  if (!command) {
+    return "";
+  }
+
+  const authCommand = getProviderAuthCommand(provider);
+  const fullCommand = authCommand
+    ? `${command} && hash -r && ${authCommand}`
+    : command;
+
+  return `${fullCommand}\r`;
+}
+
+function queueSessionInput(sessionId, data, { delayMs = 900 } = {}) {
+  const normalizedSessionId = String(sessionId || "");
+  const text = String(data || "");
+  if (!normalizedSessionId || !text) {
+    return;
+  }
+
+  state.pendingSessionInputs[normalizedSessionId] = [
+    ...(state.pendingSessionInputs[normalizedSessionId] || []),
+    {
+      data: text,
+      delayMs: Math.max(0, Number(delayMs) || 0),
+    },
+  ];
+}
+
 function renderSessionProviderPicker() {
   const selectedProvider = getSelectedProvider();
   const selectedProviderId = selectedProvider?.id || state.defaultProviderId || "";
@@ -4138,16 +4253,15 @@ function renderSessionProviderPicker() {
           .map(
             (provider) => `
               <button
-                class="session-provider-option ${provider.id === selectedProviderId ? "is-selected" : ""}"
+                class="session-provider-option ${provider.id === selectedProviderId ? "is-selected" : ""} ${provider.available ? "is-available" : "is-missing"}"
                 type="button"
                 role="option"
                 aria-selected="${provider.id === selectedProviderId ? "true" : "false"}"
-                ${provider.available ? "" : "aria-disabled=\"true\" disabled"}
                 data-session-provider-option="${escapeHtml(provider.id)}"
               >
                 <span class="session-provider-option-check" aria-hidden="true">${provider.id === selectedProviderId ? "✓" : ""}</span>
                 <span class="session-provider-option-label">${escapeHtml(provider.label)}</span>
-                ${provider.available ? "" : `<span class="session-provider-option-status">missing</span>`}
+                <span class="session-provider-option-status">${escapeHtml(provider.available ? "ready" : getProviderInstallCommand(provider) ? "install" : "missing")}</span>
               </button>
             `,
           )
@@ -4380,8 +4494,8 @@ function getBuildingHubStatusText() {
   const status = state.settings.buildingHubStatus || state.buildingHub.status || {};
   if (!state.settings.buildingHubEnabled) {
     return state.settings.buildingHubCatalogPath || state.settings.buildingHubCatalogUrl
-      ? "configured but disabled"
-      : "not configured";
+      ? "community catalogs disabled"
+      : "community catalogs off";
   }
 
   if (status.lastRefreshError) {
@@ -4697,7 +4811,56 @@ function expandSessionProject(cwd) {
   state.sessionProjectExpanded.add(key);
 }
 
-async function createSessionInFolder(cwd, { providerId = getSelectedSessionProviderId(), name = "" } = {}) {
+function getFirstSessionOnboardingPrompt({ cwd, providerId } = {}) {
+  const provider = getProviderById(providerId) || getSelectedProvider();
+  const providerLabel = provider?.label || "your agent";
+  const libraryPath = state.settings.wikiPath || state.defaultCwd || "";
+  const workspacePath = normalizeWorkspaceRoot(cwd || state.defaultCwd || "") || "this project folder";
+
+  return `Please act as a friendly Vibe Research onboarding guide for someone non-technical who just opened their first agent.
+
+Context:
+- Agent provider: ${providerLabel}
+- Project folder: ${workspacePath}
+- Library folder: ${libraryPath || "not chosen yet"}
+
+Walk me through Vibe Research in plain language:
+1. Agent Town: agents live in the canvas, and buildings are tool/integration homes.
+2. Library: shared markdown memory that agents can read and update for continuity.
+3. Settings: credentials, runtime defaults, local access, and app configuration.
+4. Occupations: the system prompts/roles that shape new agents.
+5. Automations: recurring helpers that can run on a schedule.
+6. Toolshed and BuildingHub: how new buildings are drafted, validated, and shared.
+7. Telegram and Phone/iMessage: optional communication bridges I can connect later.
+
+Then ask me one question: what kind of thing do I want to accomplish first, and do I want help connecting Telegram or phone access? Keep it warm, concrete, and brief. Do not start doing work until I answer.\r`;
+}
+
+function hasNonInstallerAgentSession() {
+  return state.sessions.some((session) => {
+    if (!session || session.providerId === "shell") {
+      return false;
+    }
+
+    return !/^install\s+/i.test(String(session.name || ""));
+  });
+}
+
+function getAgentSpawnPath() {
+  return normalizeWorkspaceRoot(state.settings.agentSpawnPath || state.defaultCwd || state.settings.workspaceRootPath || "");
+}
+
+async function createSessionInFolder(
+  cwd,
+  {
+    providerId = getSelectedSessionProviderId(),
+    name = "",
+    initialInput = "",
+    initialInputDelayMs = 900,
+    openInTown = false,
+    rememberProvider = true,
+  } = {},
+) {
   const selectedCwd = normalizeWorkspaceRoot(cwd);
 
   if (!selectedCwd) {
@@ -4710,15 +4873,76 @@ async function createSessionInFolder(cwd, { providerId = getSelectedSessionProvi
   });
 
   state.defaultCwd = getAgentSpawnPath() || selectedCwd;
-  state.defaultProviderId = providerId;
+  if (rememberProvider) {
+    state.defaultProviderId = providerId;
+  }
   state.folderPicker.open = false;
   state.sessions = [payload.session, ...state.sessions];
   state.activeSessionId = payload.session.id;
+  if (initialInput) {
+    queueSessionInput(payload.session.id, initialInput, { delayMs: initialInputDelayMs });
+  }
   expandSessionProject(payload.session.cwd);
+
+  if (openInTown) {
+    state.visualGame.selectedSessionId = payload.session.id;
+    await openSwarmProjectGraph(selectedCwd, {
+      fallbackSessionId: payload.session.id,
+      projectName: getWorkspacePathLeafName(selectedCwd),
+    });
+    state.visualGame.selectedSessionId = payload.session.id;
+    renderShell();
+    closeMobileSidebar();
+    return;
+  }
+
   setCurrentView("shell");
   renderShell();
   connectToSession(payload.session.id);
   closeMobileSidebar();
+}
+
+async function startNewAgentInDefaultFolder({ openInTown = false } = {}) {
+  const providerId = getSelectedSessionProviderId();
+  const provider = getProviderById(providerId);
+  const cwd = getAgentSpawnPath();
+  const shouldRunFirstSessionOnboarding =
+    !hasNonInstallerAgentSession() && providerId !== "shell" && provider?.available !== false;
+
+  state.defaultProviderId = providerId;
+  await createSessionInFolder(cwd, {
+    providerId,
+    name: shouldRunFirstSessionOnboarding ? "Onboarding guide" : "",
+    initialInput: shouldRunFirstSessionOnboarding
+      ? getFirstSessionOnboardingPrompt({ cwd, providerId })
+      : "",
+    initialInputDelayMs: 1400,
+    openInTown: openInTown || shouldRunFirstSessionOnboarding,
+  });
+}
+
+async function startNewAgentFromUi({ openInTown = false } = {}) {
+  try {
+    await startNewAgentInDefaultFolder({ openInTown });
+  } catch (error) {
+    window.alert(error.message);
+  }
+}
+
+async function startProviderInstallSession(provider) {
+  const installInput = buildProviderInstallInput(provider);
+  if (!installInput) {
+    window.alert(`${provider?.label || "That agent"} does not have an automatic install command yet.`);
+    return;
+  }
+
+  await createSessionInFolder(getAgentSpawnPath() || "/", {
+    providerId: "shell",
+    name: `Install ${provider.label}`,
+    initialInput: installInput,
+    initialInputDelayMs: 450,
+    rememberProvider: false,
+  });
 }
 
 async function createFolderFromPicker(folderName) {
@@ -4766,7 +4990,18 @@ async function applyFolderPickerSelection() {
   }
 
   if (state.folderPicker.target === "session") {
-    await createSessionInFolder(selectedPath);
+    const providerId = getSelectedSessionProviderId();
+    const provider = getProviderById(providerId);
+    const shouldRunFirstSessionOnboarding = !hasNonInstallerAgentSession() && providerId !== "shell" && provider?.available !== false;
+    await createSessionInFolder(selectedPath, {
+      providerId,
+      name: shouldRunFirstSessionOnboarding ? "Onboarding guide" : "",
+      initialInput: shouldRunFirstSessionOnboarding
+        ? getFirstSessionOnboardingPrompt({ cwd: selectedPath, providerId })
+        : "",
+      initialInputDelayMs: 1400,
+      openInTown: shouldRunFirstSessionOnboarding,
+    });
     return;
   }
 
@@ -5171,10 +5406,6 @@ function getWorkspaceLibraryPath(root) {
 
 function getWorkspaceUserPath(root) {
   return joinConfiguredWorkspacePath(root, WORKSPACE_USER_RELATIVE_PATH);
-}
-
-function getAgentSpawnPath() {
-  return normalizeWorkspaceRoot(state.settings.agentSpawnPath || state.defaultCwd || "");
 }
 
 function normalizePosixSegments(value) {
@@ -8911,10 +9142,10 @@ function renderSidebarNav() {
       meta: "live map",
     },
     {
-      view: "plugins",
-      icon: Plug,
-      label: "Buildings",
-      meta: "MCPs and integrations",
+      view: "agent-inbox",
+      icon: Inbox,
+      label: "Agent Inbox",
+      meta: getAgentInboxNavMeta(),
     },
     {
       view: "settings",
@@ -8962,11 +9193,11 @@ function renderSidebarNav() {
   return `
     <div class="sidebar-nav-stack">
       <nav class="sidebar-nav sidebar-primary-nav" aria-label="Main views">
-        <button class="sidebar-nav-item sidebar-nav-button" type="button" data-folder-picker-target="session" ${tooltipAttributes("New Agent", "right")}>
+        <button class="sidebar-nav-item sidebar-nav-button" type="button" data-start-new-agent ${tooltipAttributes("New Agent", "right")}>
           <span class="sidebar-nav-icon" aria-hidden="true">${renderIcon(Plus)}</span>
           <span class="sidebar-nav-copy">
             <span class="sidebar-nav-label">New Agent</span>
-            <span class="sidebar-nav-meta">${escapeHtml(`${getSelectedProviderLabel()} · agent folder`)}</span>
+            <span class="sidebar-nav-meta">${escapeHtml(`${getSelectedProviderLabel()} · default folder`)}</span>
           </span>
         </button>
         <form class="session-form session-launcher" id="session-form">
@@ -9213,6 +9444,16 @@ function openPluginDetail(pluginId) {
     return false;
   }
 
+  if (getPluginId(plugin) === "buildinghub") {
+    state.currentView = "plugins";
+    state.pluginDetailId = "";
+    state.pluginOnboardingOpenId = "";
+    updateRoute({ view: "plugins", buildingId: "" });
+    closeMobileSidebar();
+    renderShell();
+    return true;
+  }
+
   state.currentView = "plugins";
   state.pluginDetailId = getPluginId(plugin);
   state.pluginOnboardingOpenId = "";
@@ -9361,6 +9602,23 @@ function isPluginIdInstalled(pluginId) {
 
 function isLocalhostAppsEnabled() {
   return isPluginIdInstalled("localhost-apps");
+}
+
+function getTailscaleBuildingMeta() {
+  const ports = Array.isArray(state.ports) ? state.ports : [];
+  const tailnetPorts = ports.filter((port) => (
+    port?.preferredAccess === "tailscale-serve" ||
+    (port?.tailscaleUrl && (port?.directUrl || port?.exposedWithTailscale))
+  )).length;
+  const exposablePorts = ports.filter((port) => port?.canExposeWithTailscale).length;
+
+  if (tailnetPorts > 0) {
+    return `${tailnetPorts} tailnet port${tailnetPorts === 1 ? "" : "s"}`;
+  }
+  if (exposablePorts > 0) {
+    return `${exposablePorts} ready to expose`;
+  }
+  return "tailnet portal";
 }
 
 function getPluginPendingAction(plugin) {
@@ -10000,9 +10258,38 @@ function renderPluginDetailAction(plugin) {
   return renderPluginInstallButton(plugin);
 }
 
+function renderPluginWorkspaceAction(plugin) {
+  const workspaceView = normalizeWorkspaceView(plugin?.ui?.workspaceView || "");
+  if (!workspaceView) {
+    return "";
+  }
+
+  const pluginId = getPluginId(plugin);
+  return `
+    <section class="plugin-onboarding" aria-label="${escapeHtml(`${plugin.name} workspace`)}">
+      <div class="plugin-onboarding-head">
+        <strong>Workspace</strong>
+        <span>${escapeHtml(plugin.ui?.mode || "workspace")}</span>
+      </div>
+      <div class="plugin-onboarding-actions">
+        <button
+          class="primary-button toolbar-control"
+          type="button"
+          data-open-building-workspace="${escapeHtml(pluginId)}"
+          data-building-workspace-view="${escapeHtml(workspaceView)}"
+        >
+          <span aria-hidden="true">${renderIcon(plugin.icon || Plug)}</span>
+          <span>Open ${escapeHtml(plugin.name)}</span>
+        </button>
+      </div>
+    </section>
+  `;
+}
+
 function renderPluginDetailSettings(plugin) {
   const access = getPluginAccess(plugin);
   const setup = renderPluginOnboarding(plugin, { force: true });
+  const workspaceAction = renderPluginWorkspaceAction(plugin);
   const fallback = `
       <section class="plugin-onboarding" aria-label="${escapeHtml(`${plugin.name} setup`)}">
         <div class="plugin-onboarding-head">
@@ -10024,6 +10311,7 @@ function renderPluginDetailSettings(plugin) {
           </section>`
         : ""
     }
+    ${workspaceAction}
     ${setup || fallback}
   `;
 }
@@ -10040,7 +10328,7 @@ function renderPluginDetailView(plugin) {
     )}>
       <div class="dashboard-toolbar">
         <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
-        <button class="ghost-button toolbar-control" type="button" data-plugin-detail-back aria-label="Back to Buildings" ${tooltipAttributes("Back to Buildings")}>
+        <button class="ghost-button toolbar-control" type="button" data-plugin-detail-back aria-label="Back to BuildingHub" ${tooltipAttributes("Back to BuildingHub")}>
           ${renderIcon(ChevronLeft)}
           <span>Back</span>
         </button>
@@ -10124,7 +10412,7 @@ function renderAgentCredentialsSettingsPanel() {
 }
 
 function renderBuildingHubPluginPanel({ install = false } = {}) {
-  const actionLabel = install ? "save and install" : "save BuildingHub";
+  const actionLabel = install ? "save community catalogs" : "save BuildingHub";
   const status = state.settings.buildingHubStatus || state.buildingHub.status || {};
   const sourceSummary = Array.isArray(status.sources) && status.sources.length
     ? status.sources.map((source) => `${source.label || source.kind}: ${source.status || "pending"}`).join(" · ")
@@ -10563,8 +10851,8 @@ function renderPluginsView() {
       <div class="dashboard-toolbar">
         <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
         <div class="dashboard-copy">
-          <strong>Buildings</strong>
-          <div class="terminal-meta">installable town buildings for MCPs, integrations, and built-in Vibe Research tools</div>
+          <strong>BuildingHub</strong>
+          <div class="terminal-meta">building catalog for system tools, integrations, and opt-in community buildings</div>
         </div>
       </div>
       <div class="main-search-shell">
@@ -10574,16 +10862,16 @@ function renderPluginsView() {
           class="main-search-input"
           type="search"
           value="${escapeHtml(state.pluginSearchQuery)}"
-          placeholder="Search buildings"
+          placeholder="Search building catalog"
           autocomplete="off"
           autocorrect="off"
           autocapitalize="none"
           spellcheck="false"
         />
-        <span class="main-search-count">${escapeHtml(`${getFilteredPlugins().length} shown`)}</span>
+        <span class="main-search-count" data-plugin-search-count>${escapeHtml(`${getFilteredPlugins().length} shown`)}</span>
       </div>
       <div class="plugins-layout">
-        <section class="plugin-grid plugin-store-grid" id="plugin-results">${renderPluginCards()}</section>
+        <section class="plugin-grid plugin-store-grid" id="plugin-results" data-plugin-results>${renderPluginCards()}</section>
       </div>
     </section>
   `;
@@ -10765,6 +11053,112 @@ function renderAutomationsView() {
         ${renderCreateAutomationCard()}
         ${renderAgentAutomationCards()}
       </div>
+    </section>
+  `;
+}
+
+function renderAgentInboxSummaryCards() {
+  const summary = getAgentInboxSummary();
+  const cards = [
+    ["to review", summary.unread, "finished sessions you have not opened yet"],
+    ["working", summary.working, "sessions with active work, monitors, or subagents"],
+    ["exited", summary.exited, "closed terminals still in the session list"],
+    ["total", summary.total, "all local sessions"],
+  ];
+
+  return cards
+    .map(
+      ([label, value, detail]) => `
+        <article class="agent-inbox-summary-card">
+          <span class="main-search-kind">${escapeHtml(label)}</span>
+          <strong>${escapeHtml(String(value))}</strong>
+          <p>${escapeHtml(detail)}</p>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function renderAgentInboxSessionMeta(session) {
+  const subagents = Array.isArray(session?.subagents) ? session.subagents : [];
+  const workingSubagents = subagents.filter((subagent) => subagent?.status === "working").length;
+  const backgroundActive = Boolean(session?.backgroundActivity?.active);
+  const meta = [
+    relativeTime(session?.lastOutputAt || session?.updatedAt || session?.createdAt),
+    workingSubagents ? `${workingSubagents} subagent${workingSubagents === 1 ? "" : "s"} working` : "",
+    backgroundActive ? "background task active" : "",
+    session?.exitCode != null ? `exit ${session.exitCode}` : "",
+  ].filter(Boolean);
+
+  return meta.length ? meta.join(" · ") : "no recent activity";
+}
+
+function renderAgentInboxCard(item) {
+  const { session, status } = item;
+  const projectName = getWorkspacePathLeafName(session.cwd || "") || "workspace";
+  const title = status.className === "unread"
+    ? "finished; needs review"
+    : status.className === "working"
+      ? "working now"
+      : status.title || status.text;
+
+  return `
+    <article class="automation-card agent-inbox-card is-${escapeHtml(status.className)}">
+      <div class="agent-inbox-card-head">
+        <div class="automation-card-icon" aria-hidden="true">${renderIcon(Bot)}</div>
+        <span class="plugin-status">${escapeHtml(title)}</span>
+      </div>
+      <strong>${escapeHtml(session.name || "Session")}</strong>
+      <p>${escapeHtml([session.providerLabel, projectName].filter(Boolean).join(" · "))}</p>
+      <div class="agent-inbox-card-meta">${escapeHtml(renderAgentInboxSessionMeta(session))}</div>
+      <div class="plugin-onboarding-actions">
+        ${
+          status.className === "unread"
+            ? `<button class="ghost-button toolbar-control" type="button" data-mark-session-read="${escapeHtml(session.id)}">mark read</button>`
+            : ""
+        }
+        <button class="primary-button toolbar-control" type="button" data-session-id="${escapeHtml(session.id)}">open session</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderAgentInboxCards() {
+  const items = getAgentInboxItems();
+  if (!items.length) {
+    return `<div class="blank-state">no agent sessions yet</div>`;
+  }
+
+  return items.map(renderAgentInboxCard).join("");
+}
+
+function renderAgentInboxView() {
+  const summary = getAgentInboxSummary();
+  const attentionLabel = summary.unread > 0
+    ? `${summary.unread} waiting for review`
+    : summary.working > 0
+      ? `${summary.working} still working`
+      : "all caught up";
+
+  return `
+    <section class="dashboard-panel main-view agent-inbox-view" ${renderMainViewAttributes("agent-inbox", `agent-inbox:${summary.total}:${summary.unread}:${summary.working}`)}>
+      <div class="dashboard-toolbar">
+        <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
+        <div class="dashboard-copy">
+          <strong>Agent Inbox</strong>
+          <div class="terminal-meta">working, finished, and exited sessions that may need attention</div>
+        </div>
+        <div class="dashboard-actions">
+          <button class="icon-button" type="button" id="refresh-sessions" aria-label="Refresh sessions" ${tooltipAttributes("Refresh sessions")}>${renderIcon(RefreshCw)}</button>
+        </div>
+      </div>
+      <div class="dashboard-range">
+        <span class="dashboard-range-label">attention</span>
+        <span>${escapeHtml(attentionLabel)}</span>
+        <span class="dashboard-updated">${escapeHtml(`${summary.total} sessions`)}</span>
+      </div>
+      <div class="agent-inbox-summary" id="agent-inbox-summary">${renderAgentInboxSummaryCards()}</div>
+      <div class="main-results-grid agent-inbox-grid" id="agent-inbox-list">${renderAgentInboxCards()}</div>
     </section>
   `;
 }
@@ -12404,6 +12798,8 @@ function getVisualInterfaceAgents(graph) {
         activeAtMs: timestampMs(subagent.updatedAt),
         activityStartedAt: "",
         activityCompletedAt: "",
+        subagentId: subagent.id || "",
+        agentId: subagent.agentId || "",
         agentType: subagent.agentType || "",
         backgroundActivityActive: false,
         hasActiveSubagent: false,
@@ -12498,9 +12894,9 @@ function renderVisualWorkshop(graph) {
 
 function renderVisualMissionBoard() {
   const missions = [
-    { label: "New run", meta: "agent folder", icon: MessageSquarePlus, attrs: `data-folder-picker-target="session"` },
+    { label: "New run", meta: "default folder", icon: MessageSquarePlus, attrs: `data-start-new-agent="town"` },
     { label: "Findings", meta: "open library", icon: BookOpen, attrs: `data-visual-building-open="knowledge-base"` },
-    { label: "Buildings", meta: "installed", icon: Plug, attrs: `data-open-main-view="plugins"` },
+    { label: "BuildingHub", meta: "catalog", icon: Plug, attrs: `data-visual-building-open="buildinghub"` },
     { label: "Schedule", meta: "automations", icon: CalendarClock, attrs: `data-visual-building-open="automations"` },
   ];
 
@@ -12662,14 +13058,45 @@ function renderVisualEvidenceWall(graph) {
   `;
 }
 
+function renderOnboardingProviderChoices() {
+  return `
+    <div class="visual-onboarding-provider-grid" aria-label="Choose an agent">
+      ${state.providers
+        .filter((provider) => provider.id !== "shell")
+        .map(
+          (provider) => {
+            const available = Boolean(provider.available);
+            const attrs = available
+              ? `data-onboarding-provider-start="${escapeHtml(provider.id)}"`
+              : `data-onboarding-provider-install="${escapeHtml(provider.id)}"`;
+            return `
+              <button
+                class="visual-onboarding-provider ${available ? "is-available" : "is-missing"}"
+                type="button"
+                ${attrs}
+              >
+                <span>${escapeHtml(provider.label)}</span>
+                <em>${escapeHtml(available ? "ready" : getProviderInstallCommand(provider) ? "install" : "missing")}</em>
+              </button>
+            `;
+          },
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function renderVisualProjectPicker() {
   const groups = getSessionProjectGroups();
 
   if (!groups.length) {
     return `
       <div class="visual-project-empty">
-        <strong>No Agent Towns yet</strong>
-        <button class="primary-button" type="button" data-folder-picker-target="session">start an agent</button>
+        <span class="main-search-kind">first agent</span>
+        <strong>Choose an agent, then start in the default folder.</strong>
+        <p>Ready agents are marked green. Missing agents open a terminal, run the installer, then start that agent's login flow.</p>
+        ${renderOnboardingProviderChoices()}
+        <button class="ghost-button" type="button" data-start-new-agent="town">start selected agent</button>
       </div>
     `;
   }
@@ -12791,7 +13218,7 @@ function renderVisualTownWorld(graph) {
         <div class="visual-town-grid" aria-hidden="true"></div>
         <div class="visual-town-path visual-town-path-main" aria-hidden="true"></div>
         <div class="visual-town-path visual-town-path-cross" aria-hidden="true"></div>
-        <button class="visual-town-building visual-building-mission" type="button" data-folder-picker-target="session">
+        <button class="visual-town-building visual-building-mission" type="button" data-start-new-agent="town">
           <span class="visual-building-roof" aria-hidden="true"></span>
           <strong>Mission Board</strong>
           <em>start work</em>
@@ -13049,6 +13476,140 @@ function renderVisualGameLibraryBuildingPanel() {
   `;
 }
 
+function renderBuildingHubCatalogPanel() {
+  return `
+    <div class="visual-building-panel-scroll visual-building-buildinghub-panel">
+      <section class="visual-building-summary">
+        <span class="main-search-kind">system building</span>
+        <strong>Building catalog</strong>
+        <div class="visual-building-library-actions">
+          <button
+            class="primary-button toolbar-control"
+            type="button"
+            data-open-building-workspace="buildinghub"
+            data-building-workspace-view="plugins"
+          >
+            <span aria-hidden="true">${renderIcon(Plug)}</span>
+            <span>Open full catalog</span>
+          </button>
+        </div>
+      </section>
+      ${renderBuildingHubPluginPanel()}
+      <div class="main-search-shell visual-buildinghub-search">
+        <span class="main-search-icon" aria-hidden="true">${renderIcon(Plug)}</span>
+        <input
+          id="plugin-search-input"
+          class="main-search-input"
+          type="search"
+          value="${escapeHtml(state.pluginSearchQuery)}"
+          placeholder="Search building catalog"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <span class="main-search-count" data-plugin-search-count>${escapeHtml(`${getFilteredPlugins().length} shown`)}</span>
+      </div>
+      <section class="plugin-grid plugin-store-grid visual-buildinghub-grid" data-plugin-results>${renderPluginCards()}</section>
+    </div>
+  `;
+}
+
+function renderToolshedBuildingPanel() {
+  const mapCards = [
+    {
+      label: "BuildingHub",
+      meta: "catalog",
+      icon: Plug,
+      detail: "Browse system buildings, integrations, and opt-in community catalog entries.",
+      attrs: `data-visual-building-open="buildinghub"`,
+    },
+    {
+      label: "Library",
+      meta: "collective memory",
+      icon: BookOpen,
+      detail: "The Library is shared markdown memory for durable notes, decisions, sources, and project continuity.",
+      attrs: `data-visual-building-open="knowledge-base"`,
+    },
+    {
+      label: "Settings",
+      meta: "configuration",
+      icon: Settings,
+      detail: "Settings hold credentials, local folders, remote access options, and runtime defaults.",
+      attrs: `data-open-main-view="settings"`,
+    },
+    {
+      label: "Occupations",
+      meta: "agent roles",
+      icon: FilePenLine,
+      detail: "Occupations are the prompts that shape new agents, such as researcher, engineer, or a custom guide.",
+      attrs: `data-open-main-view="agent-prompt"`,
+    },
+    {
+      label: "Automations",
+      meta: "recurring helpers",
+      icon: CalendarClock,
+      detail: "Automations run scheduled helper tasks from the clock tower so maintenance work can keep going.",
+      attrs: `data-visual-building-open="automations"`,
+    },
+  ];
+  const publishSteps = [
+    "Copy a BuildingHub template or draft a first-party manifest with a stable id, description, visual shape, and setup checklist.",
+    "Keep credentials out of manifests; describe required keys with redacted configured settings or provider-side auth.",
+    "Run the catalog validator, rebuild registry.json, and inspect the building card in Agent Town.",
+    "Open a normal GitHub pull request to BuildingHub when the building is manifest-only and safe to review.",
+  ];
+
+  return `
+    <div class="visual-building-panel-scroll visual-building-toolshed-panel">
+      <section class="visual-building-summary">
+        <span class="main-search-kind">builder guide</span>
+        <strong>Make new buildings and share the safe ones.</strong>
+        <div class="visual-building-library-actions">
+          <button class="primary-button toolbar-control" type="button" data-start-new-agent="town">
+            <span aria-hidden="true">${renderIcon(MessageSquarePlus)}</span>
+            <span>Ask an agent</span>
+          </button>
+          <button class="ghost-button toolbar-control" type="button" data-visual-building-open="buildinghub">
+            <span aria-hidden="true">${renderIcon(Plug)}</span>
+            <span>BuildingHub</span>
+          </button>
+        </div>
+      </section>
+      <section class="visual-toolshed-map" aria-label="Vibe Research map">
+        ${mapCards
+          .map(
+            (card) => `
+              <button class="visual-toolshed-card" type="button" ${card.attrs}>
+                <span class="visual-toolshed-icon" aria-hidden="true">${renderIcon(card.icon)}</span>
+                <strong>${escapeHtml(card.label)}</strong>
+                <em>${escapeHtml(card.meta)}</em>
+                <span>${escapeHtml(card.detail)}</span>
+              </button>
+            `,
+          )
+          .join("")}
+      </section>
+      <section class="visual-toolshed-flow" aria-label="BuildingHub publish flow">
+        <span class="main-search-kind">publish flow</span>
+        <strong>From idea to BuildingHub</strong>
+        <div class="visual-toolshed-step-list">
+          ${publishSteps
+            .map(
+              (step, index) => `
+                <article class="visual-toolshed-step">
+                  <em>${escapeHtml(String(index + 1))}</em>
+                  <span>${escapeHtml(step)}</span>
+                </article>
+              `,
+            )
+            .join("")}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function renderVisualGamePluginBuildingPanel(plugin) {
   const issue = getPluginBuildingIssue(plugin);
   return `
@@ -13075,8 +13636,16 @@ function renderVisualGameBuildingPanelContent(buildingId, plugin) {
     return renderAutomationsBuildingPanel();
   }
 
+  if (buildingId === "toolshed") {
+    return renderToolshedBuildingPanel();
+  }
+
   if (buildingId === "knowledge-base") {
     return renderVisualGameLibraryBuildingPanel();
+  }
+
+  if (buildingId === "buildinghub") {
+    return renderBuildingHubCatalogPanel();
   }
 
   if (plugin) {
@@ -13644,13 +14213,15 @@ function getAgentTownPluginBuildingBlueprints() {
   return installedPlugins.slice(0, AGENT_TOWN_PLUGIN_BUILDING_RECTS.length).map((plugin, index) => {
     const pluginId = getPluginId(plugin);
     const issue = getPluginBuildingIssue(plugin);
+    const shape = getPluginBuildingShape(plugin);
     return {
       ...getAgentTownPluginBuildingPalette(pluginId),
       id: `building-${pluginId}`,
       issue,
       pluginId,
       label: plugin.name,
-      meta: getPluginStatusBadgeLabel(plugin, issue) || plugin.category || "building",
+      meta: pluginId === "tailscale" ? getTailscaleBuildingMeta() : getPluginStatusBadgeLabel(plugin, issue) || plugin.category || "building",
+      shape,
       baseRect: AGENT_TOWN_PLUGIN_BUILDING_RECTS[index],
       action: {
         kind: "building",
@@ -13668,6 +14239,30 @@ function getAgentTownPluginBuildingPalette(pluginId) {
       trim: "#1f2328",
       fixture: "#24292f",
       screen: "#f6f8fa",
+    },
+    tailscale: {
+      body: "#253a59",
+      trim: "#14243a",
+      fixture: "#d1af63",
+      screen: "#9ceaff",
+    },
+    "agent-inbox": {
+      body: "#4e6472",
+      trim: "#22333d",
+      fixture: "#c88e5d",
+      screen: "#d8f3ff",
+    },
+    "ci-repair-shop": {
+      body: "#656848",
+      trim: "#2e3a31",
+      fixture: "#315f68",
+      screen: "#fff0b8",
+    },
+    wandb: {
+      body: "#615574",
+      trim: "#342c46",
+      fixture: "#b16a47",
+      screen: "#ffe7a8",
     },
     "google-drive": {
       body: "#506d58",
@@ -14278,8 +14873,7 @@ async function handleVisualGameHit(hit) {
   }
 
   if (hit.kind === "new-session") {
-    state.defaultProviderId = getSelectedSessionProviderId();
-    await createSessionInFolder(getAgentSpawnPath());
+    await startNewAgentFromUi({ openInTown: true });
   }
 }
 
@@ -14365,7 +14959,7 @@ function drawVisualGameScene(context, graph, model, time, hitAreas, visibleWorld
   if (isVideoMemoryPluginInstalled()) {
     drawVisualGameCameraRoom(context, hitAreas, time, cameraAgents);
   }
-  drawAgentTownInstalledPluginBuildings(context, hitAreas);
+  drawAgentTownInstalledPluginBuildings(context, hitAreas, time);
   drawVisualGameGpuFactories(context, hitAreas, model.gpuFactories, time);
   if (isLocalhostAppsEnabled()) {
     drawVisualGameDock(context, hitAreas, time);
@@ -14586,7 +15180,72 @@ function drawVisualGameBuilding(context, hitAreas, building) {
   pushAgentTownPlaceHit(hitAreas, { ...building, rect, baseRect: building.baseRect || rect }, action);
 }
 
-function drawAgentTownInstalledPluginBuildings(context, hitAreas) {
+function drawVisualGamePortalBuilding(context, hitAreas, building, time = 0) {
+  const rect = building.rect || building;
+  const { x, y, width, height } = rect;
+  const { label, meta, body, trim, fixture, screen, action, issue } = building;
+  const portalTrim = trim || "#14243a";
+  const portalScreen = screen || "#9ceaff";
+  const glow = 0.34 + Math.sin(time / 260) * 0.08;
+  const centerX = x + width / 2;
+  const centerY = y + height - 29;
+
+  drawVisualGameRoomFloor(context, x, y, width, height, {
+    floor: body || "#253a59",
+    trim: portalTrim,
+    entrance: "bottom",
+  });
+  drawVisualGameBuildingSign(context, x + 8, y + 7, Math.min(width - 16, 88), 23, label, meta);
+
+  context.fillStyle = "rgba(9, 15, 28, 0.32)";
+  context.fillRect(x + 13, y + height - 11, width - 26, 7);
+  context.fillStyle = fixture || "#d1af63";
+  context.fillRect(x + 18, y + height - 16, width - 36, 6);
+  context.fillStyle = portalTrim;
+  context.fillRect(x + 16, y + height - 20, 11, 22);
+  context.fillRect(x + width - 27, y + height - 20, 11, 22);
+  context.fillRect(x + 21, y + height - 25, width - 42, 5);
+
+  context.save();
+  context.translate(centerX, centerY - 9);
+  context.fillStyle = "#0e1b34";
+  context.beginPath();
+  context.ellipse(0, 0, 23, 32, 0, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = portalTrim;
+  context.lineWidth = 7;
+  context.stroke();
+  context.strokeStyle = "rgba(209, 175, 99, 0.88)";
+  context.lineWidth = 3;
+  context.stroke();
+
+  context.fillStyle = `rgba(156, 234, 255, ${0.52 + glow * 0.35})`;
+  context.beginPath();
+  context.ellipse(0, 1, 15, 23, 0, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = `rgba(78, 105, 215, ${0.72 + glow * 0.2})`;
+  context.beginPath();
+  context.ellipse(0, 3, 9, 16, 0, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = `rgba(255, 255, 255, ${0.26 + glow * 0.22})`;
+  context.fillRect(-11, -10, 22, 3);
+  context.fillRect(-7, 6, 14, 2);
+  context.restore();
+
+  context.fillStyle = portalScreen;
+  context.fillRect(x + 18, y + height - 36, 8, 8);
+  context.fillRect(x + width - 26, y + height - 36, 8, 8);
+  context.fillStyle = `rgba(156, 234, 255, ${0.18 + glow * 0.25})`;
+  context.fillRect(x + 14, y + height - 40, width - 28, 18);
+
+  if (issue) {
+    drawVisualGameBuildingIssueBadge(context, rect);
+  }
+
+  pushAgentTownPlaceHit(hitAreas, { ...building, rect, baseRect: building.baseRect || rect }, action);
+}
+
+function drawAgentTownInstalledPluginBuildings(context, hitAreas, time = 0) {
   for (const blueprint of getAgentTownPluginBuildingBlueprints()) {
     const building = getVisualGameTownVirtualPlace({
       ...blueprint,
@@ -14597,6 +15256,18 @@ function drawAgentTownInstalledPluginBuildings(context, hitAreas) {
         y: blueprint.baseRect.y + blueprint.baseRect.height,
       },
     });
+    if (blueprint.shape === "portal") {
+      drawVisualGamePortalBuilding(context, hitAreas, {
+        ...building,
+        body: blueprint.body,
+        trim: blueprint.trim,
+        fixture: blueprint.fixture,
+        screen: blueprint.screen,
+        issue: blueprint.issue,
+        action: blueprint.action,
+      }, time);
+      continue;
+    }
     drawVisualGameBuilding(context, hitAreas, {
       ...building,
       body: blueprint.body,
@@ -15947,8 +16618,8 @@ function hasVisualGameLibraryActivity(agent) {
 function isVisualGameLibraryReference(value) {
   const text = String(value || "").toLowerCase();
   return (
-    text.includes(".vibe-research/wiki")
-    || text.includes("vibe-research/buildings/library")
+    text.includes("vibe-research/buildings/library")
+    || text.includes(".vibe-research/wiki")
     || text.includes("/wiki/")
     || text.includes("knowledge-base")
     || text.includes("knowledge_base")
@@ -15956,23 +16627,17 @@ function isVisualGameLibraryReference(value) {
 }
 
 function getVisualGameAgentKey(agent, index) {
-  return [
-    agent.browserUseSessionId || "",
-    agent.ottoAuthSessionId || "",
-    agent.videoMemoryMonitorId || "",
-    agent.sessionId || "",
-    agent.parentSessionId || "",
-    agent.kind || "",
-    agent.name || "",
-    index,
-  ].join(":");
+  return getVisualGameAgentIdentityKey(agent, index);
 }
 
 function getVisualGameAnimatedPosition(agent, target, time) {
   const previous = state.visualGame.agentPositions.get(agent.key);
   if (agent.destination === "roam" && (!previous || (previous.destination === "roam" && !previous.walking))) {
-    state.visualGame.agentPositions.set(agent.key, { x: target.x, y: target.y, destination: agent.destination, updatedAt: time });
-    return { x: target.x, y: target.y, walking: false };
+    return setVisualGameStationaryAgentPosition(agent, target, time);
+  }
+
+  if (!previous && agent.destination === "sleep") {
+    return setVisualGameStationaryAgentPosition(agent, target, time);
   }
 
   if (agent.destination === "roam" && previous?.destination === "roam" && previous.walking) {
@@ -15982,7 +16647,7 @@ function getVisualGameAnimatedPosition(agent, target, time) {
     }
   }
 
-  const spawn = previous || { ...getVisualGameRoamSpot(agent, agent.index, time), destination: "roam", updatedAt: time };
+  const spawn = previous || getVisualGameInitialAgentSpawn(agent, time);
   const current = { x: spawn.x, y: spawn.y };
   const needsRoute =
     !Array.isArray(spawn.route)
@@ -16047,6 +16712,45 @@ function getVisualGameAnimatedPosition(agent, target, time) {
 
   state.visualGame.agentPositions.set(agent.key, next);
   return { x: next.x, y: next.y, walking: next.walking };
+}
+
+function setVisualGameStationaryAgentPosition(agent, target, time) {
+  const routeAnchor = getVisualGameTargetRouteAnchor(target);
+  const next = {
+    x: target.x,
+    y: target.y,
+    destination: agent.destination,
+    updatedAt: time,
+    route: [{ x: target.x, y: target.y }],
+    routeIndex: 1,
+    targetX: target.x,
+    targetY: target.y,
+    routeAnchor,
+    walking: false,
+  };
+  state.visualGame.agentPositions.set(agent.key, next);
+  return { x: next.x, y: next.y, walking: false };
+}
+
+function getVisualGameInitialAgentSpawn(agent, time) {
+  if (!agent.isSubagent) {
+    const sleepSpot = getVisualGameSleepSpot(agent, Math.max(0, Number(agent.familyIndex ?? agent.index) || 0));
+    return {
+      ...sleepSpot,
+      destination: "sleep",
+      updatedAt: time,
+      targetX: sleepSpot.x,
+      targetY: sleepSpot.y,
+      routeAnchor: getVisualGameTargetRouteAnchor(sleepSpot),
+      walking: false,
+    };
+  }
+
+  return {
+    ...getVisualGameRoamSpot(agent, agent.index, time),
+    destination: "roam",
+    updatedAt: time,
+  };
 }
 
 function getVisualGameAgentPathRoute(start, target, previous) {
@@ -16668,8 +17372,9 @@ function getWorkspaceViewTabConfig(view) {
     shell: { label: "Terminal", meta: "shell", icon: Bot },
     "knowledge-base": { label: "Library", meta: "notes", icon: BookOpen },
     "agent-prompt": { label: "Occupations", meta: "prompts", icon: FilePenLine },
+    "agent-inbox": { label: "Agent Inbox", meta: "attention", icon: Inbox },
     search: { label: "Search", meta: "global", icon: Search },
-    plugins: { label: "Buildings", meta: "integrations", icon: Plug },
+    plugins: { label: "BuildingHub", meta: "catalog", icon: Plug },
     settings: { label: "Settings", meta: "app", icon: Settings },
     automations: { label: "Automations", meta: "scheduled", icon: CalendarClock },
     system: { label: "System", meta: "metrics", icon: ServerCog },
@@ -17212,6 +17917,9 @@ function renderPassiveWorkspaceView(tab) {
   if (view === "settings") {
     return renderSettingsView();
   }
+  if (view === "agent-inbox") {
+    return renderAgentInboxView();
+  }
   if (view === "automations") {
     return renderAutomationsView();
   }
@@ -17297,6 +18005,10 @@ function renderTerminalPanel(activeSession) {
     return renderSettingsView();
   }
 
+  if (state.currentView === "agent-inbox") {
+    return renderAgentInboxView();
+  }
+
   if (state.currentView === "automations") {
     return renderAutomationsView();
   }
@@ -17343,7 +18055,7 @@ function renderTerminalPanel(activeSession) {
             bottom
           </button>
           <div class="empty-state ${activeSession ? "hidden" : ""}" id="empty-state">
-            <p class="empty-state-copy">open the menu, choose a CLI, then pick or create a folder to start a session</p>
+            <p class="empty-state-copy">choose an agent, then start a session in the default folder</p>
           </div>
         </div>
         ${renderWorkspaceResizeHandle()}
@@ -17743,6 +18455,7 @@ const MAIN_VIEW_SCROLL_TARGETS = [
   ["dashboardGrid", ".dashboard-grid"],
   ["searchResults", "#global-search-results"],
   ["pluginsLayout", ".plugins-layout"],
+  ["agentInbox", "#agent-inbox-list"],
   ["automationGrid", ".automation-grid"],
   ["systemDashboard", ".system-dashboard"],
   ["knowledgeBaseGrid", ".knowledge-base-grid"],
@@ -17884,10 +18597,24 @@ function renderBrainSetupScreen() {
         <span class="brain-setup-eyebrow">Vibe Research</span>
         <h1 id="brain-setup-title">Choose your workspace</h1>
         <p>
-          Vibe Research stores its shared Library and new agent work inside one
-          workspace folder. Select an existing local folder, or clone a Library
-          from GitHub.
+          Pick one folder for Vibe Research data. The Library will live in
+          <code>${escapeHtml(WORKSPACE_LIBRARY_RELATIVE_PATH)}</code>, and new agents will work in
+          <code>${escapeHtml(WORKSPACE_USER_RELATIVE_PATH)}</code>.
         </p>
+        <div class="brain-setup-option-grid" aria-label="Workspace setup options">
+          <button class="brain-setup-option" type="button" data-folder-picker-target="wiki-onboarding">
+            <strong>Create workspace</strong>
+            <span>Open the folder chooser and use the new folder field.</span>
+          </button>
+          <button class="brain-setup-option" type="button" data-folder-picker-target="wiki-onboarding">
+            <strong>Use existing folder</strong>
+            <span>Pick a folder already on this computer.</span>
+          </button>
+          <button class="brain-setup-option" type="button" data-focus-brain-git>
+            <strong>Clone from GitHub</strong>
+            <span>Paste a repo URL and Vibe Research will clone it locally.</span>
+          </button>
+        </div>
         <div class="brain-setup-picker">
           <h2>Select a workspace folder</h2>
           <p>
@@ -17990,8 +18717,9 @@ function renderShell() {
     "knowledge-base": "Library · Vibe Research",
     "agent-prompt": "Occupations · Vibe Research",
     search: "Search · Vibe Research",
-    plugins: "Buildings · Vibe Research",
+    plugins: "BuildingHub · Vibe Research",
     settings: "Settings · Vibe Research",
+    "agent-inbox": "Agent Inbox · Vibe Research",
     automations: "Automations · Vibe Research",
     system: "System · Vibe Research",
     "visual-interface": "Agent Town · Vibe Research",
@@ -17999,7 +18727,7 @@ function renderShell() {
     "browser-use": "Browser Use · Vibe Research",
   };
   const detailPlugin = state.currentView === "plugins" ? getCurrentPluginDetail() : null;
-  document.title = detailPlugin ? `${detailPlugin.name} · Buildings · Vibe Research` : viewTitles[state.currentView] || "Vibe Research";
+  document.title = detailPlugin ? `${detailPlugin.name} · BuildingHub · Vibe Research` : viewTitles[state.currentView] || "Vibe Research";
   ensureVisualGameSimulationLoop();
 
   const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) || null;
@@ -18026,7 +18754,7 @@ function renderShell() {
             <div class="section-head">
               <span>Threads</span>
               <div class="section-actions">
-                <button class="icon-button sidebar-head-button" type="button" data-folder-picker-target="session" aria-label="Add project" ${tooltipAttributes("Add project")}>${renderIcon(FolderPlus)}</button>
+                <button class="icon-button sidebar-head-button" type="button" data-start-new-agent aria-label="New agent" ${tooltipAttributes("New agent")}>${renderIcon(FolderPlus)}</button>
               </div>
             </div>
             <div class="list-shell" id="sessions-list">${renderSessionCards()}</div>
@@ -18217,8 +18945,14 @@ function flushDeferredSelectableRefreshes({ force = false } = {}) {
     return;
   }
 
-  if (refreshes.has("sessions")) {
-    refreshSessionsList({ force: true });
+  if (refreshes.has("sessions") || refreshes.has("agent-inbox")) {
+    if (refreshes.has("sessions")) {
+      refreshSessionsList({ force: true, bindEvents: false });
+    }
+    if (refreshes.has("agent-inbox")) {
+      refreshAgentInboxUi({ force: true, bindEvents: false });
+    }
+    bindSessionEvents();
   }
 
   if (refreshes.has("ports")) {
@@ -18491,7 +19225,9 @@ function bindSessionEvents() {
       }
 
       if (markSessionRead(sessionId, { refresh: false })) {
-        refreshSessionsList({ force: true });
+        refreshSessionsList({ force: true, bindEvents: false });
+        refreshAgentInboxUi({ force: true, bindEvents: false });
+        bindSessionEvents();
       }
     });
   });
@@ -18634,7 +19370,7 @@ function bindSessionEvents() {
   });
 }
 
-function refreshSessionsList({ force = false } = {}) {
+function refreshSessionsList({ force = false, bindEvents = true } = {}) {
   const sessionsList = document.querySelector("#sessions-list");
   if (!sessionsList) {
     return;
@@ -18656,7 +19392,32 @@ function refreshSessionsList({ force = false } = {}) {
 
   state.sessionsRefreshDeferred = false;
   sessionsList.innerHTML = renderSessionCards();
-  bindSessionEvents();
+  if (bindEvents) {
+    bindSessionEvents();
+  }
+}
+
+function refreshAgentInboxUi({ force = false, bindEvents = true } = {}) {
+  const inboxList = document.querySelector("#agent-inbox-list");
+  const inboxSummary = document.querySelector("#agent-inbox-summary");
+  if (!inboxList && !inboxSummary) {
+    return;
+  }
+
+  if (shouldDeferSelectableRefresh({ force })) {
+    deferSelectableRefresh("agent-inbox");
+    return;
+  }
+
+  if (inboxSummary) {
+    inboxSummary.innerHTML = renderAgentInboxSummaryCards();
+  }
+  if (inboxList) {
+    inboxList.innerHTML = renderAgentInboxCards();
+  }
+  if (bindEvents) {
+    bindSessionEvents();
+  }
 }
 
 function refreshPortsList({ force = false } = {}) {
@@ -18713,17 +19474,18 @@ function refreshGlobalSearchUi() {
 }
 
 function refreshPluginSearchUi() {
-  const count = document.querySelector(".plugins-view .main-search-count");
-  if (count) {
+  document.querySelectorAll("[data-plugin-search-count]").forEach((count) => {
     count.textContent = `${getFilteredPlugins().length} shown`;
-  }
+  });
 
-  const results = document.querySelector("#plugin-results");
-  if (!results) {
+  const resultContainers = document.querySelectorAll("[data-plugin-results]");
+  if (!resultContainers.length) {
     return;
   }
 
-  results.innerHTML = renderPluginCards();
+  resultContainers.forEach((results) => {
+    results.innerHTML = renderPluginCards();
+  });
   bindPluginCardEvents();
   bindBrowserUseForm();
   bindOttoAuthForm();
@@ -20945,8 +21707,7 @@ function bindWorkspaceTabEvents() {
         state.activeWorkspaceGroupId = group.dataset.workspaceGroup || state.activeWorkspaceGroupId;
         saveWorkspaceGroupsState();
       }
-      state.defaultProviderId = getSelectedSessionProviderId();
-      await createSessionInFolder(getAgentSpawnPath());
+      await startNewAgentFromUi();
     });
   });
 }
@@ -21129,7 +21890,9 @@ function refreshShellUi({ sessions = true, ports = true, files = true } = {}) {
   refreshKnowledgeSettingsUi();
 
   if (sessions) {
-    refreshSessionsList();
+    refreshSessionsList({ bindEvents: false });
+    refreshAgentInboxUi({ bindEvents: false });
+    bindSessionEvents();
   }
 
   if (ports) {
@@ -21768,7 +22531,10 @@ function syncViewFromLocation() {
   const route = getRouteState();
   const previousView = state.currentView;
   state.currentView = route.view;
-  state.pluginDetailId = route.view === "plugins" && getPluginById(route.buildingId) ? normalizeBuildingId(route.buildingId) : "";
+  state.pluginDetailId =
+    route.view === "plugins" && normalizeBuildingId(route.buildingId) !== "buildinghub" && getPluginById(route.buildingId)
+      ? normalizeBuildingId(route.buildingId)
+      : "";
 
   if (route.view === "knowledge-base") {
     if (previousView !== "knowledge-base") {
@@ -21817,7 +22583,10 @@ function setCurrentView(nextView, {
 
   if (ROUTED_MAIN_VIEWS.has(nextView)) {
     state.currentView = nextView;
-    state.pluginDetailId = nextView === "plugins" && getPluginById(buildingId) ? normalizeBuildingId(buildingId) : "";
+    state.pluginDetailId =
+      nextView === "plugins" && normalizeBuildingId(buildingId) !== "buildinghub" && getPluginById(buildingId)
+        ? normalizeBuildingId(buildingId)
+        : "";
     updateRoute({ view: nextView, buildingId: state.pluginDetailId });
     return;
   }
@@ -22167,12 +22936,19 @@ function bindSessionProviderPicker() {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      if (!(button instanceof HTMLButtonElement)) {
         return;
       }
 
       const providerId = button.getAttribute("data-session-provider-option") || "";
       if (!providerId) {
+        return;
+      }
+
+      const provider = getProviderById(providerId);
+      if (provider && !provider.available) {
+        closeSessionProviderPicker();
+        void startProviderInstallSession(provider);
         return;
       }
 
@@ -22350,13 +23126,46 @@ function bindShellEvents() {
     });
   });
 
+  document.querySelectorAll("[data-onboarding-provider-start]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const providerId = button.getAttribute("data-onboarding-provider-start") || "";
+      const provider = getProviderById(providerId);
+      if (!provider?.available) {
+        return;
+      }
+
+      state.defaultProviderId = providerId;
+      await startNewAgentFromUi({ openInTown: true });
+    });
+  });
+
+  document.querySelectorAll("[data-start-new-agent]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      await startNewAgentFromUi({
+        openInTown: button.getAttribute("data-start-new-agent") === "town",
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-onboarding-provider-install]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const providerId = button.getAttribute("data-onboarding-provider-install") || "";
+      const provider = getProviderById(providerId);
+      if (provider) {
+        void startProviderInstallSession(provider);
+      }
+    });
+  });
+
   document.querySelectorAll("[data-folder-picker-target]").forEach((button) => {
     button.addEventListener("click", async () => {
       const target = button.getAttribute("data-folder-picker-target") || "session";
       const isWikiTarget = target === "wiki" || target === "wiki-onboarding";
       if (target === "session") {
-        state.defaultProviderId = getSelectedSessionProviderId();
-        await createSessionInFolder(getAgentSpawnPath());
+        await startNewAgentFromUi();
         return;
       }
 
@@ -22384,6 +23193,13 @@ function bindShellEvents() {
               : state.defaultCwd;
 
       await loadFolderPicker(initialPath, { target });
+    });
+  });
+
+  document.querySelectorAll("[data-focus-brain-git]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      document.querySelector("#brain-git-url")?.focus();
     });
   });
 
@@ -23387,6 +24203,28 @@ function sendResize() {
   );
 }
 
+function flushPendingSessionInputs(sessionId, socket) {
+  const pendingInputs = state.pendingSessionInputs[sessionId] || [];
+  if (!pendingInputs.length) {
+    return;
+  }
+
+  delete state.pendingSessionInputs[sessionId];
+  for (const pendingInput of pendingInputs) {
+    window.setTimeout(() => {
+      if (
+        state.websocket !== socket ||
+        state.connectedSessionId !== sessionId ||
+        socket.readyState !== WebSocket.OPEN
+      ) {
+        return;
+      }
+
+      socket.send(JSON.stringify({ type: "input", data: pendingInput.data }));
+    }, Math.max(0, Number(pendingInput.delayMs) || 0));
+  }
+}
+
 function connectToSession(sessionId) {
   if (!state.terminal || !sessionId) {
     return;
@@ -23426,6 +24264,7 @@ function connectToSession(sessionId) {
       state.terminal.focus();
     }
     syncTerminalScrollState();
+    flushPendingSessionInputs(sessionId, socket);
   });
 
   socket.addEventListener("message", (event) => {
@@ -23622,6 +24461,13 @@ async function loadSessions() {
     if (state.currentView !== "shell") {
       if (isVisualInterfaceView() && (sessionIdsChanged || visualSelectionPruned)) {
         renderShell();
+        return;
+      }
+
+      if (state.currentView === "agent-inbox") {
+        refreshSessionsList({ bindEvents: false });
+        refreshAgentInboxUi({ bindEvents: false });
+        bindSessionEvents();
         return;
       }
 
@@ -24033,8 +24879,12 @@ async function saveSettingsFromForm(form) {
 
   applySettingsState(payload.settings);
   if (hasField("wikiPath")) {
-    state.settings.wikiPath = wikiPath;
-    state.settings.wikiPathConfigured = true;
+    state.settings.wikiPath = payload.settings?.wikiPath || wikiPath || state.settings.wikiPath;
+    state.settings.wikiPathConfigured = Boolean(state.settings.wikiPath);
+  }
+  if (hasField("agentSpawnPath")) {
+    state.settings.agentSpawnPath = payload.settings?.agentSpawnPath || agentSpawnPath || state.settings.agentSpawnPath;
+    state.defaultCwd = state.settings.agentSpawnPath || state.defaultCwd;
   }
   if (hasField("agentSpawnPath")) {
     state.settings.agentSpawnPath = payload.settings?.agentSpawnPath || agentSpawnPath || state.settings.agentSpawnPath;

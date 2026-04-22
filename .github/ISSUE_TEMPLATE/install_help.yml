@@ -1,0 +1,38 @@
+name: Install or update help
+description: Get help with installing, starting, or updating Vibe Research.
+title: "[Install]: "
+labels: ["install"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please remove secrets before posting logs. The official installer is `curl -fsSL https://vibe-research.net/install.sh | bash`.
+  - type: textarea
+    id: command
+    attributes:
+      label: Command run
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output or error
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and hardware
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node and npm versions
+      placeholder: node v22.x, npm 10.x
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context

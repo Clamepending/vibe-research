@@ -97,6 +97,7 @@ function installTestEnv(overrides = {}) {
     ...process.env,
     VIBE_RESEARCH_INSTALL_SYSTEM_DEPS: "0",
     VIBE_RESEARCH_INSTALL_TAILSCALE: "0",
+    VIBE_RESEARCH_INSTALL_CLAUDE_CODE: "0",
     VIBE_RESEARCH_INSTALL_SERVICE: "0",
     ...overrides,
   };
@@ -202,6 +203,82 @@ test("install.sh defaults to an app checkout under the home Vibe Research direct
     assert.ok(await stat(path.join(installDir, "start.sh")));
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("install.sh installs Claude Code by default when it is missing", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-claude-install-"));
+  const homeDir = path.join(installRoot, "home");
+  const installDir = path.join(installRoot, "vibe-research");
+  const fakeBin = path.join(installRoot, "bin");
+  const claudeInstallLog = path.join(installRoot, "claude-install.log");
+
+  try {
+    await mkdir(fakeBin, { recursive: true });
+    await mkdir(homeDir, { recursive: true });
+    await writeFile(
+      path.join(fakeBin, "claude"),
+      "#!/usr/bin/env sh\nprintf 'not installed yet\\n' >&2\nexit 127\n",
+    );
+    await writeFile(
+      path.join(fakeBin, "curl"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -*)
+      shift
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+if [ "$url" != "https://claude.ai/install.sh" ]; then
+  printf 'unexpected curl URL: %s\\n' "$url" >&2
+  exit 1
+fi
+cat <<'CLAUDE_INSTALLER'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'installed via native installer\\n' >> ${JSON.stringify(claudeInstallLog)}
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/claude" <<'CLAUDE_BIN'
+#!/usr/bin/env sh
+if [ "\${1:-}" = "--version" ]; then
+  printf 'Claude Code 2.1.99\\n'
+  exit 0
+fi
+exit 0
+CLAUDE_BIN
+chmod +x "$HOME/.local/bin/claude"
+CLAUDE_INSTALLER
+`,
+    );
+    await execFile("chmod", ["+x", path.join(fakeBin, "claude"), path.join(fakeBin, "curl")]);
+
+    const result = await execFile("bash", [installScript], {
+      env: installTestEnv({
+        HOME: homeDir,
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+        VIBE_RESEARCH_HOME: installDir,
+        VIBE_RESEARCH_REPO_URL: repoDir,
+        VIBE_RESEARCH_INSTALL_CLAUDE_CODE: "1",
+        VIBE_RESEARCH_SKIP_RUN: "1",
+      }),
+    });
+
+    assert.match(result.stdout, /Installing Claude Code using Anthropic's native installer/);
+    assert.match(result.stdout, /Using Claude Code Claude Code 2\.1\.99/);
+    assert.equal((await readFile(claudeInstallLog, "utf8")).trim(), "installed via native installer");
+    assert.ok(await stat(path.join(homeDir, ".local", "bin", "claude")));
+    assert.ok(await stat(path.join(installDir, "start.sh")));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
   }
 });
 
@@ -381,6 +458,53 @@ exit 0
   }
 });
 
+test("install.sh does not require Tailscale login by default", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-tailscale-optional-"));
+  const installDir = path.join(installRoot, "vibe-research");
+  const fakeBin = path.join(installRoot, "bin");
+  const tailscaleLog = path.join(installRoot, "tailscale.log");
+
+  try {
+    await mkdir(fakeBin, { recursive: true });
+    await writeFile(
+      path.join(fakeBin, "tailscale"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> ${JSON.stringify(tailscaleLog)}
+if [ "\${1:-}" = "ip" ]; then
+  exit 1
+fi
+if [ "\${1:-}" = "up" ]; then
+  printf 'tailscale up should not run in auto mode\\n' >&2
+  exit 42
+fi
+exit 0
+`,
+    );
+    await execFile("chmod", ["+x", path.join(fakeBin, "tailscale")]);
+
+    const env = installTestEnv({
+      PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+      VIBE_RESEARCH_HOME: installDir,
+      VIBE_RESEARCH_REPO_URL: repoDir,
+      VIBE_RESEARCH_SKIP_RUN: "1",
+    });
+    delete env.VIBE_RESEARCH_INSTALL_TAILSCALE;
+    delete env.REMOTE_VIBES_INSTALL_TAILSCALE;
+
+    const result = await execFile("bash", [installScript], { env });
+
+    assert.match(result.stdout, /Tailscale is installed but not connected; continuing with local\/LAN URLs/);
+    assert.doesNotMatch(result.stdout, /Starting Tailscale/);
+    assert.ok(await stat(path.join(installDir, "start.sh")));
+    assert.deepEqual((await readFile(tailscaleLog, "utf8")).trim().split("\n"), ["ip -4"]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
 test("install.sh starts tailscaled before Tailscale login on Linux", async () => {
   const { tempRoot, repoDir } = await createSourceRepo();
   const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-tailscaled-install-"));
@@ -395,6 +519,7 @@ test("install.sh starts tailscaled before Tailscale login on Linux", async () =>
     await mkdir(fakeBin, { recursive: true });
     await writeFile(path.join(fakeBin, "uname"), "#!/usr/bin/env sh\nprintf 'Linux\\n'\n");
     await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await writeFile(path.join(fakeBin, "service"), "#!/usr/bin/env sh\nexit 1\n");
     await writeFile(
       path.join(fakeBin, "systemctl"),
       `#!/usr/bin/env bash
@@ -440,7 +565,10 @@ fi
 exit 0
 `,
     );
-    await execFile("chmod", ["+x", ...["uname", "sudo", "systemctl", "tailscale"].map((name) => path.join(fakeBin, name))]);
+    await execFile("chmod", [
+      "+x",
+      ...["uname", "sudo", "service", "systemctl", "tailscale"].map((name) => path.join(fakeBin, name)),
+    ]);
 
     const result = await execFile("bash", [installScript], {
       env: installTestEnv({
@@ -488,6 +616,7 @@ test("install.sh retries Tailscale login after a tailscaled startup race", async
     await mkdir(fakeBin, { recursive: true });
     await writeFile(path.join(fakeBin, "uname"), "#!/usr/bin/env sh\nprintf 'Linux\\n'\n");
     await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await writeFile(path.join(fakeBin, "service"), "#!/usr/bin/env sh\nexit 1\n");
     await writeFile(
       path.join(fakeBin, "systemctl"),
       `#!/usr/bin/env bash
@@ -541,7 +670,10 @@ fi
 exit 0
 `,
     );
-    await execFile("chmod", ["+x", ...["uname", "sudo", "systemctl", "tailscale"].map((name) => path.join(fakeBin, name))]);
+    await execFile("chmod", [
+      "+x",
+      ...["uname", "sudo", "service", "systemctl", "tailscale"].map((name) => path.join(fakeBin, name)),
+    ]);
 
     const result = await execFile("bash", [installScript], {
       env: installTestEnv({
@@ -594,6 +726,7 @@ test("install.sh falls back to userspace tailscaled when service startup cannot 
   try {
     await mkdir(fakeBin, { recursive: true });
     await writeFile(path.join(fakeBin, "uname"), "#!/usr/bin/env sh\nprintf 'Linux\\n'\n");
+    await writeFile(path.join(fakeBin, "service"), "#!/usr/bin/env sh\nexit 1\n");
     await writeFile(
       path.join(fakeBin, "sudo"),
       `#!/usr/bin/env bash
@@ -659,7 +792,10 @@ fi
 exit 0
 `,
     );
-    await execFile("chmod", ["+x", ...["uname", "sudo", "systemctl", "tailscaled", "tailscale"].map((name) => path.join(fakeBin, name))]);
+    await execFile("chmod", [
+      "+x",
+      ...["uname", "sudo", "service", "systemctl", "tailscaled", "tailscale"].map((name) => path.join(fakeBin, name)),
+    ]);
 
     const result = await execFile("bash", [installScript], {
       env: installTestEnv({
@@ -1031,6 +1167,12 @@ test("install.sh can launch vibe research in one command", async () => {
     assert.equal(exitCode, 0);
     assert.match(combinedOutput, /Background server pid:/);
     assert.match(combinedOutput, /will keep running after this terminal closes/);
+    assert.match(combinedOutput, /OPEN VIBE RESEARCH/);
+    assert.match(combinedOutput, new RegExp(`http://localhost:${port}`));
+    assert.match(combinedOutput, /\u001b]8;;http:\/\//);
+    assert.ok(
+      combinedOutput.lastIndexOf("OPEN VIBE RESEARCH") > combinedOutput.lastIndexOf("Background server pid:"),
+    );
     assert.match(combinedOutput, new RegExp(`State directory: ${escapeRegExp(path.join(installRoot, "state"))}`));
     assert.match(combinedOutput, new RegExp(`Library directory: ${escapeRegExp(path.join(installRoot, "mac-brain"))}`));
     assert.ok(await stat(path.join(installRoot, "state", ".git")));
@@ -1041,6 +1183,8 @@ test("install.sh can launch vibe research in one command", async () => {
     const payload = await response.json();
     assert.equal(payload.appName, "Vibe Research");
     assert.equal(payload.stateDir, path.join(installRoot, "state"));
+    assert.equal(payload.settings.wikiPathConfigured, true);
+    assert.equal(payload.settings.wikiPath, path.join(installRoot, "mac-brain"));
 
     const pidMatch = combinedOutput.match(/Background server pid: (\d+)/);
     assert.ok(pidMatch);

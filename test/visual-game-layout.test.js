@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   VISUAL_GAME_MAP_LAYOUT,
   findVisualGameRoadRoute,
+  getVisualGameAgentIdentityKey,
   getVisualGamePlace,
   getVisualGamePlaceAnchor,
   getVisualGamePlaceItemSlots,
@@ -12,6 +13,50 @@ import {
 
 test("visual game map layout has no overlapping spaces or diagonal roads", () => {
   assert.deepEqual(validateVisualGameLayout(VISUAL_GAME_MAP_LAYOUT), []);
+});
+
+test("visual game agent identity keys stay stable across wake-up reorderings", () => {
+  const sleepingSession = getVisualGameAgentIdentityKey(
+    { sessionId: "session-1", kind: "chat", name: "Quiet Agent" },
+    7,
+  );
+  const awakeSession = getVisualGameAgentIdentityKey(
+    { sessionId: "session-1", kind: "chat", name: "Renamed Agent" },
+    0,
+  );
+
+  assert.equal(awakeSession, sleepingSession);
+});
+
+test("visual game agent identity keys prefer child agent ids over parent session ids", () => {
+  assert.equal(
+    getVisualGameAgentIdentityKey({
+      sessionId: "parent-session",
+      browserUseSessionId: "browser-child",
+      kind: "browser",
+      name: "Browser task",
+    }),
+    "browser:browser-child",
+  );
+  assert.equal(
+    getVisualGameAgentIdentityKey({
+      sessionId: "parent-session",
+      subagentId: "claude-parent:agent-123",
+      agentId: "display-123",
+      kind: "helper",
+      name: "Read docs",
+    }),
+    "subagent:claude-parent:agent-123",
+  );
+  assert.equal(
+    getVisualGameAgentIdentityKey({
+      parentSessionId: "parent-session",
+      agentId: "display-123",
+      kind: "helper",
+      name: "Read docs",
+    }),
+    "subagent:parent-session:display-123",
+  );
 });
 
 test("visual game roads render as exact grid cells", () => {

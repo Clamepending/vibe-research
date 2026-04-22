@@ -13,10 +13,12 @@ REPO_URL="${VIBE_RESEARCH_REPO_URL:-${REMOTE_VIBES_REPO_URL:-}}"
 UPDATE_CHANNEL="${VIBE_RESEARCH_UPDATE_CHANNEL:-${REMOTE_VIBES_UPDATE_CHANNEL:-release}}"
 SKIP_RUN="${VIBE_RESEARCH_SKIP_RUN:-${REMOTE_VIBES_SKIP_RUN:-0}}"
 INSTALL_SYSTEM_DEPS="${VIBE_RESEARCH_INSTALL_SYSTEM_DEPS:-${REMOTE_VIBES_INSTALL_SYSTEM_DEPS:-1}}"
-INSTALL_TAILSCALE="${VIBE_RESEARCH_INSTALL_TAILSCALE:-${REMOTE_VIBES_INSTALL_TAILSCALE:-1}}"
+INSTALL_TAILSCALE="${VIBE_RESEARCH_INSTALL_TAILSCALE:-${REMOTE_VIBES_INSTALL_TAILSCALE:-auto}}"
+INSTALL_CLAUDE_CODE="${VIBE_RESEARCH_INSTALL_CLAUDE_CODE:-${REMOTE_VIBES_INSTALL_CLAUDE_CODE:-1}}"
 INSTALL_SERVICE="${VIBE_RESEARCH_INSTALL_SERVICE:-${REMOTE_VIBES_INSTALL_SERVICE:-1}}"
 TAILSCALE_UP="${VIBE_RESEARCH_TAILSCALE_UP:-${REMOTE_VIBES_TAILSCALE_UP:-1}}"
 TAILSCALE_COMMAND="${VIBE_RESEARCH_TAILSCALE_COMMAND:-${REMOTE_VIBES_TAILSCALE_COMMAND:-tailscale}}"
+CLAUDE_COMMAND="${VIBE_RESEARCH_CLAUDE_COMMAND:-${REMOTE_VIBES_CLAUDE_COMMAND:-claude}}"
 TAILSCALE_AUTHKEY="${VIBE_RESEARCH_TAILSCALE_AUTHKEY:-${REMOTE_VIBES_TAILSCALE_AUTHKEY:-}}"
 TAILSCALE_USE_SUDO="${VIBE_RESEARCH_TAILSCALE_USE_SUDO:-${REMOTE_VIBES_TAILSCALE_USE_SUDO:-1}}"
 TAILSCALE_DAEMON_WAIT_SECONDS="${VIBE_RESEARCH_TAILSCALE_DAEMON_WAIT_SECONDS:-${REMOTE_VIBES_TAILSCALE_DAEMON_WAIT_SECONDS:-15}}"
@@ -241,6 +243,92 @@ ensure_node() {
   fi
 
   log "Using Node $(node -v) and npm $(npm -v)"
+}
+
+prepend_path_dir() {
+  local dir="$1"
+
+  if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+    return
+  fi
+
+  case ":$PATH:" in
+    *:"$dir":*) ;;
+    *)
+      PATH="$dir:$PATH"
+      export PATH
+      ;;
+  esac
+}
+
+refresh_claude_command() {
+  local resolved native_bin
+  native_bin="$HOME/.local/bin/claude"
+
+  if [ -x "$native_bin" ]; then
+    CLAUDE_COMMAND="$native_bin"
+    prepend_path_dir "$HOME/.local/bin"
+    return 0
+  fi
+
+  if [ -x "$CLAUDE_COMMAND" ]; then
+    return 0
+  fi
+
+  if resolved="$(command -v "$CLAUDE_COMMAND" 2>/dev/null)" && [ -n "$resolved" ]; then
+    CLAUDE_COMMAND="$resolved"
+    return 0
+  fi
+
+  if resolved="$(command -v claude 2>/dev/null)" && [ -n "$resolved" ]; then
+    CLAUDE_COMMAND="$resolved"
+    return 0
+  fi
+
+  return 1
+}
+
+claude_code_is_usable() {
+  refresh_claude_command || return 1
+  "$CLAUDE_COMMAND" --version >/dev/null 2>&1
+}
+
+log_claude_code_version() {
+  local version
+  version="$("$CLAUDE_COMMAND" --version 2>/dev/null | head -n 1 || true)"
+  log "Using Claude Code${version:+ $version}"
+}
+
+ensure_claude_code() {
+  if [ "$INSTALL_CLAUDE_CODE" = "0" ]; then
+    log "Skipping Claude Code install because VIBE_RESEARCH_INSTALL_CLAUDE_CODE=0"
+    return
+  fi
+
+  if claude_code_is_usable; then
+    log_claude_code_version
+    return
+  fi
+
+  if ! is_linux && ! is_macos; then
+    log "Skipping Claude Code install because automatic setup is supported on macOS/Linux/WSL only"
+    return
+  fi
+
+  if ! has_command curl; then
+    fail "Missing curl. Install curl first, then rerun this installer to install Claude Code."
+  fi
+
+  log "Installing Claude Code using Anthropic's native installer"
+  if ! curl -fsSL https://claude.ai/install.sh | bash; then
+    fail "Claude Code install failed. Rerun after fixing it, or set VIBE_RESEARCH_INSTALL_CLAUDE_CODE=0 to skip Claude Code."
+  fi
+
+  if ! claude_code_is_usable; then
+    fail "Claude Code installed, but the claude command was not found. Open a new shell, or add $HOME/.local/bin to PATH."
+  fi
+
+  log_claude_code_version
 }
 
 tailscale_app_cli() {
@@ -493,6 +581,22 @@ ensure_tailscale() {
     return
   fi
 
+  if [ "$INSTALL_TAILSCALE" = "auto" ] || [ -z "$INSTALL_TAILSCALE" ]; then
+    if ! refresh_tailscale_command; then
+      log "Tailscale not found; continuing with local/LAN URLs. Install Tailscale later for private remote access."
+      return
+    fi
+
+    log "Using Tailscale command: $TAILSCALE_COMMAND"
+    if "$TAILSCALE_COMMAND" ip -4 >/dev/null 2>&1; then
+      ip_address="$("$TAILSCALE_COMMAND" ip -4 2>/dev/null | head -n 1 || true)"
+      log "Tailscale is already connected${ip_address:+ at $ip_address}"
+    else
+      log "Tailscale is installed but not connected; continuing with local/LAN URLs. Run tailscale up later for private remote access."
+    fi
+    return
+  fi
+
   if ! refresh_tailscale_command; then
     install_tailscale
     if ! refresh_tailscale_command; then
@@ -643,6 +747,20 @@ latest_release_tag() {
     return 1
   fi
 
+  curl -fsSL "https://raw.githubusercontent.com/${REPO_SLUG}/main/release-channel.json" 2>/dev/null |
+    sed -n 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+    head -n 1
+}
+
+latest_github_release_tag() {
+  if [ "$UPDATE_CHANNEL" != "release" ] || [ "$REPO_REF_WAS_SET" = "1" ] || [ -n "$REPO_URL" ]; then
+    return 1
+  fi
+
+  if ! has_command curl; then
+    return 1
+  fi
+
   curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest" 2>/dev/null |
     sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
     head -n 1
@@ -652,6 +770,11 @@ resolve_checkout_ref() {
   local tag
 
   if tag="$(latest_release_tag)" && [ -n "$tag" ]; then
+    printf '%s\n' "$tag"
+    return
+  fi
+
+  if tag="$(latest_github_release_tag)" && [ -n "$tag" ]; then
     printf '%s\n' "$tag"
     return
   fi
@@ -776,6 +899,7 @@ update_repo() {
 main() {
   ensure_base_packages
   ensure_node
+  ensure_claude_code
   ensure_tailscale
   ensure_command git
   ensure_command bash

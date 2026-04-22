@@ -273,6 +273,26 @@ test("generic agent sessions auto-rename from the first submitted prompt", async
   }
 });
 
+test("agent session auto-rename ignores terminal control responses before prompt text", async () => {
+  const { manager, workspaceDir, userHomeDir } = await createManager();
+
+  try {
+    const session = manager.createSession({
+      providerId: "codex",
+      cwd: workspaceDir,
+    });
+
+    manager.write(
+      session.id,
+      "\u001b[>0;276;0c\u001b]10;rgb:f3f3/efef/e8e8\u0007hello, can you help me start?\r",
+    );
+
+    assert.equal(manager.getSession(session.id)?.name, "help me start");
+  } finally {
+    await cleanupManager(manager, workspaceDir, userHomeDir);
+  }
+});
+
 test("custom session names are left alone after the first prompt", async () => {
   const { manager, workspaceDir, userHomeDir } = await createManager();
 

@@ -7,3 +7,4 @@ public/vendor
 .claude/
 .playwright-cli/
 output/
+dist/

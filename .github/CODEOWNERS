@@ -1,0 +1,13 @@
+# Keep release, install, and security-sensitive changes visible to the maintainer.
+* @Clamepending
+
+/install.sh @Clamepending
+/start.sh @Clamepending
+/scripts/release.mjs @Clamepending
+/scripts/build-release-assets.mjs @Clamepending
+/.github/ @Clamepending
+/src/update-manager.js @Clamepending
+/src/create-app.js @Clamepending
+/src/workspace-files.js @Clamepending
+/src/folder-browser.js @Clamepending
+/src/buildinghub-service.js @Clamepending

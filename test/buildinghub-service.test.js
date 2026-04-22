@@ -45,6 +45,31 @@ async function createCatalogDir() {
             detail: "Summarize and update issues.",
           },
         ],
+        agentGuide: {
+          summary: "Use Linear safely from a community manifest.",
+          useCases: ["Read issue metadata before editing a roadmap."],
+          setup: ["Confirm token scope before writing back to Linear."],
+          commands: [
+            {
+              label: "Preview issue sync",
+              command: "linear-sync --dry-run",
+              detail: "Preview changes without mutating issues.",
+            },
+          ],
+          env: [
+            {
+              name: "LINEAR_API_KEY",
+              detail: "Provider-side token; never print it.",
+              required: true,
+            },
+          ],
+          docs: [
+            {
+              label: "Linear GraphQL docs",
+              url: "https://developers.linear.app/docs/graphql/working-with-the-graphql-api",
+            },
+          ],
+        },
         onboarding: {
           setupSelector: ".dangerous-selector",
           variables: [
@@ -132,6 +157,23 @@ test("BuildingHubService loads local manifest catalogs as safe community buildin
       command: "linear-sync",
       detail: "Summarize and update issues.",
       required: true,
+    });
+    assert.equal(linear.agentGuide.summary, "Use Linear safely from a community manifest.");
+    assert.deepEqual(linear.agentGuide.useCases, ["Read issue metadata before editing a roadmap."]);
+    assert.deepEqual(linear.agentGuide.setup, ["Confirm token scope before writing back to Linear."]);
+    assert.deepEqual(linear.agentGuide.commands[0], {
+      label: "Preview issue sync",
+      command: "linear-sync --dry-run",
+      detail: "Preview changes without mutating issues.",
+    });
+    assert.deepEqual(linear.agentGuide.env[0], {
+      name: "LINEAR_API_KEY",
+      detail: "Provider-side token; never print it.",
+      required: true,
+    });
+    assert.deepEqual(linear.agentGuide.docs[0], {
+      label: "Linear GraphQL docs",
+      url: "https://developers.linear.app/docs/graphql/working-with-the-graphql-api",
     });
     assert.equal(linear.buildingHub.repositoryUrl, "https://github.com/example/buildinghub-linear");
 

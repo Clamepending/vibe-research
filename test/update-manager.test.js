@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { getGitHubHttpsRemoteUrl, UpdateManager } from "../src/update-manager.js";
 
 const execFile = promisify(execFileCallback);
+const releaseChannelUrl = "https://raw.githubusercontent.com/Clamepending/vibe-research/main/release-channel.json";
 const MANAGED_PROMPT_MARKER = "<!-- vibe-research:managed-agent-prompt -->";
 const LEGACY_MANAGED_PROMPT_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
 
@@ -285,6 +286,61 @@ test("UpdateManager schedules a detached pull and restart for clean updates", as
   }
 });
 
+test("UpdateManager prefers the static release channel when available", async () => {
+  const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
+  const latestCommit = await commitSourceVersion(sourceDir, "v2");
+  await git(checkoutDir, ["remote", "set-url", "origin", "git@github.com:Clamepending/vibe-research.git"]);
+
+  try {
+    const manager = new UpdateManager({
+      cwd: checkoutDir,
+      stateDir: path.join(tempRoot, "state"),
+      cacheMs: 0,
+      fetch: async (url) => {
+        assert.equal(url, releaseChannelUrl);
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              name: "Vibe Research",
+              version: "2.0.0",
+              tag: "v2.0.0",
+              releaseUrl: "https://github.com/Clamepending/vibe-research/releases/tag/v2.0.0",
+            };
+          },
+        };
+      },
+      execFile(command, args, options) {
+        if (
+          command === "git" &&
+          args[2] === "ls-remote" &&
+          args[3] === "https://github.com/Clamepending/vibe-research.git" &&
+          args[4] === "refs/tags/v2.0.0"
+        ) {
+          return Promise.resolve({
+            stdout: `${latestCommit}\trefs/tags/v2.0.0\n`,
+            stderr: "",
+          });
+        }
+
+        return execFile(command, args, options);
+      },
+    });
+
+    const status = await manager.getStatus({ force: true });
+
+    assert.equal(status.status, "available");
+    assert.equal(status.targetType, "release");
+    assert.equal(status.latestVersion, "v2.0.0");
+    assert.equal(status.latestTag, "v2.0.0");
+    assert.equal(status.latestCommit, latestCommit);
+    assert.equal(status.releaseCheck, "channel");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("UpdateManager prefers GitHub Releases and schedules a tag checkout", async () => {
   const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
   const latestCommit = await commitSourceVersion(sourceDir, "v2");
@@ -298,6 +354,13 @@ test("UpdateManager prefers GitHub Releases and schedules a tag checkout", async
       cacheMs: 0,
       port: 49124,
       fetch: async (url) => {
+        if (url === releaseChannelUrl) {
+          return {
+            ok: false,
+            status: 404,
+          };
+        }
+
         assert.equal(url, "https://api.github.com/repos/Clamepending/vibe-research/releases/latest");
         return {
           ok: true,
@@ -371,9 +434,9 @@ test("UpdateManager falls back to remote version tags for detached release check
       stateDir: path.join(tempRoot, "state"),
       cacheMs: 0,
       port: 49125,
-      fetch: async () => ({
+      fetch: async (url) => ({
         ok: false,
-        status: 403,
+        status: url === releaseChannelUrl ? 404 : 403,
       }),
       execFile(command, args, options) {
         if (
@@ -412,7 +475,7 @@ test("UpdateManager falls back to remote version tags for detached release check
     assert.equal(status.targetType, "release");
     assert.equal(status.latestVersion, "v2.0.0");
     assert.equal(status.latestCommit, latestCommit);
-    assert.equal(status.releaseCheck, "git-tags fallback after GitHub release lookup failed with HTTP 403.");
+    assert.equal(status.releaseCheck, "git-tags fallback after channel none; GitHub release lookup failed with HTTP 403.");
 
     await manager.scheduleUpdateAndRestart();
 
@@ -439,18 +502,27 @@ test("UpdateManager does not offer to downgrade branch checkouts ahead of the la
       cwd: checkoutDir,
       stateDir: path.join(tempRoot, "state"),
       cacheMs: 0,
-      fetch: async () => ({
-        ok: true,
-        status: 200,
-        async json() {
+      fetch: async (url) => {
+        if (url === releaseChannelUrl) {
           return {
-            tag_name: "v2.0.0",
-            name: "Vibe Research v2.0.0",
-            html_url: "https://github.com/Clamepending/vibe-research/releases/tag/v2.0.0",
-            published_at: "2026-04-16T08:00:00Z",
+            ok: false,
+            status: 404,
           };
-        },
-      }),
+        }
+
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              tag_name: "v2.0.0",
+              name: "Vibe Research v2.0.0",
+              html_url: "https://github.com/Clamepending/vibe-research/releases/tag/v2.0.0",
+              published_at: "2026-04-16T08:00:00Z",
+            };
+          },
+        };
+      },
       execFile(command, args, options) {
         if (
           command === "git" &&

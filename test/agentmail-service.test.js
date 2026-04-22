@@ -58,6 +58,23 @@ async function flushAgentMailBackgroundWork() {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 
+async function readEventually(filePath, { timeoutMs = 1_000, intervalMs = 20 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() <= deadline) {
+    try {
+      return await readFile(filePath, "utf8");
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+  throw lastError || new Error(`Timed out waiting for ${filePath}`);
+}
+
 test("AgentMail WebSocket listener subscribes and queues incoming email into an agent session", async () => {
   FakeSocket.instances = [];
   const createdSessions = [];
@@ -368,7 +385,7 @@ test("AgentMail polling backfills unread inbox messages and persists processed i
     assert.ok(service.getStatus().lastPromptSentAt);
     assert.equal(service.getStatus().lastPollSeen, 1);
 
-    const processed = JSON.parse(await readFile(path.join(stateDir, "agentmail-processed.json"), "utf8"));
+    const processed = JSON.parse(await readEventually(path.join(stateDir, "agentmail-processed.json")));
     assert.deepEqual(processed.messageIds, ["<poll-message@example.com>"]);
 
     const secondService = new AgentMailService({
@@ -471,7 +488,7 @@ test("AgentMail retries a message when the agent instructions could not be deliv
     assert.equal(service.getStatus().lastStatus, "prompt-sent-retry");
     assert.deepEqual(writes[2], { input: "\r", sessionId: "session-2" });
 
-    const processed = JSON.parse(await readFile(path.join(stateDir, "agentmail-processed.json"), "utf8"));
+    const processed = JSON.parse(await readEventually(path.join(stateDir, "agentmail-processed.json")));
     assert.deepEqual(processed.messageIds, ["<retry-message@example.com>"]);
   } finally {
     await flushAgentMailBackgroundWork();
