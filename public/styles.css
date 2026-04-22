@@ -6819,6 +6819,53 @@ button.agent-town-builder-card {
   padding: 14px;
 }
 
+.visual-building-cosmetic-panel {
+  gap: 12px;
+}
+
+.visual-building-cosmetic-card {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.visual-building-cosmetic-card .agent-town-builder-preview {
+  width: 56px;
+  height: 48px;
+}
+
+.visual-building-cosmetic-card > span:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.visual-building-cosmetic-card strong,
+.visual-building-cosmetic-card em,
+.visual-building-cosmetic-card span span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visual-building-cosmetic-card em {
+  color: var(--text-subtle);
+  font-size: 0.74rem;
+  font-style: normal;
+}
+
+.visual-building-cosmetic-card span span {
+  color: rgba(232, 236, 240, 0.76);
+  font-size: 0.78rem;
+}
+
 .visual-building-buildinghub-panel .mcp-import-card,
 .visual-building-buildinghub-panel .main-search-shell {
   border-radius: 8px;

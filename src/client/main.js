@@ -1254,6 +1254,7 @@ const state = {
     selectedSessionId: "",
     selectedBrowserUseSessionId: "",
     selectedBuildingId: "",
+    selectedCosmeticDecorationId: "",
   },
   browserUseSession: {
     id: "",
@@ -15170,6 +15171,55 @@ function renderVisualGamePluginBuildingPanel(plugin) {
   `;
 }
 
+function renderAgentTownCosmeticPanelContent(details) {
+  if (!details) {
+    return `
+      <div class="visual-building-panel-scroll">
+        <section class="visual-building-summary">
+          <span class="main-search-kind">cosmetic</span>
+          <strong>Cosmetic not found</strong>
+        </section>
+      </div>
+    `;
+  }
+
+  const { decoration, item } = details;
+  const sameItemCount = getAgentTownDecorations().filter((candidate) => candidate.itemId === item.id).length;
+  const locationLabel = `grid ${Math.round(decoration.x / AGENT_TOWN_BUILD_GRID_SIZE)}, ${Math.round(decoration.y / AGENT_TOWN_BUILD_GRID_SIZE)}`;
+  const columns = Math.max(1, Math.round(item.width / AGENT_TOWN_BUILD_GRID_SIZE));
+  const rows = Math.max(1, Math.round(item.height / AGENT_TOWN_BUILD_GRID_SIZE));
+  const sizeLabel = `${columns}x${rows} ${columns * rows === 1 ? "tile" : "tiles"}`;
+  const countLabel = sameItemCount === 1 ? "1 placed" : `${sameItemCount} placed`;
+
+  return `
+    <div class="visual-building-panel-scroll visual-building-cosmetic-panel">
+      <section class="visual-building-summary">
+        <span class="main-search-kind">cosmetic</span>
+        <strong>${escapeHtml(item.label)}</strong>
+        <p>${escapeHtml(`${item.meta || item.kind} · ${sizeLabel} · ${locationLabel}`)}</p>
+        <div class="visual-building-library-actions">
+          <button class="primary-button toolbar-control" type="button" data-agent-town-builder-place-cosmetic="${escapeHtml(item.id)}">
+            <span aria-hidden="true">${renderIcon(Plus)}</span>
+            <span>Place another</span>
+          </button>
+          <button class="ghost-button toolbar-control" type="button" data-agent-town-remove-decoration="${escapeHtml(decoration.id)}">
+            <span aria-hidden="true">${renderIcon(Trash2)}</span>
+            <span>Remove</span>
+          </button>
+        </div>
+      </section>
+      <section class="visual-building-cosmetic-card" aria-label="${escapeHtml(`${item.label} cosmetic details`)}">
+        ${renderAgentTownBuilderCosmeticPreview(item)}
+        <span>
+          <strong>${escapeHtml(item.label)}</strong>
+          <em>${escapeHtml(countLabel)}</em>
+          <span>${escapeHtml(`${sizeLabel} at ${locationLabel}.`)}</span>
+        </span>
+      </section>
+    </div>
+  `;
+}
+
 function renderVisualGameBuildingPanelContent(buildingId, plugin) {
   if (buildingId === "automations") {
     return renderAutomationsBuildingPanel();
@@ -15206,6 +15256,33 @@ function renderVisualGameBuildingPanelContent(buildingId, plugin) {
         <strong>Building not found</strong>
       </section>
     </div>
+  `;
+}
+
+function renderAgentTownCosmeticDrawer() {
+  const details = getAgentTownDecorationDetails(state.visualGame.selectedCosmeticDecorationId);
+  const title = details?.item?.label || "Cosmetic";
+  const meta = details
+    ? ["cosmetic", details.item.meta || details.item.kind].filter(Boolean).join(" · ")
+    : "Agent Town";
+
+  return `
+    <aside class="visual-game-building-panel visual-game-side-panel" aria-label="${escapeHtml(`${title} cosmetic UI`)}">
+      <div class="visual-game-session-head">
+        <div class="terminal-copy">
+          <strong><span class="visual-building-title-icon" aria-hidden="true">${renderIcon(Palette)}</span>${escapeHtml(title)}</strong>
+          <div class="terminal-meta">${escapeHtml(meta)}</div>
+        </div>
+        <div class="visual-game-session-actions">
+          <button class="ghost-button toolbar-control" type="button" id="visual-game-back-building" aria-label="Back to Agent Town" ${tooltipAttributes("Back to Agent Town")}>
+            ${renderIcon(ChevronLeft)}
+            <span>Back</span>
+          </button>
+          <button class="icon-button toolbar-control" type="button" id="visual-game-close-building" aria-label="Close cosmetic" ${tooltipAttributes("Close cosmetic")}>${renderIcon(X)}</button>
+        </div>
+      </div>
+      ${renderAgentTownCosmeticPanelContent(details)}
+    </aside>
   `;
 }
 
@@ -15408,11 +15485,20 @@ function renderVisualGameSidePanel(graph) {
     return renderVisualGameSessionDrawer(graph);
   }
 
+  if (state.visualGame.selectedCosmeticDecorationId) {
+    return renderAgentTownCosmeticDrawer();
+  }
+
   return renderVisualGameBuildingDrawer();
 }
 
 function renderVisualVillage(graph) {
-  const hasSidePanel = Boolean(state.visualGame.builderOpen || state.visualGame.selectedSessionId || state.visualGame.selectedBuildingId);
+  const hasSidePanel = Boolean(
+    state.visualGame.builderOpen ||
+    state.visualGame.selectedSessionId ||
+    state.visualGame.selectedBuildingId ||
+    state.visualGame.selectedCosmeticDecorationId,
+  );
   const panelStyle = hasSidePanel
     ? ` style="--visual-game-side-panel-width: ${getVisualGameSidePanelWidth()}px"`
     : "";
@@ -15441,12 +15527,14 @@ function clearVisualGameSelection({ render = true } = {}) {
   const hadSelection = Boolean(
     state.visualGame.selectedSessionId ||
     state.visualGame.selectedBrowserUseSessionId ||
-    state.visualGame.selectedBuildingId,
+    state.visualGame.selectedBuildingId ||
+    state.visualGame.selectedCosmeticDecorationId,
   );
   state.visualGame.selectedSessionId = "";
   state.visualGame.selectedBrowserUseSessionId = "";
   clearAgentProfileSelection();
   state.visualGame.selectedBuildingId = "";
+  state.visualGame.selectedCosmeticDecorationId = "";
 
   if (render && hadSelection) {
     renderShell();
@@ -15471,6 +15559,7 @@ function openVisualGameBuildingPanel(buildingId, { render = true } = {}) {
   state.visualGame.selectedBrowserUseSessionId = "";
   clearAgentProfileSelection();
   state.visualGame.selectedBuildingId = normalizedBuildingId;
+  state.visualGame.selectedCosmeticDecorationId = "";
 
   if (!isVisualInterfaceView()) {
     setCurrentView("visual-interface");
@@ -15484,6 +15573,32 @@ function openVisualGameBuildingPanel(buildingId, { render = true } = {}) {
   }
   void ensureVisualGameBuildingPanelData(normalizedBuildingId);
 
+  return true;
+}
+
+function openAgentTownCosmeticPanel(decorationId, { render = true } = {}) {
+  const details = getAgentTownDecorationDetails(decorationId);
+  if (!details) {
+    return false;
+  }
+
+  closeAgentTownBuilder({ render: false });
+  state.visualGame.selectedSessionId = "";
+  state.visualGame.selectedBrowserUseSessionId = "";
+  clearAgentProfileSelection();
+  state.visualGame.selectedBuildingId = "";
+  state.visualGame.selectedCosmeticDecorationId = details.decoration.id;
+
+  if (!isVisualInterfaceView()) {
+    setCurrentView("visual-interface");
+  } else {
+    updateRoute({ view: "visual-interface" });
+  }
+
+  closeMobileSidebar();
+  if (render) {
+    renderShell();
+  }
   return true;
 }
 
@@ -16088,6 +16203,45 @@ function clearAgentTownDecorations() {
   state.visualGame.customLayout.decorations = [];
   saveAgentTownLayoutPreferences();
   return true;
+}
+
+function getAgentTownDecorationById(decorationId) {
+  const id = String(decorationId || "").trim();
+  if (!id) {
+    return null;
+  }
+
+  return getAgentTownDecorations().find((decoration) => decoration.id === id) || null;
+}
+
+function getAgentTownDecorationDetails(decorationId) {
+  const decoration = getAgentTownDecorationById(decorationId);
+  const item = decoration ? getAgentTownCosmeticItem(decoration.itemId) : null;
+  if (!decoration || !item) {
+    return null;
+  }
+
+  return { decoration, item };
+}
+
+function removeAgentTownDecoration(decorationId) {
+  const id = String(decorationId || "").trim();
+  if (!id) {
+    return null;
+  }
+
+  const decorations = getAgentTownDecorations();
+  const decorationIndex = decorations.findIndex((decoration) => decoration.id === id);
+  if (decorationIndex < 0) {
+    return null;
+  }
+
+  const [removed] = decorations.splice(decorationIndex, 1);
+  if (state.visualGame.selectedCosmeticDecorationId === id) {
+    state.visualGame.selectedCosmeticDecorationId = "";
+  }
+  saveAgentTownLayoutPreferences();
+  return removed || null;
 }
 
 function getAgentTownFunctionalPlacements() {
@@ -17346,6 +17500,7 @@ async function handleVisualGameHit(hit) {
     state.visualGame.selectedSessionId = hit.sessionId;
     state.visualGame.selectedBrowserUseSessionId = hit.browserUseSessionId || "";
     state.visualGame.selectedBuildingId = "";
+    state.visualGame.selectedCosmeticDecorationId = "";
     setAgentProfileSelection({
       sessionId: hit.sessionId,
       subagentId: hit.subagentId || hit.agentId || "",
@@ -17378,6 +17533,11 @@ async function handleVisualGameHit(hit) {
 
   if (hit.kind === "building" && hit.buildingId) {
     openVisualGameBuildingPanel(hit.buildingId);
+    return;
+  }
+
+  if (hit.kind === "decoration" && hit.decorationId) {
+    openAgentTownCosmeticPanel(hit.decorationId);
     return;
   }
 
@@ -17455,7 +17615,7 @@ function drawVisualGameScene(context, graph, model, time, hitAreas, visibleWorld
 
   drawVisualGameGround(context, time, visibleWorld);
   drawVisualGamePaths(context, hitAreas);
-  drawAgentTownScenery(context, time, visibleWorld);
+  drawAgentTownScenery(context, hitAreas, time, visibleWorld);
   drawVisualGameSleepingQuarters(context, hitAreas, time, sleepingAgents);
   drawVisualGameSchool(context, hitAreas, time);
   drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents);
@@ -17597,7 +17757,7 @@ function drawAgentTownPathSquares(context, x, y, width, height, path) {
   }
 }
 
-function drawAgentTownScenery(context, time, visibleWorld = null) {
+function drawAgentTownScenery(context, hitAreas, time, visibleWorld = null) {
   const palette = getAgentTownSceneryPalette();
 
   for (const paver of AGENT_TOWN_SCENERY_PAVERS) {
@@ -17624,7 +17784,7 @@ function drawAgentTownScenery(context, time, visibleWorld = null) {
     }
   }
 
-  drawAgentTownPlacedCosmetics(context, time, visibleWorld, palette);
+  drawAgentTownPlacedCosmetics(context, hitAreas, time, visibleWorld, palette);
 }
 
 function getAgentTownSceneryPalette() {
@@ -17697,7 +17857,7 @@ function drawAgentTownPaverPatch(context, paver, palette) {
   }
 }
 
-function drawAgentTownPlacedCosmetics(context, time, visibleWorld, palette) {
+function drawAgentTownPlacedCosmetics(context, hitAreas, time, visibleWorld, palette) {
   for (const decoration of getAgentTownDecorations()) {
     const item = getAgentTownCosmeticItem(decoration.itemId);
     if (!item) {
@@ -17708,6 +17868,15 @@ function drawAgentTownPlacedCosmetics(context, time, visibleWorld, palette) {
       continue;
     }
     drawAgentTownCosmeticItem(context, item, rect, palette, time);
+    if (!isAgentTownEditMode()) {
+      hitAreas.push({
+        ...rect,
+        kind: "decoration",
+        decorationId: decoration.id,
+        itemId: item.id,
+        label: item.label,
+      });
+    }
   }
 }
 
@@ -26881,6 +27050,20 @@ function bindAgentTownBuilderEvents() {
       event.preventDefault();
       const cleared = clearAgentTownDecorations();
       setAgentTownBuilderFeedback(cleared ? "Cosmetics cleared" : "No cosmetics placed", cleared ? "success" : "info", { render: true });
+    });
+  });
+
+  document.querySelectorAll("[data-agent-town-remove-decoration]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const decorationId = button.getAttribute("data-agent-town-remove-decoration") || "";
+      const details = getAgentTownDecorationDetails(decorationId);
+      const removed = removeAgentTownDecoration(decorationId);
+      setAgentTownBuilderFeedback(
+        removed ? `${details?.item?.label || "Cosmetic"} removed` : "Cosmetic already removed",
+        removed ? "success" : "info",
+        { render: true },
+      );
     });
   });
 
