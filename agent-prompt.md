@@ -133,7 +133,7 @@ The conversation is the deliverable. No separate review doc — the record lives
 - Falsified and abandoned results still get a LOG row and keep their branch pushed as the record of what you tried.
 - LEADERBOARD capped at 5. QUEUE capped at 5 (min 1). ACTIVE unbounded but one-at-a-time. LOG unbounded, append-only.
 
-<!-- remote-vibes:wiki-v2-protocol:v2 -->
+<!-- vibe-research:wiki-v2-protocol:v2 -->
 
 ## Knowledge Model
 
