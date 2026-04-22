@@ -1195,6 +1195,78 @@ exit 0
       "daemon-reload",
       "enable vibe-research-test.service",
       "restart vibe-research-test.service",
+      "is-active --quiet vibe-research-test.service",
+    ]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
+test("install.sh accepts a transient systemd restart failure when the service becomes active", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-systemd-retry-"));
+  const installDir = path.join(installRoot, "vibe-research");
+  const fakeBin = path.join(installRoot, "bin");
+  const serviceDir = path.join(installRoot, "systemd");
+  const systemctlLog = path.join(installRoot, "systemctl.log");
+
+  try {
+    await mkdir(fakeBin, { recursive: true });
+    await mkdir(serviceDir, { recursive: true });
+    await writeFile(path.join(fakeBin, "uname"), "#!/usr/bin/env sh\nprintf 'Linux\\n'\n");
+    await writeFile(
+      path.join(fakeBin, "ps"),
+      `#!/usr/bin/env sh
+if [ "\${1:-}" = "-p" ] && [ "\${2:-}" = "1" ]; then
+  printf 'systemd\\n'
+  exit 0
+fi
+exec /bin/ps "$@"
+`,
+    );
+    await writeFile(
+      path.join(fakeBin, "systemctl"),
+      `#!/usr/bin/env sh
+printf '%s\\n' "$*" >> ${JSON.stringify(systemctlLog)}
+if [ "\${1:-}" = "is-system-running" ]; then
+  printf 'running\\n'
+  exit 0
+fi
+if [ "\${1:-}" = "restart" ]; then
+  exit 1
+fi
+if [ "\${1:-}" = "is-active" ]; then
+  exit 0
+fi
+exit 0
+`,
+    );
+    await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await execFile("chmod", ["+x", ...["uname", "ps", "systemctl", "sudo"].map((name) => path.join(fakeBin, name))]);
+
+    const result = await execFile("bash", [installScript], {
+      env: installTestEnv({
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+        VIBE_RESEARCH_HOME: installDir,
+        VIBE_RESEARCH_REPO_URL: repoDir,
+        VIBE_RESEARCH_INSTALL_SERVICE: "1",
+        VIBE_RESEARCH_SYSTEMD_SERVICE_DIR: serviceDir,
+        VIBE_RESEARCH_SERVICE_NAME: "vibe-research-test",
+      }),
+    });
+
+    assert.match(result.stdout, /systemd restart did not report success; checking vibe-research-test\.service status/);
+    assert.match(result.stdout, /Enabled vibe-research-test\.service/);
+    assert.doesNotMatch(result.stdout, /Could not start systemd service/);
+    assert.deepEqual((await readFile(systemctlLog, "utf8")).trim().split("\n"), [
+      "cat vibe-research-test.service",
+      "stop vibe-research-test.service",
+      "is-system-running",
+      "daemon-reload",
+      "enable vibe-research-test.service",
+      "restart vibe-research-test.service",
+      "is-active --quiet vibe-research-test.service",
     ]);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });

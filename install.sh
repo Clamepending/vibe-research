@@ -995,6 +995,22 @@ stop_existing_systemd_service() {
   fi
 }
 
+wait_for_systemd_service_active() {
+  local attempt max_attempts
+
+  max_attempts="${VIBE_RESEARCH_SYSTEMD_START_ATTEMPTS:-${REMOTE_VIBES_SYSTEMD_START_ATTEMPTS:-6}}"
+  attempt=1
+  while [ "$attempt" -le "$max_attempts" ]; do
+    if try_run_as_root systemctl is-active --quiet "${SERVICE_NAME}.service" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+
+  return 1
+}
+
 install_systemd_service() {
   local service_user state_dir wiki_dir port service_file temp_file
 
@@ -1070,8 +1086,14 @@ EOF
     return
   fi
 
-  if ! try_run_as_root systemctl restart "${SERVICE_NAME}.service"; then
-    log "Could not start systemd service; Vibe Research is still running for this session"
+  if ! try_run_as_root systemctl restart "${SERVICE_NAME}.service" >/dev/null 2>&1; then
+    log "systemd restart did not report success; checking ${SERVICE_NAME}.service status"
+    if ! wait_for_systemd_service_active; then
+      log "Could not start systemd service; Vibe Research is still running for this session"
+      return
+    fi
+  elif ! wait_for_systemd_service_active; then
+    log "Could not confirm systemd service startup; Vibe Research is still running for this session"
     return
   fi
 
