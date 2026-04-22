@@ -2473,6 +2473,7 @@ test("library graph highlights linked notes on hover and can pulse physics", asy
       );
     }, null, { timeout: 10_000 });
 
+    await page.waitForSelector("#knowledge-base-graph", { state: "visible", timeout: 10_000 });
     const graphBox = await page.locator("#knowledge-base-graph").boundingBox();
     assert.ok(graphBox, "knowledge graph should be visible");
     await page.mouse.click(graphBox.x + 8, graphBox.y + 8);
@@ -3088,12 +3089,35 @@ test("Library setup can clone an existing git Library from the browser", async (
 
   const workspaceDir = await createTempWorkspace("vibe-research-brain-clone-ui-");
   const { remoteDir } = await createBrainGitRemote(workspaceDir, "existing-brain");
-  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+  const { app, baseUrl } = await startApp({
+    cwd: workspaceDir,
+    providers: [
+      {
+        id: "test-agent",
+        label: "Test Agent",
+        defaultName: "Test Agent",
+        available: true,
+        command: "/bin/sh",
+        launchCommand: "/bin/sh",
+      },
+      {
+        id: "shell",
+        label: "Vanilla Shell",
+        defaultName: "Shell",
+        available: true,
+        command: null,
+        launchCommand: null,
+      },
+    ],
+  });
   let browser = null;
 
   try {
     browser = await chromium.launch({ executablePath, headless: true });
     const page = await browser.newPage();
+    await page.addInitScript(() => {
+      window.localStorage.setItem("vibeResearch.agentSetupComplete.v1", "1");
+    });
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await page.waitForSelector(".brain-setup-screen", { timeout: 10_000 });
     await page.fill("#brain-git-url", remoteDir);
