@@ -49,6 +49,14 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide";
+import {
+  VISUAL_GAME_MAP_LAYOUT,
+  getVisualGamePlace,
+  getVisualGamePlaceAnchor,
+  getVisualGamePlaceItemSlots,
+  getVisualGameRoadRects,
+  validateVisualGameLayout,
+} from "./visual-game-layout.js";
 
 const app = document.querySelector("#app");
 const TOUCH_TAP_SLOP_PX = 10;
@@ -126,9 +134,14 @@ const TERMINAL_FILE_PREVIEW_TEXT_MAX_CHARS = 3600;
 const TERMINAL_ATTACHMENT_MAX_IMAGES = 8;
 const TERMINAL_KEYBOARD_SCROLL_LINES = 3;
 const TERMINAL_KEYBOARD_SCROLL_PAGE_RATIO = 0.85;
-const VISUAL_GAME_WIDTH = 480;
-const VISUAL_GAME_HEIGHT = 270;
+const VISUAL_GAME_WIDTH = VISUAL_GAME_MAP_LAYOUT.width;
+const VISUAL_GAME_HEIGHT = VISUAL_GAME_MAP_LAYOUT.height;
 const VISUAL_GAME_RENDER_SCALE = 2;
+const VISUAL_GAME_CSS_PIXELS_PER_WORLD_UNIT = 2;
+const VISUAL_GAME_MIN_VIEWPORT_WIDTH = 120;
+const VISUAL_GAME_MIN_VIEWPORT_HEIGHT = 90;
+const VISUAL_GAME_CAMERA_MIN_PADDING_X = 160;
+const VISUAL_GAME_CAMERA_MIN_PADDING_Y = 96;
 const VISUAL_GAME_GPU_ACTIVE_THRESHOLD = 5;
 const VISUAL_GAME_MIN_ZOOM = 1;
 const VISUAL_GAME_MAX_ZOOM = 3.2;
@@ -144,85 +157,13 @@ const VISUAL_GAME_AGENT_PALETTES = [
   { hat: "#2f5b73", brim: "#1c394b", hair: "#4a2b21", skin: "#f1b895", coat: "#245266", trim: "#ffc7a7", pants: "#282f3c", boots: "#57331f" },
   { hat: "#713c35", brim: "#48231f", hair: "#d1a044", skin: "#e2aa7e", coat: "#7c3930", trim: "#f4e0ae", pants: "#2d3137", boots: "#4c2f20" },
 ];
-const VISUAL_GAME_ROAM_ROUTES = [
-  [
-    [78, 165],
-    [148, 165],
-    [220, 165],
-    [326, 165],
-    [434, 165],
-    [220, 165],
-  ],
-  [
-    [78, 91],
-    [146, 91],
-    [224, 91],
-    [224, 126],
-    [224, 165],
-  ],
-  [
-    [322, 165],
-    [420, 165],
-    [430, 188],
-    [430, 206],
-    [400, 188],
-  ],
-  [
-    [224, 76],
-    [224, 112],
-    [224, 150],
-    [260, 165],
-    [306, 165],
-  ],
-  [
-    [92, 91],
-    [164, 91],
-    [224, 91],
-    [224, 136],
-    [164, 165],
-  ],
-  [
-    [96, 165],
-    [96, 192],
-    [96, 214],
-    [126, 192],
-    [154, 165],
-  ],
-];
-const VISUAL_GAME_BROWSER_SPOTS = [
-  { x: 374, y: 106 },
-  { x: 402, y: 106 },
-  { x: 374, y: 136 },
-  { x: 402, y: 136 },
-];
-const VISUAL_GAME_CAMERA_SPOTS = [
-  { x: 374, y: 205 },
-  { x: 408, y: 205 },
-  { x: 374, y: 188 },
-  { x: 408, y: 188 },
-];
-const VISUAL_GAME_SLEEP_SPOTS = [
-  { x: 53, y: 72 },
-  { x: 79, y: 72 },
-  { x: 105, y: 72 },
-  { x: 131, y: 72 },
-  { x: 157, y: 72 },
-];
-const VISUAL_GAME_LIBRARY_SPOTS = [
-  { x: 78, y: 224 },
-  { x: 105, y: 226 },
-  { x: 132, y: 224 },
-  { x: 95, y: 207 },
-];
-const VISUAL_GAME_EVIDENCE_SPOTS = [
-  { x: 78, y: 190 },
-  { x: 106, y: 192 },
-  { x: 134, y: 190 },
-];
-const VISUAL_GAME_GPU_FACTORY_COLUMNS = 4;
-const VISUAL_GAME_GPU_FACTORY_ORIGIN = { x: 158, y: 195 };
-const VISUAL_GAME_GPU_FACTORY_SIZE = { width: 54, height: 42 };
-const VISUAL_GAME_GPU_FACTORY_SPACING = { x: 58, y: 45 };
+const VISUAL_GAME_ROAM_ROUTES = VISUAL_GAME_MAP_LAYOUT.roamRoutes;
+const VISUAL_GAME_GPU_FACTORY_COLUMNS = VISUAL_GAME_MAP_LAYOUT.places.gpuYard.factory.columns;
+const VISUAL_GAME_GPU_FACTORY_GAP = VISUAL_GAME_MAP_LAYOUT.places.gpuYard.factory.gap;
+const VISUAL_GAME_GPU_FACTORY_MAX_VISIBLE = VISUAL_GAME_MAP_LAYOUT.places.gpuYard.factory.maxVisible;
+const VISUAL_GAME_GPU_FACTORY_PADDING = VISUAL_GAME_MAP_LAYOUT.places.gpuYard.factory.padding;
+const VISUAL_GAME_GPU_FACTORY_SIZE = VISUAL_GAME_MAP_LAYOUT.places.gpuYard.factory.size;
+const VISUAL_GAME_LAYOUT_ISSUES = validateVisualGameLayout(VISUAL_GAME_MAP_LAYOUT);
 const TERMINAL_IMAGE_PATH_EXTENSIONS = new Set([
   ".apng",
   ".avif",
@@ -657,6 +598,7 @@ const state = {
     hoverLabel: "",
     agentPositions: new Map(),
     camera: { x: 0, y: 0, zoom: 1 },
+    viewport: null,
     selectedSessionId: "",
     selectedBrowserUseSessionId: "",
   },
@@ -4107,12 +4049,84 @@ function getVideoMemoryStatusText() {
     return state.settings.videoMemoryBaseUrl ? "configured but disabled" : "not configured";
   }
 
+  if (hasVideoMemoryCameraPermissionIssue()) {
+    return "camera permission blocked";
+  }
+
   const activeCount = Number(status.activeCount || 0);
   if (activeCount > 0) {
     return `${activeCount} camera monitor${activeCount === 1 ? "" : "s"} armed`;
   }
 
   return status.webhookUrl ? "ready for vr-videomemory" : "waiting for server URL";
+}
+
+function isVideoMemoryPluginInstalled() {
+  return Boolean(state.settings.videoMemoryEnabled || getInstalledPluginIds().has("videomemory"));
+}
+
+function getVideoMemoryPermissionMonitor() {
+  const monitors = Array.isArray(state.videoMemoryMonitors) ? state.videoMemoryMonitors : [];
+  return monitors.find((monitor) => monitor.needsCameraPermission) || null;
+}
+
+function hasVideoMemoryCameraPermissionIssue() {
+  const status = state.settings.videoMemoryStatus || {};
+  return Boolean(status.cameraPermissionIssue || getVideoMemoryPermissionMonitor());
+}
+
+function getVideoMemoryCameraPermissionMessage() {
+  const status = state.settings.videoMemoryStatus || {};
+  const monitor = getVideoMemoryPermissionMonitor();
+  return (
+    status.cameraPermissionMessage ||
+    monitor?.lastIssueMessage ||
+    "Camera access is blocked. Open System Settings > Privacy & Security > Camera and allow the app or terminal running VideoMemory, then restart VideoMemory."
+  );
+}
+
+function renderVideoMemoryInstallState() {
+  const installed = isVideoMemoryPluginInstalled();
+  const enabled = Boolean(state.settings.videoMemoryEnabled);
+  const title = installed
+    ? enabled
+      ? "VideoMemory extension installed"
+      : "VideoMemory extension installed but disabled"
+    : "VideoMemory extension not installed";
+  const detail = enabled
+    ? "Camera monitors can wake coding agents."
+    : "Enable VideoMemory monitors to arm camera wakeups.";
+
+  return `
+    <div class="videomemory-install-state ${installed ? "is-installed" : "is-missing"}">
+      <span class="session-activity-dot ${enabled ? "working" : "read"}" aria-hidden="true"></span>
+      <div>
+        <strong>${escapeHtml(title)}</strong>
+        <em>${escapeHtml(detail)}</em>
+      </div>
+    </div>
+  `;
+}
+
+function renderVideoMemoryPermissionAlert() {
+  if (!hasVideoMemoryCameraPermissionIssue()) {
+    return "";
+  }
+
+  const status = state.settings.videoMemoryStatus || {};
+  const monitor = getVideoMemoryPermissionMonitor();
+  const ioId = status.cameraPermissionIoId || monitor?.ioId || "";
+  const detail = [
+    ioId ? `Camera/input ${ioId} is blocked.` : "A VideoMemory camera/input is blocked.",
+    getVideoMemoryCameraPermissionMessage(),
+  ].join(" ");
+
+  return `
+    <div class="videomemory-permission-alert" role="alert">
+      <strong>Camera permission needed</strong>
+      <span>${escapeHtml(detail)}</span>
+    </div>
+  `;
 }
 
 function getAgentCredentialsStatusText() {
@@ -8717,18 +8731,21 @@ function renderVideoMemoryMonitorRows() {
       ${activeMonitors
         .map((monitor) => {
           const title = monitor.name || monitor.trigger || "Camera monitor";
+          const hasPermissionIssue = Boolean(monitor.needsCameraPermission);
           const meta = [
+            hasPermissionIssue ? "camera permission blocked" : "",
             monitor.status || "active",
             monitor.ioId ? `camera ${monitor.ioId}` : "",
             monitor.providerId || "",
             monitor.wakeCount ? `${monitor.wakeCount} wake${monitor.wakeCount === 1 ? "" : "s"}` : "",
           ].filter(Boolean).join(" · ");
           return `
-            <article class="videomemory-monitor-row">
-              <span class="session-activity-dot ${monitor.status === "active" ? "working" : "read"}" aria-hidden="true"></span>
+            <article class="videomemory-monitor-row ${hasPermissionIssue ? "is-warning" : ""}">
+              <span class="session-activity-dot ${hasPermissionIssue ? "exited" : monitor.status === "active" ? "working" : "read"}" aria-hidden="true"></span>
               <div class="session-main">
                 <div class="session-name">${escapeHtml(title)}</div>
                 <div class="session-subtitle">${escapeHtml(meta)}</div>
+                ${hasPermissionIssue ? `<div class="session-subtitle">${escapeHtml(monitor.lastIssueMessage || getVideoMemoryCameraPermissionMessage())}</div>` : ""}
               </div>
               <span class="session-time">${relativeTime(monitor.lastEventAt || monitor.updatedAt || monitor.createdAt)}</span>
             </article>
@@ -8749,6 +8766,8 @@ function renderVideoMemoryPluginPanel() {
       <span class="main-search-kind">camera agent</span>
       <h3>VideoMemory</h3>
       <p>Vibe Research can route VideoMemory task events into any coding-agent session and show armed monitors in the camera room.</p>
+      ${renderVideoMemoryInstallState()}
+      ${renderVideoMemoryPermissionAlert()}
       <form class="settings-form videomemory-form" id="videomemory-form">
         <label class="checkbox-row browser-use-compact-checkbox">
           <input type="checkbox" name="videoMemoryEnabled" ${state.settings.videoMemoryEnabled ? "checked" : ""} />
@@ -10731,11 +10750,12 @@ function renderVisualStations(graph) {
       count + (Array.isArray(session.subagents) ? session.subagents.filter((subagent) => subagent.videoMemoryMonitorId).length : 0),
     0,
   );
+  const cameraPermissionIssue = hasVideoMemoryCameraPermissionIssue();
   const pathBucketCount = collectSwarmPathBuckets(graph).length;
   const stationCards = [
     { label: "Agent Desk", meta: `${sessions.length} chats`, icon: Bot },
     { label: "Browser Lab", meta: browserUseCount ? `${browserUseCount} tasks` : state.settings.browserUseEnabled ? "ready" : "disabled", icon: AppWindow },
-    { label: "Camera Room", meta: cameraMonitorCount ? `${cameraMonitorCount} monitors` : state.settings.videoMemoryEnabled ? "ready" : "disabled", icon: Camera },
+    { label: "Camera Room", meta: cameraPermissionIssue ? "permission blocked" : cameraMonitorCount ? `${cameraMonitorCount} monitors` : state.settings.videoMemoryEnabled ? "ready" : "disabled", icon: Camera },
     { label: "Evidence Wall", meta: `${pathBucketCount} file groups`, icon: FileText },
     { label: "Port Dock", meta: isLocalhostAppsEnabled() ? `${state.ports.length} ports` : "off", icon: ServerCog },
   ];
@@ -11118,46 +11138,116 @@ function clearVisualGameSelection({ render = true } = {}) {
   return hadSelection;
 }
 
-function normalizeVisualGameCamera(camera = {}) {
-  const zoom = clamp(Number(camera.zoom || 1), VISUAL_GAME_MIN_ZOOM, VISUAL_GAME_MAX_ZOOM);
-  const visibleWidth = VISUAL_GAME_WIDTH / zoom;
-  const visibleHeight = VISUAL_GAME_HEIGHT / zoom;
-  const maxX = Math.max(0, VISUAL_GAME_WIDTH - visibleWidth);
-  const maxY = Math.max(0, VISUAL_GAME_HEIGHT - visibleHeight);
+function getVisualGameDefaultViewport() {
+  return {
+    width: VISUAL_GAME_WIDTH,
+    height: VISUAL_GAME_HEIGHT,
+  };
+}
+
+function getVisualGameCanvasViewport(canvas) {
+  const rect = canvas instanceof HTMLCanvasElement ? canvas.getBoundingClientRect() : null;
+  const width = Math.max(1, Number(rect?.width || 0));
+  const height = Math.max(1, Number(rect?.height || 0));
+
+  if (!rect || !width || !height) {
+    return getVisualGameDefaultViewport();
+  }
 
   return {
-    x: clamp(Number(camera.x || 0), 0, maxX),
-    y: clamp(Number(camera.y || 0), 0, maxY),
+    width: Math.max(VISUAL_GAME_MIN_VIEWPORT_WIDTH, width / VISUAL_GAME_CSS_PIXELS_PER_WORLD_UNIT),
+    height: Math.max(VISUAL_GAME_MIN_VIEWPORT_HEIGHT, height / VISUAL_GAME_CSS_PIXELS_PER_WORLD_UNIT),
+  };
+}
+
+function getVisualGameCameraBounds(visibleWidth, visibleHeight) {
+  const paddingX = Math.max(VISUAL_GAME_CAMERA_MIN_PADDING_X, visibleWidth * 0.5);
+  const paddingY = Math.max(VISUAL_GAME_CAMERA_MIN_PADDING_Y, visibleHeight * 0.5);
+
+  return {
+    minX: -paddingX,
+    minY: -paddingY,
+    maxX: VISUAL_GAME_WIDTH + paddingX - visibleWidth,
+    maxY: VISUAL_GAME_HEIGHT + paddingY - visibleHeight,
+  };
+}
+
+function getVisualGameCenteredCamera(viewport = getVisualGameDefaultViewport(), zoom = 1) {
+  return {
+    x: (VISUAL_GAME_WIDTH - viewport.width / zoom) / 2,
+    y: (VISUAL_GAME_HEIGHT - viewport.height / zoom) / 2,
     zoom,
   };
 }
 
-function setVisualGameCamera(camera) {
-  state.visualGame.camera = normalizeVisualGameCamera(camera);
+function normalizeVisualGameCamera(camera = {}, viewport = getVisualGameDefaultViewport()) {
+  const zoom = clamp(Number(camera.zoom || 1), VISUAL_GAME_MIN_ZOOM, VISUAL_GAME_MAX_ZOOM);
+  const visibleWidth = viewport.width / zoom;
+  const visibleHeight = viewport.height / zoom;
+  const bounds = getVisualGameCameraBounds(visibleWidth, visibleHeight);
+
+  return {
+    x: clamp(Number(camera.x || 0), bounds.minX, bounds.maxX),
+    y: clamp(Number(camera.y || 0), bounds.minY, bounds.maxY),
+    zoom,
+  };
+}
+
+function setVisualGameCamera(camera, viewport = state.visualGame.viewport || getVisualGameDefaultViewport()) {
+  state.visualGame.camera = normalizeVisualGameCamera(camera, viewport);
   return state.visualGame.camera;
 }
 
-function getVisualGameCamera() {
-  return setVisualGameCamera(state.visualGame.camera || { x: 0, y: 0, zoom: 1 });
+function getVisualGameCamera(viewport = state.visualGame.viewport || getVisualGameDefaultViewport()) {
+  return setVisualGameCamera(state.visualGame.camera || getVisualGameCenteredCamera(viewport), viewport);
 }
 
-function getVisualGameCameraWorldPoint(viewportPoint) {
-  const camera = getVisualGameCamera();
+function syncVisualGameCameraToViewport(viewport) {
+  const previousViewport = state.visualGame.viewport;
+  const currentCamera = state.visualGame.camera || getVisualGameCenteredCamera(viewport);
+  const zoom = clamp(Number(currentCamera.zoom || 1), VISUAL_GAME_MIN_ZOOM, VISUAL_GAME_MAX_ZOOM);
+
+  if (!previousViewport) {
+    state.visualGame.viewport = viewport;
+    return setVisualGameCamera(getVisualGameCenteredCamera(viewport, zoom), viewport);
+  }
+
+  state.visualGame.viewport = viewport;
+  if (
+    Math.abs(previousViewport.width - viewport.width) > 0.25 ||
+    Math.abs(previousViewport.height - viewport.height) > 0.25
+  ) {
+    const previousVisibleWidth = previousViewport.width / zoom;
+    const previousVisibleHeight = previousViewport.height / zoom;
+    const centerX = Number(currentCamera.x || 0) + previousVisibleWidth / 2;
+    const centerY = Number(currentCamera.y || 0) + previousVisibleHeight / 2;
+    return setVisualGameCamera({
+      x: centerX - viewport.width / zoom / 2,
+      y: centerY - viewport.height / zoom / 2,
+      zoom,
+    }, viewport);
+  }
+
+  return setVisualGameCamera(currentCamera, viewport);
+}
+
+function getVisualGameCameraWorldPoint(viewportPoint, viewport = state.visualGame.viewport || getVisualGameDefaultViewport()) {
+  const camera = getVisualGameCamera(viewport);
   return {
     x: camera.x + viewportPoint.x / camera.zoom,
     y: camera.y + viewportPoint.y / camera.zoom,
   };
 }
 
-function zoomVisualGameCameraAt(viewportPoint, zoomFactor) {
-  const camera = getVisualGameCamera();
-  const worldPoint = getVisualGameCameraWorldPoint(viewportPoint);
+function zoomVisualGameCameraAt(viewportPoint, zoomFactor, viewport = state.visualGame.viewport || getVisualGameDefaultViewport()) {
+  const camera = getVisualGameCamera(viewport);
+  const worldPoint = getVisualGameCameraWorldPoint(viewportPoint, viewport);
   const nextZoom = clamp(camera.zoom * zoomFactor, VISUAL_GAME_MIN_ZOOM, VISUAL_GAME_MAX_ZOOM);
   return setVisualGameCamera({
     x: worldPoint.x - viewportPoint.x / nextZoom,
     y: worldPoint.y - viewportPoint.y / nextZoom,
     zoom: nextZoom,
-  });
+  }, viewport);
 }
 
 function mountVisualPixelGame() {
@@ -11177,6 +11267,10 @@ function mountVisualPixelGame() {
     return;
   }
 
+  if (VISUAL_GAME_LAYOUT_ISSUES.length) {
+    console.warn("Visual game layout issues:", VISUAL_GAME_LAYOUT_ISSUES);
+  }
+
   context.imageSmoothingEnabled = false;
   if (!state.systemMetricsLoading) {
     void loadSystemMetrics();
@@ -11185,21 +11279,35 @@ function mountVisualPixelGame() {
   let panState = null;
   let suppressClickUntil = 0;
 
+  const resizeCanvasToDisplaySize = () => {
+    const rect = canvas.getBoundingClientRect();
+    const pixelRatio = clamp(window.devicePixelRatio || 1, 1, VISUAL_GAME_RENDER_SCALE);
+    const nextWidth = Math.max(1, Math.round((rect.width || VISUAL_GAME_WIDTH) * pixelRatio));
+    const nextHeight = Math.max(1, Math.round((rect.height || VISUAL_GAME_HEIGHT) * pixelRatio));
+
+    if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
+      canvas.width = nextWidth;
+      canvas.height = nextHeight;
+      context.imageSmoothingEnabled = false;
+    }
+  };
+
   const getViewportPoint = (event) => {
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) {
       return null;
     }
 
+    const viewport = getVisualGameCanvasViewport(canvas);
     return {
-      x: ((event.clientX - rect.left) / rect.width) * VISUAL_GAME_WIDTH,
-      y: ((event.clientY - rect.top) / rect.height) * VISUAL_GAME_HEIGHT,
+      x: ((event.clientX - rect.left) / rect.width) * viewport.width,
+      y: ((event.clientY - rect.top) / rect.height) * viewport.height,
     };
   };
 
   const getWorldPoint = (event) => {
     const point = getViewportPoint(event);
-    return point ? getVisualGameCameraWorldPoint(point) : null;
+    return point ? getVisualGameCameraWorldPoint(point, getVisualGameCanvasViewport(canvas)) : null;
   };
 
   const getHitAtPoint = (point) => {
@@ -11237,15 +11345,16 @@ function mountVisualPixelGame() {
         return;
       }
 
-      const deltaX = ((event.clientX - panState.startClientX) / rect.width) * VISUAL_GAME_WIDTH;
-      const deltaY = ((event.clientY - panState.startClientY) / rect.height) * VISUAL_GAME_HEIGHT;
+      const viewport = getVisualGameCanvasViewport(canvas);
+      const deltaX = ((event.clientX - panState.startClientX) / rect.width) * viewport.width;
+      const deltaY = ((event.clientY - panState.startClientY) / rect.height) * viewport.height;
       const distance = Math.hypot(event.clientX - panState.startClientX, event.clientY - panState.startClientY);
       panState.moved = panState.moved || distance >= VISUAL_GAME_DRAG_SLOP_PX;
       setVisualGameCamera({
         x: panState.startCamera.x - deltaX / panState.startCamera.zoom,
         y: panState.startCamera.y - deltaY / panState.startCamera.zoom,
         zoom: panState.startCamera.zoom,
-      });
+      }, viewport);
       canvas.classList.toggle("is-dragging", panState.moved);
       setHoverLabel(panState.moved ? "move map" : "");
       event.preventDefault();
@@ -11276,7 +11385,7 @@ function mountVisualPixelGame() {
       pointerId: event.pointerId,
       startClientX: event.clientX,
       startClientY: event.clientY,
-      startCamera: { ...getVisualGameCamera() },
+      startCamera: { ...getVisualGameCamera(getVisualGameCanvasViewport(canvas)) },
       moved: false,
     };
     canvas.classList.add("is-panning");
@@ -11322,19 +11431,20 @@ function mountVisualPixelGame() {
 
     event.preventDefault();
     const zoomFactor = Math.exp(-event.deltaY * 0.0014);
-    zoomVisualGameCameraAt(point, zoomFactor);
-    const hit = getHitAtPoint(getVisualGameCameraWorldPoint(point));
+    const viewport = getVisualGameCanvasViewport(canvas);
+    zoomVisualGameCameraAt(point, zoomFactor, viewport);
+    const hit = getHitAtPoint(getVisualGameCameraWorldPoint(point, viewport));
     canvas.classList.toggle("is-actionable", Boolean(hit));
     setHoverLabel(hit?.label || "");
   };
   const zoomCameraFromCenter = (zoomFactor) => {
-    zoomVisualGameCameraAt(
-      { x: VISUAL_GAME_WIDTH / 2, y: VISUAL_GAME_HEIGHT / 2 },
-      zoomFactor,
-    );
+    const viewport = getVisualGameCanvasViewport(canvas);
+    zoomVisualGameCameraAt({ x: viewport.width / 2, y: viewport.height / 2 }, zoomFactor, viewport);
   };
   const resetCamera = () => {
-    setVisualGameCamera({ x: 0, y: 0, zoom: 1 });
+    const viewport = getVisualGameCanvasViewport(canvas);
+    state.visualGame.viewport = viewport;
+    setVisualGameCamera(getVisualGameCenteredCamera(viewport), viewport);
     setHoverLabel("agent village");
   };
   const onLostPointerCapture = () => {
@@ -11358,20 +11468,29 @@ function mountVisualPixelGame() {
 
   const drawFrame = (time) => {
     state.visualGame.hitAreas = [];
-    const camera = getVisualGameCamera();
+    resizeCanvasToDisplaySize();
+    const viewport = getVisualGameCanvasViewport(canvas);
+    const camera = syncVisualGameCameraToViewport(viewport);
+    const renderScale = canvas.width / viewport.width;
+    const visibleWorld = {
+      x: camera.x,
+      y: camera.y,
+      width: viewport.width / camera.zoom,
+      height: viewport.height / camera.zoom,
+    };
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.setTransform(
-      VISUAL_GAME_RENDER_SCALE * camera.zoom,
+      renderScale * camera.zoom,
       0,
       0,
-      VISUAL_GAME_RENDER_SCALE * camera.zoom,
-      -camera.x * VISUAL_GAME_RENDER_SCALE * camera.zoom,
-      -camera.y * VISUAL_GAME_RENDER_SCALE * camera.zoom,
+      renderScale * camera.zoom,
+      -camera.x * renderScale * camera.zoom,
+      -camera.y * renderScale * camera.zoom,
     );
     context.imageSmoothingEnabled = false;
     const gameModel = getVisualGameModel(graph);
-    drawVisualGameScene(context, graph, gameModel, time, state.visualGame.hitAreas);
+    drawVisualGameScene(context, graph, gameModel, time, state.visualGame.hitAreas, visibleWorld);
     state.visualGame.frameHandle = window.requestAnimationFrame(drawFrame);
   };
 
@@ -11484,7 +11603,7 @@ function isVisualGameGpuActive(gpu) {
   return false;
 }
 
-function drawVisualGameScene(context, graph, model, time, hitAreas) {
+function drawVisualGameScene(context, graph, model, time, hitAreas, visibleWorld = null) {
   context.save();
   context.imageSmoothingEnabled = false;
   const agents = getVisualGameAgents(graph, time);
@@ -11494,7 +11613,7 @@ function drawVisualGameScene(context, graph, model, time, hitAreas) {
   const libraryAgents = agents.filter((agent) => agent.destination === "library");
   const sleepingAgents = agents.filter((agent) => agent.destination === "sleep");
 
-  drawVisualGameGround(context, time);
+  drawVisualGameGround(context, time, visibleWorld);
   drawVisualGamePaths(context);
   drawVisualGameSleepingQuarters(context, hitAreas, time, sleepingAgents);
   drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents);
@@ -11512,13 +11631,19 @@ function drawVisualGameScene(context, graph, model, time, hitAreas) {
   context.restore();
 }
 
-function drawVisualGameGround(context, time) {
-  context.fillStyle = "#2f6849";
-  context.fillRect(0, 0, VISUAL_GAME_WIDTH, VISUAL_GAME_HEIGHT);
+function drawVisualGameGround(context, time, visibleWorld = null) {
+  const padding = VISUAL_GAME_TILE * 3;
+  const left = Math.floor(((visibleWorld?.x ?? 0) - padding) / VISUAL_GAME_TILE) * VISUAL_GAME_TILE;
+  const top = Math.floor(((visibleWorld?.y ?? 0) - padding) / VISUAL_GAME_TILE) * VISUAL_GAME_TILE;
+  const right = Math.ceil(((visibleWorld?.x ?? 0) + (visibleWorld?.width ?? VISUAL_GAME_WIDTH) + padding) / VISUAL_GAME_TILE) * VISUAL_GAME_TILE;
+  const bottom = Math.ceil(((visibleWorld?.y ?? 0) + (visibleWorld?.height ?? VISUAL_GAME_HEIGHT) + padding) / VISUAL_GAME_TILE) * VISUAL_GAME_TILE;
 
-  for (let y = 0; y < VISUAL_GAME_HEIGHT; y += VISUAL_GAME_TILE) {
-    for (let x = 0; x < VISUAL_GAME_WIDTH; x += VISUAL_GAME_TILE) {
-      const hash = getVisualGameHash(x / VISUAL_GAME_TILE, y / VISUAL_GAME_TILE);
+  context.fillStyle = "#2f6849";
+  context.fillRect(left, top, right - left, bottom - top);
+
+  for (let y = top; y < bottom; y += VISUAL_GAME_TILE) {
+    for (let x = left; x < right; x += VISUAL_GAME_TILE) {
+      const hash = getVisualGameHash(Math.floor(x / VISUAL_GAME_TILE), Math.floor(y / VISUAL_GAME_TILE));
       context.fillStyle = hash % 3 === 0 ? "#34714f" : hash % 5 === 0 ? "#2b6046" : "#31694b";
       context.fillRect(x, y, VISUAL_GAME_TILE, VISUAL_GAME_TILE);
 
@@ -11537,14 +11662,16 @@ function drawVisualGameGround(context, time) {
 }
 
 function drawVisualGamePaths(context) {
-  drawVisualGamePathRect(context, 62, 82, 152, 23);
-  drawVisualGamePathRect(context, 190, 84, 25, 70);
-  drawVisualGamePathRect(context, 42, 148, 404, 34);
-  drawVisualGamePathRect(context, 86, 178, 28, 22);
-  drawVisualGamePathRect(context, 372, 178, 26, 45);
+  for (const road of getVisualGameRoadRects(VISUAL_GAME_MAP_LAYOUT)) {
+    drawVisualGamePathRect(context, road.rect.x, road.rect.y, road.rect.width, road.rect.height);
+  }
 }
 
 function drawVisualGamePathRect(context, x, y, width, height) {
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
   context.fillStyle = "#c09a52";
   context.fillRect(x, y, width, height);
   context.fillStyle = "#d1af63";
@@ -11562,7 +11689,7 @@ function drawVisualGameRoomFloor(context, x, y, width, height, options = {}) {
   const floor = options.floor || "#72563a";
   const wall = options.wall || "#7a4635";
   const trim = options.trim || "#3d291d";
-  const entrance = options.entrance || "bottom";
+  const entrance = normalizeVisualGameEntrance(options.entrance, x, y, width, height);
 
   drawVisualGameShadow(context, x + 3, y + height - 1, width, 7);
   context.fillStyle = floor;
@@ -11586,36 +11713,63 @@ function drawVisualGameRoomFloor(context, x, y, width, height, options = {}) {
   context.fillRect(x - 3, y + height + 1, width + 6, 2);
 
   const openingWidth = Math.min(28, Math.max(16, Math.floor(width * 0.28)));
-  if (entrance === "bottom") {
-    const openingX = Math.round(x + width / 2 - openingWidth / 2);
+  if (entrance.side === "bottom") {
+    const openingX = Math.round(clamp(entrance.anchor.x, x + openingWidth / 2, x + width - openingWidth / 2) - openingWidth / 2);
     context.fillStyle = floor;
     context.fillRect(openingX, y + height - 4, openingWidth, 7);
     context.fillStyle = "#d1af63";
     context.fillRect(openingX + 2, y + height - 1, openingWidth - 4, 6);
-  } else if (entrance === "top") {
-    const openingX = Math.round(x + width / 2 - openingWidth / 2);
+  } else if (entrance.side === "top") {
+    const openingX = Math.round(clamp(entrance.anchor.x, x + openingWidth / 2, x + width - openingWidth / 2) - openingWidth / 2);
     context.fillStyle = floor;
     context.fillRect(openingX, y - 3, openingWidth, 7);
     context.fillStyle = "#d1af63";
     context.fillRect(openingX + 2, y - 5, openingWidth - 4, 6);
-  } else if (entrance === "left") {
-    const openingY = Math.round(y + height / 2 - openingWidth / 2);
+  } else if (entrance.side === "left") {
+    const openingY = Math.round(clamp(entrance.anchor.y, y + openingWidth / 2, y + height - openingWidth / 2) - openingWidth / 2);
     context.fillStyle = floor;
     context.fillRect(x - 3, openingY, 7, openingWidth);
     context.fillStyle = "#d1af63";
     context.fillRect(x - 5, openingY + 2, 6, openingWidth - 4);
+  } else if (entrance.side === "right") {
+    const openingY = Math.round(clamp(entrance.anchor.y, y + openingWidth / 2, y + height - openingWidth / 2) - openingWidth / 2);
+    context.fillStyle = floor;
+    context.fillRect(x + width - 4, openingY, 7, openingWidth);
+    context.fillStyle = "#d1af63";
+    context.fillRect(x + width - 1, openingY + 2, 6, openingWidth - 4);
   }
 }
 
-function drawVisualGameLabConnector(context, x, y, width, height) {
-  drawVisualGameShadow(context, x + 1, y + height - 1, width, 5);
-  context.fillStyle = "#232d2d";
-  context.fillRect(x, y, width, height);
-  context.fillStyle = "rgba(255, 231, 159, 0.12)";
-  context.fillRect(x + 2, y + 4, width - 4, 2);
-  context.fillRect(x + 2, y + height - 6, width - 4, 2);
-  context.fillStyle = "#d1af63";
-  context.fillRect(x + 1, y + Math.floor(height / 2) - 2, width - 2, 4);
+function normalizeVisualGameEntrance(entrance, x, y, width, height) {
+  if (typeof entrance === "string") {
+    return { side: entrance, anchor: getVisualGameDefaultEntranceAnchor(entrance, x, y, width, height) };
+  }
+
+  const side = entrance?.side || "bottom";
+  return {
+    side,
+    anchor: entrance?.anchor || getVisualGameDefaultEntranceAnchor(side, x, y, width, height),
+  };
+}
+
+function getVisualGameDefaultEntranceAnchor(side, x, y, width, height) {
+  if (side === "top") {
+    return { x: x + width / 2, y };
+  }
+  if (side === "left") {
+    return { x, y: y + height / 2 };
+  }
+  if (side === "right") {
+    return { x: x + width, y: y + height / 2 };
+  }
+  return { x: x + width / 2, y: y + height };
+}
+
+function getVisualGameRenderedEntrance(place) {
+  return {
+    ...(place?.entrance || { side: "bottom" }),
+    anchor: getVisualGamePlaceAnchor(place),
+  };
 }
 
 function drawVisualGameComputerStation(context, desk, occupied, time, index, screenColor = "#79bdf8") {
@@ -11654,31 +11808,28 @@ function drawVisualGameBuilding(context, hitAreas, building) {
 
 function drawVisualGameSleepingQuarters(context, hitAreas, time, sleepingAgents) {
   const restingCount = sleepingAgents.length;
+  const place = getVisualGamePlace(VISUAL_GAME_MAP_LAYOUT, "dormitory");
+  const { x, y, width, height } = place.rect;
   drawVisualGameSleepRoom(context, {
-    x: 27,
-    y: 25,
-    width: 142,
-    height: 58,
-    label: "Dormitory",
+    x,
+    y,
+    width,
+    height,
+    label: place.label,
     meta: restingCount ? `${restingCount} resting` : "quiet beds",
-    beds: [
-      { x: 42, y: 59 },
-      { x: 68, y: 59 },
-      { x: 94, y: 59 },
-      { x: 120, y: 59 },
-      { x: 146, y: 59 },
-    ],
+    beds: place.beds,
+    entrance: getVisualGameRenderedEntrance(place),
   });
-  hitAreas.push({ x: 27, y: 25, width: 142, height: 58, kind: "main-view", view: "visual-interface", label: "Dormitory" });
+  hitAreas.push({ x, y, width, height, kind: "main-view", view: "visual-interface", label: place.label });
 }
 
 function drawVisualGameSleepRoom(context, room) {
-  const { x, y, width, height, label, meta, beds } = room;
+  const { x, y, width, height, label, meta, beds, entrance } = room;
   drawVisualGameRoomFloor(context, x, y, width, height, {
     floor: "#826449",
     wall: "#63463b",
     trim: "#3b2a22",
-    entrance: "bottom",
+    entrance,
   });
   drawVisualGameBuildingSign(context, x + 8, y + 7, Math.min(width - 16, 88), 23, label, meta);
   for (const bed of beds) {
@@ -11694,17 +11845,15 @@ function drawVisualGameSleepRoom(context, room) {
 }
 
 function drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents) {
-  const x = 31;
-  const y = 119;
-  const width = 134;
-  const height = 58;
+  const place = getVisualGamePlace(VISUAL_GAME_MAP_LAYOUT, "library");
+  const { x, y, width, height } = place.rect;
   const bookGlow = 0.14 + Math.sin(time / 260) * 0.04;
 
   drawVisualGameRoomFloor(context, x, y, width, height, {
     floor: "#8a6a42",
     wall: "#744034",
     trim: "#4b231d",
-    entrance: "bottom",
+    entrance: getVisualGameRenderedEntrance(place),
   });
   context.fillStyle = "#5f4229";
   context.fillRect(x + 9, y + 14, width - 18, 11);
@@ -11727,64 +11876,59 @@ function drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents) {
     y + height - 23,
     76,
     20,
-    "Library",
+    place.label,
     libraryAgents.length ? `${libraryAgents.length} reading` : `${model.pathBucketCount} notes`,
   );
 
-  hitAreas.push({ x, y, width, height, kind: "main-view", view: "knowledge-base", label: "Library" });
+  hitAreas.push({ x, y, width, height, kind: "main-view", view: "knowledge-base", label: place.label });
 }
 
 function drawVisualGameWorkshop(context, hitAreas, time, workingAgents) {
-  const x = 211;
-  const y = 40;
-  const width = 138;
-  const height = 106;
+  const place = getVisualGamePlace(VISUAL_GAME_MAP_LAYOUT, "workshop");
+  const { x, y, width, height } = place.rect;
 
   drawVisualGameRoomFloor(context, x, y, width, height, {
     floor: "#262d2d",
     wall: "#6e392f",
     trim: "#301917",
-    entrance: "bottom",
+    entrance: getVisualGameRenderedEntrance(place),
   });
   context.fillStyle = "#3d2c21";
   context.fillRect(x + 15, y + 56, width - 30, 9);
   context.fillRect(x + 15, y + 97, width - 30, 9);
-  drawVisualGamePaintedWallSign(context, x + 11, y + 14, 105, 23, "Computer Lab", `${workingAgents.length} at desks`);
+  drawVisualGamePaintedWallSign(context, x + 11, y + 14, Math.min(width - 22, 105), 23, place.label, `${workingAgents.length} at desks`);
 
   for (let index = 0; index < 6; index += 1) {
     const desk = getVisualGameDeskSpot(index);
     drawVisualGameComputerStation(context, desk, Boolean(workingAgents[index]), time, index);
   }
 
-  hitAreas.push({ x, y, width, height, kind: "main-view", view: "visual-interface", label: "Computer Lab" });
+  hitAreas.push({ x, y, width, height, kind: "main-view", view: "visual-interface", label: place.label });
 }
 
 function drawVisualGameBrowserLab(context, hitAreas, time, browserAgents) {
-  const x = 351;
-  const y = 40;
-  const width = 76;
-  const height = 106;
+  const place = getVisualGamePlace(VISUAL_GAME_MAP_LAYOUT, "browser");
+  const { x, y, width, height } = place.rect;
   drawVisualGameRoomFloor(context, x, y, width, height, {
     floor: "#253433",
     wall: "#4d795d",
     trim: "#223a2c",
-    entrance: "bottom",
+    entrance: getVisualGameRenderedEntrance(place),
   });
-  drawVisualGameLabConnector(context, x - 7, y + 58, 12, 28);
   drawVisualGamePaintedWallSign(
     context,
     x + 8,
     y + 13,
     52,
     24,
-    "Browser",
+    place.label,
     browserAgents.length ? `${browserAgents.length} task${browserAgents.length === 1 ? "" : "s"}` : "Lab",
   );
 
   context.fillStyle = "#3d2c21";
   context.fillRect(x + 10, y + 56, width - 20, 9);
   context.fillRect(x + 10, y + 97, width - 20, 9);
-  for (let index = 0; index < VISUAL_GAME_BROWSER_SPOTS.length; index += 1) {
+  for (let index = 0; index < place.spots.length; index += 1) {
     const desk = getVisualGameBrowserSpot(index);
     drawVisualGameComputerStation(context, desk, Boolean(browserAgents[index]), time, index, "#94d785");
   }
@@ -11796,21 +11940,20 @@ function drawVisualGameBrowserLab(context, hitAreas, time, browserAgents) {
       height,
       kind: "browser",
       browserUseSessionId: browserAgents[0].browserUseSessionId,
-      label: "Browser Lab",
+      label: `${place.label} Lab`,
     });
   }
 }
 
 function drawVisualGameCameraRoom(context, hitAreas, time, cameraAgents) {
-  const x = 342;
-  const y = 154;
-  const width = 88;
-  const height = 62;
+  const place = getVisualGamePlace(VISUAL_GAME_MAP_LAYOUT, "camera");
+  const { x, y, width, height } = place.rect;
+  const permissionIssue = hasVideoMemoryCameraPermissionIssue();
   drawVisualGameRoomFloor(context, x, y, width, height, {
-    floor: "#173744",
-    wall: "#3f8791",
-    trim: "#143743",
-    entrance: "left",
+    floor: permissionIssue ? "#4a2d24" : "#173744",
+    wall: permissionIssue ? "#a85b45" : "#3f8791",
+    trim: permissionIssue ? "#54251e" : "#143743",
+    entrance: getVisualGameRenderedEntrance(place),
   });
   drawVisualGamePaintedWallSign(
     context,
@@ -11818,23 +11961,31 @@ function drawVisualGameCameraRoom(context, hitAreas, time, cameraAgents) {
     y + 7,
     60,
     22,
-    "Camera",
-    cameraAgents.length ? `${cameraAgents.length} watch${cameraAgents.length === 1 ? "" : "es"}` : "Room",
+    place.label,
+    permissionIssue ? "Blocked" : cameraAgents.length ? `${cameraAgents.length} watch${cameraAgents.length === 1 ? "" : "es"}` : "Room",
   );
 
   context.fillStyle = "#1a252b";
   context.fillRect(x + 8, y + 43, width - 16, 7);
-  for (let index = 0; index < VISUAL_GAME_CAMERA_SPOTS.length; index += 1) {
+  for (let index = 0; index < place.spots.length; index += 1) {
     const occupied = Boolean(cameraAgents[index]);
     const screenX = x + 12 + index * 14;
     const screenY = y + 35;
 
-    context.fillStyle = occupied ? "#77dce7" : "#31535a";
+    context.fillStyle = permissionIssue ? "#ff9b72" : occupied ? "#77dce7" : "#31535a";
     context.fillRect(screenX, screenY, 10, 7);
-    context.fillStyle = occupied ? "#d8fbff" : "#4e8e97";
+    context.fillStyle = permissionIssue ? "#ffe1ba" : occupied ? "#d8fbff" : "#4e8e97";
     context.fillRect(screenX + 3, screenY - 3, 5, 3);
     context.fillStyle = "#172228";
     context.fillRect(screenX + 4, screenY + 7, 2, 1);
+  }
+
+  if (permissionIssue) {
+    context.fillStyle = "#ffe1ba";
+    context.fillRect(x + width - 20, y + 13, 9, 13);
+    context.fillStyle = "#7d2f24";
+    context.fillRect(x + width - 16, y + 16, 2, 5);
+    context.fillRect(x + width - 16, y + 23, 2, 2);
   }
 
   hitAreas.push({
@@ -11844,7 +11995,7 @@ function drawVisualGameCameraRoom(context, hitAreas, time, cameraAgents) {
     height,
     kind: "main-view",
     view: "plugins",
-    label: "Camera Room",
+    label: `${place.label} Room`,
   });
 }
 
@@ -11853,27 +12004,24 @@ function drawVisualGameGpuFactories(context, hitAreas, factories, time) {
     return;
   }
 
-  const columns = Math.min(VISUAL_GAME_GPU_FACTORY_COLUMNS, factories.length);
-  const rows = Math.ceil(factories.length / columns);
-  const originY = rows > 2 ? 184 : VISUAL_GAME_GPU_FACTORY_ORIGIN.y;
-  const spacingY = rows > 2 ? 36 : VISUAL_GAME_GPU_FACTORY_SPACING.y;
-  const laneWidth = (columns - 1) * VISUAL_GAME_GPU_FACTORY_SPACING.x + VISUAL_GAME_GPU_FACTORY_SIZE.width;
-  const yardHeight = (rows - 1) * spacingY + VISUAL_GAME_GPU_FACTORY_SIZE.height + 16;
-  const connectorHeight = Math.max(0, originY - 176);
-  const plazaX = VISUAL_GAME_GPU_FACTORY_ORIGIN.x - 10;
-  const plazaY = originY - 13;
-  const plazaWidth = laneWidth + 20;
-  const plazaHeight = yardHeight + 3;
-
-  if (connectorHeight) {
-    drawVisualGamePavedArea(context, VISUAL_GAME_GPU_FACTORY_ORIGIN.x + 16, 176, 22, connectorHeight + 4);
-  }
-  drawVisualGamePavedArea(context, plazaX, plazaY, plazaWidth, plazaHeight);
-
-  factories.forEach((factory, index) => {
-    const spot = getVisualGameGpuFactorySpot(index, factories.length);
-    drawVisualGameGpuFactory(context, hitAreas, factory, spot.x, spot.y, index, time);
+  const place = getVisualGamePlace(VISUAL_GAME_MAP_LAYOUT, "gpuYard");
+  const packing = getVisualGamePlaceItemSlots(VISUAL_GAME_MAP_LAYOUT, "gpuYard", factories.length, {
+    gap: VISUAL_GAME_GPU_FACTORY_GAP,
+    itemSize: VISUAL_GAME_GPU_FACTORY_SIZE,
+    maxColumns: VISUAL_GAME_GPU_FACTORY_COLUMNS,
+    maxVisible: VISUAL_GAME_GPU_FACTORY_MAX_VISIBLE,
+    padding: VISUAL_GAME_GPU_FACTORY_PADDING,
   });
+  drawVisualGamePavedArea(context, place.rect.x, place.rect.y, place.rect.width, place.rect.height);
+
+  packing.slots.forEach((slot, index) => {
+    const factory = factories[index];
+    drawVisualGameGpuFactory(context, hitAreas, factory, slot.x, slot.y, index, time, slot.scale);
+  });
+
+  if (packing.hiddenCount > 0) {
+    drawVisualGameOverflowBadge(context, place.rect.x + place.rect.width - 34, place.rect.y + place.rect.height - 19, `+${packing.hiddenCount}`);
+  }
 }
 
 function drawVisualGamePavedArea(context, x, y, width, height) {
@@ -11903,21 +12051,21 @@ function drawVisualGamePavedArea(context, x, y, width, height) {
   }
 }
 
-function getVisualGameGpuFactorySpot(index, total) {
-  const columns = Math.min(VISUAL_GAME_GPU_FACTORY_COLUMNS, Math.max(1, total));
-  const rows = Math.ceil(total / columns);
-  const row = Math.floor(index / columns);
-  const column = index % columns;
-  const originY = rows > 2 ? 184 : VISUAL_GAME_GPU_FACTORY_ORIGIN.y;
-  const spacingY = rows > 2 ? 36 : VISUAL_GAME_GPU_FACTORY_SPACING.y;
-
-  return {
-    x: VISUAL_GAME_GPU_FACTORY_ORIGIN.x + column * VISUAL_GAME_GPU_FACTORY_SPACING.x,
-    y: originY + row * spacingY,
-  };
+function drawVisualGameOverflowBadge(context, x, y, label) {
+  context.fillStyle = "rgba(15, 20, 18, 0.82)";
+  context.fillRect(Math.round(x), Math.round(y), 29, 15);
+  context.fillStyle = "#d1af63";
+  context.fillRect(Math.round(x) + 2, Math.round(y) + 2, 25, 11);
+  drawVisualGameText(context, label, Math.round(x) + 6, Math.round(y) + 11, "#251a11", 7);
 }
 
-function drawVisualGameGpuFactory(context, hitAreas, factory, x, y, index, time) {
+function drawVisualGameGpuFactory(context, hitAreas, factory, x, y, index, time, scale = 1) {
+  const spriteScale = clamp(Number(scale) || 1, 0.24, 1);
+  const originX = x;
+  const originY = y;
+  x = 0;
+  y = 0;
+
   const width = VISUAL_GAME_GPU_FACTORY_SIZE.width;
   const height = VISUAL_GAME_GPU_FACTORY_SIZE.height;
   const active = Boolean(factory.active);
@@ -11927,6 +12075,10 @@ function drawVisualGameGpuFactory(context, hitAreas, factory, x, y, index, time)
   const metal = active ? "#7d897e" : "#56605d";
   const accent = active ? "#c6df6a" : "#242b2b";
   const screen = active ? "#86d8ff" : "#2d414b";
+
+  context.save();
+  context.translate(Math.round(originX), Math.round(originY));
+  context.scale(spriteScale, spriteScale);
 
   if (active) {
     drawVisualGameGpuSmoke(context, x + 12, y - 7, index, time);
@@ -12001,11 +12153,13 @@ function drawVisualGameGpuFactory(context, hitAreas, factory, x, y, index, time)
   context.fillRect(x + 30, y + 28, 19, 8);
   drawVisualGameText(context, status, x + 32, y + 35, active ? "#c8ff9c" : "#96a098", 6);
 
+  context.restore();
+
   hitAreas.push({
-    x: x - 3,
-    y: y - 9,
-    width: width + 6,
-    height: height + 11,
+    x: originX - 3 * spriteScale,
+    y: originY - 9 * spriteScale,
+    width: (width + 6) * spriteScale,
+    height: (height + 11) * spriteScale,
     kind: "main-view",
     view: "system",
     label: `${factory.label}: ${factory.name} - ${status}`,
@@ -12054,10 +12208,8 @@ function getVisualGameGpuFactoryShortLabel(factory) {
 }
 
 function drawVisualGameDock(context) {
-  const x = 395;
-  const y = 218;
-  const width = 64;
-  const height = 42;
+  const place = getVisualGamePlace(VISUAL_GAME_MAP_LAYOUT, "dock");
+  const { x, y, width, height } = place.rect;
   drawVisualGameShadow(context, x + 3, y + height - 1, width, 7);
   context.fillStyle = "#304d64";
   context.fillRect(x - 8, y + 20, width + 18, 25);
@@ -12067,7 +12219,7 @@ function drawVisualGameDock(context) {
   }
   context.fillStyle = "#2c2020";
   context.fillRect(x + 6, y + 18, width - 8, 3);
-  drawVisualGameBuildingSign(context, x - 2, y + 2, 62, 22, "Port Dock", isLocalhostAppsEnabled() ? `${state.ports.length} ports` : "off");
+  drawVisualGameBuildingSign(context, x - 2, y + 2, 62, 22, place.label, isLocalhostAppsEnabled() ? `${state.ports.length} ports` : "off");
 }
 
 function drawVisualGameForeground(context, time) {
@@ -12530,56 +12682,41 @@ function getVisualGameRoamSpot(agent, roamingIndex, time) {
 }
 
 function getVisualGameDeskSpot(index) {
-  const column = index % 3;
-  const row = Math.floor(index / 3) % 2;
-  return {
-    x: 242 + column * 39 + (index >= 6 ? (index % 2) * 8 : 0),
-    y: 106 + row * 30 + (index >= 6 ? 6 : 0),
-  };
+  return getVisualGamePlaceSpot("workshop", index, { x: 8, y: 6 });
 }
 
 function getVisualGameBrowserSpot(index) {
-  const spot = VISUAL_GAME_BROWSER_SPOTS[index % VISUAL_GAME_BROWSER_SPOTS.length];
-  const row = Math.floor(index / VISUAL_GAME_BROWSER_SPOTS.length);
-  return {
-    x: spot.x - row * 7,
-    y: spot.y + row * 6,
-  };
+  return getVisualGamePlaceSpot("browser", index, { x: -7, y: 6 });
 }
 
 function getVisualGameCameraSpot(index) {
-  const spot = VISUAL_GAME_CAMERA_SPOTS[index % VISUAL_GAME_CAMERA_SPOTS.length];
-  const row = Math.floor(index / VISUAL_GAME_CAMERA_SPOTS.length);
-  return {
-    x: spot.x - row * 8,
-    y: spot.y + row * 6,
-  };
+  return getVisualGamePlaceSpot("camera", index, { x: -8, y: 6 });
 }
 
 function getVisualGameSleepSpot(index) {
-  const spot = VISUAL_GAME_SLEEP_SPOTS[index % VISUAL_GAME_SLEEP_SPOTS.length];
-  const row = Math.floor(index / VISUAL_GAME_SLEEP_SPOTS.length);
-  return {
-    x: spot.x + row * 7,
-    y: spot.y + row * 5,
-  };
+  return getVisualGamePlaceSpot("dormitory", index, { x: 7, y: 5 });
 }
 
 function getVisualGameLibrarySpot(index) {
-  const spot = VISUAL_GAME_LIBRARY_SPOTS[index % VISUAL_GAME_LIBRARY_SPOTS.length];
-  const row = Math.floor(index / VISUAL_GAME_LIBRARY_SPOTS.length);
-  return {
-    x: spot.x + row * 8,
-    y: spot.y + row * 7,
-  };
+  return getVisualGamePlaceSpot("library", index, { x: 8, y: 7 });
 }
 
 function getVisualGameEvidenceSpot(index) {
-  const spot = VISUAL_GAME_EVIDENCE_SPOTS[index % VISUAL_GAME_EVIDENCE_SPOTS.length];
-  const row = Math.floor(index / VISUAL_GAME_EVIDENCE_SPOTS.length);
+  const spot = getVisualGamePlaceSpot("library", index, { x: 10, y: 7 });
   return {
-    x: spot.x + row * 10,
-    y: spot.y + row * 7,
+    x: spot.x + 2,
+    y: spot.y - 18,
+  };
+}
+
+function getVisualGamePlaceSpot(placeId, index, overflowStep) {
+  const place = getVisualGamePlace(VISUAL_GAME_MAP_LAYOUT, placeId);
+  const spots = Array.isArray(place?.spots) && place.spots.length ? place.spots : [getVisualGamePlaceAnchor(place)];
+  const spot = spots[index % spots.length];
+  const row = Math.floor(index / spots.length);
+  return {
+    x: spot.x + row * overflowStep.x,
+    y: spot.y + row * overflowStep.y,
   };
 }
 
@@ -12596,10 +12733,14 @@ function getVisualGameRoutePosition(route, phase) {
   const eased = t * t * (3 - 2 * t);
   const start = route[index];
   const end = route[nextIndex];
+  const startX = Number.isFinite(Number(start?.x)) ? Number(start.x) : Number(start?.[0] || 0);
+  const startY = Number.isFinite(Number(start?.y)) ? Number(start.y) : Number(start?.[1] || 0);
+  const endX = Number.isFinite(Number(end?.x)) ? Number(end.x) : Number(end?.[0] || 0);
+  const endY = Number.isFinite(Number(end?.y)) ? Number(end.y) : Number(end?.[1] || 0);
 
   return {
-    x: start[0] + (end[0] - start[0]) * eased,
-    y: start[1] + (end[1] - start[1]) * eased,
+    x: startX + (endX - startX) * eased,
+    y: startY + (endY - startY) * eased,
   };
 }
 
