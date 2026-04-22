@@ -50,8 +50,10 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, "..", "public");
+const masterplanIndexPath = path.join(publicDir, "masterplan", "index.html");
 const execFileAsync = promisify(execFile);
 const SERVER_INFO_FILENAME = "server.json";
+const MASTERPLAN_HOSTNAME = "masterplan.vibe-research.net";
 const TAILSCALE_HTTPS_SERVE_ENABLED =
   (process.env.VIBE_RESEARCH_TAILSCALE_HTTPS ?? process.env.REMOTE_VIBES_TAILSCALE_HTTPS) !== "0";
 const DEFAULT_TAILSCALE_HTTPS_SERVE_PORTS = [443, 8443, 10000];
@@ -74,6 +76,17 @@ const LIBRARY_SYNC_SETTING_KEYS = new Set([
   "wikiPathConfigured",
   "workspaceRootPath",
 ]);
+
+function getRequestHostname(request) {
+  return String(request.get("x-forwarded-host") || request.hostname || request.get("host") || "")
+    .split(":")[0]
+    .toLowerCase();
+}
+
+function isMasterplanHost(request) {
+  return getRequestHostname(request) === MASTERPLAN_HOSTNAME;
+}
+
 const ATTACHMENTS_SUBDIR = "attachments";
 const MAX_ATTACHMENT_IMAGE_BYTES = 15 * 1024 * 1024;
 const ATTACHMENT_IMAGE_EXTENSIONS_BY_MIME_TYPE = new Map([
@@ -1203,6 +1216,16 @@ export async function createVibeResearchApp({
     } catch (error) {
       response.status(error.statusCode || 400).json({ error: error.message || "Could not load BuildingHub catalog." });
     }
+  });
+
+  app.get("/", (request, response, next) => {
+    if (!isMasterplanHost(request)) {
+      next();
+      return;
+    }
+
+    response.setHeader("Cache-Control", "no-store");
+    response.sendFile(masterplanIndexPath);
   });
 
   app.get("/api/ports", async (_request, response) => {

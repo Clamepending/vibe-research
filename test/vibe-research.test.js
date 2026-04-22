@@ -325,6 +325,61 @@ test("provider install api runs installer and refreshes detected agents", async 
   }
 });
 
+test("masterplan host serves the short public post", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-masterplan-");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+
+  try {
+    const defaultResponse = await fetch(baseUrl);
+    assert.equal(defaultResponse.status, 200);
+    assert.match(await defaultResponse.text(), /<title>Vibe Research<\/title>/);
+
+    const masterplanPayload = await new Promise((resolve, reject) => {
+      const url = new URL(baseUrl);
+      const request = http.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: "/",
+          headers: { Host: "masterplan.vibe-research.net" },
+        },
+        (response) => {
+          let body = "";
+          response.setEncoding("utf8");
+          response.on("data", (chunk) => {
+            body += chunk;
+          });
+          response.on("end", () => {
+            resolve({ body, status: response.statusCode });
+          });
+        },
+      );
+      request.on("error", reject);
+      request.end();
+    });
+    assert.equal(masterplanPayload.status, 200);
+    const masterplanText = masterplanPayload.body;
+    assert.match(masterplanText, /<title>Vibe Research Masterplan<\/title>/);
+    assert.match(masterplanText, /personal agent communities/i);
+    assert.match(masterplanText, /Base-building is the perfect UI for personal agents/);
+    assert.match(masterplanText, /clash-of-clans-base-builder\.webp/);
+    assert.match(masterplanText, /\/masterplan\/masterplan\.css/);
+    assert.match(masterplanText, /data-node-background/);
+    assert.match(masterplanText, /\/masterplan\/masterplan\.js/);
+
+    const imageResponse = await fetch(`${baseUrl}/masterplan/clash-of-clans-base-builder.webp`);
+    assert.equal(imageResponse.status, 200);
+    assert.match(imageResponse.headers.get("content-type") || "", /image\/webp/);
+
+    const scriptResponse = await fetch(`${baseUrl}/masterplan/masterplan.js`);
+    assert.equal(scriptResponse.status, 200);
+    assert.match(scriptResponse.headers.get("content-type") || "", /javascript/);
+  } finally {
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+  }
+});
+
 test("default session folder is separate from the app checkout when configured", async () => {
   const workspaceDir = await createTempWorkspace("vibe-research-default-session-cwd-");
   const defaultSessionDir = path.join(workspaceDir, "vibe-projects");
