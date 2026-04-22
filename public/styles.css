@@ -1325,10 +1325,20 @@ body.is-resizing-layout iframe {
   cursor: pointer;
 }
 
+.sidebar-nav-button:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
 .sidebar-nav-item:hover {
   border-color: rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.07);
   transform: none;
+}
+
+.sidebar-nav-button:disabled:hover {
+  border-color: transparent;
+  background: transparent;
 }
 
 .sidebar-nav-item.is-active {
@@ -1709,6 +1719,13 @@ input[readonly][data-folder-picker-target] {
 
 .system-toast.is-conflict {
   border-color: rgba(255, 216, 106, 0.42);
+}
+
+.system-toast.is-info {
+  border-color: rgba(104, 227, 199, 0.34);
+  background:
+    radial-gradient(circle at top right, rgba(104, 227, 199, 0.15), transparent 46%),
+    rgba(15, 16, 18, 0.96);
 }
 
 .system-toast-head {

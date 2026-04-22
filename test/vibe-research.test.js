@@ -1079,6 +1079,109 @@ test("BuildingHub is the catalog entry point instead of an installable detail", 
   }
 });
 
+test("Agent Town share opens Twitter intent with screenshot copied", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for the Agent Town share smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-town-share-ui-");
+  const stateDir = await createTempWorkspace("vibe-research-agent-town-share-state-");
+  const wikiDir = getWorkspaceLibraryDir(workspaceDir);
+  await mkdir(wikiDir, { recursive: true });
+  await writeFile(path.join(wikiDir, "index.md"), "# Agent Town Share Library\n", "utf8");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
+  let browser = null;
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        preventSleepEnabled: false,
+        wikiGitRemoteEnabled: false,
+        wikiPath: wikiDir,
+      }),
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "shell", cwd: workspaceDir, name: "Share Agent" }),
+    });
+    assert.equal(createResponse.status, 201);
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    await page.addInitScript(() => {
+      window.__agentTownShareOpenCalls = [];
+      window.__agentTownClipboardTypes = [];
+      window.open = (url) => {
+        window.__agentTownShareOpenCalls.push(String(url || ""));
+        return {
+          closed: false,
+          document: {
+            title: "",
+            body: {
+              innerHTML: "",
+            },
+          },
+          location: {
+            replace(nextUrl) {
+              window.__agentTownShareOpenCalls.push(String(nextUrl || ""));
+            },
+          },
+          opener: window,
+        };
+      };
+      window.ClipboardItem = class TestClipboardItem {
+        constructor(items) {
+          window.__agentTownClipboardTypes = Object.keys(items || {});
+        }
+      };
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          write: async () => {
+            window.__agentTownClipboardWriteCount = (window.__agentTownClipboardWriteCount || 0) + 1;
+          },
+        },
+      });
+    });
+
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("[data-share-agent-town]").click();
+    await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
+    await page.waitForFunction(
+      () => window.__agentTownShareOpenCalls.some((url) => url.includes("twitter.com/intent/tweet")),
+      null,
+      { timeout: 10_000 },
+    );
+
+    const shareState = await page.evaluate(() => ({
+      clipboardTypes: window.__agentTownClipboardTypes,
+      clipboardWriteCount: window.__agentTownClipboardWriteCount || 0,
+      openedUrl: window.__agentTownShareOpenCalls.find((url) => url.includes("twitter.com/intent/tweet")) || "",
+      toastText: document.querySelector("#system-toasts")?.textContent || "",
+    }));
+
+    assert.deepEqual(shareState.clipboardTypes, ["image/png"]);
+    assert.equal(shareState.clipboardWriteCount, 1);
+    assert.match(shareState.openedUrl, /twitter\.com\/intent\/tweet/);
+    assert.equal(new URL(shareState.openedUrl).searchParams.get("text"), "I set up my vibe-research.net town!");
+    assert.equal(new URL(shareState.openedUrl).searchParams.get("url"), "https://vibe-research.net");
+    assert.match(shareState.toastText, /Agent Town screenshot copied/);
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
+  }
+});
+
 test("AgentMall applies and persists the Agent Town theme", async (t) => {
   const executablePath = await resolveBrowserExecutablePath({ env: process.env });
   if (!executablePath) {
