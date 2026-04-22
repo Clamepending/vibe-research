@@ -7412,12 +7412,12 @@ select:disabled {
   }
 
   .visual-game-stage {
-    overflow: auto;
+    overflow: hidden;
   }
 
   .visual-game-frame {
-    min-width: 640px;
-    min-height: 360px;
+    min-width: 0;
+    min-height: 0;
   }
 
   .visual-game-hover {

@@ -129,6 +129,11 @@ const TERMINAL_KEYBOARD_SCROLL_PAGE_RATIO = 0.85;
 const VISUAL_GAME_WIDTH = 480;
 const VISUAL_GAME_HEIGHT = 270;
 const VISUAL_GAME_RENDER_SCALE = 2;
+const VISUAL_GAME_CSS_PIXELS_PER_WORLD_UNIT = 2;
+const VISUAL_GAME_MIN_VIEWPORT_WIDTH = 120;
+const VISUAL_GAME_MIN_VIEWPORT_HEIGHT = 90;
+const VISUAL_GAME_CAMERA_MIN_PADDING_X = 160;
+const VISUAL_GAME_CAMERA_MIN_PADDING_Y = 96;
 const VISUAL_GAME_GPU_ACTIVE_THRESHOLD = 5;
 const VISUAL_GAME_MIN_ZOOM = 1;
 const VISUAL_GAME_MAX_ZOOM = 3.2;
@@ -652,6 +657,7 @@ const state = {
     hoverLabel: "",
     agentPositions: new Map(),
     camera: { x: 0, y: 0, zoom: 1 },
+    viewport: null,
     selectedSessionId: "",
     selectedBrowserUseSessionId: "",
   },
@@ -11113,46 +11119,118 @@ function clearVisualGameSelection({ render = true } = {}) {
   return hadSelection;
 }
 
-function normalizeVisualGameCamera(camera = {}) {
-  const zoom = clamp(Number(camera.zoom || 1), VISUAL_GAME_MIN_ZOOM, VISUAL_GAME_MAX_ZOOM);
-  const visibleWidth = VISUAL_GAME_WIDTH / zoom;
-  const visibleHeight = VISUAL_GAME_HEIGHT / zoom;
-  const maxX = Math.max(0, VISUAL_GAME_WIDTH - visibleWidth);
-  const maxY = Math.max(0, VISUAL_GAME_HEIGHT - visibleHeight);
+function getVisualGameDefaultViewport() {
+  return {
+    width: VISUAL_GAME_WIDTH,
+    height: VISUAL_GAME_HEIGHT,
+  };
+}
+
+function getVisualGameCanvasViewport(canvas) {
+  const rect = canvas instanceof HTMLCanvasElement ? canvas.getBoundingClientRect() : null;
+  const width = Math.max(1, Number(rect?.width || 0));
+  const height = Math.max(1, Number(rect?.height || 0));
+
+  if (!rect || !width || !height) {
+    return getVisualGameDefaultViewport();
+  }
 
   return {
-    x: clamp(Number(camera.x || 0), 0, maxX),
-    y: clamp(Number(camera.y || 0), 0, maxY),
+    width: Math.max(VISUAL_GAME_MIN_VIEWPORT_WIDTH, width / VISUAL_GAME_CSS_PIXELS_PER_WORLD_UNIT),
+    height: Math.max(VISUAL_GAME_MIN_VIEWPORT_HEIGHT, height / VISUAL_GAME_CSS_PIXELS_PER_WORLD_UNIT),
+  };
+}
+
+function getVisualGameCameraBounds(visibleWidth, visibleHeight) {
+  const paddingX = Math.max(VISUAL_GAME_CAMERA_MIN_PADDING_X, visibleWidth * 0.5);
+  const paddingY = Math.max(VISUAL_GAME_CAMERA_MIN_PADDING_Y, visibleHeight * 0.5);
+  const minX = -paddingX;
+  const minY = -paddingY;
+
+  return {
+    minX,
+    minY,
+    maxX: Math.max(minX, VISUAL_GAME_WIDTH + paddingX - visibleWidth),
+    maxY: Math.max(minY, VISUAL_GAME_HEIGHT + paddingY - visibleHeight),
+  };
+}
+
+function getVisualGameCenteredCamera(viewport = getVisualGameDefaultViewport(), zoom = 1) {
+  return {
+    x: (VISUAL_GAME_WIDTH - viewport.width / zoom) / 2,
+    y: (VISUAL_GAME_HEIGHT - viewport.height / zoom) / 2,
     zoom,
   };
 }
 
-function setVisualGameCamera(camera) {
-  state.visualGame.camera = normalizeVisualGameCamera(camera);
+function normalizeVisualGameCamera(camera = {}, viewport = getVisualGameDefaultViewport()) {
+  const zoom = clamp(Number(camera.zoom || 1), VISUAL_GAME_MIN_ZOOM, VISUAL_GAME_MAX_ZOOM);
+  const visibleWidth = viewport.width / zoom;
+  const visibleHeight = viewport.height / zoom;
+  const bounds = getVisualGameCameraBounds(visibleWidth, visibleHeight);
+
+  return {
+    x: clamp(Number(camera.x || 0), bounds.minX, bounds.maxX),
+    y: clamp(Number(camera.y || 0), bounds.minY, bounds.maxY),
+    zoom,
+  };
+}
+
+function setVisualGameCamera(camera, viewport = state.visualGame.viewport || getVisualGameDefaultViewport()) {
+  state.visualGame.camera = normalizeVisualGameCamera(camera, viewport);
   return state.visualGame.camera;
 }
 
-function getVisualGameCamera() {
-  return setVisualGameCamera(state.visualGame.camera || { x: 0, y: 0, zoom: 1 });
+function getVisualGameCamera(viewport = state.visualGame.viewport || getVisualGameDefaultViewport()) {
+  return setVisualGameCamera(state.visualGame.camera || getVisualGameCenteredCamera(viewport), viewport);
 }
 
-function getVisualGameCameraWorldPoint(viewportPoint) {
-  const camera = getVisualGameCamera();
+function syncVisualGameCameraToViewport(viewport) {
+  const previousViewport = state.visualGame.viewport;
+  const currentCamera = state.visualGame.camera || getVisualGameCenteredCamera(viewport);
+  const zoom = clamp(Number(currentCamera.zoom || 1), VISUAL_GAME_MIN_ZOOM, VISUAL_GAME_MAX_ZOOM);
+
+  if (!previousViewport) {
+    state.visualGame.viewport = viewport;
+    return setVisualGameCamera(getVisualGameCenteredCamera(viewport, zoom), viewport);
+  }
+
+  state.visualGame.viewport = viewport;
+  if (
+    Math.abs(previousViewport.width - viewport.width) > 0.25 ||
+    Math.abs(previousViewport.height - viewport.height) > 0.25
+  ) {
+    const previousVisibleWidth = previousViewport.width / zoom;
+    const previousVisibleHeight = previousViewport.height / zoom;
+    const centerX = Number(currentCamera.x || 0) + previousVisibleWidth / 2;
+    const centerY = Number(currentCamera.y || 0) + previousVisibleHeight / 2;
+    return setVisualGameCamera({
+      x: centerX - viewport.width / zoom / 2,
+      y: centerY - viewport.height / zoom / 2,
+      zoom,
+    }, viewport);
+  }
+
+  return setVisualGameCamera(currentCamera, viewport);
+}
+
+function getVisualGameCameraWorldPoint(viewportPoint, viewport = state.visualGame.viewport || getVisualGameDefaultViewport()) {
+  const camera = getVisualGameCamera(viewport);
   return {
     x: camera.x + viewportPoint.x / camera.zoom,
     y: camera.y + viewportPoint.y / camera.zoom,
   };
 }
 
-function zoomVisualGameCameraAt(viewportPoint, zoomFactor) {
-  const camera = getVisualGameCamera();
-  const worldPoint = getVisualGameCameraWorldPoint(viewportPoint);
+function zoomVisualGameCameraAt(viewportPoint, zoomFactor, viewport = state.visualGame.viewport || getVisualGameDefaultViewport()) {
+  const camera = getVisualGameCamera(viewport);
+  const worldPoint = getVisualGameCameraWorldPoint(viewportPoint, viewport);
   const nextZoom = clamp(camera.zoom * zoomFactor, VISUAL_GAME_MIN_ZOOM, VISUAL_GAME_MAX_ZOOM);
   return setVisualGameCamera({
     x: worldPoint.x - viewportPoint.x / nextZoom,
     y: worldPoint.y - viewportPoint.y / nextZoom,
     zoom: nextZoom,
-  });
+  }, viewport);
 }
 
 function mountVisualPixelGame() {
@@ -11180,21 +11258,35 @@ function mountVisualPixelGame() {
   let panState = null;
   let suppressClickUntil = 0;
 
+  const resizeCanvasToDisplaySize = () => {
+    const rect = canvas.getBoundingClientRect();
+    const pixelRatio = clamp(window.devicePixelRatio || 1, 1, VISUAL_GAME_RENDER_SCALE);
+    const nextWidth = Math.max(1, Math.round((rect.width || VISUAL_GAME_WIDTH) * pixelRatio));
+    const nextHeight = Math.max(1, Math.round((rect.height || VISUAL_GAME_HEIGHT) * pixelRatio));
+
+    if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
+      canvas.width = nextWidth;
+      canvas.height = nextHeight;
+      context.imageSmoothingEnabled = false;
+    }
+  };
+
   const getViewportPoint = (event) => {
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) {
       return null;
     }
 
+    const viewport = getVisualGameCanvasViewport(canvas);
     return {
-      x: ((event.clientX - rect.left) / rect.width) * VISUAL_GAME_WIDTH,
-      y: ((event.clientY - rect.top) / rect.height) * VISUAL_GAME_HEIGHT,
+      x: ((event.clientX - rect.left) / rect.width) * viewport.width,
+      y: ((event.clientY - rect.top) / rect.height) * viewport.height,
     };
   };
 
   const getWorldPoint = (event) => {
     const point = getViewportPoint(event);
-    return point ? getVisualGameCameraWorldPoint(point) : null;
+    return point ? getVisualGameCameraWorldPoint(point, getVisualGameCanvasViewport(canvas)) : null;
   };
 
   const getHitAtPoint = (point) => {
@@ -11232,15 +11324,16 @@ function mountVisualPixelGame() {
         return;
       }
 
-      const deltaX = ((event.clientX - panState.startClientX) / rect.width) * VISUAL_GAME_WIDTH;
-      const deltaY = ((event.clientY - panState.startClientY) / rect.height) * VISUAL_GAME_HEIGHT;
+      const viewport = getVisualGameCanvasViewport(canvas);
+      const deltaX = ((event.clientX - panState.startClientX) / rect.width) * viewport.width;
+      const deltaY = ((event.clientY - panState.startClientY) / rect.height) * viewport.height;
       const distance = Math.hypot(event.clientX - panState.startClientX, event.clientY - panState.startClientY);
       panState.moved = panState.moved || distance >= VISUAL_GAME_DRAG_SLOP_PX;
       setVisualGameCamera({
         x: panState.startCamera.x - deltaX / panState.startCamera.zoom,
         y: panState.startCamera.y - deltaY / panState.startCamera.zoom,
         zoom: panState.startCamera.zoom,
-      });
+      }, viewport);
       canvas.classList.toggle("is-dragging", panState.moved);
       setHoverLabel(panState.moved ? "move map" : "");
       event.preventDefault();
@@ -11271,7 +11364,7 @@ function mountVisualPixelGame() {
       pointerId: event.pointerId,
       startClientX: event.clientX,
       startClientY: event.clientY,
-      startCamera: { ...getVisualGameCamera() },
+      startCamera: { ...getVisualGameCamera(getVisualGameCanvasViewport(canvas)) },
       moved: false,
     };
     canvas.classList.add("is-panning");
@@ -11317,19 +11410,20 @@ function mountVisualPixelGame() {
 
     event.preventDefault();
     const zoomFactor = Math.exp(-event.deltaY * 0.0014);
-    zoomVisualGameCameraAt(point, zoomFactor);
-    const hit = getHitAtPoint(getVisualGameCameraWorldPoint(point));
+    const viewport = getVisualGameCanvasViewport(canvas);
+    zoomVisualGameCameraAt(point, zoomFactor, viewport);
+    const hit = getHitAtPoint(getVisualGameCameraWorldPoint(point, viewport));
     canvas.classList.toggle("is-actionable", Boolean(hit));
     setHoverLabel(hit?.label || "");
   };
   const zoomCameraFromCenter = (zoomFactor) => {
-    zoomVisualGameCameraAt(
-      { x: VISUAL_GAME_WIDTH / 2, y: VISUAL_GAME_HEIGHT / 2 },
-      zoomFactor,
-    );
+    const viewport = getVisualGameCanvasViewport(canvas);
+    zoomVisualGameCameraAt({ x: viewport.width / 2, y: viewport.height / 2 }, zoomFactor, viewport);
   };
   const resetCamera = () => {
-    setVisualGameCamera({ x: 0, y: 0, zoom: 1 });
+    const viewport = getVisualGameCanvasViewport(canvas);
+    state.visualGame.viewport = viewport;
+    setVisualGameCamera(getVisualGameCenteredCamera(viewport), viewport);
     setHoverLabel("agent village");
   };
   const onLostPointerCapture = () => {
@@ -11353,20 +11447,29 @@ function mountVisualPixelGame() {
 
   const drawFrame = (time) => {
     state.visualGame.hitAreas = [];
-    const camera = getVisualGameCamera();
+    resizeCanvasToDisplaySize();
+    const viewport = getVisualGameCanvasViewport(canvas);
+    const camera = syncVisualGameCameraToViewport(viewport);
+    const renderScale = canvas.width / viewport.width;
+    const visibleWorld = {
+      x: camera.x,
+      y: camera.y,
+      width: viewport.width / camera.zoom,
+      height: viewport.height / camera.zoom,
+    };
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.setTransform(
-      VISUAL_GAME_RENDER_SCALE * camera.zoom,
+      renderScale * camera.zoom,
       0,
       0,
-      VISUAL_GAME_RENDER_SCALE * camera.zoom,
-      -camera.x * VISUAL_GAME_RENDER_SCALE * camera.zoom,
-      -camera.y * VISUAL_GAME_RENDER_SCALE * camera.zoom,
+      renderScale * camera.zoom,
+      -camera.x * renderScale * camera.zoom,
+      -camera.y * renderScale * camera.zoom,
     );
     context.imageSmoothingEnabled = false;
     const gameModel = getVisualGameModel(graph);
-    drawVisualGameScene(context, graph, gameModel, time, state.visualGame.hitAreas);
+    drawVisualGameScene(context, graph, gameModel, time, state.visualGame.hitAreas, visibleWorld);
     state.visualGame.frameHandle = window.requestAnimationFrame(drawFrame);
   };
 
@@ -11479,7 +11582,7 @@ function isVisualGameGpuActive(gpu) {
   return false;
 }
 
-function drawVisualGameScene(context, graph, model, time, hitAreas) {
+function drawVisualGameScene(context, graph, model, time, hitAreas, visibleWorld = null) {
   context.save();
   context.imageSmoothingEnabled = false;
   const agents = getVisualGameAgents(graph, time);
@@ -11489,7 +11592,7 @@ function drawVisualGameScene(context, graph, model, time, hitAreas) {
   const libraryAgents = agents.filter((agent) => agent.destination === "library");
   const sleepingAgents = agents.filter((agent) => agent.destination === "sleep");
 
-  drawVisualGameGround(context, time);
+  drawVisualGameGround(context, time, visibleWorld);
   drawVisualGamePaths(context);
   drawVisualGameSleepingQuarters(context, hitAreas, time, sleepingAgents);
   drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents);
@@ -11507,12 +11610,23 @@ function drawVisualGameScene(context, graph, model, time, hitAreas) {
   context.restore();
 }
 
-function drawVisualGameGround(context, time) {
-  context.fillStyle = "#2f6849";
-  context.fillRect(0, 0, VISUAL_GAME_WIDTH, VISUAL_GAME_HEIGHT);
+function drawVisualGameGround(context, time, visibleWorld = null) {
+  const viewport = visibleWorld || {
+    x: 0,
+    y: 0,
+    width: VISUAL_GAME_WIDTH,
+    height: VISUAL_GAME_HEIGHT,
+  };
+  const startX = Math.floor(viewport.x / VISUAL_GAME_TILE) * VISUAL_GAME_TILE;
+  const startY = Math.floor(viewport.y / VISUAL_GAME_TILE) * VISUAL_GAME_TILE;
+  const endX = Math.ceil((viewport.x + viewport.width) / VISUAL_GAME_TILE) * VISUAL_GAME_TILE;
+  const endY = Math.ceil((viewport.y + viewport.height) / VISUAL_GAME_TILE) * VISUAL_GAME_TILE;
 
-  for (let y = 0; y < VISUAL_GAME_HEIGHT; y += VISUAL_GAME_TILE) {
-    for (let x = 0; x < VISUAL_GAME_WIDTH; x += VISUAL_GAME_TILE) {
+  context.fillStyle = "#2f6849";
+  context.fillRect(startX, startY, endX - startX, endY - startY);
+
+  for (let y = startY; y < endY; y += VISUAL_GAME_TILE) {
+    for (let x = startX; x < endX; x += VISUAL_GAME_TILE) {
       const hash = getVisualGameHash(x / VISUAL_GAME_TILE, y / VISUAL_GAME_TILE);
       context.fillStyle = hash % 3 === 0 ? "#34714f" : hash % 5 === 0 ? "#2b6046" : "#31694b";
       context.fillRect(x, y, VISUAL_GAME_TILE, VISUAL_GAME_TILE);

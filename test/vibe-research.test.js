@@ -1800,18 +1800,47 @@ test("visual graph empty canvas click closes the selected session panel", async 
   });
   let browser = null;
 
+  const readCanvasShape = async (page) => {
+    return page.evaluate(() => {
+      const canvas = document.querySelector("#visual-game-canvas");
+      const frame = document.querySelector(".visual-game-frame");
+      const canvasRect = canvas?.getBoundingClientRect();
+      const frameRect = frame?.getBoundingClientRect();
+      return {
+        cssWidth: canvasRect?.width || 0,
+        cssHeight: canvasRect?.height || 0,
+        frameWidth: frameRect?.width || 0,
+        frameHeight: frameRect?.height || 0,
+        backingWidth: canvas?.width || 0,
+        backingHeight: canvas?.height || 0,
+      };
+    });
+  };
+  const assertCanvasTracksFrame = async (page, label) => {
+    const shape = await readCanvasShape(page);
+    assert.ok(shape.cssWidth > 0 && shape.cssHeight > 0, `${label} canvas should be visible`);
+    assert.ok(Math.abs(shape.cssWidth - shape.frameWidth) <= 3, `${label} canvas should fill frame width`);
+    assert.ok(Math.abs(shape.cssHeight - shape.frameHeight) <= 3, `${label} canvas should fill frame height`);
+    const cssAspect = shape.cssWidth / shape.cssHeight;
+    const backingAspect = shape.backingWidth / shape.backingHeight;
+    assert.ok(
+      Math.abs(cssAspect - backingAspect) < 0.02,
+      `${label} backing buffer should match dynamic frame aspect, saw css=${cssAspect.toFixed(3)} backing=${backingAspect.toFixed(3)}`,
+    );
+    return { ...shape, cssAspect, backingAspect };
+  };
   const clickCanvasPoint = async (page, x, y) => {
     const box = await page.locator("#visual-game-canvas").boundingBox();
     assert.ok(box, "visual game canvas should be visible");
-    await page.mouse.click(box.x + (x / 480) * box.width, box.y + (y / 270) * box.height);
+    await page.mouse.click(box.x + x, box.y + y);
   };
   const findCanvasHoverPoint = async (page, labelText) => {
     const box = await page.locator("#visual-game-canvas").boundingBox();
     assert.ok(box, "visual game canvas should be visible");
 
-    for (let y = 132; y <= 184; y += 8) {
-      for (let x = 48; x <= 456; x += 8) {
-        await page.mouse.move(box.x + (x / 480) * box.width, box.y + (y / 270) * box.height);
+    for (let y = 8; y <= box.height - 8; y += 24) {
+      for (let x = 8; x <= box.width - 8; x += 24) {
+        await page.mouse.move(box.x + x, box.y + y);
         const label = await page.locator(".visual-game-hover").textContent();
 
         if (label?.includes(labelText)) {
@@ -1839,12 +1868,23 @@ test("visual graph empty canvas click closes the selected session panel", async 
     await page.goto(`${baseUrl}/?view=swarm`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
     await page.waitForTimeout(1_200);
+    const initialShape = await assertCanvasTracksFrame(page, "initial visual game canvas");
 
     const agentPoint = await findCanvasHoverPoint(page, "Canvas Agent");
     await clickCanvasPoint(page, agentPoint.x, agentPoint.y);
     await page.waitForSelector(".visual-game-session-panel", { timeout: 10_000 });
+    const sessionPanelShape = await assertCanvasTracksFrame(page, "visual game canvas with session panel");
 
-    await clickCanvasPoint(page, 470, 260);
+    await page.setViewportSize({ width: 1440, height: 620 });
+    await page.waitForTimeout(200);
+    const resizedShape = await assertCanvasTracksFrame(page, "visual game canvas after resize");
+    assert.ok(
+      Math.abs(resizedShape.cssAspect - sessionPanelShape.cssAspect) > 0.05 ||
+        Math.abs(resizedShape.cssAspect - initialShape.cssAspect) > 0.05,
+      "resizing should change the visual game window aspect instead of locking it to 16:9",
+    );
+
+    await clickCanvasPoint(page, resizedShape.cssWidth - 10, 10);
     await page.waitForFunction(() => !document.querySelector(".visual-game-session-panel"), null, {
       timeout: 10_000,
     });
