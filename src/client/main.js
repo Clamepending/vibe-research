@@ -17552,17 +17552,33 @@ function drawAgentTownCosmeticItem(context, item, rect, palette, time) {
   }
 
   if (item.kind === "fence") {
+    const fenceThickness = 17;
+    const centeredFence = (item.orientation || "horizontal") === "vertical"
+      ? {
+          x: rect.x + Math.round((rect.width - fenceThickness) / 2),
+          y: rect.y,
+          length: rect.height - 5,
+          orientation: "vertical",
+        }
+      : {
+          x: rect.x,
+          y: rect.y + Math.round((rect.height - fenceThickness) / 2),
+          length: rect.width - 5,
+          orientation: "horizontal",
+        };
     drawAgentTownFence(context, {
-      x: rect.x,
-      y: rect.y,
-      length: item.orientation === "vertical" ? rect.height - 5 : rect.width - 5,
-      orientation: item.orientation || "horizontal",
+      ...centeredFence,
     }, palette);
     return;
   }
 
   if (item.kind === "planter") {
-    drawAgentTownPlanter(context, rect, palette, time);
+    const planterHeight = Math.min(14, rect.height);
+    drawAgentTownPlanter(context, {
+      ...rect,
+      y: rect.y + Math.round((rect.height - planterHeight) / 2),
+      height: planterHeight,
+    }, palette, time);
     return;
   }
 
