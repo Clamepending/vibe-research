@@ -15,6 +15,9 @@ SKIP_RUN="${VIBE_RESEARCH_SKIP_RUN:-${REMOTE_VIBES_SKIP_RUN:-0}}"
 INSTALL_SYSTEM_DEPS="${VIBE_RESEARCH_INSTALL_SYSTEM_DEPS:-${REMOTE_VIBES_INSTALL_SYSTEM_DEPS:-1}}"
 INSTALL_TAILSCALE="${VIBE_RESEARCH_INSTALL_TAILSCALE:-${REMOTE_VIBES_INSTALL_TAILSCALE:-auto}}"
 INSTALL_CLAUDE_CODE="${VIBE_RESEARCH_INSTALL_CLAUDE_CODE:-${REMOTE_VIBES_INSTALL_CLAUDE_CODE:-1}}"
+CLAUDE_CODE_INSTALL_TIMEOUT_SECONDS="${VIBE_RESEARCH_CLAUDE_CODE_INSTALL_TIMEOUT_SECONDS:-${REMOTE_VIBES_CLAUDE_CODE_INSTALL_TIMEOUT_SECONDS:-600}}"
+INSTALL_UI="${VIBE_RESEARCH_INSTALL_UI:-${REMOTE_VIBES_INSTALL_UI:-auto}}"
+INSTALL_ANIMATION="${VIBE_RESEARCH_INSTALL_ANIMATION:-${REMOTE_VIBES_INSTALL_ANIMATION:-auto}}"
 INSTALL_SERVICE="${VIBE_RESEARCH_INSTALL_SERVICE:-${REMOTE_VIBES_INSTALL_SERVICE:-1}}"
 TAILSCALE_UP="${VIBE_RESEARCH_TAILSCALE_UP:-${REMOTE_VIBES_TAILSCALE_UP:-1}}"
 TAILSCALE_COMMAND="${VIBE_RESEARCH_TAILSCALE_COMMAND:-${REMOTE_VIBES_TAILSCALE_COMMAND:-tailscale}}"
@@ -30,18 +33,262 @@ MIN_NODE_MAJOR=20
 APT_UPDATED=0
 MANAGED_PROMPT_MARKER="<!-- vibe-research:managed-agent-prompt -->"
 LEGACY_MANAGED_PROMPT_MARKER="<!-- remote-vibes:managed-agent-prompt -->"
+INSTALL_STEP=0
+INSTALL_TOTAL_STEPS=9
+INSTALL_SPINNER_PID=""
+INSTALL_RESET=""
+INSTALL_BOLD=""
+INSTALL_DIM=""
+INSTALL_BLUE=""
+INSTALL_CYAN=""
+INSTALL_GREEN=""
+INSTALL_RED=""
+INSTALL_YELLOW=""
+
+terminal_ui_enabled() {
+  case "$INSTALL_UI" in
+    plain | off | 0 | false | no)
+      return 1
+      ;;
+    fancy | pretty | on | 1 | true | yes)
+      return 0
+      ;;
+  esac
+
+  [ -t 1 ] && [ "${TERM:-}" != "dumb" ]
+}
+
+terminal_animation_enabled() {
+  terminal_ui_enabled || return 1
+
+  case "$INSTALL_ANIMATION" in
+    off | 0 | false | no)
+      return 1
+      ;;
+    on | 1 | true | yes)
+      return 0
+      ;;
+  esac
+
+  [ -t 1 ] && [ "${TERM:-}" != "dumb" ]
+}
+
+terminal_color_enabled() {
+  terminal_ui_enabled || return 1
+  [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]
+}
+
+init_terminal_ui() {
+  if ! terminal_color_enabled; then
+    return
+  fi
+
+  INSTALL_RESET="$(printf '\033[0m')"
+  INSTALL_BOLD="$(printf '\033[1m')"
+  INSTALL_DIM="$(printf '\033[2m')"
+  INSTALL_BLUE="$(printf '\033[34m')"
+  INSTALL_CYAN="$(printf '\033[36m')"
+  INSTALL_GREEN="$(printf '\033[32m')"
+  INSTALL_RED="$(printf '\033[31m')"
+  INSTALL_YELLOW="$(printf '\033[33m')"
+}
+
+spinner_frame() {
+  case "$1" in
+    0) printf '|' ;;
+    1) printf '/' ;;
+    2) printf '-' ;;
+    *) printf '\\' ;;
+  esac
+}
+
+spinner_loop() {
+  local label frame_index frame
+  label="$1"
+  frame_index=0
+
+  while :; do
+    frame="$(spinner_frame "$frame_index")"
+    printf '\r\033[K%s%s%s %s%s%s' "$INSTALL_CYAN" "$frame" "$INSTALL_RESET" "$INSTALL_DIM" "$label" "$INSTALL_RESET"
+    frame_index=$(((frame_index + 1) % 4))
+    sleep 0.12
+  done
+}
+
+stop_spinner() {
+  if [ -z "$INSTALL_SPINNER_PID" ]; then
+    return
+  fi
+
+  kill "$INSTALL_SPINNER_PID" >/dev/null 2>&1 || true
+  wait "$INSTALL_SPINNER_PID" 2>/dev/null || true
+  INSTALL_SPINNER_PID=""
+  printf '\r\033[K'
+}
+
+start_spinner() {
+  local label
+  label="$1"
+
+  stop_spinner
+  if terminal_animation_enabled; then
+    spinner_loop "$label" &
+    INSTALL_SPINNER_PID=$!
+  elif terminal_ui_enabled; then
+    printf '%s..%s %s\n' "$INSTALL_DIM" "$INSTALL_RESET" "$label"
+  fi
+}
+
+print_installer_banner() {
+  local repo_url
+
+  terminal_ui_enabled || return 0
+  repo_url="$(resolve_repo_url)"
+
+  printf '\n%s%sVibe Research%s\n' "$INSTALL_BOLD" "$INSTALL_BLUE" "$INSTALL_RESET"
+  printf '%sInstaller for local agent workspaces%s\n' "$INSTALL_DIM" "$INSTALL_RESET"
+  printf '%srepo%s   %s\n' "$INSTALL_DIM" "$INSTALL_RESET" "$repo_url"
+  printf '%starget%s %s\n\n' "$INSTALL_DIM" "$INSTALL_RESET" "$INSTALL_DIR"
+}
+
+print_installer_footer() {
+  terminal_ui_enabled || return 0
+  printf '\n%s%sInstall complete%s\n' "$INSTALL_BOLD" "$INSTALL_GREEN" "$INSTALL_RESET"
+}
+
+start_step() {
+  local label progress
+  label="$1"
+  INSTALL_STEP=$((INSTALL_STEP + 1))
+  progress="[$INSTALL_STEP/$INSTALL_TOTAL_STEPS] $label"
+  start_spinner "$progress"
+}
+
+finish_step() {
+  local label
+  label="$1"
+
+  stop_spinner
+  if terminal_ui_enabled; then
+    printf '%s[done]%s %s\n' "$INSTALL_GREEN" "$INSTALL_RESET" "$label"
+  fi
+}
+
+fail_step() {
+  local label
+  label="$1"
+
+  stop_spinner
+  if terminal_ui_enabled; then
+    printf '%s[fail]%s %s\n' "$INSTALL_RED" "$INSTALL_RESET" "$label" >&2
+  fi
+}
+
+run_step() {
+  local label status
+  label="$1"
+  shift
+
+  start_step "$label"
+  if "$@"; then
+    status=0
+  else
+    status=$?
+  fi
+
+  if [ "$status" -eq 0 ]; then
+    finish_step "$label"
+  else
+    fail_step "$label"
+  fi
+
+  return "$status"
+}
+
+cleanup_terminal_ui() {
+  stop_spinner
+}
 
 log() {
+  stop_spinner
   printf '[vibe-research-install] %s\n' "$*"
 }
 
 fail() {
+  stop_spinner
+  if terminal_ui_enabled; then
+    printf '%s[error]%s %s\n' "$INSTALL_RED" "$INSTALL_RESET" "$*" >&2
+  fi
   printf '[vibe-research-install] %s\n' "$*" >&2
   exit 1
 }
 
 has_command() {
   command -v "$1" >/dev/null 2>&1
+}
+
+run_command_with_timeout() {
+  local timeout_seconds
+  timeout_seconds="$1"
+  shift
+
+  case "$timeout_seconds" in
+    ""|*[!0-9]*)
+      fail "Invalid VIBE_RESEARCH_CLAUDE_CODE_INSTALL_TIMEOUT_SECONDS=$timeout_seconds; use a number of seconds, or 0 to disable."
+      ;;
+  esac
+
+  if [ "$timeout_seconds" = "0" ]; then
+    "$@"
+    return $?
+  fi
+
+  if has_command timeout; then
+    timeout "${timeout_seconds}s" "$@"
+    return $?
+  fi
+
+  if has_command perl; then
+    perl -e '
+use strict;
+use warnings;
+
+my $timeout = shift @ARGV;
+my $pid = fork();
+die "fork failed: $!\n" unless defined $pid;
+
+if ($pid == 0) {
+  setpgrp(0, 0);
+  exec @ARGV;
+  die "exec failed: $!\n";
+}
+
+my $deadline = time + $timeout;
+while (1) {
+  my $done = waitpid($pid, 1);
+  if ($done == $pid) {
+    my $status = $?;
+    if ($status & 127) {
+      exit(128 + ($status & 127));
+    }
+    exit($status >> 8);
+  }
+
+  if (time >= $deadline) {
+    kill "TERM", -$pid;
+    sleep 5;
+    kill "KILL", -$pid;
+    waitpid($pid, 0);
+    exit 124;
+  }
+
+  select undef, undef, undef, 0.2;
+}
+' "$timeout_seconds" "$@"
+    return $?
+  fi
+
+  "$@"
 }
 
 is_macos() {
@@ -316,7 +563,35 @@ log_claude_code_version() {
   log "Using Claude Code${version:+ $version}"
 }
 
+install_claude_code_native() {
+  if [ "$CLAUDE_CODE_INSTALL_TIMEOUT_SECONDS" = "0" ]; then
+    log "Installing Claude Code using Anthropic's native installer"
+  else
+    log "Installing Claude Code using Anthropic's native installer (timeout ${CLAUDE_CODE_INSTALL_TIMEOUT_SECONDS}s)"
+  fi
+
+  run_command_with_timeout "$CLAUDE_CODE_INSTALL_TIMEOUT_SECONDS" bash -c 'curl -fsSL "$1" | bash' _ "https://claude.ai/install.sh"
+}
+
+install_claude_code_with_npm() {
+  local npm_prefix
+
+  if ! has_command npm; then
+    log "Skipping Claude Code npm fallback because npm is missing"
+    return 1
+  fi
+
+  npm_prefix="$HOME/.local"
+  mkdir -p "$npm_prefix"
+  prepend_path_dir "$npm_prefix/bin"
+
+  log "Installing Claude Code using npm fallback under $npm_prefix"
+  NPM_CONFIG_PREFIX="$npm_prefix" npm install -g @anthropic-ai/claude-code --no-audit --no-fund
+}
+
 ensure_claude_code() {
+  local native_status used_npm_fallback
+
   if [ "$INSTALL_CLAUDE_CODE" = "0" ]; then
     log "Skipping Claude Code install because VIBE_RESEARCH_INSTALL_CLAUDE_CODE=0"
     return
@@ -336,9 +611,23 @@ ensure_claude_code() {
     fail "Missing curl. Install curl first, then rerun this installer to install Claude Code."
   fi
 
-  log "Installing Claude Code using Anthropic's native installer"
-  if ! curl -fsSL https://claude.ai/install.sh | bash; then
-    fail "Claude Code install failed. Rerun after fixing it, or set VIBE_RESEARCH_INSTALL_CLAUDE_CODE=0 to skip Claude Code."
+  used_npm_fallback=0
+  if install_claude_code_native; then
+    :
+  else
+    native_status=$?
+    log "Claude Code native installer did not complete (exit ${native_status}); trying npm fallback"
+    if ! install_claude_code_with_npm; then
+      fail "Claude Code install failed. Rerun after fixing it, or set VIBE_RESEARCH_INSTALL_CLAUDE_CODE=0 to skip Claude Code."
+    fi
+    used_npm_fallback=1
+  fi
+
+  if ! claude_code_is_usable && [ "$used_npm_fallback" = "0" ]; then
+    log "Claude Code native installer finished, but the claude command is not usable; trying npm fallback"
+    if ! install_claude_code_with_npm; then
+      fail "Claude Code install failed. Rerun after fixing it, or set VIBE_RESEARCH_INSTALL_CLAUDE_CODE=0 to skip Claude Code."
+    fi
   fi
 
   if ! claude_code_is_usable; then
@@ -818,6 +1107,11 @@ ensure_command() {
   fail "Missing required command: $1"
 }
 
+ensure_required_commands() {
+  ensure_command git
+  ensure_command bash
+}
+
 clone_repo() {
   local primary_url ssh_url checkout_ref
   primary_url="$(resolve_repo_url)"
@@ -924,20 +1218,16 @@ update_repo() {
   git checkout -B "$REPO_REF" FETCH_HEAD
 }
 
-main() {
-  normalize_macos_locale
-  ensure_base_packages
-  ensure_node
-  ensure_claude_code
-  ensure_tailscale
-  ensure_command git
-  ensure_command bash
-
+sync_app_checkout() {
   if [ -d "$INSTALL_DIR" ]; then
     update_repo
   else
     clone_repo
   fi
+}
+
+prepare_app_checkout() {
+  sync_app_checkout
 
   cd "$INSTALL_DIR"
 
@@ -952,15 +1242,33 @@ main() {
       fi
     done
   fi
+}
 
+launch_vibe_research() {
   if [ "$SKIP_RUN" = "1" ]; then
     log "Skipping launch because VIBE_RESEARCH_SKIP_RUN=1"
     return
   fi
 
   prepare_start_environment
+  log "Launching Vibe Research"
   "$INSTALL_DIR/start.sh"
-  install_systemd_service
+}
+
+main() {
+  init_terminal_ui
+  trap cleanup_terminal_ui EXIT
+  print_installer_banner
+  run_step "Terminal locale" normalize_macos_locale
+  run_step "System packages" ensure_base_packages
+  run_step "Node.js runtime" ensure_node
+  run_step "Claude Code" ensure_claude_code
+  run_step "Tailscale" ensure_tailscale
+  run_step "Installer prerequisites" ensure_required_commands
+  run_step "App checkout" prepare_app_checkout
+  run_step "Launch" launch_vibe_research
+  run_step "Service setup" install_systemd_service
+  print_installer_footer
 }
 
 main "$@"

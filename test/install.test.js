@@ -206,6 +206,37 @@ test("install.sh defaults to an app checkout under the home Vibe Research direct
   }
 });
 
+test("install.sh can render the polished terminal installer UI when requested", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-install-ui-"));
+  const installDir = path.join(installRoot, "vibe-research");
+
+  try {
+    const result = await execFile("bash", [installScript], {
+      env: installTestEnv({
+        NO_COLOR: "1",
+        VIBE_RESEARCH_HOME: installDir,
+        VIBE_RESEARCH_INSTALL_ANIMATION: "0",
+        VIBE_RESEARCH_INSTALL_UI: "fancy",
+        VIBE_RESEARCH_REPO_URL: repoDir,
+        VIBE_RESEARCH_SKIP_RUN: "1",
+      }),
+    });
+
+    assert.match(result.stdout, /Vibe Research/);
+    assert.match(result.stdout, /Installer for local agent workspaces/);
+    assert.match(result.stdout, /\[1\/9\] Terminal locale/);
+    assert.match(result.stdout, /\[7\/9\] App checkout/);
+    assert.match(result.stdout, /\[done\] App checkout/);
+    assert.match(result.stdout, /\[9\/9\] Service setup/);
+    assert.match(result.stdout, /Install complete/);
+    assert.ok(await stat(path.join(installDir, "start.sh")));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
 test("install.sh forces a managed restart when launching from the installer", async () => {
   const { tempRoot, repoDir } = await createSourceRepo();
   const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-force-restart-"));
@@ -304,6 +335,91 @@ CLAUDE_INSTALLER
     assert.match(result.stdout, /Using macOS locale en_US\.UTF-8 instead of unsupported C\.UTF-8/);
     assert.match(result.stdout, /Using Claude Code Claude Code 2\.1\.99/);
     assert.equal((await readFile(claudeInstallLog, "utf8")).trim(), "installed via native installer");
+    assert.ok(await stat(path.join(homeDir, ".local", "bin", "claude")));
+    assert.ok(await stat(path.join(installDir, "start.sh")));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
+test("install.sh falls back to user-local npm when the Claude Code native installer times out", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-claude-npm-fallback-"));
+  const homeDir = path.join(installRoot, "home");
+  const installDir = path.join(installRoot, "vibe-research");
+  const fakeBin = path.join(installRoot, "bin");
+  const timeoutLog = path.join(installRoot, "timeout.log");
+  const npmLog = path.join(installRoot, "npm.log");
+
+  try {
+    await mkdir(fakeBin, { recursive: true });
+    await mkdir(homeDir, { recursive: true });
+    await writeFile(
+      path.join(fakeBin, "claude"),
+      "#!/usr/bin/env sh\nprintf 'not installed yet\\n' >&2\nexit 127\n",
+    );
+    await writeFile(path.join(fakeBin, "uname"), "#!/usr/bin/env sh\nprintf 'Linux\\n'\n");
+    await writeFile(path.join(fakeBin, "curl"), "#!/usr/bin/env sh\nprintf 'native installer should be wrapped by timeout\\n' >&2\nexit 99\n");
+    await writeFile(
+      path.join(fakeBin, "timeout"),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(timeoutLog)}
+exit 124
+`,
+    );
+    await writeFile(
+      path.join(fakeBin, "npm"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "-v" ] || [ "\${1:-}" = "--version" ]; then
+  printf '10.9.7\\n'
+  exit 0
+fi
+printf '%s\\n' "$*" >> ${JSON.stringify(npmLog)}
+if [ "\${NPM_CONFIG_PREFIX:-}" != "$HOME/.local" ]; then
+  printf 'bad npm prefix: %s\\n' "\${NPM_CONFIG_PREFIX:-}" >&2
+  exit 65
+fi
+mkdir -p "$NPM_CONFIG_PREFIX/bin"
+cat > "$NPM_CONFIG_PREFIX/bin/claude" <<'CLAUDE_BIN'
+#!/usr/bin/env sh
+if [ "\${1:-}" = "--version" ]; then
+  printf 'Claude Code 2.1.100\\n'
+  exit 0
+fi
+exit 0
+CLAUDE_BIN
+chmod +x "$NPM_CONFIG_PREFIX/bin/claude"
+`,
+    );
+    await execFile("chmod", [
+      "+x",
+      path.join(fakeBin, "claude"),
+      path.join(fakeBin, "curl"),
+      path.join(fakeBin, "npm"),
+      path.join(fakeBin, "timeout"),
+      path.join(fakeBin, "uname"),
+    ]);
+
+    const result = await execFile("bash", [installScript], {
+      env: installTestEnv({
+        HOME: homeDir,
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+        VIBE_RESEARCH_HOME: installDir,
+        VIBE_RESEARCH_REPO_URL: repoDir,
+        VIBE_RESEARCH_INSTALL_CLAUDE_CODE: "1",
+        VIBE_RESEARCH_CLAUDE_CODE_INSTALL_TIMEOUT_SECONDS: "1",
+        VIBE_RESEARCH_SKIP_RUN: "1",
+      }),
+    });
+
+    assert.match(result.stdout, /Installing Claude Code using Anthropic's native installer \(timeout 1s\)/);
+    assert.match(result.stdout, /Claude Code native installer did not complete \(exit 124\); trying npm fallback/);
+    assert.match(result.stdout, new RegExp(`Installing Claude Code using npm fallback under ${escapeRegExp(path.join(homeDir, ".local"))}`));
+    assert.match(result.stdout, /Using Claude Code Claude Code 2\.1\.100/);
+    assert.match(await readFile(timeoutLog, "utf8"), /1s bash -c/);
+    assert.equal((await readFile(npmLog, "utf8")).trim(), "install -g @anthropic-ai/claude-code --no-audit --no-fund");
     assert.ok(await stat(path.join(homeDir, ".local", "bin", "claude")));
     assert.ok(await stat(path.join(installDir, "start.sh")));
   } finally {

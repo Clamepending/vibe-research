@@ -25,6 +25,8 @@ Do not run lookalike installers from unrelated domains, forks, package names, or
 
 The main installer runs Claude Code's native installer by default. That is Anthropic's recommended macOS/Linux/WSL path, and Vibe Research prefers the native `~/.local/bin/claude` binary over older npm/Homebrew shims when both are present.
 
+If Anthropic's native installer exits or does not finish within 10 minutes, the Vibe Research installer falls back to a user-local npm install under `~/.local` so setup can continue without `sudo`. Set `VIBE_RESEARCH_CLAUDE_CODE_INSTALL_TIMEOUT_SECONDS=0` to disable that timeout.
+
 ```bash
 curl -fsSL https://claude.ai/install.sh | bash
 claude --version
@@ -37,6 +39,8 @@ To skip Claude Code when installing Vibe Research for another provider, run the 
 Use the `vibe-research.net` installer URL directly. It is a small stable wrapper around the canonical installer in this repo. If a very minimal machine does not have `curl` yet, install `curl` first and rerun the quickstart command.
 
 The installer handles Claude Code, git, build tools, Node.js 22.x, Vibe Research, and startup on supported macOS/Linux/Raspberry Pi systems. It detects an already-connected Tailscale setup but does not require Tailscale login on first run. On Linux installs, `tmux` is installed too so coding-agent terminals can survive Vibe Research restarts.
+
+Interactive terminals get a polished installer view with a Vibe Research header, step progress, and a small loading spinner. Set `VIBE_RESEARCH_INSTALL_UI=plain` for simple logs, or `VIBE_RESEARCH_INSTALL_ANIMATION=0` to keep the styled step output without animation.
 
 By default, the installer uses the latest GitHub Release when one exists, then falls back to `main` while the project is still bootstrapping. Set `VIBE_RESEARCH_UPDATE_CHANNEL=branch` or `VIBE_RESEARCH_REF=<branch-or-tag>` before running the installer if you intentionally want a dev checkout.
 
