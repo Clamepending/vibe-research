@@ -13108,7 +13108,7 @@ function renderAgentPromptTargets() {
     .join("");
 }
 
-function renderAgentPromptPresetOptions() {
+function getAgentPromptPresetList() {
   const presets = state.agentPromptPresets.length
     ? state.agentPromptPresets
     : [
@@ -13117,13 +13117,28 @@ function renderAgentPromptPresetOptions() {
         { id: "engineer", label: "Engineer" },
       ];
 
+  return presets;
+}
+
+function renderAgentPromptPresetBar() {
+  const presets = getAgentPromptPresetList();
+
   return presets
     .map(
-      (preset) => `
-        <option value="${escapeHtml(preset.id)}" ${preset.id === state.agentPromptSelectedId ? "selected" : ""}>
+      (preset) => {
+        const selected = preset.id === state.agentPromptSelectedId;
+        return `
+        <button
+          class="agent-prompt-preset-button${selected ? " is-selected" : ""}"
+          type="button"
+          role="radio"
+          aria-checked="${selected ? "true" : "false"}"
+          data-agent-prompt-preset="${escapeHtml(preset.id)}"
+        >
           ${escapeHtml(preset.label || preset.id)}
-        </option>
-      `,
+        </button>
+      `;
+      },
     )
     .join("");
 }
@@ -13187,10 +13202,9 @@ function renderAgentPromptView() {
               <div class="knowledge-base-panel-meta">${escapeHtml(presetDescription)}</div>
             </div>
             <div class="agent-prompt-controls">
-              <label class="sr-only" for="agent-prompt-preset">Prompt preset</label>
-              <select class="agent-prompt-preset-select toolbar-control" id="agent-prompt-preset" name="selectedPromptId" aria-label="Prompt preset">
-                ${renderAgentPromptPresetOptions()}
-              </select>
+              <div class="agent-prompt-preset-bar" role="radiogroup" aria-label="Prompt occupation">
+                ${renderAgentPromptPresetBar()}
+              </div>
               <button class="primary-button toolbar-control" type="submit" ${state.agentPromptEditable ? "" : "disabled"}>save custom</button>
             </div>
           </div>
@@ -17036,36 +17050,36 @@ function bindShellEvents() {
       window.alert(error.message);
     }
   });
-  document.querySelector("#agent-prompt-preset")?.addEventListener("change", async (event) => {
-    const select = event.currentTarget;
-    const selectedPromptId = select instanceof HTMLSelectElement ? select.value : "";
-    if (!selectedPromptId || selectedPromptId === state.agentPromptSelectedId) {
-      return;
-    }
+  document.querySelectorAll("[data-agent-prompt-preset]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      const control = event.currentTarget;
+      const selectedPromptId = control instanceof HTMLElement ? control.dataset.agentPromptPreset || "" : "";
+      if (!selectedPromptId || selectedPromptId === state.agentPromptSelectedId) {
+        return;
+      }
 
-    const textarea = document.querySelector("#agent-prompt-textarea");
-    const hasUnsavedChanges =
-      state.agentPromptEditable && textarea instanceof HTMLTextAreaElement && textarea.value !== state.agentPrompt;
+      const textarea = document.querySelector("#agent-prompt-textarea");
+      const hasUnsavedChanges =
+        state.agentPromptEditable && textarea instanceof HTMLTextAreaElement && textarea.value !== state.agentPrompt;
 
-    if (hasUnsavedChanges && !window.confirm("You have unsaved custom prompt edits. Switch presets and discard them?")) {
-      select.value = state.agentPromptSelectedId;
-      return;
-    }
+      if (hasUnsavedChanges && !window.confirm("You have unsaved custom prompt edits. Switch presets and discard them?")) {
+        return;
+      }
 
-    try {
-      const payload = await fetchJson("/api/agent-prompt", {
-        method: "PUT",
-        body: JSON.stringify({
-          selectedPromptId,
-        }),
-      });
+      try {
+        const payload = await fetchJson("/api/agent-prompt", {
+          method: "PUT",
+          body: JSON.stringify({
+            selectedPromptId,
+          }),
+        });
 
-      applyAgentPromptState(payload);
-      renderShell();
-    } catch (error) {
-      select.value = state.agentPromptSelectedId;
-      window.alert(error.message);
-    }
+        applyAgentPromptState(payload);
+        renderShell();
+      } catch (error) {
+        window.alert(error.message);
+      }
+    });
   });
   document.querySelector("#agent-prompt-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
