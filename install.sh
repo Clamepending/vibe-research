@@ -1016,6 +1016,7 @@ Environment=VIBE_RESEARCH_STATE_DIR=$state_dir
 Environment=VIBE_RESEARCH_WORKSPACE_DIR=$workspace_dir
 $(if [ -n "$wiki_dir" ]; then printf 'Environment=VIBE_RESEARCH_WIKI_DIR=%s\n' "$wiki_dir"; fi)
 Environment=VIBE_RESEARCH_PORT=$port
+Environment=VIBE_RESEARCH_FORCE_RESTART=1
 ExecStart=$INSTALL_DIR/start.sh
 PIDFile=$state_dir/server.pid
 Restart=always
@@ -1041,8 +1042,13 @@ EOF
     return
   fi
 
-  if ! try_run_as_root systemctl enable --now "${SERVICE_NAME}.service"; then
+  if ! try_run_as_root systemctl enable "${SERVICE_NAME}.service"; then
     log "Could not enable systemd service; Vibe Research is still running for this session"
+    return
+  fi
+
+  if ! try_run_as_root systemctl restart "${SERVICE_NAME}.service"; then
+    log "Could not start systemd service; Vibe Research is still running for this session"
     return
   fi
 
