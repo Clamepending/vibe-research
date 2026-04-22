@@ -974,6 +974,10 @@ test("agent prompt api creates wiki scaffold and managed instruction files", asy
     assert.match(promptSource, /Vibe Research Agent Prompt/);
     assert.match(promptSource, /You are a research agent/);
     assert.match(promptSource, /Always take QUEUE row 1/);
+    assert.match(promptSource, /Research grounding/);
+    assert.match(promptSource, /cite paper\(s\), citation trail, or current docs/);
+    assert.match(promptSource, /Autonomous-loop behavior/);
+    assert.match(promptSource, /Self-Unblocking/);
     assert.match(promptSource, /vibe-research:wiki-v2-protocol:v2/);
     assert.match(promptSource, /Treat links as traversal hints, not decoration/);
     assert.match(promptSource, /Start with the directly named files, notes, messages, or artifacts/);
