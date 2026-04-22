@@ -11,7 +11,47 @@ const WIKI_V2_SECTION_MARKER_PATTERN = /<!-- (?:vibe-research|remote-vibes):wiki
 const AGENT_MAILBOX_SECTION_MARKER_PATTERN = /<!-- (?:vibe-research|remote-vibes):agent-mailbox-protocol:v\d+ -->/;
 export const AGENT_PROMPT_FILENAME = "agent-prompt.md";
 const PROMPT_FILENAME = AGENT_PROMPT_FILENAME;
+const CUSTOM_PROMPT_FILENAME = "custom-agent-prompt.md";
+const PROMPT_SETTINGS_FILENAME = "agent-prompt-settings.json";
+const RESEARCHER_PROMPT_ID = "researcher";
+const ENGINEER_PROMPT_ID = "engineer";
+const CUSTOM_PROMPT_ID = "custom";
 const DEFAULT_PROMPT_TEMPLATE = readFileSync(new URL("./default-agent-prompt.md", import.meta.url), "utf8");
+const ENGINEER_PROMPT_TEMPLATE = readFileSync(new URL("./engineer-agent-prompt.md", import.meta.url), "utf8");
+const BUILT_IN_PROMPTS = [
+  {
+    id: RESEARCHER_PROMPT_ID,
+    label: "Researcher",
+    description: "Runs one Vibe Research move at a time and records the result in the shared project index.",
+    template: DEFAULT_PROMPT_TEMPLATE,
+  },
+  {
+    id: ENGINEER_PROMPT_ID,
+    label: "Engineer",
+    description: "Implements focused code changes, verifies them, and keeps durable notes when useful.",
+    template: ENGINEER_PROMPT_TEMPLATE,
+  },
+];
+const PROMPT_PRESETS = [
+  {
+    id: RESEARCHER_PROMPT_ID,
+    label: "Researcher",
+    description: BUILT_IN_PROMPTS.find((preset) => preset.id === RESEARCHER_PROMPT_ID)?.description || "",
+    editable: false,
+  },
+  {
+    id: CUSTOM_PROMPT_ID,
+    label: "Custom",
+    description: "Your editable prompt. Selecting it makes this the system prompt for new agents.",
+    editable: true,
+  },
+  {
+    id: ENGINEER_PROMPT_ID,
+    label: "Engineer",
+    description: BUILT_IN_PROMPTS.find((preset) => preset.id === ENGINEER_PROMPT_ID)?.description || "",
+    editable: false,
+  },
+];
 const TARGET_FILES = [
   { filename: "AGENTS.md", label: "AGENTS.md" },
   { filename: "CLAUDE.md", label: "CLAUDE.md" },
@@ -160,6 +200,56 @@ function getDefaultPrompt(options = {}) {
   return ensureBuiltInPromptSections(DEFAULT_PROMPT_TEMPLATE, options);
 }
 
+function getBuiltInPrompt(promptId, options = {}) {
+  const preset = BUILT_IN_PROMPTS.find((entry) => entry.id === promptId) || BUILT_IN_PROMPTS[0];
+  return ensureBuiltInPromptSections(preset.template, options);
+}
+
+function isValidPromptId(promptId) {
+  return PROMPT_PRESETS.some((preset) => preset.id === promptId);
+}
+
+function normalizePromptId(promptId, fallback = RESEARCHER_PROMPT_ID) {
+  const normalized = String(promptId || "").trim();
+  return isValidPromptId(normalized) ? normalized : fallback;
+}
+
+function promptsMatch(left, right) {
+  return normalizePrompt(left).trim() === normalizePrompt(right).trim();
+}
+
+function matchesBuiltInPrompt(prompt, options = {}) {
+  return BUILT_IN_PROMPTS.some((preset) => promptsMatch(prompt, getBuiltInPrompt(preset.id, options)));
+}
+
+function safeParseJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function getPromptFromSaveInput(input) {
+  if (typeof input === "string") {
+    return { hasPrompt: true, prompt: input };
+  }
+
+  if (!input || typeof input !== "object") {
+    return { hasPrompt: false, prompt: "" };
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, "customPrompt")) {
+    return { hasPrompt: true, prompt: input.customPrompt };
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, "prompt")) {
+    return { hasPrompt: true, prompt: input.prompt };
+  }
+
+  return { hasPrompt: false, prompt: "" };
+}
+
 function renderManagedFile(prompt, sourcePath) {
   return `${MANAGED_MARKER}
 <!-- Edit this from Vibe Research or ${sourcePath}. -->
@@ -219,7 +309,11 @@ export class AgentPromptStore {
     this.cwd = cwd;
     this.stateDir = stateDir;
     this.promptFilePath = path.join(stateDir, PROMPT_FILENAME);
+    this.customPromptFilePath = path.join(stateDir, CUSTOM_PROMPT_FILENAME);
+    this.promptSettingsFilePath = path.join(stateDir, PROMPT_SETTINGS_FILENAME);
     this.prompt = "";
+    this.customPrompt = "";
+    this.selectedPromptId = RESEARCHER_PROMPT_ID;
     this.targets = [];
     this.wikiRootPath = wikiRootPath;
   }
@@ -242,11 +336,66 @@ export class AgentPromptStore {
     this.wikiRootPath = wikiRootPath;
   }
 
+  getPromptOptions({ preserveCurrentWikiSection = true } = {}) {
+    return {
+      preserveCurrentWikiSection,
+      wikiRootLabel: this.getWikiRootLabel(),
+    };
+  }
+
+  normalizePromptForStorage(prompt, { preserveCurrentWikiSection = true } = {}) {
+    const options = this.getPromptOptions({ preserveCurrentWikiSection });
+    return ensureBuiltInPromptSections(prompt, options) || getDefaultPrompt(options);
+  }
+
+  getBuiltInPrompt(promptId, { preserveCurrentWikiSection = true } = {}) {
+    return getBuiltInPrompt(promptId, this.getPromptOptions({ preserveCurrentWikiSection }));
+  }
+
+  getSelectedPrompt() {
+    if (this.selectedPromptId === CUSTOM_PROMPT_ID) {
+      return this.customPrompt || this.getBuiltInPrompt(RESEARCHER_PROMPT_ID);
+    }
+
+    return this.getBuiltInPrompt(this.selectedPromptId);
+  }
+
+  async readSettings() {
+    const settingsText = await readTextIfExists(this.promptSettingsFilePath);
+    const settings = settingsText ? safeParseJson(settingsText) : null;
+    return settings && typeof settings === "object" ? settings : {};
+  }
+
+  async writeSettings() {
+    await writeAtomic(
+      this.promptSettingsFilePath,
+      `${JSON.stringify({ selectedPromptId: this.selectedPromptId }, null, 2)}\n`,
+    );
+  }
+
+  getPresetState() {
+    return PROMPT_PRESETS.map((preset) => ({
+      ...preset,
+      selected: preset.id === this.selectedPromptId,
+    }));
+  }
+
   async initialize() {
-    const prompt =
-      (await readTextIfExists(this.promptFilePath)) ??
-      getDefaultPrompt({ wikiRootLabel: this.getWikiRootLabel() });
-    await this.persistPrompt(prompt);
+    const options = this.getPromptOptions();
+    const settings = await this.readSettings();
+    const activePrompt = await readTextIfExists(this.promptFilePath);
+    const customPrompt = await readTextIfExists(this.customPromptFilePath);
+    const migratedPromptIsCustom = activePrompt !== null && !matchesBuiltInPrompt(activePrompt, options);
+
+    this.selectedPromptId = normalizePromptId(
+      settings.selectedPromptId,
+      migratedPromptIsCustom ? CUSTOM_PROMPT_ID : RESEARCHER_PROMPT_ID,
+    );
+    this.customPrompt = this.normalizePromptForStorage(
+      customPrompt ?? (migratedPromptIsCustom ? activePrompt : this.getBuiltInPrompt(RESEARCHER_PROMPT_ID)),
+    );
+    await writeAtomic(this.customPromptFilePath, this.customPrompt);
+    await this.persistActivePrompt();
     await this.ensureWikiScaffold();
     this.targets = await this.syncManagedFiles();
   }
@@ -255,40 +404,81 @@ export class AgentPromptStore {
     return {
       prompt: this.prompt,
       promptPath: path.relative(this.cwd, this.promptFilePath) || PROMPT_FILENAME,
+      customPrompt: this.customPrompt,
+      customPromptPath: path.relative(this.cwd, this.customPromptFilePath) || CUSTOM_PROMPT_FILENAME,
+      selectedPromptId: this.selectedPromptId,
+      editable: this.selectedPromptId === CUSTOM_PROMPT_ID,
+      presets: this.getPresetState(),
       wikiRoot: this.getWikiRootLabel(),
       wikiRootPath: this.wikiRootPath,
       targets: this.targets,
     };
   }
 
-  async save(prompt) {
-    await this.persistPrompt(prompt, { preserveCurrentWikiSection: true });
+  async save(input) {
+    const { hasPrompt, prompt } = getPromptFromSaveInput(input);
+    const requestedPromptId =
+      input && typeof input === "object"
+        ? input.selectedPromptId || input.promptId || input.presetId
+        : "";
+    const hasRequestedPromptId = Boolean(String(requestedPromptId || "").trim());
+    const nextPromptId = normalizePromptId(
+      requestedPromptId,
+      hasPrompt && !hasRequestedPromptId ? CUSTOM_PROMPT_ID : this.selectedPromptId,
+    );
+
+    if (hasPrompt) {
+      if (nextPromptId !== CUSTOM_PROMPT_ID) {
+        throw new Error("Only the custom prompt can be edited.");
+      }
+
+      await this.persistCustomPrompt(prompt, { preserveCurrentWikiSection: true });
+    }
+
+    this.selectedPromptId = nextPromptId;
+    await this.persistActivePrompt();
     await this.ensureWikiScaffold();
     this.targets = await this.syncManagedFiles();
     return this.getState();
   }
 
   async refreshBuiltInSections() {
-    await this.persistPrompt(this.prompt, { preserveCurrentWikiSection: false });
+    await this.persistCustomPrompt(this.customPrompt, { preserveCurrentWikiSection: false });
+    await this.persistActivePrompt();
     await this.ensureWikiScaffold();
     this.targets = await this.syncManagedFiles();
     return this.getState();
   }
 
   async reload() {
-    const prompt =
-      (await readTextIfExists(this.promptFilePath)) ??
-      getDefaultPrompt({ wikiRootLabel: this.getWikiRootLabel() });
-    await this.persistPrompt(prompt);
+    const settings = await this.readSettings();
+    this.selectedPromptId = normalizePromptId(settings.selectedPromptId, this.selectedPromptId);
+
+    const customPrompt = await readTextIfExists(this.customPromptFilePath);
+    if (customPrompt !== null) {
+      await this.persistCustomPrompt(customPrompt, { preserveCurrentWikiSection: true });
+    } else {
+      const activePrompt = await readTextIfExists(this.promptFilePath);
+      await this.persistCustomPrompt(activePrompt ?? this.getBuiltInPrompt(RESEARCHER_PROMPT_ID), {
+        preserveCurrentWikiSection: true,
+      });
+    }
+
+    await this.persistActivePrompt();
     await this.ensureWikiScaffold();
     this.targets = await this.syncManagedFiles();
     return this.getState();
   }
 
-  async persistPrompt(prompt, { preserveCurrentWikiSection = true } = {}) {
-    const options = { preserveCurrentWikiSection, wikiRootLabel: this.getWikiRootLabel() };
-    this.prompt = ensureBuiltInPromptSections(prompt, options) || getDefaultPrompt(options);
+  async persistCustomPrompt(prompt, { preserveCurrentWikiSection = true } = {}) {
+    this.customPrompt = this.normalizePromptForStorage(prompt, { preserveCurrentWikiSection });
+    await writeAtomic(this.customPromptFilePath, this.customPrompt);
+  }
+
+  async persistActivePrompt() {
+    this.prompt = this.getSelectedPrompt();
     await writeAtomic(this.promptFilePath, this.prompt);
+    await this.writeSettings();
   }
 
   async syncManagedFiles() {

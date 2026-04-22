@@ -634,6 +634,11 @@ const state = {
   brainSetupError: "",
   agentPrompt: "",
   agentPromptPath: "",
+  agentPromptCustomPrompt: "",
+  agentPromptCustomPath: "",
+  agentPromptSelectedId: "researcher",
+  agentPromptEditable: false,
+  agentPromptPresets: [],
   agentPromptWikiRoot: ".vibe-research/wiki",
   agentPromptTargets: [],
   swarmGraph: {
@@ -13103,6 +13108,30 @@ function renderAgentPromptTargets() {
     .join("");
 }
 
+function renderAgentPromptPresetOptions() {
+  const presets = state.agentPromptPresets.length
+    ? state.agentPromptPresets
+    : [
+        { id: "researcher", label: "Researcher" },
+        { id: "custom", label: "Custom" },
+        { id: "engineer", label: "Engineer" },
+      ];
+
+  return presets
+    .map(
+      (preset) => `
+        <option value="${escapeHtml(preset.id)}" ${preset.id === state.agentPromptSelectedId ? "selected" : ""}>
+          ${escapeHtml(preset.label || preset.id)}
+        </option>
+      `,
+    )
+    .join("");
+}
+
+function getSelectedAgentPromptPreset() {
+  return state.agentPromptPresets.find((preset) => preset.id === state.agentPromptSelectedId) || null;
+}
+
 function getAgentPromptTargetSummary() {
   if (!state.agentPromptTargets.length) {
     return "no managed files";
@@ -13122,6 +13151,17 @@ function getAgentPromptTargetSummary() {
 }
 
 function renderAgentPromptView() {
+  const selectedPreset = getSelectedAgentPromptPreset();
+  const presetDescription =
+    selectedPreset?.description ||
+    (state.agentPromptEditable ? "custom prompt selected" : "built-in prompt selected");
+  const editorAttributes = `
+              spellcheck="false"
+              autocapitalize="none"
+              autocorrect="off"
+              ${state.agentPromptEditable ? "" : "readonly"}
+            `;
+
   return `
     <section class="dashboard-panel agent-prompt-view" ${renderMainViewAttributes("agent-prompt")}>
       <div class="dashboard-toolbar">
@@ -13144,9 +13184,19 @@ function renderAgentPromptView() {
           <div class="agent-prompt-card-head">
             <div>
               <strong>Prompt</strong>
-              <div class="knowledge-base-panel-meta">wiki root: ${escapeHtml(state.agentPromptWikiRoot)}</div>
+              <div class="knowledge-base-panel-meta">${escapeHtml(presetDescription)}</div>
             </div>
-            <button class="primary-button toolbar-control" type="submit">save prompt</button>
+            <div class="agent-prompt-controls">
+              <label class="sr-only" for="agent-prompt-preset">Prompt preset</label>
+              <select class="agent-prompt-preset-select toolbar-control" id="agent-prompt-preset" name="selectedPromptId" aria-label="Prompt preset">
+                ${renderAgentPromptPresetOptions()}
+              </select>
+              <button class="primary-button toolbar-control" type="submit" ${state.agentPromptEditable ? "" : "disabled"}>save custom</button>
+            </div>
+          </div>
+          <div class="agent-prompt-meta-row">
+            <span>wiki root: ${escapeHtml(state.agentPromptWikiRoot)}</span>
+            <span>${state.agentPromptEditable ? `custom source: ${escapeHtml(state.agentPromptCustomPath || ".vibe-research/custom-agent-prompt.md")}` : "built-in prompt"}</span>
           </div>
           ${renderLineNumberEditor({
             id: "agent-prompt-textarea",
@@ -13154,11 +13204,7 @@ function renderAgentPromptView() {
             name: "prompt",
             value: state.agentPrompt,
             variant: "prompt",
-            attributes: `
-              spellcheck="false"
-              autocapitalize="none"
-              autocorrect="off"
-            `,
+            attributes: editorAttributes,
           })}
         </form>
         <aside class="agent-prompt-target-card">
@@ -16131,6 +16177,11 @@ function scheduleSessionsRefresh() {
 function applyAgentPromptState(payload) {
   state.agentPrompt = payload?.prompt || "";
   state.agentPromptPath = payload?.promptPath || ".vibe-research/agent-prompt.md";
+  state.agentPromptCustomPrompt = payload?.customPrompt || "";
+  state.agentPromptCustomPath = payload?.customPromptPath || ".vibe-research/custom-agent-prompt.md";
+  state.agentPromptSelectedId = payload?.selectedPromptId || "researcher";
+  state.agentPromptEditable = Boolean(payload?.editable);
+  state.agentPromptPresets = Array.isArray(payload?.presets) ? payload.presets : [];
   state.agentPromptWikiRoot = payload?.wikiRoot || state.settings.wikiRelativeRoot || ".vibe-research/wiki";
   state.agentPromptTargets = Array.isArray(payload?.targets) ? payload.targets : [];
 }
@@ -16970,7 +17021,8 @@ function bindShellEvents() {
   document.querySelector("#refresh-sessions")?.addEventListener("click", () => loadSessions());
   document.querySelector("#refresh-agent-prompt")?.addEventListener("click", async () => {
     const textarea = document.querySelector("#agent-prompt-textarea");
-    const hasUnsavedChanges = textarea instanceof HTMLTextAreaElement && textarea.value !== state.agentPrompt;
+    const hasUnsavedChanges =
+      state.agentPromptEditable && textarea instanceof HTMLTextAreaElement && textarea.value !== state.agentPrompt;
 
     if (hasUnsavedChanges && !window.confirm("You have unsaved edits in the prompt editor. Reload from disk and discard them?")) {
       return;
@@ -16984,15 +17036,51 @@ function bindShellEvents() {
       window.alert(error.message);
     }
   });
-  document.querySelector("#agent-prompt-form")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  document.querySelector("#agent-prompt-preset")?.addEventListener("change", async (event) => {
+    const select = event.currentTarget;
+    const selectedPromptId = select instanceof HTMLSelectElement ? select.value : "";
+    if (!selectedPromptId || selectedPromptId === state.agentPromptSelectedId) {
+      return;
+    }
+
     const textarea = document.querySelector("#agent-prompt-textarea");
-    const prompt = textarea instanceof HTMLTextAreaElement ? textarea.value : "";
+    const hasUnsavedChanges =
+      state.agentPromptEditable && textarea instanceof HTMLTextAreaElement && textarea.value !== state.agentPrompt;
+
+    if (hasUnsavedChanges && !window.confirm("You have unsaved custom prompt edits. Switch presets and discard them?")) {
+      select.value = state.agentPromptSelectedId;
+      return;
+    }
 
     try {
       const payload = await fetchJson("/api/agent-prompt", {
         method: "PUT",
         body: JSON.stringify({
+          selectedPromptId,
+        }),
+      });
+
+      applyAgentPromptState(payload);
+      renderShell();
+    } catch (error) {
+      select.value = state.agentPromptSelectedId;
+      window.alert(error.message);
+    }
+  });
+  document.querySelector("#agent-prompt-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const textarea = document.querySelector("#agent-prompt-textarea");
+    const prompt = textarea instanceof HTMLTextAreaElement ? textarea.value : "";
+
+    if (!state.agentPromptEditable) {
+      return;
+    }
+
+    try {
+      const payload = await fetchJson("/api/agent-prompt", {
+        method: "PUT",
+        body: JSON.stringify({
+          selectedPromptId: state.agentPromptSelectedId,
           prompt,
         }),
       });

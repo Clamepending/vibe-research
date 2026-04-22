@@ -61,6 +61,15 @@ body {
   font-size: 16px;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
 #app {
   height: 100vh;
   height: var(--app-height);
@@ -4922,6 +4931,7 @@ button.visual-town-building:focus-visible {
 
 .agent-prompt-card-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -4929,8 +4939,45 @@ button.visual-town-building:focus-visible {
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.agent-prompt-card-head > div {
+  min-width: 0;
+}
+
 .agent-prompt-card-head strong {
   font-family: "IBM Plex Mono", monospace;
+}
+
+.agent-prompt-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-prompt-preset-select {
+  max-width: 180px;
+}
+
+.agent-prompt-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 14px;
+  min-width: 0;
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+}
+
+.agent-prompt-meta-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-prompt-textarea {

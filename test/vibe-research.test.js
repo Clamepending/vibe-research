@@ -954,6 +954,12 @@ test("agent prompt api creates wiki scaffold and managed instruction files", asy
     const statePayload = await stateResponse.json();
 
     assert.match(statePayload.agentPrompt.prompt, /Vibe Research Agent Prompt/);
+    assert.equal(statePayload.agentPrompt.selectedPromptId, "researcher");
+    assert.equal(statePayload.agentPrompt.editable, false);
+    assert.deepEqual(
+      statePayload.agentPrompt.presets.map((preset) => preset.id),
+      ["researcher", "custom", "engineer"],
+    );
     assert.equal(statePayload.agentPrompt.targets.length, 3);
     assert.ok(statePayload.agentPrompt.targets.every((target) => target.status !== "conflict"));
 
@@ -990,6 +996,8 @@ test("agent prompt api creates wiki scaffold and managed instruction files", asy
 
     assert.equal(updateResponse.status, 200);
     const updatedPayload = await updateResponse.json();
+    assert.equal(updatedPayload.selectedPromptId, "custom");
+    assert.equal(updatedPayload.editable, true);
     assert.match(updatedPayload.prompt, /Custom Prompt/);
     assert.match(updatedPayload.prompt, /vibe-research:wiki-v2-protocol:v2/);
     assert.match(updatedPayload.prompt, /Prefer fewer, better notes/);
@@ -1001,6 +1009,81 @@ test("agent prompt api creates wiki scaffold and managed instruction files", asy
     assert.match(updatedManagedAgents, /Knowledge Model/);
     assert.doesNotMatch(updatedManagedAgents, /Agent Mailboxes/);
     assert.doesNotMatch(updatedManagedAgents, /vr-mailwatch/);
+  } finally {
+    await app.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("agent prompt presets switch active system prompts and only custom is editable", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-prompt-presets-");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+
+  try {
+    const engineerResponse = await fetch(`${baseUrl}/api/agent-prompt`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ selectedPromptId: "engineer" }),
+    });
+    assert.equal(engineerResponse.status, 200);
+    const engineerPayload = await engineerResponse.json();
+    assert.equal(engineerPayload.selectedPromptId, "engineer");
+    assert.equal(engineerPayload.editable, false);
+    assert.match(engineerPayload.prompt, /Vibe Research Engineer Prompt/);
+
+    const managedAgents = await readFile(path.join(workspaceDir, "AGENTS.md"), "utf8");
+    assert.match(managedAgents, /Vibe Research Engineer Prompt/);
+    assert.doesNotMatch(managedAgents, /You are a research agent/);
+
+    const rejectedResponse = await fetch(`${baseUrl}/api/agent-prompt`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        selectedPromptId: "engineer",
+        prompt: "# Edited Built-In\n",
+      }),
+    });
+    assert.equal(rejectedResponse.status, 400);
+
+    const customResponse = await fetch(`${baseUrl}/api/agent-prompt`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        selectedPromptId: "custom",
+        prompt: "# Custom Prompt\n\nShip the smallest complete fix.",
+      }),
+    });
+    assert.equal(customResponse.status, 200);
+    const customPayload = await customResponse.json();
+    assert.equal(customPayload.selectedPromptId, "custom");
+    assert.equal(customPayload.editable, true);
+    assert.match(customPayload.prompt, /Custom Prompt/);
+    assert.match(customPayload.prompt, /Knowledge Model/);
+
+    const savedCustom = await readFile(
+      path.join(workspaceDir, ".vibe-research", "custom-agent-prompt.md"),
+      "utf8",
+    );
+    assert.match(savedCustom, /Ship the smallest complete fix/);
+
+    const selectedSettings = await readFile(
+      path.join(workspaceDir, ".vibe-research", "agent-prompt-settings.json"),
+      "utf8",
+    );
+    assert.equal(JSON.parse(selectedSettings).selectedPromptId, "custom");
+
+    const researcherResponse = await fetch(`${baseUrl}/api/agent-prompt`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ selectedPromptId: "researcher" }),
+    });
+    assert.equal(researcherResponse.status, 200);
+    const researcherPayload = await researcherResponse.json();
+    assert.equal(researcherPayload.selectedPromptId, "researcher");
+    assert.equal(researcherPayload.editable, false);
+    assert.match(researcherPayload.prompt, /Vibe Research Agent Prompt/);
+    assert.doesNotMatch(researcherPayload.prompt, /Ship the smallest complete fix/);
+    assert.match(researcherPayload.customPrompt, /Ship the smallest complete fix/);
   } finally {
     await app.close();
     await rm(workspaceDir, { recursive: true, force: true });

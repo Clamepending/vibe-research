@@ -721,7 +721,7 @@ export async function createVibeResearchApp({
     if (wikiRootChanged) {
       await agentPromptStore.refreshBuiltInSections();
     } else {
-      await agentPromptStore.save(agentPromptStore.prompt);
+      await agentPromptStore.save({ selectedPromptId: agentPromptStore.selectedPromptId });
     }
     wikiBackupService.setConfig({
       enabled: settings.wikiGitBackupEnabled,
@@ -1725,7 +1725,7 @@ export async function createVibeResearchApp({
 
   app.put("/api/agent-prompt", async (request, response) => {
     try {
-      response.json(await agentPromptStore.save(request.body?.prompt));
+      response.json(await agentPromptStore.save(request.body));
     } catch (error) {
       response.status(400).json({ error: error.message });
     }
