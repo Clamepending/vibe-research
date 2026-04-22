@@ -299,7 +299,8 @@ const SYSTEM_CHART_COLORS = [
   "#bfc7d0",
   "#ececef",
 ];
-const PLUGIN_CATALOG = BUILDING_CATALOG;
+const CORE_BUILDING_IDS = new Set(BUILDING_CATALOG.map((building) => normalizeBuildingId(building.id)));
+const PLUGIN_CATALOG = [...BUILDING_CATALOG];
 const AUTOMATION_CADENCE_OPTIONS = [
   ["hourly", "Every hour"],
   ["six-hours", "Every 6 hours"],
@@ -833,6 +834,12 @@ const state = {
     error: "",
     data: null,
   },
+  buildingHub: {
+    buildings: [],
+    loaded: false,
+    loading: false,
+    status: null,
+  },
   videoMemoryMonitors: [],
   settings: {
     agentAnthropicApiKeyConfigured: false,
@@ -859,6 +866,10 @@ const state = {
     browserUseProfileDir: "",
     browserUseStatus: null,
     browserUseWorkerPath: "",
+    buildingHubCatalogPath: "",
+    buildingHubCatalogUrl: "",
+    buildingHubEnabled: false,
+    buildingHubStatus: null,
     ottoAuthBaseUrl: "https://ottoauth.vercel.app",
     ottoAuthCallbackUrl: "",
     ottoAuthDefaultMaxChargeCents: "",
@@ -9394,6 +9405,10 @@ function isPluginOnboardingStepComplete(plugin, step) {
 
   if (Array.isArray(check.allConfigured)) {
     return check.allConfigured.every((settingKey) => isSettingConfigured(settingKey));
+  }
+
+  if (Array.isArray(check.anyConfigured)) {
+    return check.anyConfigured.some((settingKey) => isSettingConfigured(settingKey));
   }
 
   return false;

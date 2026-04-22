@@ -14,6 +14,7 @@ import {
   MessageCircle,
   MessagesSquare,
   Notebook,
+  Plug,
   Send,
   ShoppingCart,
   Smartphone,
@@ -98,6 +99,41 @@ const CORE_BUILDING_MANIFESTS = [
       steps: [
         { title: "Connect the MCP", detail: "Authorize Calendar in the agent host that will run this building." },
         { title: "Pick calendars", detail: "Keep the account scope narrow enough for agents to reason about." },
+      ],
+    },
+  },
+  {
+    id: "buildinghub",
+    name: "BuildingHub",
+    category: "Community",
+    description: "Load manifest-only community buildings from a local or remote BuildingHub catalog.",
+    icon: Plug,
+    install: {
+      enabledSetting: "buildingHubEnabled",
+      storedFallback: false,
+    },
+    status: "catalog ready",
+    source: "vibe-research",
+    visual: {
+      shape: "plugin",
+    },
+    access: {
+      label: "Manifest catalog",
+      detail: "BuildingHub catalogs contribute setup guides and visual buildings only. They do not run executable code inside Vibe Research.",
+    },
+    onboarding: {
+      variables: [
+        { label: "Local catalog", setting: "buildingHubCatalogPath", required: false },
+        { label: "Remote catalog", setting: "buildingHubCatalogUrl", required: false },
+      ],
+      steps: [
+        { title: "Enable BuildingHub", detail: "Turn on community building catalogs.", completeWhen: { type: "installed" } },
+        {
+          title: "Choose a source",
+          detail: "Point Vibe Research at a local BuildingHub checkout or a reviewed registry JSON URL.",
+          completeWhen: { anyConfigured: ["buildingHubCatalogPath", "buildingHubCatalogUrl"] },
+        },
+        { title: "Review manifests", detail: "Install community buildings after checking their setup notes and required capabilities." },
       ],
     },
   },
