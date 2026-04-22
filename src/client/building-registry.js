@@ -1,5 +1,6 @@
 import {
   AppWindow,
+  Activity,
   Banana,
   BookOpen,
   Bot,
@@ -9,6 +10,7 @@ import {
   Clapperboard,
   Database,
   GitPullRequest,
+  Inbox,
   Lightbulb,
   Mail,
   MessageCircle,
@@ -18,6 +20,8 @@ import {
   Send,
   ShoppingCart,
   Smartphone,
+  Waypoints,
+  Wrench,
 } from "lucide";
 import { createBuildingRegistry, defineBuilding, normalizeBuildingId } from "./building-sdk.js";
 
@@ -45,6 +49,199 @@ const CORE_BUILDING_MANIFESTS = [
       steps: [
         { title: "Connect GitHub", detail: "Enable the GitHub plugin or authenticate gh where agents run." },
         { title: "Start a session", detail: "Agents can inspect repositories, issues, pull requests, and checks." },
+      ],
+    },
+  },
+  {
+    id: "agent-inbox",
+    name: "Agent Inbox",
+    category: "Vibe Research",
+    description: "Review agent sessions that are working, finished, exited, or ready for human attention.",
+    icon: Inbox,
+    install: {
+      system: true,
+    },
+    status: "built in",
+    source: "vibe-research",
+    ui: {
+      entryView: "agent-inbox",
+      mode: "workspace",
+      workspaceView: "agent-inbox",
+    },
+    visual: {
+      shape: "post",
+    },
+    access: {
+      label: "Session stream",
+      detail: "Uses local Vibe Research session state, read markers, background task summaries, and subagent status. No extra credentials are required.",
+    },
+    onboarding: {
+      variables: [
+        { label: "Sessions", value: "local Vibe Research sessions", required: true },
+        { label: "Read markers", value: "browser-local attention state", required: true },
+        { label: "Notifications", value: "AgentMail, Telegram, or browser push later", required: false },
+      ],
+      steps: [
+        { title: "Open the inbox", detail: "Use the Agent Inbox workspace to see working, unread, and exited sessions.", completeWhen: { type: "installed" } },
+        { title: "Review finished work", detail: "Open unread sessions, inspect the result, and mark them read." },
+        { title: "Jump back to context", detail: "Each inbox row opens the underlying terminal session." },
+      ],
+    },
+  },
+  {
+    id: "tailscale",
+    name: "Tailscale",
+    category: "Networking",
+    description: "Open Vibe Research and localhost app ports through a tailnet portal.",
+    icon: Waypoints,
+    install: {
+      system: true,
+    },
+    status: "auto-detected",
+    source: "vibe-research",
+    visual: {
+      shape: "portal",
+    },
+    access: {
+      label: "Tailnet portal",
+      detail: "Uses the local Tailscale CLI when available to show tailnet URLs and expose localhost-only ports with Tailscale Serve. Vibe Research does not store Tailscale credentials.",
+    },
+    agentGuide: {
+      summary: "Use Tailscale when an agent needs to understand private remote access, tailnet URLs, or why a localhost app can be exposed safely through Tailscale Serve.",
+      useCases: [
+        "Check whether this Vibe Research instance has a tailnet URL.",
+        "Diagnose why a localhost-only app is not reachable from another device.",
+        "Explain to a human what Tailscale Serve setup is missing without asking for credentials unless login is required.",
+      ],
+      commands: [
+        { label: "Check local Tailscale status", command: "tailscale status", detail: "Shows whether the machine is logged into a tailnet." },
+        { label: "Check Serve config", command: "tailscale serve status", detail: "Shows active Tailscale Serve forwards." },
+        { label: "List app ports", command: "curl -s http://127.0.0.1:${VIBE_RESEARCH_PORT:-4123}/api/ports -H 'X-Vibe-Research-API: 1'", detail: "Use the current app port when known; browser UI usually exposes ports directly." },
+      ],
+      docs: [
+        { label: "Tailscale Serve docs", url: "https://tailscale.com/kb/1242/tailscale-serve" },
+      ],
+      env: [
+        { name: "VIBE_RESEARCH_BUILDING_GUIDES_DIR", detail: "Directory containing all generated building guides." },
+        { name: "VIBE_RESEARCH_BUILDING_GUIDES_INDEX", detail: "Index of generated building guides." },
+      ],
+    },
+    onboarding: {
+      variables: [
+        { label: "Tailscale CLI", value: "installed and logged in on this machine", required: false },
+        { label: "Tailnet URL", value: "auto-detected when Tailscale is connected", required: false },
+        { label: "Serve permissions", value: "local tailscale serve access", required: false },
+      ],
+      steps: [
+        { title: "Connect Tailscale", detail: "Sign in with the local Tailscale CLI if tailnet URLs are not appearing." },
+        { title: "Use the portal", detail: "Open Vibe Research from the Tailscale URL shown in startup output or port previews." },
+        { title: "Expose local apps", detail: "Use the Localhost Apps dock to publish eligible localhost-only ports with Tailscale Serve." },
+      ],
+    },
+  },
+  {
+    id: "ci-repair-shop",
+    name: "CI Repair Shop",
+    category: "Coding",
+    description: "Turn failing GitHub checks into focused repair-agent sessions with logs, repro commands, and PR updates.",
+    icon: Wrench,
+    install: {
+      system: true,
+    },
+    status: "built in",
+    source: "vibe-research",
+    visual: {
+      shape: "plugin",
+    },
+    access: {
+      label: "GitHub + local tests",
+      detail: "Uses the GitHub connector or gh authentication plus the checked-out repository's test commands. Local terminal agents still need repo and GitHub access where they run.",
+    },
+    onboarding: {
+      variables: [
+        { label: "GitHub access", value: "Codex connector or gh auth", required: true },
+        { label: "Repository checkout", value: "local workspace folder", required: true },
+        { label: "Repro command", value: "project test or check command", required: true },
+      ],
+      steps: [
+        { title: "Connect GitHub", detail: "Make sure the host agent or local shell can read PR checks and logs." },
+        { title: "Pick a failing check", detail: "Start from the PR check summary, job log, and branch SHA." },
+        { title: "Repair locally", detail: "Have an agent reproduce the failure, patch, rerun the focused command, and prepare the PR update." },
+      ],
+    },
+  },
+  {
+    id: "toolshed",
+    name: "Toolshed",
+    category: "Vibe Research",
+    description: "Build new Agent Town buildings, prepare BuildingHub submissions, and keep the Vibe Research operating map close at hand.",
+    icon: Wrench,
+    install: {
+      system: true,
+    },
+    status: "built in",
+    source: "vibe-research",
+    visual: {
+      shape: "plugin",
+    },
+    access: {
+      label: "Building SDK + BuildingHub",
+      detail: "Uses the local building docs, core manifest registry, and optional BuildingHub catalog workflow. Community buildings stay manifest-only until reviewed.",
+    },
+    agentGuide: {
+      summary: "Use Toolshed when an agent needs to create, review, or extend a building manifest and its generated setup guide.",
+      useCases: [
+        "Draft a first-party building manifest with setup, access, and agentGuide fields.",
+        "Create or review a manifest-only BuildingHub entry.",
+        "Find the generated building guide index that Codex and Claude Code sessions can read.",
+      ],
+      commands: [
+        { label: "Read building docs", command: "sed -n '1,220p' docs/buildings.md", detail: "Start here before changing building contracts." },
+        { label: "Read generated guide index", command: "sed -n '1,220p' \"$VIBE_RESEARCH_BUILDING_GUIDES_INDEX\"", detail: "Shows every building guide available to the current agent." },
+      ],
+      env: [
+        { name: "VIBE_RESEARCH_BUILDING_GUIDES_DIR", detail: "Generated per-building guide directory." },
+        { name: "VIBE_RESEARCH_BUILDING_GUIDES_INDEX", detail: "Generated building guide index." },
+      ],
+    },
+    onboarding: {
+      variables: [
+        { label: "Building docs", value: "docs/buildings.md", required: true },
+        { label: "Starter catalog", value: "BuildingHub checkout or template", required: false },
+        { label: "Publish path", value: "GitHub PR to BuildingHub", required: false },
+      ],
+      steps: [
+        { title: "Read the map", detail: "Understand buildings, Library memory, settings, occupations, automations, and communications before adding new surfaces." },
+        { title: "Draft a manifest", detail: "Copy a BuildingHub template or add a first-party manifest with a stable id, setup variables, and Agent Town visual shape." },
+        { title: "Validate and publish", detail: "Run the catalog validator, rebuild registry.json, and open a reviewed BuildingHub pull request when the building is community-safe." },
+      ],
+    },
+  },
+  {
+    id: "wandb",
+    name: "W&B",
+    category: "Observability",
+    description: "Track training runs, sweeps, metrics, and artifacts from research-agent experiments.",
+    icon: Activity,
+    status: "connector-ready",
+    source: "external",
+    visual: {
+      shape: "studio",
+    },
+    access: {
+      label: "Weights & Biases API",
+      detail: "Requires WANDB_API_KEY or an existing wandb login where the agent runs, plus explicit entity/project scope for experiment logging.",
+    },
+    onboarding: {
+      variables: [
+        { label: "W&B API key", value: "WANDB_API_KEY in agent environment", required: true },
+        { label: "Entity / project", value: "wandb entity and project name", required: true },
+        { label: "Artifact policy", value: "run URLs, configs, checkpoints, tables, and plots", required: false },
+      ],
+      steps: [
+        { title: "Authenticate wandb", detail: "Log in or provide WANDB_API_KEY in the environment used by the training agent." },
+        { title: "Declare the project", detail: "Tell agents which entity/project to log to before long runs start." },
+        { title: "Install the building", detail: "Add W&B to Agent Town once experiment logging is configured.", completeWhen: { type: "installed" } },
       ],
     },
   },
@@ -209,6 +406,22 @@ const CORE_BUILDING_MANIFESTS = [
       shape: "browser",
       specialTownPlace: true,
     },
+    agentGuide: {
+      summary: "Use Browser Use when a coding agent needs a separate browser-fulfillment worker for long or delegated web tasks.",
+      useCases: [
+        "Start a browser worker from an existing agent session.",
+        "Hand off a web task that needs OttoAuth browser state or an Anthropic-backed worker.",
+        "Check missing setup before asking the human for an API key or profile path.",
+      ],
+      commands: [
+        { label: "Run a browser-use task", command: "vr-browser-use --task \"Describe the task here\" --wait", detail: "Starts the configured worker and waits for completion." },
+        { label: "Check generated guide", command: "sed -n '1,220p' \"$VIBE_RESEARCH_BUILDING_GUIDES_DIR/browser-use.md\"", detail: "Read the local setup checklist first." },
+      ],
+      env: [
+        { name: "VIBE_RESEARCH_BROWSER_USE_COMMAND", detail: "Canonical helper command for local agents." },
+        { name: "VIBE_RESEARCH_BUILDING_GUIDES_DIR", detail: "Generated per-building guide directory." },
+      ],
+    },
     onboarding: {
       setupSelector: ".browser-use-plugin-card",
       variables: [
@@ -249,6 +462,21 @@ const CORE_BUILDING_MANIFESTS = [
     visual: {
       shape: "market",
       specialTownPlace: true,
+    },
+    agentGuide: {
+      summary: "Use OttoAuth when an agent needs human-linked checkout or purchase help through a bounded service request.",
+      useCases: [
+        "Create an OttoAuth task from an agent session.",
+        "Respect spend caps and callback setup before asking a human to approve commerce actions.",
+        "Diagnose missing username, private key, service URL, or default spend cap setup.",
+      ],
+      commands: [
+        { label: "Start an OttoAuth task", command: "vr-ottoauth --task \"Describe the purchase or checkout task\" --max-charge-cents 2500 --wait", detail: "Use an explicit spending bound for commerce requests." },
+        { label: "Read OttoAuth guide", command: "sed -n '1,220p' \"$VIBE_RESEARCH_BUILDING_GUIDES_DIR/ottoauth.md\"", detail: "Review setup and safety expectations first." },
+      ],
+      env: [
+        { name: "VIBE_RESEARCH_OTTOAUTH_COMMAND", detail: "Canonical helper command for local agents." },
+      ],
     },
     onboarding: {
       setupSelector: ".ottoauth-plugin-card",
@@ -291,6 +519,21 @@ const CORE_BUILDING_MANIFESTS = [
     visual: {
       shape: "camera",
       specialTownPlace: true,
+    },
+    agentGuide: {
+      summary: "Use VideoMemory when an agent needs a camera or video monitor that can wake a Vibe Research session later.",
+      useCases: [
+        "Create a monitor that watches a browser/camera condition and wakes an agent.",
+        "Check whether camera permission or service URL setup is blocking monitors.",
+        "Record monitor IDs, task URLs, and artifact paths in the Library when they matter.",
+      ],
+      commands: [
+        { label: "Start a monitor", command: "vr-videomemory --help", detail: "Read helper options before creating a monitor." },
+        { label: "Read VideoMemory guide", command: "sed -n '1,220p' \"$VIBE_RESEARCH_BUILDING_GUIDES_DIR/videomemory.md\"", detail: "Review setup and camera permission expectations first." },
+      ],
+      env: [
+        { name: "VIBE_RESEARCH_VIDEOMEMORY_COMMAND", detail: "Canonical helper command for local agents." },
+      ],
     },
     onboarding: {
       setupSelector: ".videomemory-plugin-card",
@@ -561,6 +804,22 @@ const CORE_BUILDING_MANIFESTS = [
     visual: {
       shape: "dock",
       specialTownPlace: true,
+    },
+    agentGuide: {
+      summary: "Use Localhost Apps when an agent needs to discover, rename, preview, or expose web apps running from the workspace.",
+      useCases: [
+        "Find development servers discovered by Vibe Research.",
+        "Preview a local app through the Vibe Research proxy or direct URL.",
+        "Expose eligible localhost-only ports through the Tailscale portal when available.",
+      ],
+      commands: [
+        { label: "List discovered ports", command: "curl -s http://127.0.0.1:${VIBE_RESEARCH_PORT:-4123}/api/ports -H 'X-Vibe-Research-API: 1'", detail: "Use the runtime app port if it differs from 4123." },
+        { label: "Open with Playwright", command: "vr-playwright open http://127.0.0.1:4173 && vr-playwright snapshot", detail: "Inspect a local app with a real browser." },
+      ],
+      env: [
+        { name: "VIBE_RESEARCH_PLAYWRIGHT_COMMAND", detail: "Canonical Playwright helper command." },
+        { name: "VIBE_RESEARCH_BROWSER_FALLBACK_COMMAND", detail: "Visual fallback helper for screenshots/images." },
+      ],
     },
     onboarding: {
       variables: [

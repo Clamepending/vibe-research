@@ -171,6 +171,71 @@ function normalizeAccess(access) {
   return label || detail ? { label, detail } : null;
 }
 
+function normalizeAgentGuideCommand(command) {
+  if (typeof command === "string") {
+    const commandText = normalizeText(command, 220);
+    return commandText ? { command: commandText, label: "", detail: "" } : null;
+  }
+
+  if (!isPlainObject(command)) {
+    return null;
+  }
+
+  const commandText = normalizeText(command.command || command.example, 220);
+  const label = normalizeText(command.label || command.name, 120);
+  const detail = normalizeText(command.detail || command.description, 500);
+  return commandText || label || detail
+    ? { command: commandText, label, detail }
+    : null;
+}
+
+function normalizeAgentGuideEnv(envVar) {
+  if (typeof envVar === "string") {
+    const name = normalizeText(envVar, 120);
+    return name ? { name, detail: "", required: false } : null;
+  }
+
+  if (!isPlainObject(envVar)) {
+    return null;
+  }
+
+  const name = normalizeText(envVar.name || envVar.key, 120);
+  const detail = normalizeText(envVar.detail || envVar.description, 500);
+  return name || detail
+    ? { name, detail, required: Boolean(envVar.required) }
+    : null;
+}
+
+function normalizeAgentGuideDoc(doc) {
+  if (typeof doc === "string") {
+    const url = normalizeOptionalUrl(doc);
+    return url ? { label: "", url } : null;
+  }
+
+  if (!isPlainObject(doc)) {
+    return null;
+  }
+
+  const label = normalizeText(doc.label || doc.title, 120);
+  const url = normalizeOptionalUrl(doc.url || doc.href);
+  return label || url ? { label, url } : null;
+}
+
+function normalizeAgentGuide(agentGuide) {
+  if (!isPlainObject(agentGuide)) {
+    return null;
+  }
+
+  return {
+    commands: safeArray(agentGuide.commands).map(normalizeAgentGuideCommand).filter(Boolean).slice(0, 20),
+    docs: safeArray(agentGuide.docs).map(normalizeAgentGuideDoc).filter(Boolean).slice(0, 12),
+    env: safeArray(agentGuide.env).map(normalizeAgentGuideEnv).filter(Boolean).slice(0, 24),
+    setup: safeArray(agentGuide.setup).map((entry) => normalizeText(entry, 700)).filter(Boolean).slice(0, 20),
+    summary: normalizeText(agentGuide.summary, 900),
+    useCases: safeArray(agentGuide.useCases).map((entry) => normalizeText(entry, 500)).filter(Boolean).slice(0, 20),
+  };
+}
+
 function normalizeInstall(install) {
   const source = isPlainObject(install) ? install : {};
   return {
@@ -210,11 +275,13 @@ export function normalizeBuildingHubManifest(manifest, { sourceId = "buildinghub
   }
 
   const access = normalizeAccess(manifest.access);
+  const agentGuide = normalizeAgentGuide(manifest.agentGuide);
   const building = defineBuilding({
     id,
     name,
     category: normalizeText(manifest.category || "Community", 80) || "Community",
     description: normalizeText(manifest.description, 900),
+    ...(agentGuide ? { agentGuide } : {}),
     install: normalizeInstall(manifest.install),
     onboarding: normalizeOnboarding(manifest.onboarding),
     source: "buildinghub",

@@ -45,6 +45,110 @@ function normalizeVisualContract(visual) {
   };
 }
 
+function normalizeStringList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+}
+
+function normalizeAgentGuideCommand(command) {
+  if (typeof command === "string") {
+    const text = command.trim();
+    return text ? { command: text, label: "", detail: "" } : null;
+  }
+
+  if (!command || typeof command !== "object" || Array.isArray(command)) {
+    return null;
+  }
+
+  const commandText = String(command.command || command.example || "").trim();
+  const label = String(command.label || command.name || "").trim();
+  const detail = String(command.detail || command.description || "").trim();
+  if (!commandText && !label && !detail) {
+    return null;
+  }
+
+  return {
+    command: commandText,
+    label,
+    detail,
+  };
+}
+
+function normalizeAgentGuideEnv(envVar) {
+  if (typeof envVar === "string") {
+    const name = envVar.trim();
+    return name ? { name, detail: "", required: false } : null;
+  }
+
+  if (!envVar || typeof envVar !== "object" || Array.isArray(envVar)) {
+    return null;
+  }
+
+  const name = String(envVar.name || envVar.key || "").trim();
+  const detail = String(envVar.detail || envVar.description || "").trim();
+  if (!name && !detail) {
+    return null;
+  }
+
+  return {
+    name,
+    detail,
+    required: Boolean(envVar.required),
+  };
+}
+
+function normalizeAgentGuideDoc(doc) {
+  if (typeof doc === "string") {
+    const url = doc.trim();
+    return url ? { label: "", url } : null;
+  }
+
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
+    return null;
+  }
+
+  const label = String(doc.label || doc.title || "").trim();
+  const url = String(doc.url || doc.href || "").trim();
+  if (!label && !url) {
+    return null;
+  }
+
+  return { label, url };
+}
+
+function normalizeAgentGuideContract(agentGuide) {
+  if (!agentGuide || typeof agentGuide !== "object" || Array.isArray(agentGuide)) {
+    return {
+      commands: [],
+      docs: [],
+      env: [],
+      setup: [],
+      summary: "",
+      useCases: [],
+    };
+  }
+
+  return {
+    commands: Array.isArray(agentGuide.commands)
+      ? agentGuide.commands.map(normalizeAgentGuideCommand).filter(Boolean)
+      : [],
+    docs: Array.isArray(agentGuide.docs)
+      ? agentGuide.docs.map(normalizeAgentGuideDoc).filter(Boolean)
+      : [],
+    env: Array.isArray(agentGuide.env)
+      ? agentGuide.env.map(normalizeAgentGuideEnv).filter(Boolean)
+      : [],
+    setup: normalizeStringList(agentGuide.setup),
+    summary: String(agentGuide.summary || "").trim(),
+    useCases: normalizeStringList(agentGuide.useCases),
+  };
+}
+
 function normalizeUiContract(ui) {
   if (!ui || typeof ui !== "object" || Array.isArray(ui)) {
     return { mode: "panel", entryView: "", workspaceView: "" };
@@ -79,6 +183,7 @@ export function defineBuilding(manifest) {
     name,
     category: String(manifest.category || "Building").trim() || "Building",
     description: String(manifest.description || "").trim(),
+    agentGuide: normalizeAgentGuideContract(manifest.agentGuide),
     install: normalizeInstallContract(manifest.install),
     onboarding: normalizeOnboarding(manifest.onboarding),
     source: String(manifest.source || "custom").trim() || "custom",

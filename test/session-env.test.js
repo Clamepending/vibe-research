@@ -37,6 +37,18 @@ test("buildSessionEnv exposes helper and common CLI directories on PATH", () => 
     assert.equal(env.VIBE_RESEARCH_ROOT, stateDir);
     assert.equal(env.VIBE_RESEARCH_SYSTEM_DIR, systemRoot);
     assert.equal(env.VIBE_RESEARCH_AGENT_PROMPT_PATH, path.join(stateDir, "agent-prompt.md"));
+    assert.equal(env.VIBE_RESEARCH_BUILDING_GUIDES_DIR, path.join(systemRoot, "building-guides"));
+    assert.equal(env.VIBE_RESEARCH_BUILDING_GUIDES_INDEX, path.join(systemRoot, "building-guides", "README.md"));
+    assert.equal(
+      env.VIBE_RESEARCH_BUILDING_GUIDES_HELP,
+      "sed -n '1,220p' \"$VIBE_RESEARCH_BUILDING_GUIDES_INDEX\"",
+    );
+    assert.equal(env.REMOTE_VIBES_BUILDING_GUIDES_DIR, path.join(systemRoot, "building-guides"));
+    assert.equal(env.REMOTE_VIBES_BUILDING_GUIDES_INDEX, path.join(systemRoot, "building-guides", "README.md"));
+    assert.equal(
+      env.REMOTE_VIBES_BUILDING_GUIDES_HELP,
+      "sed -n '1,220p' \"$REMOTE_VIBES_BUILDING_GUIDES_INDEX\"",
+    );
     assert.equal(env.PWCLI, "vr-playwright");
     assert.equal(env.VIBE_RESEARCH_BROWSER_COMMAND, "vr-playwright");
     assert.equal(env.VIBE_RESEARCH_BROWSER_FALLBACK_COMMAND, "vr-browser");

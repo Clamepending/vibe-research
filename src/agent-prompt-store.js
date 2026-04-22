@@ -7,8 +7,11 @@ const MANAGED_MARKER = "<!-- vibe-research:managed-agent-prompt -->";
 const LEGACY_MANAGED_MARKER = "<!-- remote-vibes:managed-agent-prompt -->";
 const MANAGED_MARKERS = [MANAGED_MARKER, LEGACY_MANAGED_MARKER];
 const WIKI_V2_MARKER = "<!-- vibe-research:library-v2-protocol:v2 -->";
+const BUILDING_GUIDES_MARKER = "<!-- vibe-research:building-guides-protocol:v1 -->";
 const WIKI_V2_SECTION_MARKER_PATTERN =
   /<!-- (?:vibe-research|remote-vibes):(?:wiki|library)-v2-protocol:v\d+ -->/;
+const BUILDING_GUIDES_SECTION_MARKER_PATTERN =
+  /<!-- (?:vibe-research|remote-vibes):building-guides-protocol:v\d+ -->/;
 const AGENT_MAILBOX_SECTION_MARKER_PATTERN = /<!-- (?:vibe-research|remote-vibes):agent-mailbox-protocol:v\d+ -->/;
 export const AGENT_PROMPT_FILENAME = "agent-prompt.md";
 const PROMPT_FILENAME = AGENT_PROMPT_FILENAME;
@@ -82,7 +85,7 @@ function stripDeprecatedPromptSections(prompt) {
   return match ? normalizePrompt(normalized.slice(0, match.index)) : normalized;
 }
 
-function getWikiV2Section({ wikiRootLabel = ".vibe-research/wiki" } = {}) {
+function getWikiV2Section({ wikiRootLabel = "vibe-research/buildings/library" } = {}) {
   return normalizePrompt(`
 ${WIKI_V2_MARKER}
 
@@ -176,9 +179,26 @@ Do not leave contradictory notes side by side without explanation.
 `);
 }
 
+function getBuildingGuidesSection() {
+  return normalizePrompt(`
+${BUILDING_GUIDES_MARKER}
+
+## Building Guides
+
+Vibe Research generates agent-readable manuals for every Building in the catalog.
+
+- Start with \`$VIBE_RESEARCH_BUILDING_GUIDES_INDEX\` before using or setting up a building.
+- Per-building guides live in \`$VIBE_RESEARCH_BUILDING_GUIDES_DIR/<building-id>.md\`.
+- Each guide summarizes what the building is for, setup variables, setup steps, helper commands, environment variables, and docs.
+- Codex, Claude Code, and shell agents receive the same guide paths through environment variables.
+- Prefer guide-listed helper commands and setup checks over guessing. If a required credential is missing, ask the human instead of inventing it or writing placeholders into durable notes.
+- Never write secrets, tokens, passwords, or private keys into the Library, result docs, logs, screenshots, or generated guide files.
+`);
+}
+
 const WIKI_PLACEHOLDER_PATTERN = /\{\{\s*(?:WIKI|LIBRARY)\s*\}\}/g;
 
-function substitutePromptPlaceholders(prompt, { wikiRootLabel = ".vibe-research/wiki" } = {}) {
+function substitutePromptPlaceholders(prompt, { wikiRootLabel = "vibe-research/buildings/library" } = {}) {
   return String(prompt ?? "").replace(WIKI_PLACEHOLDER_PATTERN, wikiRootLabel);
 }
 
@@ -191,17 +211,31 @@ function ensureBuiltInPromptSections(prompt, options = {}) {
   }
 
   const wikiMatch = WIKI_V2_SECTION_MARKER_PATTERN.exec(normalized);
+  let withWikiSection = "";
   if (wikiMatch) {
     if (preserveCurrentWikiSection && wikiMatch[0] === WIKI_V2_MARKER) {
-      return normalized;
+      withWikiSection = normalized;
+    } else {
+      withWikiSection = normalizePrompt(
+        `${normalizePrompt(normalized.slice(0, wikiMatch.index))}\n${getWikiV2Section(sectionOptions)}`,
+      );
+    }
+  } else {
+    withWikiSection = normalizePrompt(`${normalized}\n${getWikiV2Section(sectionOptions)}`);
+  }
+
+  const buildingGuidesMatch = BUILDING_GUIDES_SECTION_MARKER_PATTERN.exec(withWikiSection);
+  if (buildingGuidesMatch) {
+    if (preserveCurrentWikiSection && buildingGuidesMatch[0] === BUILDING_GUIDES_MARKER) {
+      return withWikiSection;
     }
 
     return normalizePrompt(
-      `${normalizePrompt(normalized.slice(0, wikiMatch.index))}\n${getWikiV2Section(sectionOptions)}`,
+      `${normalizePrompt(withWikiSection.slice(0, buildingGuidesMatch.index))}\n${getBuildingGuidesSection()}`,
     );
   }
 
-  return normalizePrompt(`${normalized}\n${getWikiV2Section(sectionOptions)}`);
+  return normalizePrompt(`${withWikiSection}\n${getBuildingGuidesSection()}`);
 }
 
 function getDefaultPrompt(options = {}) {

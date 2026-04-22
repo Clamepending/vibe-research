@@ -26,6 +26,7 @@ import {
   Image as ImageIcon,
   IndentDecrease,
   IndentIncrease,
+  Inbox,
   MemoryStick,
   Menu,
   MessageSquarePlus,
@@ -41,6 +42,7 @@ import {
   Trash2,
   Type,
   Waypoints,
+  Wrench,
   X,
   Zap,
   ZoomIn,
@@ -49,6 +51,7 @@ import {
 import {
   VISUAL_GAME_MAP_LAYOUT,
   findVisualGameRoadRoute,
+  getVisualGameAgentIdentityKey,
   getVisualGamePlace,
   getVisualGamePlaceAnchor,
   getVisualGamePackedItemSlots,
@@ -119,6 +122,7 @@ const KNOWLEDGE_BASE_SEARCH_FIELD_WEIGHTS = [
 ];
 const PORT_PREVIEW_TAB_PREFIX = "port:";
 const ROUTED_MAIN_VIEWS = new Set([
+  "agent-inbox",
   "search",
   "plugins",
   "settings",
@@ -802,7 +806,7 @@ const state = {
   agentPromptSelectedId: "researcher",
   agentPromptEditable: false,
   agentPromptPresets: [],
-  agentPromptWikiRoot: ".vibe-research/wiki",
+  agentPromptWikiRoot: "vibe-research/buildings/library",
   agentPromptTargets: [],
   swarmGraph: {
     sessionId: null,
@@ -889,9 +893,13 @@ const state = {
     installedPluginIds: [],
     preventSleepEnabled: true,
     sleepPrevention: null,
+    workspaceRootPath: "",
+    workspaceRelativeRoot: "",
+    agentSpawnPath: "",
+    agentSpawnRelativePath: "",
     wikiPath: "",
     wikiPathConfigured: false,
-    wikiRelativeRoot: ".vibe-research/wiki",
+    wikiRelativeRoot: "vibe-research/buildings/library",
     wikiGitBackupEnabled: true,
     wikiGitRemoteBranch: "main",
     wikiGitRemoteEnabled: true,
@@ -937,7 +945,7 @@ const state = {
   buildingWorkspaceReturnId: "",
   knowledgeBase: {
     rootPath: "",
-    relativeRoot: ".vibe-research/wiki",
+    relativeRoot: "vibe-research/buildings/library",
     notes: [],
     edges: [],
     loading: false,
@@ -983,6 +991,7 @@ const state = {
   openFileRequestId: 0,
   activeSessionId: null,
   connectedSessionId: null,
+  pendingSessionInputs: {},
   defaultCwd: "",
   stateDir: "",
   defaultProviderId: "claude",
@@ -1537,6 +1546,74 @@ function getSessionActivityStyle(status) {
 
   const delay = Date.now() % SESSION_WORKING_SPINNER_MS;
   return ` style="--session-spinner-delay: -${delay}ms"`;
+}
+
+function getAgentInboxSummary() {
+  const summary = {
+    exited: 0,
+    read: 0,
+    total: state.sessions.length,
+    unread: 0,
+    working: 0,
+  };
+
+  for (const session of state.sessions) {
+    const status = getSessionLabel(session).className;
+    if (status === "working") {
+      summary.working += 1;
+    } else if (status === "unread") {
+      summary.unread += 1;
+    } else if (status === "exited") {
+      summary.exited += 1;
+    } else {
+      summary.read += 1;
+    }
+  }
+
+  return summary;
+}
+
+function getAgentInboxNavMeta() {
+  const summary = getAgentInboxSummary();
+  if (summary.unread > 0) {
+    return `${summary.unread} to review`;
+  }
+  if (summary.working > 0) {
+    return `${summary.working} working`;
+  }
+  return `${summary.total} sessions`;
+}
+
+function getAgentInboxPriority(status) {
+  const priorities = {
+    unread: 0,
+    working: 1,
+    exited: 2,
+    read: 3,
+  };
+  return priorities[status?.className] ?? 4;
+}
+
+function getAgentInboxTimestamp(session) {
+  return Math.max(
+    getSessionUnreadAt(session),
+    timestampMs(session?.lastOutputAt),
+    timestampMs(session?.updatedAt),
+    timestampMs(session?.createdAt),
+  );
+}
+
+function getAgentInboxItems() {
+  return [...state.sessions]
+    .map((session) => ({
+      session,
+      status: getSessionLabel(session),
+      timestamp: getAgentInboxTimestamp(session),
+    }))
+    .sort((left, right) => {
+      const priorityDelta = getAgentInboxPriority(left.status) - getAgentInboxPriority(right.status);
+      return priorityDelta || right.timestamp - left.timestamp;
+    });
 }
 
 function getPortDisplayName(port) {
@@ -3896,11 +3973,15 @@ function getMainViewUrl(view) {
 
 function getFolderPickerTitle() {
   if (state.folderPicker.target === "wiki-onboarding") {
-    return "select Library folder";
+    return "select workspace folder";
   }
 
   if (state.folderPicker.target === "wiki") {
     return "choose Library folder";
+  }
+
+  if (state.folderPicker.target === "agent-spawn") {
+    return "choose new agent folder";
   }
 
   if (state.folderPicker.target === "files") {
@@ -4059,6 +4140,10 @@ function getFolderPickerTargetInput() {
     return document.querySelector("#brain-folder-input");
   }
 
+  if (state.folderPicker.target === "agent-spawn") {
+    return document.querySelector("#agent-spawn-path-input");
+  }
+
   if (state.folderPicker.target === "files") {
     return document.querySelector("#files-root-input");
   }
@@ -4097,6 +4182,48 @@ function getSelectedProvider() {
   );
 }
 
+function getProviderById(providerId) {
+  return state.providers.find((provider) => provider.id === providerId) || null;
+}
+
+function getProviderInstallCommand(provider) {
+  return String(provider?.installCommand || "").trim();
+}
+
+function getProviderAuthCommand(provider) {
+  return String(provider?.authCommand || "").trim();
+}
+
+function buildProviderInstallInput(provider) {
+  const command = getProviderInstallCommand(provider);
+  if (!command) {
+    return "";
+  }
+
+  const authCommand = getProviderAuthCommand(provider);
+  const fullCommand = authCommand
+    ? `${command} && hash -r && ${authCommand}`
+    : command;
+
+  return `${fullCommand}\r`;
+}
+
+function queueSessionInput(sessionId, data, { delayMs = 900 } = {}) {
+  const normalizedSessionId = String(sessionId || "");
+  const text = String(data || "");
+  if (!normalizedSessionId || !text) {
+    return;
+  }
+
+  state.pendingSessionInputs[normalizedSessionId] = [
+    ...(state.pendingSessionInputs[normalizedSessionId] || []),
+    {
+      data: text,
+      delayMs: Math.max(0, Number(delayMs) || 0),
+    },
+  ];
+}
+
 function renderSessionProviderPicker() {
   const selectedProvider = getSelectedProvider();
   const selectedProviderId = selectedProvider?.id || state.defaultProviderId || "";
@@ -4123,16 +4250,15 @@ function renderSessionProviderPicker() {
           .map(
             (provider) => `
               <button
-                class="session-provider-option ${provider.id === selectedProviderId ? "is-selected" : ""}"
+                class="session-provider-option ${provider.id === selectedProviderId ? "is-selected" : ""} ${provider.available ? "is-available" : "is-missing"}"
                 type="button"
                 role="option"
                 aria-selected="${provider.id === selectedProviderId ? "true" : "false"}"
-                ${provider.available ? "" : "aria-disabled=\"true\" disabled"}
                 data-session-provider-option="${escapeHtml(provider.id)}"
               >
                 <span class="session-provider-option-check" aria-hidden="true">${provider.id === selectedProviderId ? "✓" : ""}</span>
                 <span class="session-provider-option-label">${escapeHtml(provider.label)}</span>
-                ${provider.available ? "" : `<span class="session-provider-option-status">missing</span>`}
+                <span class="session-provider-option-status">${escapeHtml(provider.available ? "ready" : getProviderInstallCommand(provider) ? "install" : "missing")}</span>
               </button>
             `,
           )
@@ -4682,7 +4808,56 @@ function expandSessionProject(cwd) {
   state.sessionProjectExpanded.add(key);
 }
 
-async function createSessionInFolder(cwd, { providerId = getSelectedSessionProviderId(), name = "" } = {}) {
+function getFirstSessionOnboardingPrompt({ cwd, providerId } = {}) {
+  const provider = getProviderById(providerId) || getSelectedProvider();
+  const providerLabel = provider?.label || "your agent";
+  const libraryPath = state.settings.wikiPath || state.defaultCwd || "";
+  const workspacePath = normalizeWorkspaceRoot(cwd || state.defaultCwd || "") || "this project folder";
+
+  return `Please act as a friendly Vibe Research onboarding guide for someone non-technical who just opened their first agent.
+
+Context:
+- Agent provider: ${providerLabel}
+- Project folder: ${workspacePath}
+- Library folder: ${libraryPath || "not chosen yet"}
+
+Walk me through Vibe Research in plain language:
+1. Agent Town: agents live in the canvas, and buildings are tool/integration homes.
+2. Library: shared markdown memory that agents can read and update for continuity.
+3. Settings: credentials, runtime defaults, local access, and app configuration.
+4. Occupations: the system prompts/roles that shape new agents.
+5. Automations: recurring helpers that can run on a schedule.
+6. Toolshed and BuildingHub: how new buildings are drafted, validated, and shared.
+7. Telegram and Phone/iMessage: optional communication bridges I can connect later.
+
+Then ask me one question: what kind of thing do I want to accomplish first, and do I want help connecting Telegram or phone access? Keep it warm, concrete, and brief. Do not start doing work until I answer.\r`;
+}
+
+function hasNonInstallerAgentSession() {
+  return state.sessions.some((session) => {
+    if (!session || session.providerId === "shell") {
+      return false;
+    }
+
+    return !/^install\s+/i.test(String(session.name || ""));
+  });
+}
+
+function getAgentSpawnPath() {
+  return normalizeWorkspaceRoot(state.settings.agentSpawnPath || state.defaultCwd || "");
+}
+
+async function createSessionInFolder(
+  cwd,
+  {
+    providerId = getSelectedSessionProviderId(),
+    name = "",
+    initialInput = "",
+    initialInputDelayMs = 900,
+    openInTown = false,
+    rememberProvider = true,
+  } = {},
+) {
   const selectedCwd = normalizeWorkspaceRoot(cwd);
 
   if (!selectedCwd) {
@@ -4695,15 +4870,68 @@ async function createSessionInFolder(cwd, { providerId = getSelectedSessionProvi
   });
 
   state.defaultCwd = selectedCwd;
-  state.defaultProviderId = providerId;
+  if (rememberProvider) {
+    state.defaultProviderId = providerId;
+  }
   state.folderPicker.open = false;
   state.sessions = [payload.session, ...state.sessions];
   state.activeSessionId = payload.session.id;
+  if (initialInput) {
+    queueSessionInput(payload.session.id, initialInput, { delayMs: initialInputDelayMs });
+  }
   expandSessionProject(payload.session.cwd);
+
+  if (openInTown) {
+    state.visualGame.selectedSessionId = payload.session.id;
+    await openSwarmProjectGraph(selectedCwd, {
+      fallbackSessionId: payload.session.id,
+      projectName: getWorkspacePathLeafName(selectedCwd),
+    });
+    state.visualGame.selectedSessionId = payload.session.id;
+    renderShell();
+    closeMobileSidebar();
+    return;
+  }
+
   setCurrentView("shell");
   renderShell();
   connectToSession(payload.session.id);
   closeMobileSidebar();
+}
+
+async function startNewAgentInDefaultFolder({ openInTown = false } = {}) {
+  const providerId = getSelectedSessionProviderId();
+  const provider = getProviderById(providerId);
+  const cwd = getAgentSpawnPath();
+  const shouldRunFirstSessionOnboarding =
+    state.sessions.length === 0 && providerId !== "shell" && provider?.available !== false;
+
+  state.defaultProviderId = providerId;
+  await createSessionInFolder(cwd, {
+    providerId,
+    name: shouldRunFirstSessionOnboarding ? "Onboarding guide" : "",
+    initialInput: shouldRunFirstSessionOnboarding
+      ? getFirstSessionOnboardingPrompt({ cwd, providerId })
+      : "",
+    initialInputDelayMs: 1400,
+    openInTown: openInTown || shouldRunFirstSessionOnboarding,
+  });
+}
+
+async function startProviderInstallSession(provider) {
+  const installInput = buildProviderInstallInput(provider);
+  if (!installInput) {
+    window.alert(`${provider?.label || "That agent"} does not have an automatic install command yet.`);
+    return;
+  }
+
+  await createSessionInFolder(getAgentSpawnPath() || "/", {
+    providerId: "shell",
+    name: `Install ${provider.label}`,
+    initialInput: installInput,
+    initialInputDelayMs: 450,
+    rememberProvider: false,
+  });
 }
 
 async function createFolderFromPicker(folderName) {
@@ -4751,7 +4979,18 @@ async function applyFolderPickerSelection() {
   }
 
   if (state.folderPicker.target === "session") {
-    await createSessionInFolder(selectedPath);
+    const providerId = getSelectedSessionProviderId();
+    const provider = getProviderById(providerId);
+    const shouldRunFirstSessionOnboarding = !hasNonInstallerAgentSession() && providerId !== "shell" && provider?.available !== false;
+    await createSessionInFolder(selectedPath, {
+      providerId,
+      name: shouldRunFirstSessionOnboarding ? "Onboarding guide" : "",
+      initialInput: shouldRunFirstSessionOnboarding
+        ? getFirstSessionOnboardingPrompt({ cwd: selectedPath, providerId })
+        : "",
+      initialInputDelayMs: 1400,
+      openInTown: shouldRunFirstSessionOnboarding,
+    });
     return;
   }
 
@@ -4761,6 +5000,9 @@ async function applyFolderPickerSelection() {
 
   if (state.folderPicker.target === "wiki") {
     state.settings.wikiPath = selectedPath || state.settings.wikiPath;
+  } else if (state.folderPicker.target === "agent-spawn") {
+    state.settings.agentSpawnPath = selectedPath || state.settings.agentSpawnPath;
+    state.defaultCwd = selectedPath || state.defaultCwd;
   } else if (state.folderPicker.target === "files") {
     state.filesRootOverride = normalizeWorkspaceRoot(selectedPath) || null;
     syncFilesRoot({ force: true });
@@ -4827,10 +5069,19 @@ function inferWikiPathConfigured(settings) {
   }
 
   const relativeRoot = String(settings.wikiRelativeRoot || settings.wikiRelativePath || "");
-  const defaultWikiPath = state.defaultCwd
+  const workspaceRoot = normalizeWorkspaceRoot(settings.workspaceRootPath || state.settings.workspaceRootPath || "");
+  const defaultWikiPath = workspaceRoot
+    ? normalizeWorkspaceRoot(`${workspaceRoot.replace(/\/+$/, "")}/vibe-research/buildings/library`)
+    : "";
+  const legacyDefaultWikiPath = state.defaultCwd
     ? normalizeWorkspaceRoot(`${state.defaultCwd.replace(/\/+$/, "")}/.vibe-research/wiki`)
     : "";
-  if (relativeRoot === ".vibe-research/wiki" || (defaultWikiPath && wikiPath === defaultWikiPath)) {
+  if (
+    relativeRoot === "vibe-research/buildings/library" ||
+    relativeRoot === ".vibe-research/wiki" ||
+    (defaultWikiPath && wikiPath === defaultWikiPath) ||
+    (legacyDefaultWikiPath && wikiPath === legacyDefaultWikiPath)
+  ) {
     return false;
   }
 
@@ -4838,12 +5089,15 @@ function inferWikiPathConfigured(settings) {
 }
 
 function getDefaultBrainClonePathHint() {
-  const stateDirParent = getParentPathForDisplay(state.stateDir);
-  if (stateDirParent) {
-    return `${stateDirParent}/mac-brain`;
+  if (state.settings.wikiPath) {
+    return state.settings.wikiPath;
   }
 
-  return state.defaultCwd ? `${state.defaultCwd.replace(/\/+$/, "")}/mac-brain` : "mac-brain";
+  if (state.settings.workspaceRootPath) {
+    return `${state.settings.workspaceRootPath.replace(/\/+$/, "")}/vibe-research/buildings/library`;
+  }
+
+  return state.defaultCwd ? `${state.defaultCwd.replace(/\/+$/, "")}/vibe-research/buildings/library` : "library";
 }
 
 function getParentPathForDisplay(value) {
@@ -7094,7 +7348,7 @@ function createKnowledgeBaseGraphLayout(notes, edges) {
 function applyKnowledgeBaseIndexState(payload) {
   teardownKnowledgeBaseGraphInteractions();
   state.knowledgeBase.rootPath = payload?.rootPath || "";
-  state.knowledgeBase.relativeRoot = payload?.relativeRoot || ".vibe-research/wiki";
+  state.knowledgeBase.relativeRoot = payload?.relativeRoot || "vibe-research/buildings/library";
   state.knowledgeBase.notes = Array.isArray(payload?.notes) ? payload.notes : [];
   state.knowledgeBase.edges = Array.isArray(payload?.edges) ? payload.edges : [];
   state.knowledgeBase.graphLayout = createKnowledgeBaseGraphLayout(
@@ -8022,6 +8276,24 @@ function renderKnowledgeSettingsForm({ popover = false, remoteControls = true } 
           />
           <button class="ghost-button folder-browse-button" type="button" data-folder-picker-target="wiki">choose</button>
         </div>
+        <label class="field-label" for="agent-spawn-path-input">new agent folder</label>
+        <div class="folder-input-row">
+          <input
+            class="file-root-input"
+            id="agent-spawn-path-input"
+            name="agentSpawnPath"
+            type="text"
+            value="${escapeHtml(state.settings.agentSpawnPath || state.defaultCwd || "")}"
+            placeholder="${escapeHtml(state.defaultCwd || "agent folder")}"
+            readonly
+            data-folder-picker-target="agent-spawn"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="none"
+            spellcheck="false"
+          />
+          <button class="ghost-button folder-browse-button" type="button" data-folder-picker-target="agent-spawn">choose</button>
+        </div>
         <div class="knowledge-settings-options">
           <label class="checkbox-row">
             <input type="checkbox" name="wikiGitBackupEnabled" ${state.settings.wikiGitBackupEnabled ? "checked" : ""} />
@@ -8832,6 +9104,12 @@ function renderSidebarNav() {
       meta: "live map",
     },
     {
+      view: "agent-inbox",
+      icon: Inbox,
+      label: "Agent Inbox",
+      meta: getAgentInboxNavMeta(),
+    },
+    {
       view: "plugins",
       icon: Plug,
       label: "Buildings",
@@ -8887,7 +9165,7 @@ function renderSidebarNav() {
           <span class="sidebar-nav-icon" aria-hidden="true">${renderIcon(Plus)}</span>
           <span class="sidebar-nav-copy">
             <span class="sidebar-nav-label">New Agent</span>
-            <span class="sidebar-nav-meta">${escapeHtml(`${getSelectedProviderLabel()} · choose folder`)}</span>
+            <span class="sidebar-nav-meta">${escapeHtml(`${getSelectedProviderLabel()} · agent folder`)}</span>
           </span>
         </button>
         <form class="session-form session-launcher" id="session-form">
@@ -9284,6 +9562,23 @@ function isLocalhostAppsEnabled() {
   return isPluginIdInstalled("localhost-apps");
 }
 
+function getTailscaleBuildingMeta() {
+  const ports = Array.isArray(state.ports) ? state.ports : [];
+  const tailnetPorts = ports.filter((port) => (
+    port?.preferredAccess === "tailscale-serve" ||
+    (port?.tailscaleUrl && (port?.directUrl || port?.exposedWithTailscale))
+  )).length;
+  const exposablePorts = ports.filter((port) => port?.canExposeWithTailscale).length;
+
+  if (tailnetPorts > 0) {
+    return `${tailnetPorts} tailnet port${tailnetPorts === 1 ? "" : "s"}`;
+  }
+  if (exposablePorts > 0) {
+    return `${exposablePorts} ready to expose`;
+  }
+  return "tailnet portal";
+}
+
 function getPluginPendingAction(plugin) {
   return state.pluginInstallActions[getPluginId(plugin)] || "";
 }
@@ -9407,7 +9702,7 @@ function getBuildingIssueById(buildingId) {
 
   if (normalizeBuildingId(buildingId) === "knowledge-base" && (!state.settings.wikiPathConfigured || !state.settings.wikiPath)) {
     return {
-      detail: "Choose a Library folder.",
+      detail: "Choose a workspace folder.",
       label: "not configured",
     };
   }
@@ -9921,9 +10216,38 @@ function renderPluginDetailAction(plugin) {
   return renderPluginInstallButton(plugin);
 }
 
+function renderPluginWorkspaceAction(plugin) {
+  const workspaceView = normalizeWorkspaceView(plugin?.ui?.workspaceView || "");
+  if (!workspaceView) {
+    return "";
+  }
+
+  const pluginId = getPluginId(plugin);
+  return `
+    <section class="plugin-onboarding" aria-label="${escapeHtml(`${plugin.name} workspace`)}">
+      <div class="plugin-onboarding-head">
+        <strong>Workspace</strong>
+        <span>${escapeHtml(plugin.ui?.mode || "workspace")}</span>
+      </div>
+      <div class="plugin-onboarding-actions">
+        <button
+          class="primary-button toolbar-control"
+          type="button"
+          data-open-building-workspace="${escapeHtml(pluginId)}"
+          data-building-workspace-view="${escapeHtml(workspaceView)}"
+        >
+          <span aria-hidden="true">${renderIcon(plugin.icon || Plug)}</span>
+          <span>Open ${escapeHtml(plugin.name)}</span>
+        </button>
+      </div>
+    </section>
+  `;
+}
+
 function renderPluginDetailSettings(plugin) {
   const access = getPluginAccess(plugin);
   const setup = renderPluginOnboarding(plugin, { force: true });
+  const workspaceAction = renderPluginWorkspaceAction(plugin);
   const fallback = `
       <section class="plugin-onboarding" aria-label="${escapeHtml(`${plugin.name} setup`)}">
         <div class="plugin-onboarding-head">
@@ -9945,6 +10269,7 @@ function renderPluginDetailSettings(plugin) {
           </section>`
         : ""
     }
+    ${workspaceAction}
     ${setup || fallback}
   `;
 }
@@ -10517,7 +10842,7 @@ function renderSettingsView() {
         <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
         <div class="dashboard-copy">
           <strong>Settings</strong>
-          <div class="terminal-meta">credentials, Library folder, and local runtime defaults</div>
+          <div class="terminal-meta">credentials, Library and agent folders, and local runtime defaults</div>
         </div>
       </div>
       <div class="settings-layout">
@@ -10686,6 +11011,112 @@ function renderAutomationsView() {
         ${renderCreateAutomationCard()}
         ${renderAgentAutomationCards()}
       </div>
+    </section>
+  `;
+}
+
+function renderAgentInboxSummaryCards() {
+  const summary = getAgentInboxSummary();
+  const cards = [
+    ["to review", summary.unread, "finished sessions you have not opened yet"],
+    ["working", summary.working, "sessions with active work, monitors, or subagents"],
+    ["exited", summary.exited, "closed terminals still in the session list"],
+    ["total", summary.total, "all local sessions"],
+  ];
+
+  return cards
+    .map(
+      ([label, value, detail]) => `
+        <article class="agent-inbox-summary-card">
+          <span class="main-search-kind">${escapeHtml(label)}</span>
+          <strong>${escapeHtml(String(value))}</strong>
+          <p>${escapeHtml(detail)}</p>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function renderAgentInboxSessionMeta(session) {
+  const subagents = Array.isArray(session?.subagents) ? session.subagents : [];
+  const workingSubagents = subagents.filter((subagent) => subagent?.status === "working").length;
+  const backgroundActive = Boolean(session?.backgroundActivity?.active);
+  const meta = [
+    relativeTime(session?.lastOutputAt || session?.updatedAt || session?.createdAt),
+    workingSubagents ? `${workingSubagents} subagent${workingSubagents === 1 ? "" : "s"} working` : "",
+    backgroundActive ? "background task active" : "",
+    session?.exitCode != null ? `exit ${session.exitCode}` : "",
+  ].filter(Boolean);
+
+  return meta.length ? meta.join(" · ") : "no recent activity";
+}
+
+function renderAgentInboxCard(item) {
+  const { session, status } = item;
+  const projectName = getWorkspacePathLeafName(session.cwd || "") || "workspace";
+  const title = status.className === "unread"
+    ? "finished; needs review"
+    : status.className === "working"
+      ? "working now"
+      : status.title || status.text;
+
+  return `
+    <article class="automation-card agent-inbox-card is-${escapeHtml(status.className)}">
+      <div class="agent-inbox-card-head">
+        <div class="automation-card-icon" aria-hidden="true">${renderIcon(Bot)}</div>
+        <span class="plugin-status">${escapeHtml(title)}</span>
+      </div>
+      <strong>${escapeHtml(session.name || "Session")}</strong>
+      <p>${escapeHtml([session.providerLabel, projectName].filter(Boolean).join(" · "))}</p>
+      <div class="agent-inbox-card-meta">${escapeHtml(renderAgentInboxSessionMeta(session))}</div>
+      <div class="plugin-onboarding-actions">
+        ${
+          status.className === "unread"
+            ? `<button class="ghost-button toolbar-control" type="button" data-mark-session-read="${escapeHtml(session.id)}">mark read</button>`
+            : ""
+        }
+        <button class="primary-button toolbar-control" type="button" data-session-id="${escapeHtml(session.id)}">open session</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderAgentInboxCards() {
+  const items = getAgentInboxItems();
+  if (!items.length) {
+    return `<div class="blank-state">no agent sessions yet</div>`;
+  }
+
+  return items.map(renderAgentInboxCard).join("");
+}
+
+function renderAgentInboxView() {
+  const summary = getAgentInboxSummary();
+  const attentionLabel = summary.unread > 0
+    ? `${summary.unread} waiting for review`
+    : summary.working > 0
+      ? `${summary.working} still working`
+      : "all caught up";
+
+  return `
+    <section class="dashboard-panel main-view agent-inbox-view" ${renderMainViewAttributes("agent-inbox", `agent-inbox:${summary.total}:${summary.unread}:${summary.working}`)}>
+      <div class="dashboard-toolbar">
+        <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
+        <div class="dashboard-copy">
+          <strong>Agent Inbox</strong>
+          <div class="terminal-meta">working, finished, and exited sessions that may need attention</div>
+        </div>
+        <div class="dashboard-actions">
+          <button class="icon-button" type="button" id="refresh-sessions" aria-label="Refresh sessions" ${tooltipAttributes("Refresh sessions")}>${renderIcon(RefreshCw)}</button>
+        </div>
+      </div>
+      <div class="dashboard-range">
+        <span class="dashboard-range-label">attention</span>
+        <span>${escapeHtml(attentionLabel)}</span>
+        <span class="dashboard-updated">${escapeHtml(`${summary.total} sessions`)}</span>
+      </div>
+      <div class="agent-inbox-summary" id="agent-inbox-summary">${renderAgentInboxSummaryCards()}</div>
+      <div class="main-results-grid agent-inbox-grid" id="agent-inbox-list">${renderAgentInboxCards()}</div>
     </section>
   `;
 }
@@ -12325,6 +12756,8 @@ function getVisualInterfaceAgents(graph) {
         activeAtMs: timestampMs(subagent.updatedAt),
         activityStartedAt: "",
         activityCompletedAt: "",
+        subagentId: subagent.id || "",
+        agentId: subagent.agentId || "",
         agentType: subagent.agentType || "",
         backgroundActivityActive: false,
         hasActiveSubagent: false,
@@ -12419,7 +12852,7 @@ function renderVisualWorkshop(graph) {
 
 function renderVisualMissionBoard() {
   const missions = [
-    { label: "New run", meta: "choose project", icon: MessageSquarePlus, attrs: `data-folder-picker-target="session"` },
+    { label: "New run", meta: "agent folder", icon: MessageSquarePlus, attrs: `data-folder-picker-target="session"` },
     { label: "Findings", meta: "open library", icon: BookOpen, attrs: `data-visual-building-open="knowledge-base"` },
     { label: "Buildings", meta: "installed", icon: Plug, attrs: `data-open-main-view="plugins"` },
     { label: "Schedule", meta: "automations", icon: CalendarClock, attrs: `data-visual-building-open="automations"` },
@@ -12583,14 +13016,45 @@ function renderVisualEvidenceWall(graph) {
   `;
 }
 
+function renderOnboardingProviderChoices() {
+  return `
+    <div class="visual-onboarding-provider-grid" aria-label="Choose an agent">
+      ${state.providers
+        .filter((provider) => provider.id !== "shell")
+        .map(
+          (provider) => {
+            const available = Boolean(provider.available);
+            const attrs = available
+              ? `data-onboarding-provider-start="${escapeHtml(provider.id)}"`
+              : `data-onboarding-provider-install="${escapeHtml(provider.id)}"`;
+            return `
+              <button
+                class="visual-onboarding-provider ${available ? "is-available" : "is-missing"}"
+                type="button"
+                ${attrs}
+              >
+                <span>${escapeHtml(provider.label)}</span>
+                <em>${escapeHtml(available ? "ready" : getProviderInstallCommand(provider) ? "install" : "missing")}</em>
+              </button>
+            `;
+          },
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function renderVisualProjectPicker() {
   const groups = getSessionProjectGroups();
 
   if (!groups.length) {
     return `
       <div class="visual-project-empty">
-        <strong>No Agent Towns yet</strong>
-        <button class="primary-button" type="button" data-folder-picker-target="session">start a project</button>
+        <span class="main-search-kind">first agent</span>
+        <strong>Choose an agent, then start in the agent folder.</strong>
+        <p>Ready agents are marked green. Missing agents open a terminal, run the installer, then start that agent's login flow.</p>
+        ${renderOnboardingProviderChoices()}
+        <button class="ghost-button" type="button" data-folder-picker-target="session">start selected agent</button>
       </div>
     `;
   }
@@ -12970,6 +13434,109 @@ function renderVisualGameLibraryBuildingPanel() {
   `;
 }
 
+function renderToolshedBuildingPanel() {
+  const buildingHubStatus = getBuildingHubStatusText();
+  const mapCards = [
+    {
+      label: "Buildings",
+      meta: "tool homes",
+      icon: Plug,
+      detail: "Buildings package setup notes, credentials, status, and Agent Town presence for tools agents can use.",
+      attrs: `data-open-main-view="plugins"`,
+    },
+    {
+      label: "Library",
+      meta: "collective memory",
+      icon: BookOpen,
+      detail: "The Library is shared markdown memory for durable notes, decisions, sources, and project continuity.",
+      attrs: `data-visual-building-open="knowledge-base"`,
+    },
+    {
+      label: "Settings",
+      meta: "configuration",
+      icon: Settings,
+      detail: "Settings hold credentials, local folders, remote access options, and runtime defaults.",
+      attrs: `data-open-main-view="settings"`,
+    },
+    {
+      label: "Occupations",
+      meta: "agent roles",
+      icon: FilePenLine,
+      detail: "Occupations are the prompts that shape new agents, such as researcher, engineer, or a custom guide.",
+      attrs: `data-open-main-view="agent-prompt"`,
+    },
+    {
+      label: "Automations",
+      meta: "recurring helpers",
+      icon: CalendarClock,
+      detail: "Automations run scheduled helper tasks from the clock tower so maintenance work can keep going.",
+      attrs: `data-visual-building-open="automations"`,
+    },
+    {
+      label: "BuildingHub",
+      meta: buildingHubStatus,
+      icon: Plug,
+      detail: "BuildingHub is the reviewed community catalog for manifest-only buildings that can be shared safely.",
+      attrs: `data-visual-building-open="buildinghub"`,
+    },
+  ];
+  const publishSteps = [
+    "Copy a BuildingHub template or draft a first-party manifest with a stable id, description, visual shape, and setup checklist.",
+    "Keep credentials out of manifests; describe required keys with redacted configured settings or provider-side auth.",
+    "Run the catalog validator, rebuild registry.json, and inspect the building card in Agent Town.",
+    "Open a normal GitHub pull request to BuildingHub when the building is manifest-only and safe to review.",
+  ];
+
+  return `
+    <div class="visual-building-panel-scroll visual-building-toolshed-panel">
+      <section class="visual-building-summary">
+        <span class="main-search-kind">builder guide</span>
+        <strong>Make new buildings and share the safe ones.</strong>
+        <div class="visual-building-library-actions">
+          <button class="primary-button toolbar-control" type="button" data-folder-picker-target="session">
+            <span aria-hidden="true">${renderIcon(MessageSquarePlus)}</span>
+            <span>Ask an agent</span>
+          </button>
+          <button class="ghost-button toolbar-control" type="button" data-visual-building-open="buildinghub">
+            <span aria-hidden="true">${renderIcon(Plug)}</span>
+            <span>BuildingHub</span>
+          </button>
+        </div>
+      </section>
+      <section class="visual-toolshed-map" aria-label="Vibe Research map">
+        ${mapCards
+          .map(
+            (card) => `
+              <button class="visual-toolshed-card" type="button" ${card.attrs}>
+                <span class="visual-toolshed-icon" aria-hidden="true">${renderIcon(card.icon)}</span>
+                <strong>${escapeHtml(card.label)}</strong>
+                <em>${escapeHtml(card.meta)}</em>
+                <span>${escapeHtml(card.detail)}</span>
+              </button>
+            `,
+          )
+          .join("")}
+      </section>
+      <section class="visual-toolshed-flow" aria-label="BuildingHub publish flow">
+        <span class="main-search-kind">publish flow</span>
+        <strong>From idea to BuildingHub</strong>
+        <div class="visual-toolshed-step-list">
+          ${publishSteps
+            .map(
+              (step, index) => `
+                <article class="visual-toolshed-step">
+                  <em>${escapeHtml(String(index + 1))}</em>
+                  <span>${escapeHtml(step)}</span>
+                </article>
+              `,
+            )
+            .join("")}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function renderVisualGamePluginBuildingPanel(plugin) {
   const issue = getPluginBuildingIssue(plugin);
   return `
@@ -12994,6 +13561,10 @@ function renderVisualGamePluginBuildingPanel(plugin) {
 function renderVisualGameBuildingPanelContent(buildingId, plugin) {
   if (buildingId === "automations") {
     return renderAutomationsBuildingPanel();
+  }
+
+  if (buildingId === "toolshed") {
+    return renderToolshedBuildingPanel();
   }
 
   if (buildingId === "knowledge-base") {
@@ -13565,13 +14136,15 @@ function getAgentTownPluginBuildingBlueprints() {
   return installedPlugins.slice(0, AGENT_TOWN_PLUGIN_BUILDING_RECTS.length).map((plugin, index) => {
     const pluginId = getPluginId(plugin);
     const issue = getPluginBuildingIssue(plugin);
+    const shape = getPluginBuildingShape(plugin);
     return {
       ...getAgentTownPluginBuildingPalette(pluginId),
       id: `building-${pluginId}`,
       issue,
       pluginId,
       label: plugin.name,
-      meta: getPluginStatusBadgeLabel(plugin, issue) || plugin.category || "building",
+      meta: pluginId === "tailscale" ? getTailscaleBuildingMeta() : getPluginStatusBadgeLabel(plugin, issue) || plugin.category || "building",
+      shape,
       baseRect: AGENT_TOWN_PLUGIN_BUILDING_RECTS[index],
       action: {
         kind: "building",
@@ -13589,6 +14162,30 @@ function getAgentTownPluginBuildingPalette(pluginId) {
       trim: "#1f2328",
       fixture: "#24292f",
       screen: "#f6f8fa",
+    },
+    tailscale: {
+      body: "#253a59",
+      trim: "#14243a",
+      fixture: "#d1af63",
+      screen: "#9ceaff",
+    },
+    "agent-inbox": {
+      body: "#4e6472",
+      trim: "#22333d",
+      fixture: "#c88e5d",
+      screen: "#d8f3ff",
+    },
+    "ci-repair-shop": {
+      body: "#656848",
+      trim: "#2e3a31",
+      fixture: "#315f68",
+      screen: "#fff0b8",
+    },
+    wandb: {
+      body: "#615574",
+      trim: "#342c46",
+      fixture: "#b16a47",
+      screen: "#ffe7a8",
     },
     "google-drive": {
       body: "#506d58",
@@ -14199,8 +14796,7 @@ async function handleVisualGameHit(hit) {
   }
 
   if (hit.kind === "new-session") {
-    state.defaultProviderId = getSelectedSessionProviderId();
-    await loadFolderPicker(state.defaultCwd, { target: "session" });
+    await startNewAgentInDefaultFolder({ openInTown: true });
   }
 }
 
@@ -14286,7 +14882,7 @@ function drawVisualGameScene(context, graph, model, time, hitAreas, visibleWorld
   if (isVideoMemoryPluginInstalled()) {
     drawVisualGameCameraRoom(context, hitAreas, time, cameraAgents);
   }
-  drawAgentTownInstalledPluginBuildings(context, hitAreas);
+  drawAgentTownInstalledPluginBuildings(context, hitAreas, time);
   drawVisualGameGpuFactories(context, hitAreas, model.gpuFactories, time);
   if (isLocalhostAppsEnabled()) {
     drawVisualGameDock(context, hitAreas, time);
@@ -14507,7 +15103,72 @@ function drawVisualGameBuilding(context, hitAreas, building) {
   pushAgentTownPlaceHit(hitAreas, { ...building, rect, baseRect: building.baseRect || rect }, action);
 }
 
-function drawAgentTownInstalledPluginBuildings(context, hitAreas) {
+function drawVisualGamePortalBuilding(context, hitAreas, building, time = 0) {
+  const rect = building.rect || building;
+  const { x, y, width, height } = rect;
+  const { label, meta, body, trim, fixture, screen, action, issue } = building;
+  const portalTrim = trim || "#14243a";
+  const portalScreen = screen || "#9ceaff";
+  const glow = 0.34 + Math.sin(time / 260) * 0.08;
+  const centerX = x + width / 2;
+  const centerY = y + height - 29;
+
+  drawVisualGameRoomFloor(context, x, y, width, height, {
+    floor: body || "#253a59",
+    trim: portalTrim,
+    entrance: "bottom",
+  });
+  drawVisualGameBuildingSign(context, x + 8, y + 7, Math.min(width - 16, 88), 23, label, meta);
+
+  context.fillStyle = "rgba(9, 15, 28, 0.32)";
+  context.fillRect(x + 13, y + height - 11, width - 26, 7);
+  context.fillStyle = fixture || "#d1af63";
+  context.fillRect(x + 18, y + height - 16, width - 36, 6);
+  context.fillStyle = portalTrim;
+  context.fillRect(x + 16, y + height - 20, 11, 22);
+  context.fillRect(x + width - 27, y + height - 20, 11, 22);
+  context.fillRect(x + 21, y + height - 25, width - 42, 5);
+
+  context.save();
+  context.translate(centerX, centerY - 9);
+  context.fillStyle = "#0e1b34";
+  context.beginPath();
+  context.ellipse(0, 0, 23, 32, 0, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = portalTrim;
+  context.lineWidth = 7;
+  context.stroke();
+  context.strokeStyle = "rgba(209, 175, 99, 0.88)";
+  context.lineWidth = 3;
+  context.stroke();
+
+  context.fillStyle = `rgba(156, 234, 255, ${0.52 + glow * 0.35})`;
+  context.beginPath();
+  context.ellipse(0, 1, 15, 23, 0, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = `rgba(78, 105, 215, ${0.72 + glow * 0.2})`;
+  context.beginPath();
+  context.ellipse(0, 3, 9, 16, 0, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = `rgba(255, 255, 255, ${0.26 + glow * 0.22})`;
+  context.fillRect(-11, -10, 22, 3);
+  context.fillRect(-7, 6, 14, 2);
+  context.restore();
+
+  context.fillStyle = portalScreen;
+  context.fillRect(x + 18, y + height - 36, 8, 8);
+  context.fillRect(x + width - 26, y + height - 36, 8, 8);
+  context.fillStyle = `rgba(156, 234, 255, ${0.18 + glow * 0.25})`;
+  context.fillRect(x + 14, y + height - 40, width - 28, 18);
+
+  if (issue) {
+    drawVisualGameBuildingIssueBadge(context, rect);
+  }
+
+  pushAgentTownPlaceHit(hitAreas, { ...building, rect, baseRect: building.baseRect || rect }, action);
+}
+
+function drawAgentTownInstalledPluginBuildings(context, hitAreas, time = 0) {
   for (const blueprint of getAgentTownPluginBuildingBlueprints()) {
     const building = getVisualGameTownVirtualPlace({
       ...blueprint,
@@ -14518,6 +15179,18 @@ function drawAgentTownInstalledPluginBuildings(context, hitAreas) {
         y: blueprint.baseRect.y + blueprint.baseRect.height,
       },
     });
+    if (blueprint.shape === "portal") {
+      drawVisualGamePortalBuilding(context, hitAreas, {
+        ...building,
+        body: blueprint.body,
+        trim: blueprint.trim,
+        fixture: blueprint.fixture,
+        screen: blueprint.screen,
+        issue: blueprint.issue,
+        action: blueprint.action,
+      }, time);
+      continue;
+    }
     drawVisualGameBuilding(context, hitAreas, {
       ...building,
       body: blueprint.body,
@@ -15868,7 +16541,8 @@ function hasVisualGameLibraryActivity(agent) {
 function isVisualGameLibraryReference(value) {
   const text = String(value || "").toLowerCase();
   return (
-    text.includes(".vibe-research/wiki")
+    text.includes("vibe-research/buildings/library")
+    || text.includes(".vibe-research/wiki")
     || text.includes("/wiki/")
     || text.includes("knowledge-base")
     || text.includes("knowledge_base")
@@ -15876,23 +16550,17 @@ function isVisualGameLibraryReference(value) {
 }
 
 function getVisualGameAgentKey(agent, index) {
-  return [
-    agent.browserUseSessionId || "",
-    agent.ottoAuthSessionId || "",
-    agent.videoMemoryMonitorId || "",
-    agent.sessionId || "",
-    agent.parentSessionId || "",
-    agent.kind || "",
-    agent.name || "",
-    index,
-  ].join(":");
+  return getVisualGameAgentIdentityKey(agent, index);
 }
 
 function getVisualGameAnimatedPosition(agent, target, time) {
   const previous = state.visualGame.agentPositions.get(agent.key);
   if (agent.destination === "roam" && (!previous || (previous.destination === "roam" && !previous.walking))) {
-    state.visualGame.agentPositions.set(agent.key, { x: target.x, y: target.y, destination: agent.destination, updatedAt: time });
-    return { x: target.x, y: target.y, walking: false };
+    return setVisualGameStationaryAgentPosition(agent, target, time);
+  }
+
+  if (!previous && agent.destination === "sleep") {
+    return setVisualGameStationaryAgentPosition(agent, target, time);
   }
 
   if (agent.destination === "roam" && previous?.destination === "roam" && previous.walking) {
@@ -15902,7 +16570,7 @@ function getVisualGameAnimatedPosition(agent, target, time) {
     }
   }
 
-  const spawn = previous || { ...getVisualGameRoamSpot(agent, agent.index, time), destination: "roam", updatedAt: time };
+  const spawn = previous || getVisualGameInitialAgentSpawn(agent, time);
   const current = { x: spawn.x, y: spawn.y };
   const needsRoute =
     !Array.isArray(spawn.route)
@@ -15967,6 +16635,45 @@ function getVisualGameAnimatedPosition(agent, target, time) {
 
   state.visualGame.agentPositions.set(agent.key, next);
   return { x: next.x, y: next.y, walking: next.walking };
+}
+
+function setVisualGameStationaryAgentPosition(agent, target, time) {
+  const routeAnchor = getVisualGameTargetRouteAnchor(target);
+  const next = {
+    x: target.x,
+    y: target.y,
+    destination: agent.destination,
+    updatedAt: time,
+    route: [{ x: target.x, y: target.y }],
+    routeIndex: 1,
+    targetX: target.x,
+    targetY: target.y,
+    routeAnchor,
+    walking: false,
+  };
+  state.visualGame.agentPositions.set(agent.key, next);
+  return { x: next.x, y: next.y, walking: false };
+}
+
+function getVisualGameInitialAgentSpawn(agent, time) {
+  if (!agent.isSubagent) {
+    const sleepSpot = getVisualGameSleepSpot(agent, Math.max(0, Number(agent.familyIndex ?? agent.index) || 0));
+    return {
+      ...sleepSpot,
+      destination: "sleep",
+      updatedAt: time,
+      targetX: sleepSpot.x,
+      targetY: sleepSpot.y,
+      routeAnchor: getVisualGameTargetRouteAnchor(sleepSpot),
+      walking: false,
+    };
+  }
+
+  return {
+    ...getVisualGameRoamSpot(agent, agent.index, time),
+    destination: "roam",
+    updatedAt: time,
+  };
 }
 
 function getVisualGameAgentPathRoute(start, target, previous) {
@@ -16588,6 +17295,7 @@ function getWorkspaceViewTabConfig(view) {
     shell: { label: "Terminal", meta: "shell", icon: Bot },
     "knowledge-base": { label: "Library", meta: "notes", icon: BookOpen },
     "agent-prompt": { label: "Occupations", meta: "prompts", icon: FilePenLine },
+    "agent-inbox": { label: "Agent Inbox", meta: "attention", icon: Inbox },
     search: { label: "Search", meta: "global", icon: Search },
     plugins: { label: "Buildings", meta: "integrations", icon: Plug },
     settings: { label: "Settings", meta: "app", icon: Settings },
@@ -17132,6 +17840,9 @@ function renderPassiveWorkspaceView(tab) {
   if (view === "settings") {
     return renderSettingsView();
   }
+  if (view === "agent-inbox") {
+    return renderAgentInboxView();
+  }
   if (view === "automations") {
     return renderAutomationsView();
   }
@@ -17215,6 +17926,10 @@ function renderTerminalPanel(activeSession) {
 
   if (state.currentView === "settings") {
     return renderSettingsView();
+  }
+
+  if (state.currentView === "agent-inbox") {
+    return renderAgentInboxView();
   }
 
   if (state.currentView === "automations") {
@@ -17582,7 +18297,7 @@ function renderFolderPickerModal() {
   const chooseLabel = isSessionTarget
     ? "choose folder"
     : state.folderPicker.target === "wiki-onboarding"
-      ? "use this Library"
+      ? "use this workspace"
       : "choose this folder";
   const dragStyle = renderFolderPickerDragStyle();
 
@@ -17663,6 +18378,7 @@ const MAIN_VIEW_SCROLL_TARGETS = [
   ["dashboardGrid", ".dashboard-grid"],
   ["searchResults", "#global-search-results"],
   ["pluginsLayout", ".plugins-layout"],
+  ["agentInbox", "#agent-inbox-list"],
   ["automationGrid", ".automation-grid"],
   ["systemDashboard", ".system-dashboard"],
   ["knowledgeBaseGrid", ".knowledge-base-grid"],
@@ -17796,31 +18512,45 @@ function renderUpdateBanner() {
 }
 
 function renderBrainSetupScreen() {
-  document.title = "Set Library Folder · Vibe Research";
+  document.title = "Set Workspace Folder · Vibe Research";
 
   app.innerHTML = `
     <main class="screen brain-setup-screen">
       <section class="brain-setup-card" aria-labelledby="brain-setup-title">
         <span class="brain-setup-eyebrow">Vibe Research</span>
-        <h1 id="brain-setup-title">Choose your Library</h1>
+        <h1 id="brain-setup-title">Choose your workspace</h1>
         <p>
-          Vibe Research needs one markdown Library folder for shared memory. Select an
-          existing local folder, or clone one from GitHub.
+          Pick one folder for Vibe Research data. The Library will live in
+          <code>vibe-research/buildings/library</code>, and new agents will work in
+          <code>vibe-research/user</code>.
         </p>
+        <div class="brain-setup-option-grid" aria-label="Workspace setup options">
+          <button class="brain-setup-option" type="button" data-folder-picker-target="wiki-onboarding">
+            <strong>Create workspace</strong>
+            <span>Open the folder chooser and use the new folder field.</span>
+          </button>
+          <button class="brain-setup-option" type="button" data-folder-picker-target="wiki-onboarding">
+            <strong>Use existing folder</strong>
+            <span>Pick a folder already on this computer.</span>
+          </button>
+          <button class="brain-setup-option" type="button" data-focus-brain-git>
+            <strong>Clone from GitHub</strong>
+            <span>Paste a repo URL and Vibe Research will clone it locally.</span>
+          </button>
+        </div>
         <div class="brain-setup-picker">
-          <h2>Select a Library folder</h2>
+          <h2>Select a workspace folder</h2>
           <p>
-            If the folder is already a git repo, Vibe Research will detect its origin
-            remote and use it for private backups.
+            Vibe Research will create the Library and agent folders inside this workspace.
           </p>
-          <label class="field-label" for="brain-folder-input">Library folder</label>
+          <label class="field-label" for="brain-folder-input">workspace folder</label>
           <div class="folder-input-row">
             <input
               id="brain-folder-input"
               class="file-root-input"
               type="text"
-              value="${escapeHtml(state.settings.wikiPathConfigured ? state.settings.wikiPath || "" : "")}"
-              placeholder="${escapeHtml(state.defaultCwd || "choose a folder")}"
+              value="${escapeHtml(state.settings.wikiPathConfigured ? state.settings.workspaceRootPath || "" : "")}"
+              placeholder="${escapeHtml(state.settings.workspaceRootPath || state.defaultCwd || "choose a folder")}"
               readonly
               data-folder-picker-target="wiki-onboarding"
               autocomplete="off"
@@ -17910,6 +18640,7 @@ function renderShell() {
     search: "Search · Vibe Research",
     plugins: "Buildings · Vibe Research",
     settings: "Settings · Vibe Research",
+    "agent-inbox": "Agent Inbox · Vibe Research",
     automations: "Automations · Vibe Research",
     system: "System · Vibe Research",
     "visual-interface": "Agent Town · Vibe Research",
@@ -17944,7 +18675,7 @@ function renderShell() {
             <div class="section-head">
               <span>Threads</span>
               <div class="section-actions">
-                <button class="icon-button sidebar-head-button" type="button" data-folder-picker-target="session" aria-label="Add project" ${tooltipAttributes("Add project")}>${renderIcon(FolderPlus)}</button>
+                <button class="icon-button sidebar-head-button" type="button" data-folder-picker-target="session" aria-label="New agent" ${tooltipAttributes("New agent")}>${renderIcon(FolderPlus)}</button>
               </div>
             </div>
             <div class="list-shell" id="sessions-list">${renderSessionCards()}</div>
@@ -18135,8 +18866,14 @@ function flushDeferredSelectableRefreshes({ force = false } = {}) {
     return;
   }
 
-  if (refreshes.has("sessions")) {
-    refreshSessionsList({ force: true });
+  if (refreshes.has("sessions") || refreshes.has("agent-inbox")) {
+    if (refreshes.has("sessions")) {
+      refreshSessionsList({ force: true, bindEvents: false });
+    }
+    if (refreshes.has("agent-inbox")) {
+      refreshAgentInboxUi({ force: true, bindEvents: false });
+    }
+    bindSessionEvents();
   }
 
   if (refreshes.has("ports")) {
@@ -18409,7 +19146,9 @@ function bindSessionEvents() {
       }
 
       if (markSessionRead(sessionId, { refresh: false })) {
-        refreshSessionsList({ force: true });
+        refreshSessionsList({ force: true, bindEvents: false });
+        refreshAgentInboxUi({ force: true, bindEvents: false });
+        bindSessionEvents();
       }
     });
   });
@@ -18552,7 +19291,7 @@ function bindSessionEvents() {
   });
 }
 
-function refreshSessionsList({ force = false } = {}) {
+function refreshSessionsList({ force = false, bindEvents = true } = {}) {
   const sessionsList = document.querySelector("#sessions-list");
   if (!sessionsList) {
     return;
@@ -18574,7 +19313,32 @@ function refreshSessionsList({ force = false } = {}) {
 
   state.sessionsRefreshDeferred = false;
   sessionsList.innerHTML = renderSessionCards();
-  bindSessionEvents();
+  if (bindEvents) {
+    bindSessionEvents();
+  }
+}
+
+function refreshAgentInboxUi({ force = false, bindEvents = true } = {}) {
+  const inboxList = document.querySelector("#agent-inbox-list");
+  const inboxSummary = document.querySelector("#agent-inbox-summary");
+  if (!inboxList && !inboxSummary) {
+    return;
+  }
+
+  if (shouldDeferSelectableRefresh({ force })) {
+    deferSelectableRefresh("agent-inbox");
+    return;
+  }
+
+  if (inboxSummary) {
+    inboxSummary.innerHTML = renderAgentInboxSummaryCards();
+  }
+  if (inboxList) {
+    inboxList.innerHTML = renderAgentInboxCards();
+  }
+  if (bindEvents) {
+    bindSessionEvents();
+  }
 }
 
 function refreshPortsList({ force = false } = {}) {
@@ -20863,8 +21627,7 @@ function bindWorkspaceTabEvents() {
         state.activeWorkspaceGroupId = group.dataset.workspaceGroup || state.activeWorkspaceGroupId;
         saveWorkspaceGroupsState();
       }
-      state.defaultProviderId = getSelectedSessionProviderId();
-      await loadFolderPicker(state.defaultCwd, { target: "session" });
+      await startNewAgentInDefaultFolder();
     });
   });
 }
@@ -21047,7 +21810,9 @@ function refreshShellUi({ sessions = true, ports = true, files = true } = {}) {
   refreshKnowledgeSettingsUi();
 
   if (sessions) {
-    refreshSessionsList();
+    refreshSessionsList({ bindEvents: false });
+    refreshAgentInboxUi({ bindEvents: false });
+    bindSessionEvents();
   }
 
   if (ports) {
@@ -21480,7 +22245,7 @@ function applyAgentPromptState(payload) {
   state.agentPromptSelectedId = payload?.selectedPromptId || "researcher";
   state.agentPromptEditable = Boolean(payload?.editable);
   state.agentPromptPresets = Array.isArray(payload?.presets) ? payload.presets : [];
-  state.agentPromptWikiRoot = payload?.wikiRoot || state.settings.wikiRelativeRoot || ".vibe-research/wiki";
+  state.agentPromptWikiRoot = payload?.wikiRoot || state.settings.wikiRelativeRoot || "vibe-research/buildings/library";
   state.agentPromptTargets = Array.isArray(payload?.targets) ? payload.targets : [];
 }
 
@@ -21635,13 +22400,29 @@ function applySettingsState(payload) {
         ? state.settings.preventSleepEnabled
         : Boolean(settings.preventSleepEnabled),
     sleepPrevention: sleepPrevention || null,
+    workspaceRootPath:
+      settings.workspaceRootPath === undefined
+        ? state.settings.workspaceRootPath || ""
+        : String(settings.workspaceRootPath || ""),
+    workspaceRelativeRoot:
+      settings.workspaceRelativeRoot === undefined
+        ? state.settings.workspaceRelativeRoot || ""
+        : String(settings.workspaceRelativeRoot || ""),
+    agentSpawnPath:
+      settings.agentSpawnPath === undefined
+        ? state.settings.agentSpawnPath || ""
+        : String(settings.agentSpawnPath || ""),
+    agentSpawnRelativePath:
+      settings.agentSpawnRelativePath === undefined
+        ? state.settings.agentSpawnRelativePath || ""
+        : String(settings.agentSpawnRelativePath || ""),
     wikiPath: settings.wikiPath || state.settings.wikiPath || "",
     wikiPathConfigured: inferWikiPathConfigured(settings),
     wikiRelativeRoot:
       settings.wikiRelativeRoot ||
       settings.wikiRelativePath ||
       state.settings.wikiRelativeRoot ||
-      ".vibe-research/wiki",
+      "vibe-research/buildings/library",
     wikiGitBackupEnabled:
       settings.wikiGitBackupEnabled === undefined
         ? state.settings.wikiGitBackupEnabled
@@ -21660,6 +22441,9 @@ function applySettingsState(payload) {
       5 * 60 * 1000,
     wikiBackup: backup || null,
   };
+  if (settings.agentSpawnPath !== undefined && state.settings.agentSpawnPath) {
+    state.defaultCwd = state.settings.agentSpawnPath;
+  }
   state.agentPromptWikiRoot = state.settings.wikiRelativeRoot;
 }
 
@@ -22066,12 +22850,19 @@ function bindSessionProviderPicker() {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      if (!(button instanceof HTMLButtonElement)) {
         return;
       }
 
       const providerId = button.getAttribute("data-session-provider-option") || "";
       if (!providerId) {
+        return;
+      }
+
+      const provider = getProviderById(providerId);
+      if (provider && !provider.available) {
+        closeSessionProviderPicker();
+        void startProviderInstallSession(provider);
         return;
       }
 
@@ -22249,12 +23040,38 @@ function bindShellEvents() {
     });
   });
 
+  document.querySelectorAll("[data-onboarding-provider-start]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const providerId = button.getAttribute("data-onboarding-provider-start") || "";
+      const provider = getProviderById(providerId);
+      if (!provider?.available) {
+        return;
+      }
+
+      state.defaultProviderId = providerId;
+      await startNewAgentInDefaultFolder({ openInTown: true });
+    });
+  });
+
+  document.querySelectorAll("[data-onboarding-provider-install]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const providerId = button.getAttribute("data-onboarding-provider-install") || "";
+      const provider = getProviderById(providerId);
+      if (provider) {
+        void startProviderInstallSession(provider);
+      }
+    });
+  });
+
   document.querySelectorAll("[data-folder-picker-target]").forEach((button) => {
     button.addEventListener("click", async () => {
       const target = button.getAttribute("data-folder-picker-target") || "session";
       const isWikiTarget = target === "wiki" || target === "wiki-onboarding";
       if (target === "session") {
-        state.defaultProviderId = getSelectedSessionProviderId();
+        await startNewAgentInDefaultFolder();
+        return;
       }
 
       const input =
@@ -22262,6 +23079,8 @@ function bindShellEvents() {
           ? document.querySelector("#brain-folder-input")
           : target === "wiki"
             ? document.querySelector("#wiki-path-input")
+          : target === "agent-spawn"
+            ? document.querySelector("#agent-spawn-path-input")
           : target === "files"
             ? document.querySelector("#files-root-input")
             : null;
@@ -22270,13 +23089,22 @@ function bindShellEvents() {
           ? input.value.trim()
           : isWikiTarget
             ? target === "wiki-onboarding"
-              ? state.defaultCwd || state.settings.wikiPath
+              ? state.settings.workspaceRootPath || state.defaultCwd || state.settings.wikiPath
               : state.settings.wikiPath || state.defaultCwd
+            : target === "agent-spawn"
+              ? state.settings.agentSpawnPath || state.defaultCwd
             : target === "files"
               ? state.filesRoot || state.defaultCwd
               : state.defaultCwd;
 
       await loadFolderPicker(initialPath, { target });
+    });
+  });
+
+  document.querySelectorAll("[data-focus-brain-git]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      document.querySelector("#brain-git-url")?.focus();
     });
   });
 
@@ -23280,6 +24108,28 @@ function sendResize() {
   );
 }
 
+function flushPendingSessionInputs(sessionId, socket) {
+  const pendingInputs = state.pendingSessionInputs[sessionId] || [];
+  if (!pendingInputs.length) {
+    return;
+  }
+
+  delete state.pendingSessionInputs[sessionId];
+  for (const pendingInput of pendingInputs) {
+    window.setTimeout(() => {
+      if (
+        state.websocket !== socket ||
+        state.connectedSessionId !== sessionId ||
+        socket.readyState !== WebSocket.OPEN
+      ) {
+        return;
+      }
+
+      socket.send(JSON.stringify({ type: "input", data: pendingInput.data }));
+    }, Math.max(0, Number(pendingInput.delayMs) || 0));
+  }
+}
+
 function connectToSession(sessionId) {
   if (!state.terminal || !sessionId) {
     return;
@@ -23319,6 +24169,7 @@ function connectToSession(sessionId) {
       state.terminal.focus();
     }
     syncTerminalScrollState();
+    flushPendingSessionInputs(sessionId, socket);
   });
 
   socket.addEventListener("message", (event) => {
@@ -23515,6 +24366,13 @@ async function loadSessions() {
     if (state.currentView !== "shell") {
       if (isVisualInterfaceView() && (sessionIdsChanged || visualSelectionPruned)) {
         renderShell();
+        return;
+      }
+
+      if (state.currentView === "agent-inbox") {
+        refreshSessionsList({ bindEvents: false });
+        refreshAgentInboxUi({ bindEvents: false });
+        bindSessionEvents();
         return;
       }
 
@@ -23870,6 +24728,7 @@ async function loadFolderPickerTreePath(relativePath = "", { force = false } = {
 async function saveSettingsFromForm(form) {
   const formData = new FormData(form);
   const wikiPath = String(formData.get("wikiPath") || "");
+  const agentSpawnPath = String(formData.get("agentSpawnPath") || "");
   const hasField = (name) => Boolean(form.querySelector(`[name="${name}"]`));
   const body = {};
 
@@ -23902,6 +24761,10 @@ async function saveSettingsFromForm(form) {
     body.wikiPathConfigured = Boolean(wikiPath.trim());
   }
 
+  if (hasField("agentSpawnPath")) {
+    body.agentSpawnPath = agentSpawnPath;
+  }
+
   if (hasField("buildingHubEnabled")) {
     body.buildingHubEnabled = formData.get("buildingHubEnabled") === "on";
   }
@@ -23921,8 +24784,12 @@ async function saveSettingsFromForm(form) {
 
   applySettingsState(payload.settings);
   if (hasField("wikiPath")) {
-    state.settings.wikiPath = wikiPath;
-    state.settings.wikiPathConfigured = true;
+    state.settings.wikiPath = payload.settings?.wikiPath || wikiPath || state.settings.wikiPath;
+    state.settings.wikiPathConfigured = Boolean(state.settings.wikiPath);
+  }
+  if (hasField("agentSpawnPath")) {
+    state.settings.agentSpawnPath = payload.settings?.agentSpawnPath || agentSpawnPath || state.settings.agentSpawnPath;
+    state.defaultCwd = state.settings.agentSpawnPath || state.defaultCwd;
   }
   applyAgentPromptState(payload.agentPrompt);
   state.knowledgeBase.noteCache = {};
@@ -23955,21 +24822,24 @@ async function saveAgentCredentialsFromForm(form) {
 }
 
 async function saveBrainFolderSelection(selectedPath) {
-  const wikiPath = normalizeWorkspaceRoot(selectedPath);
-  if (!wikiPath) {
-    throw new Error("Choose or create a Library folder first.");
+  const workspaceRootPath = normalizeWorkspaceRoot(selectedPath);
+  if (!workspaceRootPath) {
+    throw new Error("Choose or create a workspace folder first.");
   }
 
   const payload = await fetchJson("/api/settings", {
     method: "PATCH",
     body: JSON.stringify({
-      wikiPath,
+      workspaceRootPath,
       wikiPathConfigured: true,
     }),
   });
 
   applySettingsState(payload.settings);
   state.settings.wikiPath = payload.settings?.wikiPath || state.settings.wikiPath;
+  state.settings.workspaceRootPath = payload.settings?.workspaceRootPath || workspaceRootPath;
+  state.settings.agentSpawnPath = payload.settings?.agentSpawnPath || state.settings.agentSpawnPath;
+  state.defaultCwd = state.settings.agentSpawnPath || state.defaultCwd;
   state.settings.wikiPathConfigured = true;
   applyAgentPromptState(payload.agentPrompt);
   state.knowledgeBase.noteCache = {};
@@ -24204,7 +25074,7 @@ async function bootstrapApp() {
   state.providers = payload.providers;
   state.sessions = payload.sessions;
   pruneSessionReadState();
-  state.defaultCwd = payload.cwd;
+  state.defaultCwd = payload.defaultSessionCwd || payload.cwd;
   state.stateDir = payload.stateDir || "";
   state.defaultProviderId = payload.defaultProviderId;
   applySettingsState(payload.settings);
