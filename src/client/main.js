@@ -9614,6 +9614,8 @@ function renderPluginOnboarding(plugin, { force = false } = {}) {
 function renderPluginInstallSetup(plugin) {
   const pluginId = getPluginId(plugin);
   switch (pluginId) {
+    case "buildinghub":
+      return renderBuildingHubPluginPanel({ install: true });
     case "browser-use":
       return renderBrowserUseInstallForm();
     case "ottoauth":
@@ -10533,6 +10535,7 @@ function renderSettingsView() {
           </summary>
           <div class="settings-advanced-grid">
             ${renderWikiRemoteSettingsPanel()}
+            ${renderBuildingHubPluginPanel()}
             ${renderOttoAuthPluginPanel()}
             ${renderCommunicationsPluginPanel()}
             ${renderBrowserUsePluginPanel()}
@@ -18723,6 +18726,10 @@ async function setPluginInstalled(pluginId, installed, { force = false } = {}) {
         void loadPorts();
       }
       return;
+    }
+
+    if (pluginId === "buildinghub") {
+      await loadBuildingHubCatalog({ force: true, renderOnComplete: false });
     }
 
     if (surfaceOpen) {
