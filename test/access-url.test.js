@@ -71,6 +71,27 @@ test("detects Tailscale Serve HTTPS root for the current Vibe Research port", ()
   assert.equal(hasTailscaleHttpsRootServe(serveStatus, "home-raspi.tail8dd042.ts.net"), true);
 });
 
+test("detects Tailscale Serve HTTPS fallback ports", () => {
+  const serveStatus = {
+    Web: {
+      "home-raspi.tail8dd042.ts.net:8443": {
+        Handlers: {
+          "/": {
+            Proxy: "http://127.0.0.1:4123",
+          },
+        },
+      },
+    },
+  };
+
+  assert.equal(
+    getTailscaleHttpsUrlFromServeStatus(serveStatus, 4123, "home-raspi.tail8dd042.ts.net"),
+    "https://home-raspi.tail8dd042.ts.net:8443/",
+  );
+  assert.equal(hasTailscaleHttpsRootServe(serveStatus, "home-raspi.tail8dd042.ts.net", 443), false);
+  assert.equal(hasTailscaleHttpsRootServe(serveStatus, "home-raspi.tail8dd042.ts.net", 8443), true);
+});
+
 test("does not treat another HTTPS root service as Vibe Research", () => {
   const serveStatus = {
     Web: {

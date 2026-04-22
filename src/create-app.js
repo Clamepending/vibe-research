@@ -51,6 +51,7 @@ const execFileAsync = promisify(execFile);
 const SERVER_INFO_FILENAME = "server.json";
 const TAILSCALE_HTTPS_SERVE_ENABLED =
   (process.env.VIBE_RESEARCH_TAILSCALE_HTTPS ?? process.env.REMOTE_VIBES_TAILSCALE_HTTPS) !== "0";
+const DEFAULT_TAILSCALE_HTTPS_SERVE_PORTS = [443, 8443, 10000];
 const JSON_BODY_LIMIT = "25mb";
 const ATTACHMENTS_SUBDIR = "attachments";
 const MAX_ATTACHMENT_IMAGE_BYTES = 15 * 1024 * 1024;
@@ -246,6 +247,20 @@ function getServerInfoPath(stateDir) {
   return path.join(stateDir, SERVER_INFO_FILENAME);
 }
 
+function parseTailscaleHttpsServePorts(value) {
+  const configured = String(value || "")
+    .split(",")
+    .map((entry) => Number(entry.trim()))
+    .filter((entry) => Number.isInteger(entry) && entry > 0 && entry < 65_536);
+  const ports = configured.length ? configured : DEFAULT_TAILSCALE_HTTPS_SERVE_PORTS;
+
+  return [...new Set(ports)];
+}
+
+const TAILSCALE_HTTPS_SERVE_PORTS = parseTailscaleHttpsServePorts(
+  process.env.VIBE_RESEARCH_TAILSCALE_HTTPS_PORTS ?? process.env.REMOTE_VIBES_TAILSCALE_HTTPS_PORTS,
+);
+
 function getHelperBaseUrl(host, port) {
   if (host === "0.0.0.0" || host === "::") {
     return `http://127.0.0.1:${port}`;
@@ -357,7 +372,7 @@ async function getAccessUrls(host, port) {
 
   const tailscaleHttpsUrl = await getTailscaleHttpsServeUrl(port);
   if (tailscaleHttpsUrl && !urls.some((entry) => entry.url === tailscaleHttpsUrl)) {
-    urls.push({ label: "Tailscale HTTPS", url: tailscaleHttpsUrl });
+    urls.splice(1, 0, { label: "Tailscale HTTPS", url: tailscaleHttpsUrl });
   }
 
   return urls;
@@ -404,51 +419,39 @@ async function getTailscaleHttpsServeUrl(port) {
 
     const configuredUrl = getTailscaleHttpsUrlFromServeStatus(serveStatus, port, dnsName);
     if (configuredUrl) {
-      return (await probeTailscaleHttpsUrl(configuredUrl)) ? configuredUrl : "";
+      return configuredUrl;
     }
 
-    if (hasTailscaleHttpsRootServe(serveStatus, dnsName)) {
-      return "";
-    }
+    for (const servePort of TAILSCALE_HTTPS_SERVE_PORTS) {
+      if (hasTailscaleHttpsRootServe(serveStatus, dnsName, servePort)) {
+        continue;
+      }
 
-    try {
-      await runTailscaleCommand(["serve", "--bg", "--yes", String(port)]);
-    } catch {
+      const serveArgs =
+        servePort === 443
+          ? ["serve", "--bg", "--yes", String(port)]
+          : ["serve", "--bg", "--yes", `--https=${servePort}`, String(port)];
+
       try {
-        await runTailscaleCommand(["serve", "--bg", String(port)]);
+        await runTailscaleCommand(serveArgs);
       } catch {
-        return "";
+        try {
+          await runTailscaleCommand(serveArgs.filter((arg) => arg !== "--yes"));
+        } catch {
+          continue;
+        }
+      }
+
+      serveStatus = await readTailscaleServeStatusJson();
+      const nextUrl = getTailscaleHttpsUrlFromServeStatus(serveStatus, port, dnsName);
+      if (nextUrl) {
+        return nextUrl;
       }
     }
 
-    serveStatus = await readTailscaleServeStatusJson();
-    const nextUrl = getTailscaleHttpsUrlFromServeStatus(serveStatus, port, dnsName);
-    return nextUrl && (await probeTailscaleHttpsUrl(nextUrl)) ? nextUrl : "";
+    return "";
   } catch {
     return "";
-  }
-}
-
-async function probeTailscaleHttpsUrl(baseUrl) {
-  let probeUrl;
-  try {
-    probeUrl = new URL("/api/state", baseUrl);
-  } catch {
-    return false;
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2500);
-
-  try {
-    const response = await fetch(probeUrl, {
-      signal: controller.signal,
-    });
-    return response.ok;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

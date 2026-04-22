@@ -4361,6 +4361,30 @@ function getBrowserUseStatusText() {
   return "ready for vr-browser-use";
 }
 
+function getBuildingHubStatusText() {
+  const status = state.settings.buildingHubStatus || state.buildingHub.status || {};
+  if (!state.settings.buildingHubEnabled) {
+    return state.settings.buildingHubCatalogPath || state.settings.buildingHubCatalogUrl
+      ? "configured but disabled"
+      : "not configured";
+  }
+
+  if (status.lastRefreshError) {
+    return status.lastRefreshError;
+  }
+
+  const buildingCount = Number(status.buildingCount ?? state.buildingHub.buildings.length ?? 0);
+  if (buildingCount > 0) {
+    return `${buildingCount} community building${buildingCount === 1 ? "" : "s"} loaded`;
+  }
+
+  if (!state.settings.buildingHubCatalogPath && !state.settings.buildingHubCatalogUrl) {
+    return "choose a BuildingHub source";
+  }
+
+  return state.buildingHub.loading ? "loading catalog" : "catalog ready";
+}
+
 function getOttoAuthStatusText() {
   const status = state.settings.ottoAuthStatus || {};
   if (!state.settings.ottoAuthEnabled) {
@@ -9141,6 +9165,93 @@ function getUpdatedInstalledPluginIds(pluginId, installed) {
   return [...pluginIds].sort();
 }
 
+function normalizeCommunityBuildingForClient(manifest) {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    return null;
+  }
+
+  const id = normalizeBuildingId(manifest.id || manifest.name);
+  if (!id || CORE_BUILDING_IDS.has(id)) {
+    return null;
+  }
+
+  const onboarding = manifest.onboarding && typeof manifest.onboarding === "object" && !Array.isArray(manifest.onboarding)
+    ? manifest.onboarding
+    : {};
+  const install = manifest.install && typeof manifest.install === "object" && !Array.isArray(manifest.install)
+    ? manifest.install
+    : {};
+  const visual = manifest.visual && typeof manifest.visual === "object" && !Array.isArray(manifest.visual)
+    ? manifest.visual
+    : {};
+  const ui = manifest.ui && typeof manifest.ui === "object" && !Array.isArray(manifest.ui)
+    ? manifest.ui
+    : {};
+
+  return {
+    ...manifest,
+    id,
+    name: String(manifest.name || id).trim() || id,
+    category: String(manifest.category || "Community").trim() || "Community",
+    description: String(manifest.description || "").trim(),
+    install: {
+      ...install,
+      enabledSetting: "",
+      system: false,
+      storedFallback: install.storedFallback === undefined ? true : Boolean(install.storedFallback),
+    },
+    onboarding: {
+      ...onboarding,
+      setupSelector: "",
+      steps: Array.isArray(onboarding.steps) ? onboarding.steps.filter(Boolean) : [],
+      variables: Array.isArray(onboarding.variables) ? onboarding.variables.filter(Boolean) : [],
+    },
+    source: "buildinghub",
+    status: String(manifest.status || "community").trim() || "community",
+    ui: {
+      ...ui,
+      entryView: "",
+      mode: ["panel", "wide"].includes(ui.mode) ? ui.mode : "panel",
+      workspaceView: "",
+    },
+    visual: {
+      ...visual,
+      shape: normalizeBuildingId(visual.shape || "plugin") || "plugin",
+      specialTownPlace: false,
+    },
+  };
+}
+
+function syncPluginCatalogFromBuildingHub(buildings = state.buildingHub.buildings) {
+  PLUGIN_CATALOG.splice(
+    0,
+    PLUGIN_CATALOG.length,
+    ...BUILDING_CATALOG,
+    ...buildings
+      .map(normalizeCommunityBuildingForClient)
+      .filter(Boolean),
+  );
+}
+
+function applyBuildingHubCatalog(payload = {}) {
+  const buildings = Array.isArray(payload.buildings)
+    ? payload.buildings
+    : Array.isArray(payload.buildingHub?.buildings)
+      ? payload.buildingHub.buildings
+      : [];
+  const status = payload.buildingHub?.status || payload.buildingHub || payload.status || null;
+  state.buildingHub = {
+    buildings,
+    loaded: true,
+    loading: false,
+    status,
+  };
+  syncPluginCatalogFromBuildingHub(buildings);
+  if (state.pluginDetailId && !getPluginById(state.pluginDetailId)) {
+    state.pluginDetailId = "";
+  }
+}
+
 function isPluginSystemApp(plugin) {
   return Boolean(plugin?.install?.system);
 }
@@ -9927,6 +10038,59 @@ function renderAgentCredentialsSettingsPanel() {
         </div>
       </form>
       <p class="mcp-import-paths"><code>ANTHROPIC_API_KEY</code> · <code>OPENAI_API_KEY</code> · <code>HF_TOKEN</code></p>
+    </aside>
+  `;
+}
+
+function renderBuildingHubPluginPanel({ install = false } = {}) {
+  const actionLabel = install ? "save and install" : "save BuildingHub";
+  const status = state.settings.buildingHubStatus || state.buildingHub.status || {};
+  const sourceSummary = Array.isArray(status.sources) && status.sources.length
+    ? status.sources.map((source) => `${source.label || source.kind}: ${source.status || "pending"}`).join(" · ")
+    : "local folder or registry JSON";
+
+  return `
+    <aside class="mcp-import-card buildinghub-plugin-card">
+      <span class="main-search-kind">building catalog</span>
+      <strong>BuildingHub</strong>
+      <p>Load manifest-only community buildings from a reviewed catalog. Catalogs can add setup guides and town lots, but not executable app code.</p>
+      <form class="settings-form buildinghub-form ${install ? "plugin-install-form" : ""}" ${install ? "" : "id=\"buildinghub-form\""} data-settings-form>
+        <label class="checkbox-row browser-use-compact-checkbox">
+          <input type="checkbox" name="buildingHubEnabled" ${state.settings.buildingHubEnabled ? "checked" : ""} />
+          <span>enable community building catalogs</span>
+        </label>
+        <label class="field-label" for="${install ? "install-" : ""}buildinghub-catalog-path">local catalog folder</label>
+        <input
+          class="file-root-input"
+          id="${install ? "install-" : ""}buildinghub-catalog-path"
+          name="buildingHubCatalogPath"
+          type="text"
+          value="${escapeHtml(state.settings.buildingHubCatalogPath || "")}"
+          placeholder="/Users/mark/Desktop/projects/buildinghub"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <label class="field-label" for="${install ? "install-" : ""}buildinghub-catalog-url">remote registry JSON</label>
+        <input
+          class="file-root-input"
+          id="${install ? "install-" : ""}buildinghub-catalog-url"
+          name="buildingHubCatalogUrl"
+          type="url"
+          value="${escapeHtml(state.settings.buildingHubCatalogUrl || "")}"
+          placeholder="https://example.com/buildinghub/registry.json"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <div class="knowledge-settings-actions">
+          <button class="primary-button settings-save-button" type="submit">${escapeHtml(actionLabel)}</button>
+          <div class="settings-status">${escapeHtml(getBuildingHubStatusText())}</div>
+        </div>
+      </form>
+      <p class="mcp-import-paths">${escapeHtml(sourceSummary)}</p>
     </aside>
   `;
 }
@@ -21322,6 +21486,7 @@ function applySettingsState(payload) {
   const ottoAuthStatus = settings.ottoAuthStatus || settings.ottoAuth || state.settings.ottoAuthStatus;
   const telegramStatus = settings.telegramStatus || settings.telegram || state.settings.telegramStatus;
   const videoMemoryStatus = settings.videoMemoryStatus || settings.videoMemory || state.settings.videoMemoryStatus;
+  const buildingHubStatus = settings.buildingHubStatus || settings.buildingHub || state.settings.buildingHubStatus;
 
   state.settings = {
     agentAnthropicApiKeyConfigured:
@@ -21393,6 +21558,19 @@ function applySettingsState(payload) {
       settings.browserUseWorkerPath === undefined
         ? state.settings.browserUseWorkerPath || ""
         : String(settings.browserUseWorkerPath || ""),
+    buildingHubCatalogPath:
+      settings.buildingHubCatalogPath === undefined
+        ? state.settings.buildingHubCatalogPath || ""
+        : String(settings.buildingHubCatalogPath || ""),
+    buildingHubCatalogUrl:
+      settings.buildingHubCatalogUrl === undefined
+        ? state.settings.buildingHubCatalogUrl || ""
+        : String(settings.buildingHubCatalogUrl || ""),
+    buildingHubEnabled:
+      settings.buildingHubEnabled === undefined
+        ? state.settings.buildingHubEnabled
+        : Boolean(settings.buildingHubEnabled),
+    buildingHubStatus: buildingHubStatus || null,
     ottoAuthBaseUrl:
       settings.ottoAuthBaseUrl === undefined
         ? state.settings.ottoAuthBaseUrl || "https://ottoauth.vercel.app"
@@ -21825,6 +22003,31 @@ async function loadVideoMemoryStatus({ renderOnComplete = false } = {}) {
       refreshVideoMemoryPluginUi({ force: true });
     }
   } catch (error) {
+    console.error(error);
+  }
+}
+
+async function loadBuildingHubCatalog({ force = false, renderOnComplete = false } = {}) {
+  if (!state.settings.buildingHubEnabled) {
+    applyBuildingHubCatalog({ buildings: [], buildingHub: state.settings.buildingHubStatus || null });
+    if (renderOnComplete) {
+      renderShell();
+    }
+    return;
+  }
+
+  state.buildingHub.loading = true;
+  try {
+    const payload = await fetchJson(`/api/buildinghub/catalog${force ? "?force=1" : ""}`, {
+      cache: "no-store",
+    });
+    applyBuildingHubCatalog(payload);
+    applySettingsState({ buildingHubStatus: payload.buildingHub });
+    if (renderOnComplete) {
+      renderShell();
+    }
+  } catch (error) {
+    state.buildingHub.loading = false;
     console.error(error);
   }
 }
@@ -23692,6 +23895,18 @@ async function saveSettingsFromForm(form) {
     body.wikiPathConfigured = Boolean(wikiPath.trim());
   }
 
+  if (hasField("buildingHubEnabled")) {
+    body.buildingHubEnabled = formData.get("buildingHubEnabled") === "on";
+  }
+
+  if (hasField("buildingHubCatalogPath")) {
+    body.buildingHubCatalogPath = String(formData.get("buildingHubCatalogPath") || "");
+  }
+
+  if (hasField("buildingHubCatalogUrl")) {
+    body.buildingHubCatalogUrl = String(formData.get("buildingHubCatalogUrl") || "");
+  }
+
   const payload = await fetchJson("/api/settings", {
     method: "PATCH",
     body: JSON.stringify(body),
@@ -23708,6 +23923,10 @@ async function saveSettingsFromForm(form) {
   if (state.currentView === "knowledge-base") {
     await loadKnowledgeBaseIndex();
     await ensureKnowledgeBaseSelectionLoaded({ force: true });
+  }
+
+  if (hasField("buildingHubEnabled") || hasField("buildingHubCatalogPath") || hasField("buildingHubCatalogUrl")) {
+    await loadBuildingHubCatalog({ force: true, renderOnComplete: false });
   }
 }
 
@@ -23982,6 +24201,7 @@ async function bootstrapApp() {
   state.stateDir = payload.stateDir || "";
   state.defaultProviderId = payload.defaultProviderId;
   applySettingsState(payload.settings);
+  applyBuildingHubCatalog(payload.buildingHub || {});
   state.ports = isLocalhostAppsEnabled() ? (payload.ports ?? []) : [];
   state.portsLoadedAt = Date.now();
   state.preferredBaseUrl = payload.preferredUrl ? new URL(payload.preferredUrl).origin : "";
