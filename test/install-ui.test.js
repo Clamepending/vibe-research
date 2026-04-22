@@ -63,10 +63,11 @@ test("install.sh can render the polished terminal installer UI when requested", 
 
     assert.match(result.stdout, /Vibe Research/);
     assert.match(result.stdout, /Installer for local agent workspaces/);
-    assert.match(result.stdout, /\[1\/9\] Terminal locale/);
-    assert.match(result.stdout, /\[7\/9\] App checkout/);
+    assert.match(result.stdout, /\[1\/10\] Terminal locale/);
+    assert.match(result.stdout, /\[7\/10\] App checkout/);
     assert.match(result.stdout, /\[done\] App checkout/);
-    assert.match(result.stdout, /\[9\/9\] Service setup/);
+    assert.match(result.stdout, /\[8\/10\] Terminal launcher/);
+    assert.match(result.stdout, /\[10\/10\] Service setup/);
     assert.match(result.stdout, /Install complete/);
     assert.ok(await stat(path.join(installDir, "start.sh")));
   } finally {

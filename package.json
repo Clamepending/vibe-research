@@ -5,6 +5,7 @@
   "private": true,
   "type": "module",
   "bin": {
+    "vibe-research": "./bin/vibe-research",
     "vr-agentmail-reply": "./bin/vr-agentmail-reply",
     "vr-browser": "./bin/vr-browser",
     "vr-browser-use": "./bin/vr-browser-use",

@@ -5,8 +5,9 @@
 Minimal browser terminal to vibe code on your server/cluster/Mac/Raspberry Pi via your phone/laptop on the go.
 
 1. On the machine you want to control, run `curl -fsSL https://vibe-research.net/install.sh | bash`
-2. Open the Local URL printed at the end. From another device on the same network, open the LAN URL or scan the QR code.
-3. In Vibe Research, choose a workspace folder during onboarding, then tap New Agent. The Library is created under `<workspace>/vibe-research/buildings/library`, and agents start in `<workspace>/vibe-research/user`. The first Claude Code session will ask for Claude sign-in if needed.
+2. Later, run `vibe-research` from a terminal to launch it if needed and open the local UI in your browser.
+3. From another device on the same network, open the LAN URL or scan the QR code printed by startup.
+4. In Vibe Research, choose a workspace folder during onboarding, then tap New Agent. The Library is created under `<workspace>/vibe-research/buildings/library`, and agents start in `<workspace>/vibe-research/user`. The first Claude Code session will ask for Claude sign-in if needed.
 
 Tailscale is optional for first setup. If it is already installed and connected, Vibe Research will print a Tailscale URL too. To have the installer install/start Tailscale onboarding for private remote access, run the quickstart with `VIBE_RESEARCH_INSTALL_TAILSCALE=1`.
 
@@ -44,6 +45,8 @@ Interactive terminals get a polished installer view with a Vibe Research header,
 By default, the installer uses the latest GitHub Release when one exists, then falls back to `main` while the project is still bootstrapping. Set `VIBE_RESEARCH_UPDATE_CHANNEL=branch` or `VIBE_RESEARCH_REF=<branch-or-tag>` before running the installer if you intentionally want a dev checkout.
 
 The install command now launches Vibe Research as a background server, so it keeps running even after the SSH session or terminal closes. The app checkout lives under `~/.vibe-research/app`; onboarding chooses the workspace where the Library and agent-created files live; settings, logs, session history, and the managed pid live under `~/.vibe-research/`. Coding-agent terminals use `tmux` when available so Vibe Research restarts can reattach to live agent work instead of merely replaying a transcript.
+
+The installer adds a `vibe-research` terminal command, preferring a bin directory already on `PATH` and falling back to `~/.local/bin`. Running `vibe-research` starts the background server when needed and opens the local browser UI; use `vibe-research --no-browser` on headless machines. If your current shell has not picked up the install location, open a new terminal or add the printed directory to `PATH`.
 
 New release installs start workspace picking from `~/vibe-projects` when the app checkout is under `~/.vibe-research/app`. New agents start in the configured new-agent folder without asking for a folder each time; Settings can change both the Library folder and the new-agent folder. By default, Vibe Research keeps local git backups of the Library every 10 minutes. To back the Library up off-machine, create a private Git repo, paste its SSH or credential-helper remote URL into the sidebar's private remote backup field, enable remote push, and Vibe Research will push Library backup commits there on each backup run.
 
