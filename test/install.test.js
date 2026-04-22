@@ -1289,8 +1289,11 @@ test("start.sh retries dependency install after a transient npm network failure"
   const port = await getFreePort();
   const fakeBin = path.join(tempRoot, "bin");
   const npmLog = path.join(tempRoot, "npm.log");
+  const curlLog = path.join(tempRoot, "curl.log");
   const npmAttemptState = path.join(tempRoot, "npm-attempts");
+  const npmCacheState = path.join(tempRoot, "npm-cache-warmed");
   const stateDir = path.join(tempRoot, "state");
+  const realCurl = (await execFile("bash", ["-lc", "command -v curl"])).stdout.trim();
 
   try {
     await mkdir(fakeBin, { recursive: true });
@@ -1334,6 +1337,14 @@ if [ "\${1:-}" = "-v" ] || [ "\${1:-}" = "--version" ]; then
   exit 0
 fi
 printf '%s\\n' "$*" >> ${JSON.stringify(npmLog)}
+if [ "\${1:-}" = "cache" ] && [ "\${2:-}" = "add" ]; then
+  case "\${3:-}" in
+    *node-pty*)
+      : > ${JSON.stringify(npmCacheState)}
+      ;;
+  esac
+  exit 0
+fi
 if [ "\${1:-}" != "ci" ]; then
   printf 'unexpected npm command: %s\\n' "$*" >&2
   exit 64
@@ -1349,11 +1360,66 @@ if [ "$attempt" -eq 1 ]; then
   printf 'npm error network read ETIMEDOUT\\n' >&2
   exit 110
 fi
+if [ ! -f ${JSON.stringify(npmCacheState)} ]; then
+  printf 'expected node-pty tarball to be warmed before retry\\n' >&2
+  exit 65
+fi
 mkdir -p node_modules/playwright-core
 printf '{}\\n' > node_modules/playwright-core/package.json
 `,
     );
-    await execFile("chmod", ["+x", path.join(fakeBin, "npm")]);
+    await writeFile(
+      path.join(fakeBin, "curl"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "--help" ]; then
+  printf '%s\\n' '--retry-all-errors'
+  exit 0
+fi
+for arg in "$@"; do
+  case "$arg" in
+    http://127.0.0.1*|http://localhost*)
+      exec ${JSON.stringify(realCurl)} "$@"
+      ;;
+  esac
+done
+output=""
+url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o)
+      output="$2"
+      shift 2
+      ;;
+    --retry|--connect-timeout|--max-time)
+      shift 2
+      ;;
+    -fL|--retry-all-errors)
+      shift
+      ;;
+    -*)
+      shift
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+case "$url" in
+  https://registry.npmjs.org/*)
+    printf '%s\\n' "$url" >> ${JSON.stringify(curlLog)}
+    mkdir -p "$(dirname "$output")"
+    printf 'fake tarball for %s\\n' "$url" > "$output"
+    ;;
+  *)
+    printf 'unexpected curl URL: %s\\n' "$url" >&2
+    exit 64
+    ;;
+esac
+`,
+    );
+    await execFile("chmod", ["+x", path.join(fakeBin, "npm"), path.join(fakeBin, "curl")]);
 
     const result = await execFile("bash", [path.join(repoDir, "start.sh")], {
       env: installTestEnv({
@@ -1364,6 +1430,7 @@ printf '{}\\n' > node_modules/playwright-core/package.json
         VIBE_RESEARCH_WIKI_DIR: path.join(tempRoot, "mac-brain"),
         VIBE_RESEARCH_NPM_INSTALL_ATTEMPTS: "2",
         VIBE_RESEARCH_NPM_INSTALL_RETRY_DELAY_SECONDS: "0",
+        VIBE_RESEARCH_NPM_TARBALL_PREFETCH_PACKAGES: "node-pty",
       }),
       timeout: 60_000,
     });
@@ -1371,14 +1438,19 @@ printf '{}\\n' > node_modules/playwright-core/package.json
 
     assert.match(combinedOutput, /Installing dependencies/);
     assert.match(combinedOutput, /npm error network read ETIMEDOUT/);
+    assert.match(combinedOutput, /Warming npm cache for large dependency tarballs/);
+    assert.match(combinedOutput, /Fetching node-pty tarball with curl/);
     assert.match(combinedOutput, /Dependency install failed; retrying \(2\/2\)/);
 
     const npmCommands = (await readFile(npmLog, "utf8")).trim().split("\n");
-    assert.equal(npmCommands.length, 2);
-    assert.ok(npmCommands.every((command) => command.startsWith("ci --fetch-retries 5 ")));
-    assert.ok(npmCommands.every((command) => command.includes("--fetch-retry-mintimeout 20000")));
-    assert.ok(npmCommands.every((command) => command.includes("--fetch-retry-maxtimeout 120000")));
-    assert.ok(npmCommands.every((command) => command.includes("--fetch-timeout 300000")));
+    const npmCiCommands = npmCommands.filter((command) => command.startsWith("ci "));
+    assert.equal(npmCiCommands.length, 2);
+    assert.ok(npmCiCommands.every((command) => command.startsWith("ci --prefer-offline --no-audit --no-fund --fetch-retries 5 ")));
+    assert.ok(npmCiCommands.every((command) => command.includes("--fetch-retry-mintimeout 20000")));
+    assert.ok(npmCiCommands.every((command) => command.includes("--fetch-retry-maxtimeout 120000")));
+    assert.ok(npmCiCommands.every((command) => command.includes("--fetch-timeout 300000")));
+    assert.ok(npmCommands.some((command) => /cache add .*node-pty.*\.tgz/.test(command)));
+    assert.match(await readFile(curlLog, "utf8"), /https:\/\/registry\.npmjs\.org\/node-pty\/-\/node-pty-1\.1\.0\.tgz/);
 
     const response = await fetch(`http://127.0.0.1:${port}/api/state`);
     assert.equal(response.status, 200);

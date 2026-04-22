@@ -21,6 +21,11 @@ NPM_FETCH_RETRY_FACTOR="${VIBE_RESEARCH_NPM_FETCH_RETRY_FACTOR:-${REMOTE_VIBES_N
 NPM_FETCH_RETRY_MINTIMEOUT="${VIBE_RESEARCH_NPM_FETCH_RETRY_MINTIMEOUT:-${REMOTE_VIBES_NPM_FETCH_RETRY_MINTIMEOUT:-20000}}"
 NPM_FETCH_RETRY_MAXTIMEOUT="${VIBE_RESEARCH_NPM_FETCH_RETRY_MAXTIMEOUT:-${REMOTE_VIBES_NPM_FETCH_RETRY_MAXTIMEOUT:-120000}}"
 NPM_FETCH_TIMEOUT="${VIBE_RESEARCH_NPM_FETCH_TIMEOUT:-${REMOTE_VIBES_NPM_FETCH_TIMEOUT:-300000}}"
+NPM_TARBALL_PREFETCH="${VIBE_RESEARCH_NPM_TARBALL_PREFETCH:-${REMOTE_VIBES_NPM_TARBALL_PREFETCH:-after-failure}}"
+NPM_TARBALL_PREFETCH_PACKAGES="${VIBE_RESEARCH_NPM_TARBALL_PREFETCH_PACKAGES:-${REMOTE_VIBES_NPM_TARBALL_PREFETCH_PACKAGES:-node-pty,playwright-core,esbuild}}"
+NPM_TARBALL_PREFETCH_RETRIES="${VIBE_RESEARCH_NPM_TARBALL_PREFETCH_RETRIES:-${REMOTE_VIBES_NPM_TARBALL_PREFETCH_RETRIES:-5}}"
+NPM_TARBALL_PREFETCH_CONNECT_TIMEOUT="${VIBE_RESEARCH_NPM_TARBALL_PREFETCH_CONNECT_TIMEOUT:-${REMOTE_VIBES_NPM_TARBALL_PREFETCH_CONNECT_TIMEOUT:-30}}"
+NPM_TARBALL_PREFETCH_MAX_TIME="${VIBE_RESEARCH_NPM_TARBALL_PREFETCH_MAX_TIME:-${REMOTE_VIBES_NPM_TARBALL_PREFETCH_MAX_TIME:-900}}"
 export VIBE_RESEARCH_STATE_DIR="$RUNTIME_DIR"
 export REMOTE_VIBES_STATE_DIR="${REMOTE_VIBES_STATE_DIR:-$RUNTIME_DIR}"
 if [ -n "$WIKI_DIR" ]; then
@@ -386,11 +391,144 @@ run_npm_dependency_install() {
   fi
 
   npm "$command" \
+    --prefer-offline \
+    --no-audit \
+    --no-fund \
     --fetch-retries "$(positive_int_or_default "$NPM_FETCH_RETRIES" 5)" \
     --fetch-retry-factor "$(positive_int_or_default "$NPM_FETCH_RETRY_FACTOR" 2)" \
     --fetch-retry-mintimeout "$(positive_int_or_default "$NPM_FETCH_RETRY_MINTIMEOUT" 20000)" \
     --fetch-retry-maxtimeout "$(positive_int_or_default "$NPM_FETCH_RETRY_MAXTIMEOUT" 120000)" \
     --fetch-timeout "$(positive_int_or_default "$NPM_FETCH_TIMEOUT" 300000)"
+}
+
+esbuild_platform_package_name() {
+  local os arch suffix
+  os="$(uname -s 2>/dev/null || true)"
+  arch="$(uname -m 2>/dev/null || true)"
+
+  case "$os:$arch" in
+    Linux:x86_64|Linux:amd64) suffix="linux-x64" ;;
+    Linux:aarch64|Linux:arm64) suffix="linux-arm64" ;;
+    Linux:armv7l|Linux:armv6l) suffix="linux-arm" ;;
+    Darwin:x86_64|Darwin:amd64) suffix="darwin-x64" ;;
+    Darwin:arm64|Darwin:aarch64) suffix="darwin-arm64" ;;
+    FreeBSD:x86_64|FreeBSD:amd64) suffix="freebsd-x64" ;;
+    FreeBSD:aarch64|FreeBSD:arm64) suffix="freebsd-arm64" ;;
+    *) suffix="" ;;
+  esac
+
+  if [ -n "$suffix" ]; then
+    printf '@esbuild/%s\n' "$suffix"
+  fi
+}
+
+warm_npm_tarball_cache() {
+  case "$NPM_TARBALL_PREFETCH" in
+    0|false|False|FALSE|off|Off|OFF|never)
+      return 1
+      ;;
+  esac
+
+  if [ ! -f package-lock.json ] || ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local prefetch_dir list_file platform_package
+  prefetch_dir="$RUNTIME_DIR/npm-tarball-prefetch"
+  list_file="$prefetch_dir/tarballs.txt"
+  platform_package="$(esbuild_platform_package_name)"
+
+  rm -rf "$prefetch_dir"
+  mkdir -p "$prefetch_dir"
+
+  if ! NPM_TARBALL_PREFETCH_PACKAGES="$NPM_TARBALL_PREFETCH_PACKAGES" \
+    NPM_PLATFORM_ESBUILD_PACKAGE="$platform_package" \
+    node <<'NODE' >"$list_file"; then
+const fs = require("fs");
+
+function packageNameFromLockPath(lockPath) {
+  const marker = "node_modules/";
+  const index = lockPath.lastIndexOf(marker);
+  if (index === -1) {
+    return "";
+  }
+  return lockPath.slice(index + marker.length);
+}
+
+const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+const configured = String(process.env.NPM_TARBALL_PREFETCH_PACKAGES || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+const wanted = new Set(configured);
+if (process.env.NPM_PLATFORM_ESBUILD_PACKAGE) {
+  wanted.add(process.env.NPM_PLATFORM_ESBUILD_PACKAGE);
+}
+
+const seen = new Set();
+for (const [lockPath, packageInfo] of Object.entries(lock.packages || {})) {
+  const name = packageNameFromLockPath(lockPath);
+  const resolved = String(packageInfo?.resolved || "");
+  if (!name || !resolved.startsWith("https://") || !wanted.has(name) || seen.has(resolved)) {
+    continue;
+  }
+  seen.add(resolved);
+  process.stdout.write(`${name} ${resolved}\n`);
+}
+NODE
+    rm -rf "$prefetch_dir"
+    return 1
+  fi
+
+  if [ ! -s "$list_file" ]; then
+    rm -rf "$prefetch_dir"
+    return 1
+  fi
+
+  log "Warming npm cache for large dependency tarballs"
+
+  local cached_any failed_any name url safe_name file retry_all_errors
+  cached_any=0
+  failed_any=0
+  retry_all_errors=""
+  if curl --help all 2>/dev/null | grep -q -- '--retry-all-errors'; then
+    retry_all_errors="--retry-all-errors"
+  fi
+
+  while read -r name url; do
+    [ -n "$name" ] || continue
+    safe_name="$(printf '%s' "$name" | tr '/@' '__' | tr -c 'A-Za-z0-9._-' '_')"
+    file="$prefetch_dir/$safe_name.tgz"
+
+    log "Fetching $name tarball with curl"
+    if ! curl -fL \
+      --retry "$(positive_int_or_default "$NPM_TARBALL_PREFETCH_RETRIES" 5)" \
+      $retry_all_errors \
+      --connect-timeout "$(positive_int_or_default "$NPM_TARBALL_PREFETCH_CONNECT_TIMEOUT" 30)" \
+      --max-time "$(positive_int_or_default "$NPM_TARBALL_PREFETCH_MAX_TIME" 900)" \
+      -o "$file" \
+      "$url"; then
+      log "Could not prefetch $name; npm will retry normally"
+      failed_any=1
+      continue
+    fi
+
+    if npm cache add "$file" --prefer-offline --no-audit --no-fund >/dev/null 2>&1; then
+      cached_any=1
+    else
+      log "Could not add $name tarball to npm cache; npm will retry normally"
+      failed_any=1
+    fi
+  done <"$list_file"
+
+  rm -rf "$prefetch_dir"
+
+  if [ "$cached_any" = "1" ]; then
+    return 0
+  fi
+
+  [ "$failed_any" = "0" ] || return 1
+  return 1
 }
 
 ensure_dependencies_installed() {
@@ -400,9 +538,10 @@ ensure_dependencies_installed() {
     return
   fi
 
-  local attempt max_attempts retry_delay
+  local attempt max_attempts retry_delay prefetch_tried
   max_attempts="$(positive_int_or_default "$NPM_INSTALL_ATTEMPTS" 3)"
   retry_delay="$(nonnegative_int_or_default "$NPM_INSTALL_RETRY_DELAY_SECONDS" 5)"
+  prefetch_tried=0
 
   echo "Installing dependencies..."
   for attempt in $(seq 1 "$max_attempts"); do
@@ -413,6 +552,11 @@ ensure_dependencies_installed() {
 
     if [ "$attempt" -ge "$max_attempts" ]; then
       fail "Dependency install failed after $max_attempts attempts. Check npm network connectivity, then rerun start.sh."
+    fi
+
+    if [ "$prefetch_tried" = "0" ]; then
+      warm_npm_tarball_cache || true
+      prefetch_tried=1
     fi
 
     log "Dependency install failed; retrying ($((attempt + 1))/$max_attempts)"
