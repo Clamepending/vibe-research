@@ -786,17 +786,28 @@ latest_github_release_tag() {
 resolve_checkout_ref() {
   local tag
 
-  if tag="$(latest_release_tag)" && [ -n "$tag" ]; then
-    printf '%s\n' "$tag"
-    return
-  fi
-
   if tag="$(latest_github_release_tag)" && [ -n "$tag" ]; then
     printf '%s\n' "$tag"
     return
   fi
 
+  if tag="$(latest_release_tag)" && [ -n "$tag" ]; then
+    printf '%s\n' "$tag"
+    return
+  fi
+
   printf '%s\n' "$REPO_REF"
+}
+
+prepare_start_environment() {
+  if [ -z "${VIBE_RESEARCH_FORCE_RESTART+x}" ] && [ -z "${REMOTE_VIBES_FORCE_RESTART+x}" ]; then
+    export VIBE_RESEARCH_FORCE_RESTART=1
+    export REMOTE_VIBES_FORCE_RESTART=1
+    return
+  fi
+
+  export VIBE_RESEARCH_FORCE_RESTART="${VIBE_RESEARCH_FORCE_RESTART:-${REMOTE_VIBES_FORCE_RESTART:-}}"
+  export REMOTE_VIBES_FORCE_RESTART="${REMOTE_VIBES_FORCE_RESTART:-$VIBE_RESEARCH_FORCE_RESTART}"
 }
 
 ensure_command() {
@@ -947,6 +958,7 @@ main() {
     return
   fi
 
+  prepare_start_environment
   "$INSTALL_DIR/start.sh"
   install_systemd_service
 }

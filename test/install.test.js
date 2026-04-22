@@ -21,7 +21,7 @@ async function createSourceRepo() {
 
   await writeFile(
     path.join(repoDir, "start.sh"),
-    "#!/usr/bin/env bash\nset -euo pipefail\necho SOURCE_VERSION=$(cat VERSION)\n",
+    "#!/usr/bin/env bash\nset -euo pipefail\necho SOURCE_VERSION=$(cat VERSION)\necho FORCE_RESTART=${VIBE_RESEARCH_FORCE_RESTART:-${REMOTE_VIBES_FORCE_RESTART:-}}\n",
   );
   await writeFile(path.join(repoDir, "VERSION"), "v1\n");
 
@@ -203,6 +203,27 @@ test("install.sh defaults to an app checkout under the home Vibe Research direct
     assert.ok(await stat(path.join(installDir, "start.sh")));
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("install.sh forces a managed restart when launching from the installer", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-force-restart-"));
+  const installDir = path.join(installRoot, "vibe-research");
+
+  try {
+    const result = await execFile("bash", [installScript], {
+      env: installTestEnv({
+        VIBE_RESEARCH_HOME: installDir,
+        VIBE_RESEARCH_REPO_URL: repoDir,
+      }),
+    });
+
+    assert.match(result.stdout, /SOURCE_VERSION=v1/);
+    assert.match(result.stdout, /FORCE_RESTART=1/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
   }
 });
 
