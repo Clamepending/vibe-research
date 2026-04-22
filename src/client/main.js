@@ -14477,7 +14477,7 @@ function renderVisualTownWorld(graph) {
   `;
 }
 
-function renderVisualPixelGame(graph) {
+function renderVisualPixelGame(graph, { controls = true } = {}) {
   const agents = getVisualInterfaceAgents(graph);
   const workingCount = agents.filter((agent) => getVisualStatusClass(agent.status) === "working").length;
   const roamingCount = Math.max(0, agents.length - workingCount);
@@ -14503,16 +14503,22 @@ function renderVisualPixelGame(graph) {
           aria-label="${escapeHtml(`${workingCount} working agents, ${roamingCount} roaming agents in Agent Town`)}"
         ></canvas>
         <div class="visual-game-hover" aria-hidden="true">${escapeHtml(hoverLabel)}</div>
-        <div class="agent-town-floating-controls" aria-label="Agent Town controls">
-          <button class="icon-button toolbar-control hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
-          <button class="icon-button toolbar-control ${isAgentTownEditMode() ? "is-active" : ""}" type="button" id="visual-game-edit-town" aria-label="${escapeHtml(editTownLabel)}" aria-pressed="${isAgentTownEditMode() ? "true" : "false"}" ${tooltipAttributes(editTownLabel)}>${renderIcon(Pencil)}</button>
-          <button class="icon-button toolbar-control danger-icon-button" type="button" id="visual-game-reset-town-layout" aria-label="Reset town layout" ${tooltipAttributes("Reset town layout")} ${isAgentTownLayoutCustomized() ? "" : "disabled"}>${renderIcon(Trash2)}</button>
-          <button class="icon-button toolbar-control" type="button" id="visual-game-zoom-out" aria-label="Zoom out map" ${tooltipAttributes("Zoom out map")}>${renderIcon(ZoomOut)}</button>
-          <button class="icon-button toolbar-control" type="button" id="visual-game-reset-camera" aria-label="Reset map view" ${tooltipAttributes("Reset map view")}>${renderIcon(RefreshCw)}</button>
-          <button class="icon-button toolbar-control" type="button" id="visual-game-zoom-in" aria-label="Zoom in map" ${tooltipAttributes("Zoom in map")}>${renderIcon(ZoomIn)}</button>
-          <button class="icon-button toolbar-control" type="button" id="swarm-back-to-session" aria-label="Back to terminal" ${tooltipAttributes("Back to terminal")}>${renderIcon(Bot)}</button>
-          <button class="icon-button toolbar-control refresh-icon-button ${state.swarmGraph.loading ? "is-loading" : ""}" type="button" id="refresh-swarm-graph" aria-label="${escapeHtml(refreshLabel)}" ${tooltipAttributes(refreshLabel)} ${state.swarmGraph.loading || !canRefreshSwarm ? "disabled" : ""}>${renderIcon(RefreshCw)}</button>
-        </div>
+        ${
+          controls
+            ? `
+              <div class="agent-town-floating-controls" role="toolbar" aria-label="Agent Town controls">
+                <button class="icon-button toolbar-control hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
+                <button class="icon-button toolbar-control ${isAgentTownEditMode() ? "is-active" : ""}" type="button" id="visual-game-edit-town" aria-label="${escapeHtml(editTownLabel)}" aria-pressed="${isAgentTownEditMode() ? "true" : "false"}" ${tooltipAttributes(editTownLabel)}>${renderIcon(Pencil)}</button>
+                <button class="icon-button toolbar-control danger-icon-button" type="button" id="visual-game-reset-town-layout" aria-label="Reset town layout" ${tooltipAttributes("Reset town layout")} ${isAgentTownLayoutCustomized() ? "" : "disabled"}>${renderIcon(Trash2)}</button>
+                <button class="icon-button toolbar-control" type="button" id="visual-game-zoom-out" aria-label="Zoom out map" ${tooltipAttributes("Zoom out map")}>${renderIcon(ZoomOut)}</button>
+                <button class="icon-button toolbar-control" type="button" id="visual-game-reset-camera" aria-label="Reset map view" ${tooltipAttributes("Reset map view")}>${renderIcon(RefreshCw)}</button>
+                <button class="icon-button toolbar-control" type="button" id="visual-game-zoom-in" aria-label="Zoom in map" ${tooltipAttributes("Zoom in map")}>${renderIcon(ZoomIn)}</button>
+                <button class="icon-button toolbar-control" type="button" id="swarm-back-to-session" aria-label="Back to terminal" ${tooltipAttributes("Back to terminal")}>${renderIcon(Bot)}</button>
+                <button class="icon-button toolbar-control refresh-icon-button ${state.swarmGraph.loading ? "is-loading" : ""}" type="button" id="refresh-swarm-graph" aria-label="${escapeHtml(refreshLabel)}" ${tooltipAttributes(refreshLabel)} ${state.swarmGraph.loading || !canRefreshSwarm ? "disabled" : ""}>${renderIcon(RefreshCw)}</button>
+              </div>
+            `
+            : ""
+        }
         <div
           class="agent-town-builder-feedback ${builderFeedback ? `is-visible is-${escapeHtml(builderFeedback.tone)}` : ""}"
           data-agent-town-builder-feedback
@@ -14546,29 +14552,9 @@ function renderVisualPixelGame(graph) {
 
 function renderPassiveSwarmGraphView() {
   const graph = state.swarmGraph.data;
-  const selectedSession = state.sessions.find((session) => session.id === state.swarmGraph.sessionId) || null;
-  const title =
-    state.swarmGraph.projectName
-    || (graph?.git?.root ? getWorkspacePathLeafName(graph.git.root) : "")
-    || selectedSession?.name
-    || graph?.sessions?.[0]?.name
-    || "Agent Town";
-  const meta = graph
-    ? `${graph.git?.isRepository ? "git" : "folder"} · ${graph.cwd || selectedSession?.cwd || state.defaultCwd}`
-    : selectedSession
-      ? `${selectedSession.providerLabel} · ${selectedSession.cwd}`
-      : state.swarmGraph.projectCwd
-        ? `project folder · ${state.swarmGraph.projectCwd}`
-        : "choose a project to open its town";
 
   return `
-    <section class="dashboard-panel main-view visual-interface-view workspace-passive-visual-view" data-passive-main-view="visual-interface">
-      <div class="dashboard-toolbar">
-        <div class="dashboard-copy">
-          <strong>${escapeHtml(title)}</strong>
-          <div class="terminal-meta">Agent Town · ${escapeHtml(meta)}</div>
-        </div>
-      </div>
+    <section class="dashboard-panel main-view visual-interface-view workspace-passive-visual-view is-map-only ${state.swarmGraph.error ? "has-visual-error" : ""}" data-passive-main-view="visual-interface">
       ${
         state.swarmGraph.error
           ? `<div class="system-error-card">${escapeHtml(state.swarmGraph.error)}</div>`
@@ -14578,7 +14564,7 @@ function renderPassiveSwarmGraphView() {
         state.swarmGraph.loading && !graph
           ? `<div class="blank-state">mapping agents, buildings, files, and evidence...</div>`
           : graph
-            ? `<div class="visual-game-layout workspace-passive-visual-layout">${renderVisualPixelGame(graph)}</div>`
+            ? `<div class="visual-game-layout workspace-passive-visual-layout">${renderVisualPixelGame(graph, { controls: false })}</div>`
             : renderVisualProjectPicker()
       }
     </section>
@@ -15490,7 +15476,7 @@ function primeAgentTownBuilderPlacementPreview() {
   const preview = updateAgentTownBuilderPlacementPreview({
     x: camera.x + viewport.width / camera.zoom / 2,
     y: camera.y + viewport.height / camera.zoom / 2,
-  });
+  }, { preferOpen: true });
   placement.centerOnNextFrame = true;
   return preview;
 }
@@ -15634,14 +15620,70 @@ function getAgentTownPlacementBlocker(placement, rect) {
   return null;
 }
 
-function updateAgentTownBuilderPlacementPreview(point) {
-  const placement = state.visualGame.builderPlacement;
-  if (!placement) {
+function getAgentTownBuilderPlacementPreview(placement, point) {
+  if (!placement || !point) {
     return null;
   }
 
   const rect = getAgentTownPlacementRectAtPoint(placement, point);
   const blocker = getAgentTownPlacementBlocker(placement, rect);
+  return { rect, blocker };
+}
+
+function getAgentTownBuilderNearbyOpenPreview(placement, preferredPoint) {
+  const preferredPreview = getAgentTownBuilderPlacementPreview(placement, preferredPoint);
+  if (!preferredPreview?.blocker) {
+    return preferredPreview;
+  }
+
+  const radii = [44, 88, 132, 176, 220, 264];
+  for (const radius of radii) {
+    const candidates = [
+      [radius, 0],
+      [-radius, 0],
+      [0, radius],
+      [0, -radius],
+      [radius, radius],
+      [-radius, radius],
+      [radius, -radius],
+      [-radius, -radius],
+      [Math.round(radius * 0.5), radius],
+      [-Math.round(radius * 0.5), radius],
+      [Math.round(radius * 0.5), -radius],
+      [-Math.round(radius * 0.5), -radius],
+      [radius, Math.round(radius * 0.5)],
+      [-radius, Math.round(radius * 0.5)],
+      [radius, -Math.round(radius * 0.5)],
+      [-radius, -Math.round(radius * 0.5)],
+    ];
+    for (const [offsetX, offsetY] of candidates) {
+      const preview = getAgentTownBuilderPlacementPreview(placement, {
+        x: preferredPoint.x + offsetX,
+        y: preferredPoint.y + offsetY,
+      });
+      if (preview?.rect && !preview.blocker) {
+        return preview;
+      }
+    }
+  }
+
+  return preferredPreview;
+}
+
+function updateAgentTownBuilderPlacementPreview(point, { preferOpen = false } = {}) {
+  const placement = state.visualGame.builderPlacement;
+  if (!placement) {
+    return null;
+  }
+
+  const preview = preferOpen
+    ? getAgentTownBuilderNearbyOpenPreview(placement, point)
+    : getAgentTownBuilderPlacementPreview(placement, point);
+  if (!preview?.rect) {
+    return null;
+  }
+
+  const { rect, blocker } = preview;
   placement.cursorRect = rect;
   placement.blocked = Boolean(blocker);
   placement.blockedLabel = blocker?.label || "";
@@ -17052,7 +17094,7 @@ function mountVisualPixelGame() {
       updateAgentTownBuilderPlacementPreview({
         x: visibleWorld.x + visibleWorld.width / 2,
         y: visibleWorld.y + visibleWorld.height / 2,
-      });
+      }, { preferOpen: true });
     }
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, canvas.width, canvas.height);
