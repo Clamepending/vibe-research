@@ -71,13 +71,7 @@ export const VISUAL_GAME_MAP_LAYOUT = Object.freeze({
   places: {
     dormitory: place("dormitory", "Dormitory", 0, 0, 6, 2, {
       entrance: { side: "bottom", offset: 2.5 / 6 },
-      beds: [
-        point(29, 41),
-        point(58, 41),
-        point(87, 41),
-        point(116, 41),
-        point(145, 41),
-      ],
+      beds: [],
       spots: [
         cellCenter(1, 1, 0, 2),
         cellCenter(2, 1, 0, 2),
