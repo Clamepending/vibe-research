@@ -1499,6 +1499,7 @@ const state = {
     hitAreas: [],
     hoverLabel: "",
     agentPositions: new Map(),
+    libraryActivity: new Map(),
     camera: { x: 0, y: 0, zoom: 1 },
     viewport: null,
     editMode: false,
@@ -23880,7 +23881,18 @@ function isVisualGamePassiveMonitor(agent) {
   return source === "videomemory" || agentType.includes("monitor");
 }
 
+const VISUAL_GAME_LIBRARY_ACTIVITY_TTL_MS = 8000;
+
 function hasVisualGameLibraryActivity(agent) {
+  const now = Date.now();
+  const sessionId = agent.sessionId || agent.parentSessionId || "";
+  if (sessionId) {
+    const expiresAt = state.visualGame.libraryActivity.get(sessionId);
+    if (expiresAt && expiresAt > now) {
+      return true;
+    }
+  }
+
   const references = [
     ...(Array.isArray(agent.paths) ? agent.paths : []),
     ...(Array.isArray(agent.commands) ? agent.commands : []),
@@ -23984,6 +23996,7 @@ function isVisualGameLibraryReference(value) {
     text.includes("vibe-research/buildings/library")
     || text.includes(".vibe-research/wiki")
     || text.includes("/wiki/")
+    || text.includes("/mac-brain/")
     || text.includes("knowledge-base")
     || text.includes("knowledge_base")
   );
@@ -32908,6 +32921,14 @@ function connectToSession(sessionId) {
 
     if (payload.type === "session") {
       updateSession(payload.session);
+      return;
+    }
+
+    if (payload.type === "library-activity") {
+      if (payload.sessionId) {
+        const expiresAt = Date.now() + VISUAL_GAME_LIBRARY_ACTIVITY_TTL_MS;
+        state.visualGame.libraryActivity.set(payload.sessionId, expiresAt);
+      }
       return;
     }
 

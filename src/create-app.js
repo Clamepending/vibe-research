@@ -41,6 +41,7 @@ import {
 } from "./scaffold-recipe-service.js";
 import { buildAgentCredentialEnv, SettingsStore } from "./settings-store.js";
 import { SessionManager } from "./session-manager.js";
+import { startLibraryActivityWatcher } from "./library-activity-watcher.js";
 import { SleepPreventionService } from "./sleep-prevention.js";
 import { getVibeResearchStateDir, getVibeResearchSystemDir } from "./state-paths.js";
 import { collectSystemMetrics } from "./system-metrics.js";
@@ -3952,6 +3953,51 @@ export async function createVibeResearchApp({
     nextServer.on("error", reject);
   });
   const websocketServer = new WebSocketServer({ noServer: true });
+  const globalWebsocketClients = new Set();
+
+  function broadcastToAllClients(payload) {
+    const message = JSON.stringify(payload);
+    for (const client of globalWebsocketClients) {
+      if (client.readyState === client.OPEN) {
+        try {
+          client.send(message);
+        } catch {
+          // Silently drop; socket will be cleaned up on close.
+        }
+      }
+    }
+  }
+
+  function resolveSessionForPath(absolutePath) {
+    let best = null;
+    let bestLength = -1;
+    for (const session of sessionManager.listSessions()) {
+      const cwd = session.cwd || "";
+      if (!cwd) continue;
+      if (absolutePath === cwd || absolutePath.startsWith(cwd + path.sep)) {
+        if (cwd.length > bestLength) {
+          best = session;
+          bestLength = cwd.length;
+        }
+      }
+    }
+    if (best) return best.id;
+
+    const sessions = sessionManager.listSessions();
+    if (!sessions.length) return "";
+    return sessions.reduce((latest, session) => {
+      const latestTs = Date.parse(latest.updatedAt || latest.createdAt || 0) || 0;
+      const candidateTs = Date.parse(session.updatedAt || session.createdAt || 0) || 0;
+      return candidateTs > latestTs ? session : latest;
+    }).id;
+  }
+
+  const stopLibraryActivityWatcher = startLibraryActivityWatcher({
+    wikiPath: settingsStore.settings.wikiPath,
+    resolveSessionForPath,
+    broadcast: broadcastToAllClients,
+    log: (message) => console.log(message),
+  });
   const resolvedPort =
     typeof server.address() === "object" && server.address()
       ? server.address().port
@@ -4037,6 +4083,11 @@ export async function createVibeResearchApp({
       return;
     }
 
+    globalWebsocketClients.add(websocket);
+    websocket.on("close", () => {
+      globalWebsocketClients.delete(websocket);
+    });
+
     websocket.on("message", (payload) => {
       try {
         const message = JSON.parse(String(payload));
@@ -4065,6 +4116,7 @@ export async function createVibeResearchApp({
     }
 
     closePromise = (async () => {
+      stopLibraryActivityWatcher();
       await sessionManager.shutdown({ preserveSessions: persistSessions });
       await browserUseService.shutdown();
       await removeServerInfo(stateDir);
