@@ -114,6 +114,135 @@ async function createUninstallableApp(appDir) {
   await execFile("chmod", ["+x", path.join(appDir, "start.sh"), path.join(appDir, "bin", "vibe-research")]);
 }
 
+async function createLinuxNodeInstallFakes({
+  fakeBin,
+  realNode = "",
+  realCurl = "",
+  nodeModulesDir = "",
+} = {}) {
+  const nodeVersion = "v22.99.0";
+  const npmVersion = "10.9.8";
+  const nodeMajor = nodeVersion.replace(/^v/, "").split(".")[0];
+  const tarballBase = "node-v22.99.0-linux-x64";
+  const tarballName = `${tarballBase}.tar.xz`;
+
+  await writeFile(
+    path.join(fakeBin, "uname"),
+    "#!/usr/bin/env sh\nif [ \"${1:-}\" = \"-m\" ]; then printf 'x86_64\\n'; else printf 'Linux\\n'; fi\n",
+  );
+  await writeFile(path.join(fakeBin, "node"), "#!/usr/bin/env sh\nexit 127\n");
+  await writeFile(path.join(fakeBin, "npm"), "#!/usr/bin/env sh\nexit 127\n");
+  await writeFile(
+    path.join(fakeBin, "curl"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+original_args=("$@")
+url=""
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o)
+      output="$2"
+      shift 2
+      ;;
+    -*)
+      shift
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+case "$url" in
+  *SHASUMS256.txt)
+    printf 'abc  ${tarballName}\\n'
+    ;;
+  *${tarballName})
+    printf 'node tarball' > "$output"
+    ;;
+  *)
+    ${realCurl ? `exec ${JSON.stringify(realCurl)} "\${original_args[@]}"` : "printf 'unexpected curl URL: %s\\n' \"$url\" >&2\n    exit 1"}
+    ;;
+esac
+`,
+  );
+  await writeFile(
+    path.join(fakeBin, "tar"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+target=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -C)
+      target="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [ -z "$target" ]; then
+  printf 'missing tar target\\n' >&2
+  exit 64
+fi
+mkdir -p "$target/${tarballBase}/bin"
+cat > "$target/${tarballBase}/bin/node" <<'NODE_BIN'
+#!/usr/bin/env sh
+case "\${1:-}" in
+  -p)
+    printf '${nodeMajor}\\n'
+    exit 0
+    ;;
+  -v|--version)
+    printf '${nodeVersion}\\n'
+    exit 0
+    ;;
+esac
+${realNode ? `exec ${JSON.stringify(realNode)} "$@"` : "exit 0"}
+NODE_BIN
+cat > "$target/${tarballBase}/bin/npm" <<'NPM_BIN'
+#!/usr/bin/env sh
+case "\${1:-}" in
+  -v|--version)
+    printf '${npmVersion}\\n'
+    exit 0
+    ;;
+  ci|install)
+    ${
+      nodeModulesDir
+        ? `if [ -d ${JSON.stringify(nodeModulesDir)} ]; then
+      ln -sfn ${JSON.stringify(nodeModulesDir)} node_modules
+    else
+      mkdir -p node_modules/playwright-core node_modules/esbuild node_modules/node-pty
+      printf '{}\\n' > node_modules/playwright-core/package.json
+      printf '{}\\n' > node_modules/esbuild/package.json
+      printf '{}\\n' > node_modules/node-pty/package.json
+    fi`
+        : `mkdir -p node_modules/playwright-core node_modules/esbuild node_modules/node-pty
+    printf '{}\\n' > node_modules/playwright-core/package.json
+    printf '{}\\n' > node_modules/esbuild/package.json
+    printf '{}\\n' > node_modules/node-pty/package.json`
+    }
+    exit 0
+    ;;
+esac
+exit 0
+NPM_BIN
+cat > "$target/${tarballBase}/bin/npx" <<'NPX_BIN'
+#!/usr/bin/env sh
+exit 0
+NPX_BIN
+chmod +x "$target/${tarballBase}/bin/node" "$target/${tarballBase}/bin/npm" "$target/${tarballBase}/bin/npx"
+`,
+  );
+
+  await execFile("chmod", ["+x", ...["uname", "node", "npm", "curl", "tar"].map((name) => path.join(fakeBin, name))]);
+
+  return { nodeVersion, npmVersion, tarballBase, tarballName };
+}
+
 test("install.sh clones and updates a checkout in one command", async () => {
   const { tempRoot, repoDir } = await createSourceRepo();
   const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-install-"));
@@ -568,6 +697,49 @@ exit 0
   }
 });
 
+test("install.sh installs user-local Node.js on Linux hosts without apt", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-linux-node-install-"));
+  const installDir = path.join(installRoot, "vibe-research");
+  const fakeBin = path.join(installRoot, "bin");
+  const nodeInstallRoot = path.join(installRoot, "managed-node");
+  const nodeBinDir = path.join(installRoot, "local-bin");
+
+  try {
+    await mkdir(fakeBin, { recursive: true });
+    await mkdir(nodeBinDir, { recursive: true });
+    await writeFile(path.join(nodeBinDir, "node"), "existing node\n");
+    const { nodeVersion, npmVersion, tarballBase } = await createLinuxNodeInstallFakes({ fakeBin });
+
+    const result = await execFile("bash", [installScript], {
+      env: installTestEnv({
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+        VIBE_RESEARCH_HOME: installDir,
+        VIBE_RESEARCH_REPO_URL: repoDir,
+        VIBE_RESEARCH_NODE_INSTALL_ROOT: nodeInstallRoot,
+        VIBE_RESEARCH_NODE_BIN_DIR: nodeBinDir,
+        VIBE_RESEARCH_SKIP_RUN: "1",
+      }),
+    });
+
+    assert.match(result.stdout, new RegExp(`Installing Node\\.js 22\\.x for Linux under ${escapeRegExp(nodeInstallRoot)}`));
+    assert.match(result.stdout, new RegExp(`Using Node ${escapeRegExp(nodeVersion)} and npm ${escapeRegExp(npmVersion)}`));
+    assert.ok(await stat(path.join(installDir, "start.sh")));
+    assert.equal(
+      await realpath(path.join(nodeInstallRoot, "current", "bin", "node")),
+      await realpath(path.join(nodeInstallRoot, tarballBase, "bin", "node")),
+    );
+    assert.equal(await readFile(path.join(nodeBinDir, "node"), "utf8"), "existing node\n");
+    assert.equal(
+      await realpath(path.join(nodeBinDir, "npm")),
+      await realpath(path.join(nodeInstallRoot, "current", "bin", "npm")),
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
 test("start.sh bootstraps Node.js through the installer when launched from a checkout", async () => {
   const { tempRoot, repoDir } = await createWorkingTreeRepoSnapshot();
   const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-start-node-install-"));
@@ -679,6 +851,62 @@ exit 0
     assert.match(combinedOutput, /running the installer Node\.js step/);
     assert.match(combinedOutput, /Installing Node\.js 22\.x for macOS/);
     assert.match(combinedOutput, /Using Node v22\.99\.0 and npm 10\.9\.9/);
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/state`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.appName, "Vibe Research");
+  } finally {
+    try {
+      await fetch(`http://127.0.0.1:${port}/api/terminate`, {
+        method: "POST",
+      });
+      await waitForShutdown(`http://127.0.0.1:${port}/api/state`);
+    } catch {
+      // Server may not have started.
+    }
+
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
+test("start.sh refreshes PATH after the installer adds managed Linux Node.js", async () => {
+  const { tempRoot, repoDir } = await createWorkingTreeRepoSnapshot();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-start-linux-node-install-"));
+  const fakeBin = path.join(installRoot, "bin");
+  const nodeInstallRoot = path.join(installRoot, "managed-node");
+  const nodeBinDir = path.join(installRoot, "local-bin");
+  const port = await getFreePort();
+  const realNode = process.execPath;
+  const realCurl = (await execFile("bash", ["-lc", "command -v curl"])).stdout.trim();
+
+  try {
+    await mkdir(fakeBin, { recursive: true });
+    const { nodeVersion, npmVersion } = await createLinuxNodeInstallFakes({
+      fakeBin,
+      realNode,
+      realCurl,
+      nodeModulesDir: path.join(rootDir, "node_modules"),
+    });
+
+    const result = await execFile("bash", [path.join(repoDir, "start.sh")], {
+      env: installTestEnv({
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+        VIBE_RESEARCH_PORT: String(port),
+        VIBE_RESEARCH_READY_TIMEOUT_SECONDS: "30",
+        VIBE_RESEARCH_STATE_DIR: path.join(installRoot, "state"),
+        VIBE_RESEARCH_WIKI_DIR: path.join(installRoot, "linux-brain"),
+        VIBE_RESEARCH_NODE_INSTALL_ROOT: nodeInstallRoot,
+        VIBE_RESEARCH_NODE_BIN_DIR: nodeBinDir,
+      }),
+      timeout: 60_000,
+    });
+    const combinedOutput = `${result.stdout}${result.stderr}`;
+
+    assert.match(combinedOutput, /running the installer Node\.js step/);
+    assert.match(combinedOutput, new RegExp(`Installing Node\\.js 22\\.x for Linux under ${escapeRegExp(nodeInstallRoot)}`));
+    assert.match(combinedOutput, new RegExp(`Using Node ${escapeRegExp(nodeVersion)} and npm ${escapeRegExp(npmVersion)}`));
 
     const response = await fetch(`http://127.0.0.1:${port}/api/state`);
     assert.equal(response.status, 200);
