@@ -41,7 +41,7 @@ test("buildStartupOutput includes a terminal QR block for the preferred phone UR
   assert.match(output, /Open the clickable URL above/);
   assert.match(output, /Tap New Agent/);
   assert.match(output, /default agent folder: \/home\/friend\/vibe-projects/);
-  assert.match(output, /If Claude asks you to sign in/);
+  assert.match(output, /If Claude Code asks you to sign in/);
   assert.match(output, /Remote access is optional/);
   assert.match(output, /\u001b\[47m/);
   assert.match(output, /OPEN VIBE RESEARCH/);
@@ -49,6 +49,35 @@ test("buildStartupOutput includes a terminal QR block for the preferred phone UR
   assert.match(output, /This laptop: \u001b]8;;http:\/\/localhost:4123\u0007http:\/\/localhost:4123\u001b]8;;\u0007/);
   assert.match(output, /\u001b\[32mrunning\u001b\[0m\n\n/);
   assert.match(output, /\u001b\[1m\u001b\[36m============================================================\u001b\[0m$/);
+});
+
+test("buildStartupOutput names the selected provider in the getting-started steps", () => {
+  const output = buildStartupOutput({
+    cwd: "/tmp/vibe-research",
+    urls: [{ label: "Local", url: "http://localhost:4123" }],
+    defaultProviderId: "codex",
+    providers: [
+      { id: "claude", label: "Claude Code", available: true },
+      { id: "codex", label: "Codex", available: true },
+      { id: "gemini", label: "Gemini CLI", available: false },
+    ],
+  });
+
+  const plain = stripAnsi(output);
+  assert.match(plain, /Choose Codex in the agent selector/);
+  assert.match(plain, /If Codex asks you to sign in/);
+  assert.doesNotMatch(plain, /Choose Claude Code in the agent selector/);
+});
+
+test("buildStartupOutput falls back to 'your preferred agent' when no providers are available", () => {
+  const output = buildStartupOutput({
+    cwd: "/tmp/vibe-research",
+    urls: [{ label: "Local", url: "http://localhost:4123" }],
+    providers: [],
+  });
+
+  const plain = stripAnsi(output);
+  assert.match(plain, /Choose your preferred agent in the agent selector/);
 });
 
 test("renderTerminalLink emits an OSC 8 clickable terminal link", () => {

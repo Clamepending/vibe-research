@@ -81,6 +81,69 @@ function compareVersionTags(left, right) {
   return leftParts && rightParts ? compareVersionParts(leftParts, rightParts) : null;
 }
 
+function getReleaseTargetPriority(target) {
+  const releaseCheck = trim(target?.releaseCheck);
+  if (releaseCheck === "latest") {
+    return 3;
+  }
+  if (releaseCheck === "channel") {
+    return 2;
+  }
+  if (releaseCheck.startsWith("git-tags")) {
+    return 1;
+  }
+  return 0;
+}
+
+function pickBestReleaseTarget(candidates) {
+  let best = null;
+
+  for (const candidate of candidates) {
+    if (!candidate?.commit) {
+      continue;
+    }
+
+    if (!best) {
+      best = candidate;
+      continue;
+    }
+
+    const candidateVersion = trim(candidate.version || candidate.tag);
+    const bestVersion = trim(best.version || best.tag);
+    const versionComparison = compareVersionTags(candidateVersion, bestVersion);
+
+    if (versionComparison !== null) {
+      if (versionComparison > 0) {
+        best = candidate;
+      } else if (versionComparison === 0 && getReleaseTargetPriority(candidate) > getReleaseTargetPriority(best)) {
+        best = candidate;
+      }
+      continue;
+    }
+
+    const candidateHasSemver = Boolean(parseVersionTag(candidateVersion));
+    const bestHasSemver = Boolean(parseVersionTag(bestVersion));
+    if (candidateHasSemver && !bestHasSemver) {
+      best = candidate;
+      continue;
+    }
+    if (!candidateHasSemver && bestHasSemver) {
+      continue;
+    }
+
+    if (getReleaseTargetPriority(candidate) > getReleaseTargetPriority(best)) {
+      best = candidate;
+      continue;
+    }
+
+    if (!best.releaseUrl && candidate.releaseUrl) {
+      best = candidate;
+    }
+  }
+
+  return best;
+}
+
 function parseLsRemoteTags(stdout) {
   const tags = new Map();
   for (const line of trim(stdout).split(/\r?\n/).filter(Boolean)) {
@@ -492,41 +555,49 @@ export class UpdateManager {
   }
 
   async readLatestTarget(remoteUrl) {
-    let releaseCheck = "skipped";
+    const releaseCandidates = [];
+    const releaseCheckNotes = [];
 
     if (this.channel !== "branch") {
       try {
         const releaseTarget = await this.readLatestGitHubRelease(remoteUrl);
         if (releaseTarget?.commit) {
-          return releaseTarget;
+          releaseCandidates.push(releaseTarget);
+        } else {
+          releaseCheckNotes.push("GitHub release none");
         }
-        releaseCheck = "GitHub release none";
       } catch (error) {
-        releaseCheck = error.message || "GitHub release lookup failed.";
+        releaseCheckNotes.push(error.message || "GitHub release lookup failed.");
       }
 
       try {
         const channelTarget = await this.readLatestReleaseChannel(remoteUrl);
         if (channelTarget?.commit) {
-          return channelTarget;
+          releaseCandidates.push(channelTarget);
+        } else {
+          releaseCheckNotes.push("channel none");
         }
-        releaseCheck = releaseCheck === "skipped" ? "channel none" : `${releaseCheck}; channel none`;
       } catch (error) {
-        const channelError = error.message || "release channel lookup failed.";
-        releaseCheck = releaseCheck && releaseCheck !== "skipped" ? `${releaseCheck}; ${channelError}` : channelError;
+        releaseCheckNotes.push(error.message || "release channel lookup failed.");
       }
 
+      const releaseCheck = releaseCheckNotes.length ? releaseCheckNotes.join("; ") : "skipped";
       try {
         const tagTarget = await this.readLatestGitTagRelease(remoteUrl, releaseCheck);
         if (tagTarget?.commit) {
-          return tagTarget;
+          releaseCandidates.push(tagTarget);
         }
       } catch (error) {
-        const tagError = error.message || "git tag lookup failed.";
-        releaseCheck = releaseCheck ? `${releaseCheck}; ${tagError}` : tagError;
+        releaseCheckNotes.push(error.message || "git tag lookup failed.");
+      }
+
+      const bestReleaseTarget = pickBestReleaseTarget(releaseCandidates);
+      if (bestReleaseTarget) {
+        return bestReleaseTarget;
       }
     }
 
+    const releaseCheck = releaseCheckNotes.length ? releaseCheckNotes.join("; ") : "skipped";
     const branchTarget = await this.readLatestBranchCommit(remoteUrl);
     return {
       ...branchTarget,

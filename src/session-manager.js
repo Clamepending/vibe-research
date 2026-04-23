@@ -26,7 +26,6 @@ import {
 } from "./building-agent-guides.js";
 import { AgentRunTracker } from "./agent-run-tracker.js";
 import { SessionStore } from "./session-store.js";
-import { normalizeBuildingId } from "./client/building-sdk.js";
 import { getLegacyWorkspaceStateDir, getVibeResearchStateDir, getVibeResearchSystemDir } from "./state-paths.js";
 
 const MAX_BUFFER_LENGTH = 2_000_000;
@@ -670,6 +669,8 @@ export function buildSessionEnv(
     VIBE_RESEARCH_BROWSER_FALLBACK_COMMAND: "vr-browser",
     VIBE_RESEARCH_BROWSER_USE_COMMAND: "vr-browser-use",
     VIBE_RESEARCH_OTTOAUTH_COMMAND: "vr-ottoauth",
+    VIBE_RESEARCH_SCAFFOLD_RECIPE_COMMAND: "vr-scaffold-recipe",
+    VIBE_RESEARCH_SCAFFOLD_RECIPE_HELP: "vr-scaffold-recipe export --pretty",
     VIBE_RESEARCH_VIDEOMEMORY_COMMAND: "vr-videomemory",
     VIBE_RESEARCH_BROWSER_DESCRIBE:
       "vr-browser describe 4173 --prompt \"What visual issues stand out in the rendered UI?\"",
@@ -700,17 +701,18 @@ export function buildSessionEnv(
     VIBE_RESEARCH_AGENT_INBOX: path.join(agentDir, "inbox"),
     VIBE_RESEARCH_AGENT_PROCESSED_DIR: path.join(agentDir, "processed"),
     VIBE_RESEARCH_AGENT_CANVAS_HELP:
-      "vr-agent-canvas --image results/chart.png --title \"Latest graph\" --caption \"Best qualitative result so far.\" # or: vr-agent-canvas --url https://example.com/image.png --title \"Reference image\"",
+      "vr-agent-canvas --image results/chart.png --title \"Latest graph\" --caption \"Best qualitative result so far.\"",
     VIBE_RESEARCH_AGENT_CANVAS_COMMAND: "vr-agent-canvas",
     VIBE_RESEARCH_AGENTMAIL_REPLY_COMMAND: "vr-agentmail-reply",
     VIBE_RESEARCH_TELEGRAM_REPLY_COMMAND: "vr-telegram-reply",
-    VIBE_RESEARCH_TWILIO_REPLY_COMMAND: "vr-twilio-reply",
     VIBE_RESEARCH_MAIL_WATCHER: "vr-mailwatch",
     REMOTE_VIBES_APP_ROOT: appRootDir,
     REMOTE_VIBES_BROWSER_COMMAND: "rv-playwright",
     REMOTE_VIBES_BROWSER_FALLBACK_COMMAND: "rv-browser",
     REMOTE_VIBES_BROWSER_USE_COMMAND: "rv-browser-use",
     REMOTE_VIBES_OTTOAUTH_COMMAND: "rv-ottoauth",
+    REMOTE_VIBES_SCAFFOLD_RECIPE_COMMAND: "rv-scaffold-recipe",
+    REMOTE_VIBES_SCAFFOLD_RECIPE_HELP: "rv-scaffold-recipe export --pretty",
     REMOTE_VIBES_VIDEOMEMORY_COMMAND: "rv-videomemory",
     REMOTE_VIBES_PLAYWRIGHT_COMMAND: "rv-playwright",
     REMOTE_VIBES_PLAYWRIGHT_SKILL: path.join(appRootDir, "skills", "playwright", "SKILL.md"),
@@ -732,11 +734,10 @@ export function buildSessionEnv(
     REMOTE_VIBES_AGENT_INBOX: path.join(agentDir, "inbox"),
     REMOTE_VIBES_AGENT_PROCESSED_DIR: path.join(agentDir, "processed"),
     REMOTE_VIBES_AGENT_CANVAS_HELP:
-      "rv-agent-canvas --image results/chart.png --title \"Latest graph\" --caption \"Best qualitative result so far.\" # or: rv-agent-canvas --url https://example.com/image.png --title \"Reference image\"",
+      "rv-agent-canvas --image results/chart.png --title \"Latest graph\" --caption \"Best qualitative result so far.\"",
     REMOTE_VIBES_AGENT_CANVAS_COMMAND: "rv-agent-canvas",
     REMOTE_VIBES_AGENTMAIL_REPLY_COMMAND: "rv-agentmail-reply",
     REMOTE_VIBES_TELEGRAM_REPLY_COMMAND: "rv-telegram-reply",
-    REMOTE_VIBES_TWILIO_REPLY_COMMAND: "rv-twilio-reply",
     REMOTE_VIBES_MAIL_WATCHER: "rv-mailwatch",
     TERM: "xterm-256color",
   };
@@ -769,6 +770,30 @@ function shellQuote(value) {
 
 function buildShellCommand(command, args = []) {
   return [command, ...args].map((part) => shellQuote(part)).join(" ");
+}
+
+function getSiblingNodeRuntime(commandPath) {
+  const normalizedCommandPath = String(commandPath || "").trim();
+  if (!normalizedCommandPath || !normalizedCommandPath.includes("/")) {
+    return null;
+  }
+
+  const candidate = path.join(path.dirname(normalizedCommandPath), "node");
+  const stats = statSync(candidate, { throwIfNoEntry: false });
+  if (!stats || !stats.isFile() || (stats.mode & 0o111) === 0) {
+    return null;
+  }
+
+  return candidate;
+}
+
+function buildOpenClawLaunchCommand(commandPath) {
+  const siblingNodeRuntime = getSiblingNodeRuntime(commandPath);
+  if (siblingNodeRuntime) {
+    return buildShellCommand(siblingNodeRuntime, [commandPath, "tui"]);
+  }
+
+  return buildShellCommand(commandPath, ["tui"]);
 }
 
 function getProviderCredentialEntries(env) {
@@ -1883,10 +1908,6 @@ function normalizeSessionOccupationId(occupationId, fallback = "researcher") {
   return normalized || fallback;
 }
 
-function normalizeSessionSourceBuildingId(sourceBuildingId) {
-  return normalizeBuildingId(sourceBuildingId);
-}
-
 function hasGeminiConversationMessages(messages) {
   return Array.isArray(messages) && messages.some((message) => message?.type === "user" || message?.type === "assistant");
 }
@@ -1969,6 +1990,7 @@ export class SessionManager {
     sessionActivityIdleMs = SESSION_ACTIVITY_IDLE_MS,
     persistentTerminals = true,
     extraSubagentsProvider = null,
+    sessionEnvironmentProvider = null,
     occupationId = "researcher",
     userHomeDir = env?.HOME || os.homedir(),
     setTimeoutFn = setTimeout,
@@ -1988,6 +2010,8 @@ export class SessionManager {
     this.env = env && typeof env === "object" ? { ...env } : { ...process.env };
     this.persistentTerminals = Boolean(persistentTerminals);
     this.extraSubagentsProvider = typeof extraSubagentsProvider === "function" ? extraSubagentsProvider : null;
+    this.sessionEnvironmentProvider =
+      typeof sessionEnvironmentProvider === "function" ? sessionEnvironmentProvider : null;
     this.occupationId = normalizeSessionOccupationId(occupationId);
     this.tmuxAvailable = null;
     this.tmuxEnvironmentArgsAvailable = null;
@@ -2040,6 +2064,11 @@ export class SessionManager {
   setExtraSubagentsProvider(extraSubagentsProvider) {
     this.extraSubagentsProvider =
       typeof extraSubagentsProvider === "function" ? extraSubagentsProvider : null;
+  }
+
+  setSessionEnvironmentProvider(sessionEnvironmentProvider) {
+    this.sessionEnvironmentProvider =
+      typeof sessionEnvironmentProvider === "function" ? sessionEnvironmentProvider : null;
   }
 
   setOccupationId(occupationId) {
@@ -2250,7 +2279,7 @@ export class SessionManager {
   }
 
   buildSessionEnvironment(session, providerId = session.providerId) {
-    return buildSessionEnv(
+    const env = buildSessionEnv(
       session.id,
       providerId,
       this.providers,
@@ -2260,6 +2289,18 @@ export class SessionManager {
       this.wikiRootPath,
       this.systemRootPath,
     );
+
+    if (!this.sessionEnvironmentProvider) {
+      return env;
+    }
+
+    try {
+      const provided = this.sessionEnvironmentProvider(session, providerId, env);
+      return provided && typeof provided === "object" ? { ...env, ...provided } : env;
+    } catch (error) {
+      console.warn("[vibe-research] failed to build session environment extension", error);
+      return env;
+    }
   }
 
   isTmuxAvailable(env) {
@@ -2613,15 +2654,7 @@ export class SessionManager {
     return true;
   }
 
-  createSession({
-    providerId,
-    name,
-    cwd,
-    occupationId,
-    initialPrompt = "",
-    initialPromptDelayMs = null,
-    sourceBuildingId = "",
-  }) {
+  createSession({ providerId, name, cwd, occupationId, initialPrompt = "", initialPromptDelayMs = null }) {
     const provider = this.getProvider(providerId);
 
     if (!provider) {
@@ -2640,7 +2673,6 @@ export class SessionManager {
       providerId: provider.id,
       providerLabel: provider.label,
       occupationId: occupationId || this.occupationId,
-      sourceBuildingId,
       createdAt,
       updatedAt: createdAt,
       restoreOnStartup: true,
@@ -2755,7 +2787,6 @@ export class SessionManager {
       rows: sourceSession.rows,
       providerState: forkProviderState,
       occupationId: sourceSession.occupationId || this.occupationId,
-      sourceBuildingId: sourceSession.sourceBuildingId || "",
       restoreOnStartup: true,
       buffer: [
         `\u001b[1;36m[vibe-research]\u001b[0m forked from: ${sourceSession.name}`,
@@ -3129,7 +3160,6 @@ export class SessionManager {
       providerLabel: session.providerLabel,
       name: session.name,
       cwd: session.cwd,
-      sourceBuildingId: session.sourceBuildingId || "",
       shell: session.shell,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
@@ -3174,14 +3204,12 @@ export class SessionManager {
     providerState = null,
     autoRenameEnabled = false,
     occupationId = this.occupationId,
-    sourceBuildingId = "",
   }) {
     return {
       id,
       providerId,
       providerLabel,
       occupationId: normalizeSessionOccupationId(occupationId, this.occupationId),
-      sourceBuildingId: normalizeSessionSourceBuildingId(sourceBuildingId),
       name,
       shell,
       cwd,
@@ -3471,7 +3499,7 @@ export class SessionManager {
     if (provider.id === "openclaw") {
       this.setPendingProviderCapture(session, null);
       return {
-        commandString: buildShellCommand(provider.launchCommand, ["tui"]),
+        commandString: buildOpenClawLaunchCommand(provider.launchCommand),
         afterLaunch: null,
       };
     }
@@ -3522,14 +3550,6 @@ export class SessionManager {
           }
           await this.beginPendingProviderCapture(session);
         },
-      };
-    }
-
-    if (provider.id === "openclaw") {
-      this.setPendingProviderCapture(session, null);
-      return {
-        commandString: buildShellCommand(provider.launchCommand, ["tui"]),
-        afterLaunch: null,
       };
     }
 
@@ -3900,7 +3920,6 @@ export class SessionManager {
       restoreOnStartup: Boolean(snapshot.restoreOnStartup),
       providerState: snapshot.providerState || null,
       occupationId: snapshot.occupationId || snapshot.promptId || this.occupationId,
-      sourceBuildingId: snapshot.sourceBuildingId || "",
     });
 
     this.sessions.set(session.id, session);

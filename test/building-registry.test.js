@@ -15,10 +15,11 @@ test("building registry exposes core building manifests", () => {
   assert.ok(ids.includes("agent-inbox"));
   assert.ok(ids.includes("ci-repair-shop"));
   assert.ok(ids.includes("toolshed"));
-  assert.ok(ids.includes("agentmall"));
+  assert.equal(ids.includes("agentmall"), false);
   assert.ok(ids.includes("doghouse"));
   assert.ok(ids.includes("tailscale"));
   assert.ok(ids.includes("google-drive"));
+  assert.ok(ids.includes("gmail"));
   assert.ok(ids.includes("ottoauth"));
   assert.ok(ids.includes("telegram"));
   assert.ok(ids.includes("discord"));
@@ -29,6 +30,8 @@ test("building registry exposes core building manifests", () => {
   assert.ok(ids.includes("nano-banana"));
   assert.ok(ids.includes("harbor"));
   assert.ok(ids.includes("wandb"));
+  assert.ok(ids.includes("modal"));
+  assert.ok(ids.includes("runpod"));
   assert.ok(ids.includes("system"));
   assert.ok(ids.includes("occupations"));
   assert.ok(ids.includes("phone-imessage"));
@@ -36,15 +39,28 @@ test("building registry exposes core building manifests", () => {
 
   const googleDrive = BUILDING_CATALOG.find((building) => building.id === "google-drive");
   assert.equal(googleDrive.install.system, true);
-  assert.equal(googleDrive.status, "MCP-ready");
-  assert.match(googleDrive.access.detail, /does not inject Drive tools into local terminal agents/i);
+  assert.equal(googleDrive.status, "ready");
+  assert.equal(googleDrive.source, "google");
+  assert.match(googleDrive.access.detail, /Drive access is enabled/i);
   assert.match(
     googleDrive.onboarding.steps.map((step) => `${step.title} ${step.detail}`).join("\n"),
-    /local CLI\/provider separately/i,
+    /Enable Drive access/i,
   );
+  assert.equal(googleDrive.onboarding.steps[0].completeWhen?.buildingAccessConfirmed, true);
 
   const googleCalendar = BUILDING_CATALOG.find((building) => building.id === "google-calendar");
   assert.equal(googleCalendar.install.system, true);
+  assert.equal(googleCalendar.status, "ready");
+  assert.equal(googleCalendar.source, "google");
+  assert.equal(googleCalendar.onboarding.steps[0].title, "Enable Calendar access");
+  assert.equal(googleCalendar.onboarding.steps[0].completeWhen?.buildingAccessConfirmed, true);
+
+  const gmail = BUILDING_CATALOG.find((building) => building.id === "gmail");
+  assert.equal(gmail.install.system, true);
+  assert.equal(gmail.status, "ready");
+  assert.equal(gmail.source, "google");
+  assert.equal(gmail.onboarding.steps[0].title, "Enable Gmail access");
+  assert.equal(gmail.onboarding.steps[0].completeWhen?.buildingAccessConfirmed, true);
 
   const github = BUILDING_CATALOG.find((building) => building.id === "github");
   assert.equal(github.install.system, true);
@@ -66,30 +82,23 @@ test("building registry exposes core building manifests", () => {
   assert.match(toolshed.description, /BuildingHub/i);
   assert.match(toolshed.access.detail, /Building SDK|BuildingHub/i);
 
-  const agentMall = BUILDING_CATALOG.find((building) => building.id === "agentmall");
-  assert.equal(agentMall.install.system, true);
-  assert.equal(agentMall.install.enabledSetting, "");
-  assert.equal(agentMall.category, "Vibe Research");
-  assert.equal(agentMall.visual.shape, "market");
-  assert.match(agentMall.description, /theme skins/i);
-  assert.match(agentMall.access.detail, /browser-local/i);
+  const buildingHub = BUILDING_CATALOG.find((building) => building.id === "buildinghub");
+  assert.equal(buildingHub.install.system, true);
+  assert.equal(buildingHub.install.enabledSetting, "");
+  assert.equal(buildingHub.category, "Community");
+  assert.equal(buildingHub.ui.mode, "workspace");
+  assert.equal(buildingHub.ui.workspaceView, "plugins");
+  assert.match(buildingHub.description, /skins, themes/i);
+  assert.match(buildingHub.access.detail, /browser-local Agent Town preferences/i);
+  assert.ok(buildingHub.agentGuide.useCases.some((useCase) => /themes/i.test(useCase)));
 
   const agentMail = BUILDING_CATALOG.find((building) => building.id === "agentmail");
   assert.equal(agentMail.visual.logo, "agentmail");
+  assert.ok(agentMail.onboarding.variables.some((variable) => variable.setting === "agentMailApiKey" && variable.setupUrl));
 
   const telegram = BUILDING_CATALOG.find((building) => building.id === "telegram");
   assert.equal(telegram.visual.logo, "telegram");
-
-  const wallet = BUILDING_CATALOG.find((building) => building.id === "wallet");
-  assert.equal(wallet.category, "Commerce");
-  assert.equal(wallet.install.system, true);
-  assert.match(wallet.agentGuide.commands[0].command, /WALLET_API/);
-
-  const twilio = BUILDING_CATALOG.find((building) => building.id === "twilio");
-  assert.equal(twilio.category, "Communication");
-  assert.equal(twilio.install.enabledSetting, "twilioEnabled");
-  assert.equal(twilio.visual.shape, "post");
-  assert.ok(twilio.agentGuide.commands.some((command) => command.command.includes("vr-twilio-reply")));
+  assert.ok(telegram.onboarding.variables.some((variable) => variable.setting === "telegramBotToken" && /botfather/i.test(variable.setupUrl)));
 
   const doghouse = BUILDING_CATALOG.find((building) => building.id === "doghouse");
   assert.equal(doghouse.install.system, true);
@@ -132,6 +141,30 @@ test("building registry exposes core building manifests", () => {
   assert.equal(wandb.visual.shape, "studio");
   assert.match(wandb.access.detail, /WANDB_API_KEY/i);
   assert.ok(wandb.onboarding.steps.some((step) => step.completeWhen?.type === "installed"));
+
+  const modal = BUILDING_CATALOG.find((building) => building.id === "modal");
+  assert.equal(modal.category, "Cloud Compute");
+  assert.equal(modal.visual.shape, "lab");
+  assert.equal(modal.status, "CLI install required");
+  assert.match(modal.access.detail, /MODAL_TOKEN_ID/i);
+  assert.match(modal.access.detail, /cloud costs stay in the agent runtime/i);
+  assert.ok(modal.agentGuide.commands.some((command) => command.command === "modal token info"));
+  assert.ok(modal.agentGuide.commands.some((command) => command.command.includes("modal deploy")));
+  assert.ok(modal.agentGuide.env.some((envVar) => envVar.name === "MODAL_TOKEN_SECRET"));
+  assert.ok(modal.agentGuide.docs.some((doc) => doc.url.includes("modal.com/docs")));
+  assert.ok(modal.onboarding.steps.some((step) => step.completeWhen?.type === "installed"));
+
+  const runPod = BUILDING_CATALOG.find((building) => building.id === "runpod");
+  assert.equal(runPod.category, "Cloud Compute");
+  assert.equal(runPod.visual.shape, "lab");
+  assert.equal(runPod.status, "CLI/API setup required");
+  assert.match(runPod.access.detail, /RunPod API key/i);
+  assert.match(runPod.access.detail, /cloud costs stay outside the browser catalog/i);
+  assert.ok(runPod.agentGuide.commands.some((command) => command.command === "runpodctl serverless list"));
+  assert.ok(runPod.agentGuide.commands.some((command) => command.command.includes("RUNPOD_ENDPOINT_ID")));
+  assert.ok(runPod.agentGuide.env.some((envVar) => envVar.name === "RUNPOD_API_KEY"));
+  assert.ok(runPod.agentGuide.docs.some((doc) => doc.url.includes("docs.runpod.io")));
+  assert.ok(runPod.onboarding.steps.some((step) => step.completeWhen?.type === "installed"));
 
   const harbor = BUILDING_CATALOG.find((building) => building.id === "harbor");
   assert.equal(harbor.category, "Evals");
@@ -218,6 +251,16 @@ test("custom building manifests normalize through the registry sdk", () => {
       variables: [{ label: "API key", setting: "exampleApiKey", required: true }],
       steps: [{ title: "Save variables", detail: "Add the API key." }],
     },
+    ui: {
+      mode: "workspace",
+      entryView: "example-commerce",
+      workspaceView: "plugins",
+      sidebarTab: {
+        enabled: true,
+        label: "Example Ops",
+        meta: "community helper",
+      },
+    },
     visual: {
       logo: "Example Logo!",
       shape: "Market",
@@ -241,7 +284,14 @@ test("custom building manifests normalize through the registry sdk", () => {
   assert.equal(building.install.enabledSetting, "exampleCommerceEnabled");
   assert.equal(building.install.system, false);
   assert.equal(building.install.storedFallback, false);
-  assert.equal(building.ui.mode, "panel");
+  assert.equal(building.ui.mode, "workspace");
+  assert.equal(building.ui.entryView, "example-commerce");
+  assert.equal(building.ui.workspaceView, "plugins");
+  assert.deepEqual(building.ui.sidebarTab, {
+    enabled: true,
+    label: "Example Ops",
+    meta: "community helper",
+  });
   assert.equal(building.visual.logo, "example-logo");
   assert.equal(building.visual.shape, "market");
   assert.deepEqual(building.agentGuide.commands[0], {

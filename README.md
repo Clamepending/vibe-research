@@ -22,9 +22,12 @@ Build it locally with:
 ```bash
 npm run desktop:install
 npm run desktop:dist
+npm --prefix desktop run dist:mas
 ```
 
 macOS artifacts are written to `desktop/dist/`. The GitHub Actions `Desktop` workflow builds `.dmg` and `.zip` artifacts plus update metadata. Release tags require Developer ID signing and Apple notarization secrets, then publish the files through GitHub Releases so installed desktop apps can auto-update.
+
+Mac App Store packaging uses the `mas` target and needs App Store signing assets (`MAS_PROVISIONING_PROFILE` plus Mac App Store signing identities in `CSC_LINK`).
 
 ## Official Sources
 
@@ -73,6 +76,8 @@ By default, the installer uses the latest GitHub Release when one exists, then f
 The install command now launches Vibe Research as a background server, so it keeps running even after the SSH session or terminal closes. The app checkout lives under `~/.vibe-research/app`; onboarding chooses the workspace where the Library and agent-created files live; settings, logs, session history, and the managed pid live under `~/.vibe-research/`. Coding-agent terminals use `tmux` when available so Vibe Research restarts can reattach to live agent work instead of merely replaying a transcript.
 
 The installer adds a `vibe-research` terminal command, preferring a bin directory already on `PATH` and falling back to `~/.local/bin`. Running `vibe-research` starts the background server when needed and opens the local browser UI; use `vibe-research --no-browser` on headless machines. If your current shell has not picked up the install location, open a new terminal or add the printed directory to `PATH`.
+
+To remove the terminal command, background service, and app checkout, run `vibe-research uninstall`. It keeps local Vibe Research state by default; use `vibe-research uninstall --purge` only when you also want to remove local settings, logs, and session state.
 
 New release installs start workspace picking from `~/vibe-projects` when the app checkout is under `~/.vibe-research/app`. New agents start in the configured new-agent folder without asking for a folder each time; Settings can change both the Library folder and the new-agent folder. By default, Vibe Research keeps local git backups of the Library every 10 minutes. To back the Library up off-machine, create a private Git repo, paste its SSH or credential-helper remote URL into the sidebar's private remote backup field, enable remote push, and Vibe Research will push Library backup commits there on each backup run.
 

@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { cp, lstat, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import http from "node:http";
@@ -100,8 +100,19 @@ function installTestEnv(overrides = {}) {
     VIBE_RESEARCH_INSTALL_TAILSCALE: "0",
     VIBE_RESEARCH_INSTALL_CLAUDE_CODE: "0",
     VIBE_RESEARCH_INSTALL_SERVICE: "0",
+    VIBE_RESEARCH_UNINSTALL_SERVICE: "0",
     ...overrides,
   };
+}
+
+async function createUninstallableApp(appDir) {
+  await mkdir(path.join(appDir, "bin"), { recursive: true });
+  await mkdir(path.join(appDir, "src"), { recursive: true });
+  await writeFile(path.join(appDir, "package.json"), '{"name":"vibe-research"}\n');
+  await writeFile(path.join(appDir, "start.sh"), "#!/usr/bin/env bash\nexit 0\n");
+  await writeFile(path.join(appDir, "src", "server.js"), "");
+  await cp(path.join(rootDir, "bin", "vibe-research"), path.join(appDir, "bin", "vibe-research"));
+  await execFile("chmod", ["+x", path.join(appDir, "start.sh"), path.join(appDir, "bin", "vibe-research")]);
 }
 
 test("package lock uses prebuilt node-pty packages on Linux", async () => {
@@ -957,6 +968,124 @@ test("install.sh installs a vibe-research launcher command", async () => {
   }
 });
 
+test("vibe-research uninstall removes the launcher and app checkout while keeping state", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-uninstall-"));
+  const appDir = path.join(tempRoot, "app");
+  const stateDir = path.join(tempRoot, "state");
+  const userBinDir = path.join(tempRoot, "bin");
+  const launcherPath = path.join(userBinDir, "vibe-research");
+
+  try {
+    await createUninstallableApp(appDir);
+    await mkdir(stateDir, { recursive: true });
+    await mkdir(userBinDir, { recursive: true });
+    await writeFile(path.join(stateDir, "settings.json"), "{}\n");
+    await symlink(path.join(appDir, "bin", "vibe-research"), launcherPath);
+
+    const result = await execFile("bash", [path.join(rootDir, "bin", "vibe-research"), "uninstall", "--yes"], {
+      env: installTestEnv({
+        VIBE_RESEARCH_HOME: appDir,
+        VIBE_RESEARCH_STATE_DIR: stateDir,
+        VIBE_RESEARCH_BIN_DIR: userBinDir,
+        PATH: `${userBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      }),
+    });
+
+    assert.match(result.stdout, /Removing terminal command:/);
+    assert.match(result.stdout, /Removing app checkout:/);
+    assert.match(result.stdout, /Keeping local state:/);
+    assert.match(result.stdout, /Uninstall complete/);
+    await assert.rejects(() => lstat(launcherPath));
+    await assert.rejects(() => stat(appDir));
+    assert.equal(await readFile(path.join(stateDir, "settings.json"), "utf8"), "{}\n");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("vibe-research uninstall --purge removes local state", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-uninstall-purge-"));
+  const appDir = path.join(tempRoot, "state", "app");
+  const stateDir = path.join(tempRoot, "state");
+
+  try {
+    await createUninstallableApp(appDir);
+    await writeFile(path.join(stateDir, "settings.json"), "{}\n");
+
+    const result = await execFile("bash", [path.join(rootDir, "bin", "vibe-research"), "uninstall", "--yes", "--purge"], {
+      env: installTestEnv({
+        VIBE_RESEARCH_HOME: appDir,
+        VIBE_RESEARCH_STATE_DIR: stateDir,
+      }),
+    });
+
+    assert.match(result.stdout, /Removing app checkout:/);
+    assert.match(result.stdout, /Removing local state:/);
+    await assert.rejects(() => stat(stateDir));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("vibe-research uninstall removes an installed systemd unit", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-uninstall-systemd-"));
+  const appDir = path.join(tempRoot, "app");
+  const stateDir = path.join(tempRoot, "state");
+  const fakeBin = path.join(tempRoot, "bin");
+  const serviceDir = path.join(tempRoot, "systemd");
+  const systemctlLog = path.join(tempRoot, "systemctl.log");
+  const servicePath = path.join(serviceDir, "vibe-research-test.service");
+
+  try {
+    await createUninstallableApp(appDir);
+    await mkdir(stateDir, { recursive: true });
+    await mkdir(fakeBin, { recursive: true });
+    await mkdir(serviceDir, { recursive: true });
+    await writeFile(servicePath, "[Unit]\nDescription=Vibe Research\n");
+    await writeFile(path.join(fakeBin, "uname"), "#!/usr/bin/env sh\nprintf 'Linux\\n'\n");
+    await writeFile(
+      path.join(fakeBin, "systemctl"),
+      `#!/usr/bin/env sh
+printf '%s\\n' "$*" >> ${JSON.stringify(systemctlLog)}
+if [ "\${1:-}" = "cat" ]; then
+  if [ -f ${JSON.stringify(servicePath)} ]; then
+    cat ${JSON.stringify(servicePath)}
+    exit 0
+  fi
+  exit 1
+fi
+exit 0
+`,
+    );
+    await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await execFile("chmod", ["+x", path.join(fakeBin, "uname"), path.join(fakeBin, "systemctl"), path.join(fakeBin, "sudo")]);
+
+    const result = await execFile("bash", [path.join(rootDir, "bin", "vibe-research"), "uninstall", "--yes"], {
+      env: installTestEnv({
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+        VIBE_RESEARCH_HOME: appDir,
+        VIBE_RESEARCH_STATE_DIR: stateDir,
+        VIBE_RESEARCH_SYSTEMD_SERVICE_DIR: serviceDir,
+        VIBE_RESEARCH_SERVICE_NAME: "vibe-research-test",
+        VIBE_RESEARCH_UNINSTALL_SERVICE: "1",
+      }),
+    });
+
+    assert.match(result.stdout, /Disabling systemd service vibe-research-test\.service/);
+    assert.match(result.stdout, /Removing systemd unit:/);
+    await assert.rejects(() => stat(servicePath));
+    assert.deepEqual((await readFile(systemctlLog, "utf8")).trim().split("\n"), [
+      "cat vibe-research-test.service",
+      "stop vibe-research-test.service",
+      "disable vibe-research-test.service",
+      "daemon-reload",
+      "reset-failed vibe-research-test.service",
+    ]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("vibe-research command starts the app and opens the browser URL", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-command-"));
   const appDir = path.join(tempRoot, "app");
@@ -1185,8 +1314,11 @@ exit 0
       "is-active --quiet tailscaled",
       "enable --now tailscaled",
     ]);
-    assert.deepEqual((await readFile(tailscaleLog, "utf8")).trim().split("\n"), [
-      "status --json",
+    const tailscaleCommands = (await readFile(tailscaleLog, "utf8")).trim().split("\n");
+    const daemonPolls = tailscaleCommands.slice(0, -4);
+    assert.ok(daemonPolls.length >= 1);
+    assert.ok(daemonPolls.every((command) => command === "status --json"));
+    assert.deepEqual(tailscaleCommands.slice(-4), [
       "ip -4",
       "up",
       "ip -4",

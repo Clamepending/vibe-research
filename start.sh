@@ -937,25 +937,6 @@ wait_for_server_ready() {
   return 1
 }
 
-wait_for_startup_log() {
-  local pid="$1"
-  local attempt
-
-  for attempt in $(seq 1 50); do
-    if [ -f "$LOG_FILE" ] && grep -q "OPEN VIBE RESEARCH" "$LOG_FILE"; then
-      return 0
-    fi
-
-    if ! is_pid_running "$pid"; then
-      return 1
-    fi
-
-    sleep 0.1
-  done
-
-  return 1
-}
-
 start_server_in_background() {
   ensure_runtime_dir
   : >"$LOG_FILE"
@@ -1059,7 +1040,6 @@ if ! wait_for_server_ready "$server_pid"; then
   fail "Vibe Research failed to start within ${READY_TIMEOUT_SECONDS}s."
 fi
 
-wait_for_startup_log "$server_pid" || true
 track_vibe_research_settings
 log "Background server pid: $server_pid"
 log "Server is detached and will keep running after this terminal closes."

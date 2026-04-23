@@ -141,7 +141,6 @@ test("AgentMail WebSocket listener subscribes and queues incoming email into an 
   assert.equal(createdSessions.length, 1);
   assert.equal(createdSessions[0].providerId, "claude");
   assert.equal(createdSessions[0].cwd, "/tmp/wiki");
-  assert.equal(createdSessions[0].sourceBuildingId, "agentmail");
   assert.match(createdSessions[0].name, /^email: Can you help/);
   assert.equal(writes.length, 2);
   assert.equal(writes[0].sessionId, "session-1");
@@ -379,8 +378,7 @@ test("AgentMail polling backfills unread inbox messages and persists processed i
     await flushAgentMailBackgroundWork();
     assert.equal(firstPoll.length, 1);
     assert.equal(createdSessions.length, 1);
-    assert.equal(createdSessions[0].cwd, path.join(systemRoot, "vibe-research", "buildings", "agentmail"));
-    assert.equal(createdSessions[0].sourceBuildingId, "agentmail");
+    assert.equal(createdSessions[0].cwd, systemRoot);
     assert.equal(createdSessions[0].name, "email: Missed while offline");
     assert.equal(writes.length, 2);
     assert.match(writes[0].input, /simple greeting or test email/);

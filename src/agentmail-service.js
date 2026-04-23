@@ -3,9 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import WebSocket from "ws";
 import { getVibeResearchSystemDir } from "./state-paths.js";
-import { getBuildingAgentWorkspacePath } from "./workspace-layout.js";
 
-const AGENTMAIL_BUILDING_ID = "agentmail";
 const AGENTMAIL_API_BASE_URL = "https://api.agentmail.to";
 const AGENTMAIL_WS_URL = "wss://ws.agentmail.to/v0";
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
@@ -738,13 +736,12 @@ export class AgentMailService {
 
     const subject = compactWhitespace(message.subject || "new email");
     const fallbackSessionName = `email: ${subject || "new message"}`.slice(0, 64);
-    const buildingSessionCwd = this.getBuildingSessionCwd();
-    const sessionCwd = buildingSessionCwd || this.systemRootPath || this.settings.wikiPath || this.cwd;
+    const sessionCwd = this.systemRootPath || this.settings.wikiPath || this.cwd;
     let remoteClaim = null;
 
     try {
-      if (buildingSessionCwd || this.systemRootPath) {
-        await mkdir(sessionCwd, { recursive: true });
+      if (this.systemRootPath) {
+        await mkdir(this.systemRootPath, { recursive: true });
       }
 
       remoteClaim = await this.claimRemoteMessage({
@@ -853,19 +850,9 @@ export class AgentMailService {
       providerId: config.providerId,
       name: canReuseDedicatedSession ? sessionName : fallbackName,
       cwd,
-      sourceBuildingId: AGENTMAIL_BUILDING_ID,
     });
     this.status.lastSessionId = session.id;
     return session;
-  }
-
-  getBuildingSessionCwd() {
-    return getBuildingAgentWorkspacePath({
-      buildingId: AGENTMAIL_BUILDING_ID,
-      cwd: this.cwd,
-      settings: this.settings,
-      systemRootPath: this.systemRootPath,
-    });
   }
 
   wait(ms) {

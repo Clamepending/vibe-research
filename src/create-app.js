@@ -18,17 +18,27 @@ import {
   pickPreferredUrl,
 } from "./access-url.js";
 import { AgentMailService } from "./agentmail-service.js";
+import { AgentCallbackService } from "./agent-callback-service.js";
 import { AgentPromptStore } from "./agent-prompt-store.js";
 import { AgentRunStore } from "./agent-run-store.js";
 import { AgentTownStore } from "./agent-town-store.js";
+import { publishTownShareToBuildingHub } from "./buildinghub-layout-publisher.js";
+import { publishScaffoldRecipeToBuildingHub } from "./buildinghub-scaffold-publisher.js";
 import { writeBuildingAgentGuides } from "./building-agent-guides.js";
 import { BuildingHubService } from "./buildinghub-service.js";
 import { BrowserUseService } from "./browser-use-service.js";
 import { BUILDING_CATALOG } from "./client/building-registry.js";
+import { normalizeBuildingId } from "./client/building-sdk.js";
 import { createFolderEntry, listFolderEntries } from "./folder-browser.js";
 import { OttoAuthService } from "./ottoauth-service.js";
 import { PortAliasStore } from "./port-alias-store.js";
 import { listListeningPorts } from "./ports.js";
+import {
+  buildScaffoldRecipe,
+  createScaffoldRecipeApplyPlan,
+  previewScaffoldRecipe,
+  ScaffoldRecipeService,
+} from "./scaffold-recipe-service.js";
 import { buildAgentCredentialEnv, SettingsStore } from "./settings-store.js";
 import { SessionManager } from "./session-manager.js";
 import { SleepPreventionService } from "./sleep-prevention.js";
@@ -52,6 +62,7 @@ import {
 } from "./workspace-files.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const appRootDir = path.resolve(__dirname, "..");
 const publicDir = path.resolve(__dirname, "..", "public");
 const masterplanIndexPath = path.join(publicDir, "masterplan", "index.html");
 const execFileAsync = promisify(execFile);
@@ -71,6 +82,29 @@ const PROVIDER_INSTALL_MAX_BUFFER = Number(
 );
 const WIKI_CLONE_RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const WIKI_CLONE_RATE_LIMIT_MAX = 5;
+const GOOGLE_OAUTH_RESULT_MESSAGE_TYPE = "vibe-research-google-oauth-result";
+const GOOGLE_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const GOOGLE_OAUTH_FLOWS = Object.freeze({
+  "google-drive": Object.freeze({
+    scopes: Object.freeze([
+      "https://www.googleapis.com/auth/drive.readonly",
+    ]),
+    prompt: "consent",
+  }),
+  "google-calendar": Object.freeze({
+    scopes: Object.freeze([
+      "https://www.googleapis.com/auth/calendar.readonly",
+      "https://www.googleapis.com/auth/calendar.freebusy",
+    ]),
+    prompt: "consent",
+  }),
+  gmail: Object.freeze({
+    scopes: Object.freeze([
+      "https://www.googleapis.com/auth/gmail.readonly",
+    ]),
+    prompt: "consent",
+  }),
+});
 const LIBRARY_SYNC_SETTING_KEYS = new Set([
   "wikiGitBackupEnabled",
   "wikiGitRemoteBranch",
@@ -93,6 +127,7 @@ function isMasterplanHost(request) {
 }
 
 const ATTACHMENTS_SUBDIR = "attachments";
+const TOWN_SHARES_SUBDIR = "agent-town/town-shares";
 const MAX_ATTACHMENT_IMAGE_BYTES = 15 * 1024 * 1024;
 const ATTACHMENT_IMAGE_EXTENSIONS_BY_MIME_TYPE = new Map([
   ["image/apng", ".apng"],
@@ -248,6 +283,81 @@ async function requestStripe({ body, fetchImpl, secretKey, url }) {
   return payload;
 }
 
+function getRequestOrigin(request) {
+  const forwardedProto = String(request.get("x-forwarded-proto") || "").split(",")[0].trim();
+  const forwardedHost = String(request.get("x-forwarded-host") || "").split(",")[0].trim();
+  const protocol = forwardedProto || request.protocol || "http";
+  const host = forwardedHost || String(request.get("host") || "").trim();
+  return host ? `${protocol}://${host}` : "";
+}
+
+function renderGoogleOAuthPopupPage({
+  status = "error",
+  buildingId = "",
+  message = "",
+} = {}) {
+  const normalizedBuildingId = normalizeBuildingId(buildingId);
+  const normalizedStatus = status === "success" ? "success" : "error";
+  const defaultMessage = normalizedStatus === "success"
+    ? "Google access enabled. You can close this window."
+    : "Google access was not completed.";
+  const payload = {
+    type: GOOGLE_OAUTH_RESULT_MESSAGE_TYPE,
+    status: normalizedStatus,
+    buildingId: normalizedBuildingId,
+    message: String(message || defaultMessage).trim() || defaultMessage,
+  };
+  const title = normalizedStatus === "success" ? "Google Access Enabled" : "Google Access Not Completed";
+  const bodyMessage = escapeHtml(payload.message);
+  const statusClass = normalizedStatus === "success" ? "status-success" : "status-error";
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    :root { font-family: "SF Pro Text", "Segoe UI", sans-serif; color-scheme: light; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f8fc; color: #1f2937; }
+    main { width: min(460px, calc(100% - 32px)); border: 1px solid #dce3ef; border-radius: 14px; padding: 20px; background: #ffffff; }
+    h1 { margin: 0 0 10px; font-size: 1.05rem; }
+    p { margin: 0; font-size: 0.95rem; line-height: 1.4; color: #374151; }
+    .status-success { color: #0f5132; }
+    .status-error { color: #991b1b; }
+    .actions { margin-top: 14px; display: flex; gap: 10px; }
+    a { color: #1d4ed8; text-decoration: none; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>${escapeHtml(title)}</h1>
+    <p class="${statusClass}" data-status>${bodyMessage}</p>
+    <div class="actions">
+      <a href="/">Return to Vibe Research</a>
+    </div>
+  </main>
+  <script>
+    (() => {
+      const payload = ${JSON.stringify(payload)};
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage(payload, window.location.origin);
+        }
+      } catch {
+        // Ignore cross-window access failures in fallback browser modes.
+      }
+      if (payload.status === "success") {
+        window.setTimeout(() => {
+          window.close();
+        }, 150);
+      }
+    })();
+  </script>
+</body>
+</html>`;
+}
+
 function normalizeAttachmentSource(value) {
   return value === "drop" ? "drop" : "paste";
 }
@@ -375,6 +485,211 @@ async function resolveAgentCanvasImage({ canvas, session, fallbackCwd }) {
   }
 
   return { targetPath, mimeType };
+}
+
+function normalizeTownShareId(value) {
+  const id = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96);
+  return id || `town-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}
+
+function withTownShareUrls(townShare, request) {
+  if (!townShare) {
+    return null;
+  }
+
+  const origin = getRequestOrigin(request);
+  const encodedId = encodeURIComponent(townShare.id);
+  const sharePath = `/buildinghub/towns/${encodedId}`;
+  const imagePath = `/api/agent-town/town-shares/${encodedId}/image`;
+  const buildingHubUrl = String(
+    townShare.buildingHub?.layoutUrl ||
+      townShare.buildingHub?.homepageUrl ||
+      townShare.buildingHub?.repositoryUrl ||
+      "",
+  ).trim();
+  return {
+    ...townShare,
+    sharePath,
+    buildingHubUrl,
+    shareUrl: buildingHubUrl || (origin ? `${origin}${sharePath}` : sharePath),
+    imageUrl: townShare.imagePath ? `${origin}${imagePath}` : "",
+  };
+}
+
+async function saveTownShareImage({ stateDir, shareId, dataUrl, mimeType }) {
+  const { buffer, extension, mimeType: decodedMimeType } = decodeAttachmentDataUrl(dataUrl, mimeType);
+  const updatedAt = new Date().toISOString();
+  const directoryPath = path.join(stateDir, TOWN_SHARES_SUBDIR, shareId);
+  const fileName = `snapshot${extension}`;
+  const absolutePath = path.join(directoryPath, fileName);
+
+  await mkdir(directoryPath, { recursive: true });
+  await writeFile(absolutePath, buffer);
+
+  return {
+    imagePath: path.relative(stateDir, absolutePath),
+    imageMimeType: decodedMimeType,
+    imageByteLength: buffer.byteLength,
+    imageUpdatedAt: updatedAt,
+  };
+}
+
+async function resolveTownShareImage({ townShare, stateDir }) {
+  const rawImagePath = String(townShare?.imagePath || "").trim();
+  if (!rawImagePath) {
+    throw buildHttpError("Agent Town share image path is not set.", 404);
+  }
+
+  const targetPath = path.resolve(stateDir, rawImagePath);
+  const relativePath = path.relative(stateDir, targetPath);
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    throw buildHttpError("Agent Town share image path is outside the state directory.", 400);
+  }
+
+  const storedMimeType = ATTACHMENT_IMAGE_EXTENSIONS_BY_MIME_TYPE.has(townShare.imageMimeType)
+    ? townShare.imageMimeType
+    : "";
+  const mimeType = storedMimeType || getAgentCanvasImageMimeType(targetPath);
+  if (!mimeType) {
+    throw buildHttpError("Agent Town share image type is not supported.", 415);
+  }
+
+  const stats = await stat(targetPath).catch((error) => {
+    if (error?.code === "ENOENT") {
+      throw buildHttpError("Agent Town share image not found.", 404);
+    }
+
+    throw error;
+  });
+
+  if (!stats.isFile()) {
+    throw buildHttpError("Agent Town share image path is not a file.", 400);
+  }
+
+  return { targetPath, mimeType };
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderTownSharePage(townShare, request) {
+  const share = withTownShareUrls(townShare, request);
+  const title = `${share.name} · BuildingHub`;
+  const description = share.description || "A shared Agent Town base layout.";
+  const imageMeta = share.imageUrl
+    ? `
+    <meta property="og:image" content="${escapeHtml(share.imageUrl)}" />
+    <meta name="twitter:image" content="${escapeHtml(share.imageUrl)}" />`
+    : "";
+  const image = share.imageUrl
+    ? `<img class="town-image" src="${escapeHtml(share.imageUrl)}" alt="${escapeHtml(`${share.name} snapshot`)}" />`
+    : `<div class="town-image town-image-empty">No snapshot yet</div>`;
+  const summary = share.layoutSummary || {};
+  const theme = summary.themeId || share.layout?.themeId || "default";
+  const cosmetics = Number(summary.cosmeticCount) || 0;
+  const functional = Number(summary.functionalCount) || 0;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(title)}</title>
+  <meta name="description" content="${escapeHtml(description)}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="${escapeHtml(title)}" />
+  <meta property="og:description" content="${escapeHtml(description)}" />${imageMeta}
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="${escapeHtml(title)}" />
+  <meta name="twitter:description" content="${escapeHtml(description)}" />
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; min-height: 100vh; background: #111316; color: #f4f0e8; }
+    main { display: grid; gap: 18px; width: min(960px, calc(100% - 32px)); margin: 0 auto; padding: 32px 0 40px; }
+    .town-image { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; background: #1d2326; }
+    .town-image-empty { display: grid; place-items: center; color: #a6aaa3; }
+    h1 { margin: 0; font-size: clamp(2rem, 6vw, 4rem); line-height: .95; letter-spacing: 0; }
+    p { margin: 0; max-width: 68ch; color: #c8ccc5; font-size: 1rem; line-height: 1.55; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; color: #d8ddcd; font-size: .82rem; }
+    .meta span { padding: 7px 9px; border: 1px solid rgba(255,255,255,.12); border-radius: 999px; background: rgba(255,255,255,.05); }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    button, a.button { appearance: none; display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 0 14px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; background: #d7f36b; color: #12140f; font-weight: 750; text-decoration: none; cursor: pointer; }
+    a.button.secondary { background: transparent; color: #f4f0e8; }
+    .status { min-height: 20px; color: #c8ccc5; font-size: .86rem; }
+  </style>
+</head>
+<body>
+  <main>
+    ${image}
+    <div class="meta">
+      <span>${escapeHtml(`${cosmetics} cosmetic`)}</span>
+      <span>${escapeHtml(`${functional} functional`)}</span>
+      <span>${escapeHtml(`theme ${theme}`)}</span>
+    </div>
+    <h1>${escapeHtml(share.name)}</h1>
+    <p>${escapeHtml(description)}</p>
+    <div class="actions">
+      <button type="button" data-import-town>Import town</button>
+      <a class="button secondary" href="/">Open Vibe Research</a>
+    </div>
+    <div class="status" data-import-status></div>
+  </main>
+  <script>
+    const shareId = ${JSON.stringify(share.id)};
+    const button = document.querySelector("[data-import-town]");
+    const status = document.querySelector("[data-import-status]");
+    button?.addEventListener("click", async () => {
+      button.disabled = true;
+      status.textContent = "Importing town...";
+      try {
+        const response = await fetch("/api/agent-town/town-shares/" + encodeURIComponent(shareId) + "/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Vibe-Research-API": "1" },
+          body: "{}"
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.error || "Import failed.");
+        }
+        const layout = payload.townShare?.layout || payload.agentTown?.layout || null;
+        if (layout && typeof layout === "object") {
+          const localLayout = {
+            places: layout.places || {},
+            roads: layout.roads || {},
+            decorations: Array.isArray(layout.decorations) ? layout.decorations : [],
+            functional: layout.functional || {},
+            pendingFunctional: Array.isArray(layout.pendingFunctional) ? layout.pendingFunctional : []
+          };
+          window.localStorage.setItem("vibe-research-agent-town-layout-v1", JSON.stringify(localLayout));
+          if (layout.themeId) {
+            window.localStorage.setItem("vibe-research-agent-town-theme-v1", String(layout.themeId));
+          }
+          if (layout.dogName && layout.dogName !== "Dog") {
+            window.localStorage.setItem("vibe-research-agent-town-dog-name-v1", String(layout.dogName));
+          } else {
+            window.localStorage.removeItem("vibe-research-agent-town-dog-name-v1");
+          }
+        }
+        window.location.href = "/?view=swarm";
+      } catch (error) {
+        status.textContent = error.message || "Import failed.";
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>`;
 }
 
 function normalizePort(value) {
@@ -733,6 +1048,7 @@ export async function createVibeResearchApp({
   onTerminate = null,
   agentMailServiceFactory = null,
   buildingHubServiceFactory = null,
+  scaffoldRecipeServiceFactory = null,
   browserUseServiceFactory = null,
   ottoAuthServiceFactory = null,
   telegramServiceFactory = null,
@@ -764,6 +1080,7 @@ export async function createVibeResearchApp({
   const systemMetricsHistoryStore = new SystemMetricsHistoryStore({ stateDir });
   const portAliasStore = new PortAliasStore({ stateDir });
   await settingsStore.initialize();
+  const googleOAuthStates = new Map();
   let sessionDefaultCwd = await ensureDefaultSessionCwd(settingsStore.settings.agentSpawnPath || defaultSessionCwd, cwd);
   await mkdir(systemRootPath, { recursive: true });
   await systemMetricsHistoryStore.initialize();
@@ -777,6 +1094,10 @@ export async function createVibeResearchApp({
       : new BuildingHubService({
           settings: settingsStore.settings,
         });
+  const scaffoldRecipeService =
+    typeof scaffoldRecipeServiceFactory === "function"
+      ? scaffoldRecipeServiceFactory(settingsStore.settings, { cwd, stateDir, systemRootPath })
+      : new ScaffoldRecipeService({ stateDir });
   const browserUseService =
     typeof browserUseServiceFactory === "function"
       ? browserUseServiceFactory(settingsStore.settings, { cwd, stateDir, systemRootPath })
@@ -873,8 +1194,23 @@ export async function createVibeResearchApp({
           sessionManager,
           settings: settingsStore.settings,
           stateDir,
-          systemRootPath,
         });
+  const agentCallbackService = new AgentCallbackService({
+    serverBaseUrl: getHelperBaseUrl(host, port),
+    sessionManager,
+    stateDir,
+  });
+  sessionManager.setSessionEnvironmentProvider((session) => {
+    const callback = agentCallbackService.getCallback(session.id);
+    return {
+      REMOTE_VIBES_AGENT_CALLBACK_HELP:
+        "Pass this URL to buildings or services that need to notify this exact agent later. POST JSON with buildingId, serviceId, event, message, and payload.",
+      REMOTE_VIBES_AGENT_CALLBACK_URL: callback.url,
+      VIBE_RESEARCH_AGENT_CALLBACK_HELP:
+        "Pass this URL to buildings or services that need to notify this exact agent later. POST JSON with buildingId, serviceId, event, message, and payload.",
+      VIBE_RESEARCH_AGENT_CALLBACK_URL: callback.url,
+    };
+  });
   await agentRunStore.initialize();
   await agentTownStore.initialize();
   await portAliasStore.initialize();
@@ -883,6 +1219,8 @@ export async function createVibeResearchApp({
   await ottoAuthService.initialize();
   await twilioService.initialize?.();
   await videoMemoryService.initialize();
+  await agentCallbackService.initialize();
+  await scaffoldRecipeService.initialize();
   await sessionManager.initialize();
   await agentPromptStore.initialize();
   sessionManager.setOccupationId(agentPromptStore.selectedPromptId);
@@ -1004,6 +1342,61 @@ export async function createVibeResearchApp({
     });
   }
 
+  async function getAppMetadata() {
+    let version = "";
+    try {
+      const packageJson = JSON.parse(await readFile(path.join(appRootDir, "package.json"), "utf8"));
+      version = String(packageJson.version || "").trim();
+    } catch {
+      version = "";
+    }
+
+    let commit = "";
+    let branch = "";
+    try {
+      const { stdout = "" } = await execFileAsync("git", ["-C", appRootDir, "rev-parse", "HEAD"]);
+      commit = stdout.trim();
+    } catch {
+      commit = "";
+    }
+    try {
+      const { stdout = "" } = await execFileAsync("git", ["-C", appRootDir, "branch", "--show-current"]);
+      branch = stdout.trim();
+    } catch {
+      branch = "";
+    }
+
+    return { version, commit, branch };
+  }
+
+  async function buildCurrentScaffoldRecipe({ name = "Current Vibe Research scaffold", tags = [] } = {}) {
+    await buildingHubService.refresh();
+    return buildScaffoldRecipe({
+      agentPrompt: await agentPromptStore.getState(),
+      app: await getAppMetadata(),
+      buildingHub: {
+        buildings: buildingHubService.listBuildings(),
+        layouts: buildingHubService.listLayouts(),
+        recipes: buildingHubService.listRecipes ? buildingHubService.listRecipes() : [],
+        status: buildingHubService.getStatus(),
+      },
+      coreBuildings: BUILDING_CATALOG,
+      defaultProviderId,
+      layout: agentTownStore.getState().layout,
+      name,
+      providers,
+      settings: settingsStore.settings,
+      tags,
+    });
+  }
+
+  function getAvailableBuildingIds() {
+    return [
+      ...BUILDING_CATALOG.map((building) => building.id),
+      ...buildingHubService.listBuildings().map((building) => building.id),
+    ];
+  }
+
   function buildSessionManagerEnvironment() {
     const resolvedPort = exposedPort || port;
     return {
@@ -1011,12 +1404,16 @@ export async function createVibeResearchApp({
       REMOTE_VIBES_PORT: String(resolvedPort),
       REMOTE_VIBES_SERVER_URL: helperBaseUrl || "",
       REMOTE_VIBES_URL: preferredUrl || helperBaseUrl || "",
+      REMOTE_VIBES_AGENT_CALLBACK_BASE_URL: agentCallbackService.getCallbackBaseUrl(),
+      REMOTE_VIBES_SCAFFOLD_RECIPES_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/scaffold-recipes`,
+      REMOTE_VIBES_WALLET_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/wallet`,
       VIBE_RESEARCH_PORT: String(resolvedPort),
       VIBE_RESEARCH_SERVER_URL: helperBaseUrl || "",
       VIBE_RESEARCH_URL: preferredUrl || helperBaseUrl || "",
+      VIBE_RESEARCH_AGENT_CALLBACK_BASE_URL: agentCallbackService.getCallbackBaseUrl(),
       VIBE_RESEARCH_AGENT_TOWN_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/agent-town`,
+      VIBE_RESEARCH_SCAFFOLD_RECIPES_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/scaffold-recipes`,
       VIBE_RESEARCH_WALLET_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/wallet`,
-      REMOTE_VIBES_WALLET_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/wallet`,
     };
   }
 
@@ -1071,6 +1468,14 @@ export async function createVibeResearchApp({
     await syncBuildingAgentGuides();
     if (backupReason) {
       void wikiBackupService.runBackup({ reason: backupReason });
+    }
+  }
+
+  function pruneGoogleOAuthStates(now = Date.now()) {
+    for (const [stateToken, entry] of googleOAuthStates.entries()) {
+      if (!entry || now - Number(entry.createdAt || 0) > GOOGLE_OAUTH_STATE_TTL_MS) {
+        googleOAuthStates.delete(stateToken);
+      }
     }
   }
 
@@ -1333,7 +1738,6 @@ export async function createVibeResearchApp({
   });
 
   app.use(express.json({ limit: JSON_BODY_LIMIT }));
-  app.use(express.urlencoded({ extended: false, limit: JSON_BODY_LIMIT }));
 
   app.use((request, response, next) => {
     if (request.path.startsWith("/api/") && request.get("X-Vibe-Research-API") === "1") {
@@ -1407,6 +1811,8 @@ export async function createVibeResearchApp({
       agentTown: agentTownStore.getState(),
       buildingHub: {
         buildings: buildingHubService.listBuildings(),
+        layouts: buildingHubService.listLayouts(),
+        recipes: buildingHubService.listRecipes ? buildingHubService.listRecipes() : [],
         status: buildingHubService.getStatus(),
       },
       cwd,
@@ -1428,10 +1834,205 @@ export async function createVibeResearchApp({
       await syncBuildingAgentGuides();
       response.json({
         buildings: buildingHubService.listBuildings(),
+        layouts: buildingHubService.listLayouts(),
+        recipes: buildingHubService.listRecipes ? buildingHubService.listRecipes() : [],
         buildingHub: buildingHubService.getStatus(),
       });
     } catch (error) {
       response.status(error.statusCode || 400).json({ error: error.message || "Could not load BuildingHub catalog." });
+    }
+  });
+
+  app.get("/api/scaffold-recipes/current", async (request, response) => {
+    try {
+      const tags = String(request.query.tags || "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      const recipe = await buildCurrentScaffoldRecipe({
+        name: request.query.name || "Current Vibe Research scaffold",
+        tags,
+      });
+      response.json({
+        recipe,
+        preview: previewScaffoldRecipe(recipe, {
+          availableBuildingIds: getAvailableBuildingIds(),
+          settings: settingsStore.settings,
+        }),
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not export scaffold recipe." });
+    }
+  });
+
+  app.get("/api/scaffold-recipes", (_request, response) => {
+    response.json({
+      recipes: scaffoldRecipeService.listRecipes(),
+    });
+  });
+
+  app.post("/api/scaffold-recipes", async (request, response) => {
+    try {
+      const recipe = await scaffoldRecipeService.saveRecipe(request.body?.recipe || request.body || {});
+      response.status(201).json({ recipe });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not save scaffold recipe." });
+    }
+  });
+
+  app.post("/api/scaffold-recipes/current", async (request, response) => {
+    try {
+      const recipe = await buildCurrentScaffoldRecipe({
+        name: request.body?.name || "Current Vibe Research scaffold",
+        tags: request.body?.tags || [],
+      });
+      const saved = await scaffoldRecipeService.saveRecipe({
+        ...recipe,
+        id: request.body?.id || recipe.id,
+        name: request.body?.name || recipe.name,
+        description: request.body?.description || recipe.description,
+      });
+      response.status(201).json({ recipe: saved });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not save current scaffold recipe." });
+    }
+  });
+
+  app.get("/api/scaffold-recipes/:recipeId", (request, response) => {
+    const recipe = scaffoldRecipeService.getRecipe(request.params.recipeId);
+    if (!recipe) {
+      response.status(404).json({ error: "Scaffold recipe not found." });
+      return;
+    }
+    response.json({ recipe });
+  });
+
+  app.delete("/api/scaffold-recipes/:recipeId", async (request, response) => {
+    try {
+      const recipe = await scaffoldRecipeService.deleteRecipe(request.params.recipeId);
+      response.json({ recipe });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not delete scaffold recipe." });
+    }
+  });
+
+  app.post("/api/scaffold-recipes/preview", async (request, response) => {
+    try {
+      await buildingHubService.refresh();
+      const preview = previewScaffoldRecipe(request.body?.recipe || request.body || {}, {
+        availableBuildingIds: getAvailableBuildingIds(),
+        localBindings: request.body?.localBindings || {},
+        settings: settingsStore.settings,
+      });
+      response.json({ preview, recipe: preview.recipe });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not preview scaffold recipe." });
+    }
+  });
+
+  async function applyScaffoldRecipeInput(input = {}) {
+    const plan = createScaffoldRecipeApplyPlan(input.recipe || input, {
+      localBindings: input.localBindings || {},
+    });
+    await settingsStore.update({
+      ...plan.settingsPatch,
+      ...plan.localSettingsPatch,
+    });
+    await applyRuntimeSettings(settingsStore.settings, {
+      backupReason: shouldSyncLibraryForSettingsPatch(plan.localSettingsPatch) ? "scaffold-recipe" : false,
+    });
+    let layoutPayload = null;
+    if (plan.layout) {
+      layoutPayload = await agentTownStore.importLayout({
+        layout: plan.layout,
+        reason: `apply scaffold recipe ${plan.recipe.name}`,
+      });
+    }
+    if (input.applyOccupation && plan.occupation?.selectedPromptId) {
+      await agentPromptStore.save({
+        selectedPromptId: plan.occupation.selectedPromptId,
+      });
+      sessionManager.setOccupationId(agentPromptStore.selectedPromptId);
+    }
+    await syncBuildingAgentGuides({ refreshBuildingHub: true });
+    return {
+      agentPrompt: await agentPromptStore.getState(),
+      agentTown: layoutPayload?.state || agentTownStore.getState(),
+      plan,
+      preview: previewScaffoldRecipe(plan.recipe, {
+        availableBuildingIds: getAvailableBuildingIds(),
+        localBindings: input.localBindings || {},
+        settings: settingsStore.settings,
+      }),
+      recipe: plan.recipe,
+      settings: getSettingsState(),
+    };
+  }
+
+  app.post("/api/scaffold-recipes/apply", async (request, response) => {
+    try {
+      response.json(await applyScaffoldRecipeInput(request.body || {}));
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not apply scaffold recipe." });
+    }
+  });
+
+  app.post("/api/scaffold-recipes/:recipeId/apply", async (request, response) => {
+    try {
+      const recipe = scaffoldRecipeService.getRecipe(request.params.recipeId);
+      if (!recipe) {
+        response.status(404).json({ error: "Scaffold recipe not found." });
+        return;
+      }
+      response.json(await applyScaffoldRecipeInput({
+        ...request.body,
+        recipe,
+      }));
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not apply scaffold recipe." });
+    }
+  });
+
+  app.post("/api/scaffold-recipes/:recipeId/publish", async (request, response) => {
+    try {
+      const recipe = request.params.recipeId === "current"
+        ? await buildCurrentScaffoldRecipe({
+            name: request.body?.name || "Current Vibe Research scaffold",
+            tags: request.body?.tags || [],
+          })
+        : scaffoldRecipeService.getRecipe(request.params.recipeId);
+      if (!recipe) {
+        response.status(404).json({ error: "Scaffold recipe not found." });
+        return;
+      }
+      const buildingHub = await publishScaffoldRecipeToBuildingHub({
+        recipe: {
+          ...recipe,
+          name: request.body?.name || recipe.name,
+          description: request.body?.description || recipe.description,
+        },
+        settings: settingsStore.settings,
+        cwd,
+        env: serverEnv,
+      });
+      const saved = await scaffoldRecipeService.saveRecipe({
+        ...recipe,
+        source: {
+          ...recipe.source,
+          kind: "buildinghub",
+          sourceId: "local",
+          ...buildingHub,
+        },
+      });
+      await buildingHubService.refresh({ force: true });
+      await syncBuildingAgentGuides();
+      response.status(201).json({
+        recipe: saved,
+        buildingHub,
+        buildingHubStatus: buildingHubService.getStatus(),
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not publish scaffold recipe." });
     }
   });
 
@@ -1596,6 +2197,200 @@ export async function createVibeResearchApp({
     }
   });
 
+  app.post("/api/agent-town/layout/validate", async (request, response) => {
+    try {
+      const validation = await agentTownStore.validateLayout(request.body || {});
+      response.json({ validation });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not validate Agent Town layout." });
+    }
+  });
+
+  app.put("/api/agent-town/layout", async (request, response) => {
+    try {
+      const payload = await agentTownStore.importLayout(request.body || {});
+      response.json({
+        validation: payload.validation,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({
+        error: error.message || "Could not import Agent Town layout.",
+        validation: error.validation,
+      });
+    }
+  });
+
+  app.post("/api/agent-town/layout/snapshots", async (request, response) => {
+    try {
+      const payload = await agentTownStore.createLayoutSnapshot(request.body || {});
+      response.status(201).json({
+        snapshot: payload.snapshot,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not save Agent Town snapshot." });
+    }
+  });
+
+  app.post("/api/agent-town/layout/snapshots/:snapshotId/restore", async (request, response) => {
+    try {
+      const payload = await agentTownStore.restoreLayoutSnapshot(request.params.snapshotId);
+      response.json({
+        snapshot: payload.snapshot,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not restore Agent Town snapshot." });
+    }
+  });
+
+  app.get("/api/agent-town/town-shares", (request, response) => {
+    const state = agentTownStore.getState();
+    response.json({
+      townShares: state.townShares.map((townShare) => withTownShareUrls(townShare, request)),
+    });
+  });
+
+  app.post("/api/agent-town/town-shares", async (request, response) => {
+    try {
+      const body = request.body || {};
+      const shareId = normalizeTownShareId(body.id);
+      const image = body.imageDataUrl
+        ? await saveTownShareImage({
+            stateDir,
+            shareId,
+            dataUrl: body.imageDataUrl,
+            mimeType: body.imageMimeType,
+          })
+        : {};
+      const localPayload = await agentTownStore.publishTownShare({
+        ...body,
+        id: shareId,
+        imagePath: image.imagePath,
+        imageMimeType: image.imageMimeType,
+        imageByteLength: image.imageByteLength,
+        imageUpdatedAt: image.imageUpdatedAt,
+      });
+      const buildingHub = await publishTownShareToBuildingHub({
+        townShare: localPayload.townShare,
+        stateDir,
+        settings: settingsStore.settings,
+        cwd,
+        env: serverEnv,
+      });
+      const payload = await agentTownStore.publishTownShare({
+        ...localPayload.townShare,
+        buildingHub,
+      });
+      await buildingHubService.refresh({ force: true });
+      await syncBuildingAgentGuides();
+      response.status(201).json({
+        townShare: withTownShareUrls(payload.townShare, request),
+        validation: payload.validation,
+        agentTown: payload.state,
+        buildingHub,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({
+        error: error.message || "Could not publish Agent Town share.",
+        validation: error.validation,
+      });
+    }
+  });
+
+  app.get("/api/agent-town/town-shares/:shareId", (request, response) => {
+    const townShare = agentTownStore.getTownShare(request.params.shareId);
+    if (!townShare) {
+      response.status(404).json({ error: "Agent Town share not found." });
+      return;
+    }
+
+    response.json({
+      townShare: withTownShareUrls(townShare, request),
+    });
+  });
+
+  app.get("/api/agent-town/town-shares/:shareId/image", async (request, response) => {
+    try {
+      const townShare = agentTownStore.getTownShare(request.params.shareId);
+      if (!townShare) {
+        response.status(404).json({ error: "Agent Town share not found." });
+        return;
+      }
+
+      const image = await resolveTownShareImage({ townShare, stateDir });
+      response.setHeader("Cache-Control", "public, max-age=300");
+      response.setHeader("Content-Type", image.mimeType);
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      response.sendFile(image.targetPath, { dotfiles: "allow" }, (error) => {
+        if (!error) {
+          return;
+        }
+
+        if (response.headersSent) {
+          response.destroy(error);
+          return;
+        }
+
+        response.status(error.statusCode || 500).json({ error: error.message });
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not read Agent Town share image." });
+    }
+  });
+
+  app.post("/api/agent-town/town-shares/:shareId/import", async (request, response) => {
+    try {
+      const payload = await agentTownStore.importTownShare(request.params.shareId);
+      response.json({
+        townShare: withTownShareUrls(payload.townShare, request),
+        validation: payload.validation,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({
+        error: error.message || "Could not import Agent Town share.",
+        validation: error.validation,
+      });
+    }
+  });
+
+  app.get("/buildinghub/towns/:shareId", (request, response) => {
+    const townShare = agentTownStore.getTownShare(request.params.shareId);
+    if (!townShare) {
+      response.status(404).send("Agent Town share not found.");
+      return;
+    }
+
+    response.setHeader("Cache-Control", "no-store");
+    response.type("html").send(renderTownSharePage(townShare, request));
+  });
+
+  app.post("/api/agent-town/layout/undo", async (_request, response) => {
+    try {
+      const payload = await agentTownStore.undoLayout();
+      response.json({
+        changed: payload.changed,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not undo Agent Town layout." });
+    }
+  });
+
+  app.post("/api/agent-town/layout/redo", async (_request, response) => {
+    try {
+      const payload = await agentTownStore.redoLayout();
+      response.json({
+        changed: payload.changed,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not redo Agent Town layout." });
+    }
+  });
+
   app.post("/api/agent-town/events", async (request, response) => {
     try {
       const payload = await agentTownStore.recordEvent(request.body || {});
@@ -1605,6 +2400,36 @@ export async function createVibeResearchApp({
       });
     } catch (error) {
       response.status(error.statusCode || 400).json({ error: error.message || "Could not record Agent Town event." });
+    }
+  });
+
+  app.get("/api/agent-town/highlight", (_request, response) => {
+    response.json({
+      highlight: agentTownStore.getHighlight(),
+    });
+  });
+
+  app.post("/api/agent-town/highlight", async (request, response) => {
+    try {
+      const payload = await agentTownStore.setHighlight(request.body || {});
+      response.status(201).json({
+        highlight: payload.highlight,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not set Agent Town highlight." });
+    }
+  });
+
+  app.delete("/api/agent-town/highlight", async (_request, response) => {
+    try {
+      const payload = await agentTownStore.clearHighlight();
+      response.json({
+        highlight: null,
+        agentTown: payload.state,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not clear Agent Town highlight." });
     }
   });
 
@@ -1705,6 +2530,7 @@ export async function createVibeResearchApp({
         predicateParams: {
           actionItemId: request.query.actionItemId,
           pluginId: request.query.pluginId,
+          itemId: request.query.itemId,
           minCount: request.query.minCount,
         },
         timeoutMs: request.query.timeoutMs,
@@ -1745,6 +2571,15 @@ export async function createVibeResearchApp({
         agentMailMode: request.body?.agentMailMode,
         agentMailProviderId: request.body?.agentMailProviderId,
         agentMailUsername: request.body?.agentMailUsername,
+        agentCommunicationCaptureMessageReads: request.body?.agentCommunicationCaptureMessageReads,
+        agentCommunicationCaptureMessages: request.body?.agentCommunicationCaptureMessages,
+        agentCommunicationDmBody: request.body?.agentCommunicationDmBody,
+        agentCommunicationDmEnabled: request.body?.agentCommunicationDmEnabled,
+        agentCommunicationDmVisibility: request.body?.agentCommunicationDmVisibility,
+        agentCommunicationGroupInboxes: request.body?.agentCommunicationGroupInboxes,
+        agentCommunicationMaxThreadDepth: request.body?.agentCommunicationMaxThreadDepth,
+        agentCommunicationMaxUnrepliedPerAgent: request.body?.agentCommunicationMaxUnrepliedPerAgent,
+        agentCommunicationRequireRelatedObject: request.body?.agentCommunicationRequireRelatedObject,
         agentOpenAiApiKey: request.body?.agentOpenAiApiKey,
         browserUseAnthropicApiKey: request.body?.browserUseAnthropicApiKey,
         browserUseBrowserPath: request.body?.browserUseBrowserPath,
@@ -1754,9 +2589,14 @@ export async function createVibeResearchApp({
         browserUseModel: request.body?.browserUseModel,
         browserUseProfileDir: request.body?.browserUseProfileDir,
         browserUseWorkerPath: request.body?.browserUseWorkerPath,
+        buildingAccessConfirmedIds: request.body?.buildingAccessConfirmedIds,
+        buildingHubAuthProvider: request.body?.buildingHubAuthProvider,
         buildingHubCatalogPath: request.body?.buildingHubCatalogPath,
         buildingHubCatalogUrl: request.body?.buildingHubCatalogUrl,
         buildingHubEnabled: request.body?.buildingHubEnabled,
+        buildingHubProfileUrl: request.body?.buildingHubProfileUrl,
+        googleOAuthClientId: request.body?.googleOAuthClientId,
+        googleOAuthClientSecret: request.body?.googleOAuthClientSecret,
         ottoAuthBaseUrl: request.body?.ottoAuthBaseUrl,
         ottoAuthCallbackUrl: request.body?.ottoAuthCallbackUrl,
         ottoAuthDefaultMaxChargeCents: request.body?.ottoAuthDefaultMaxChargeCents,
@@ -1801,6 +2641,115 @@ export async function createVibeResearchApp({
       });
     } catch (error) {
       response.status(error.statusCode || 400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/google/oauth/start", (request, response) => {
+    const buildingId = normalizeBuildingId(request.query?.buildingId || "");
+    const flow = GOOGLE_OAUTH_FLOWS[buildingId];
+    if (!flow) {
+      response.status(404).send(renderGoogleOAuthPopupPage({
+        buildingId,
+        message: "Google OAuth is only available for supported Google buildings.",
+      }));
+      return;
+    }
+
+    const clientId = String(settingsStore.settings.googleOAuthClientId || "").trim();
+    if (!clientId) {
+      response.status(400).send(renderGoogleOAuthPopupPage({
+        buildingId,
+        message: "Google OAuth client ID is not configured yet.",
+      }));
+      return;
+    }
+
+    const origin = getRequestOrigin(request);
+    if (!origin) {
+      response.status(500).send(renderGoogleOAuthPopupPage({
+        buildingId,
+        message: "Could not determine callback URL for Google OAuth.",
+      }));
+      return;
+    }
+
+    pruneGoogleOAuthStates();
+    const stateToken = randomUUID();
+    googleOAuthStates.set(stateToken, {
+      buildingId,
+      createdAt: Date.now(),
+    });
+
+    const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    authUrl.searchParams.set("client_id", clientId);
+    authUrl.searchParams.set("redirect_uri", `${origin}/api/google/oauth/callback`);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", flow.scopes.join(" "));
+    authUrl.searchParams.set("state", stateToken);
+    authUrl.searchParams.set("include_granted_scopes", "true");
+    authUrl.searchParams.set("access_type", "online");
+    if (flow.prompt) {
+      authUrl.searchParams.set("prompt", flow.prompt);
+    }
+
+    response.redirect(authUrl.toString());
+  });
+
+  app.get("/api/google/oauth/callback", async (request, response) => {
+    const stateToken = String(request.query?.state || "").trim();
+    const oauthError = String(request.query?.error || "").trim();
+    const authCode = String(request.query?.code || "").trim();
+
+    pruneGoogleOAuthStates();
+    const stateEntry = stateToken ? googleOAuthStates.get(stateToken) : null;
+    if (stateToken) {
+      googleOAuthStates.delete(stateToken);
+    }
+
+    if (!stateEntry) {
+      response.status(400).send(renderGoogleOAuthPopupPage({
+        message: "Google setup session expired. Start again from the building setup button.",
+      }));
+      return;
+    }
+
+    if (oauthError) {
+      response.status(400).send(renderGoogleOAuthPopupPage({
+        buildingId: stateEntry.buildingId,
+        message: `Google declined access: ${oauthError}.`,
+      }));
+      return;
+    }
+
+    if (!authCode) {
+      response.status(400).send(renderGoogleOAuthPopupPage({
+        buildingId: stateEntry.buildingId,
+        message: "Google did not return an authorization code.",
+      }));
+      return;
+    }
+
+    try {
+      const confirmedIds = new Set(
+        Array.isArray(settingsStore.settings.buildingAccessConfirmedIds)
+          ? settingsStore.settings.buildingAccessConfirmedIds.map(normalizeBuildingId).filter(Boolean)
+          : [],
+      );
+      confirmedIds.add(stateEntry.buildingId);
+      await settingsStore.update({
+        buildingAccessConfirmedIds: [...confirmedIds].sort(),
+      });
+      response.setHeader("Cache-Control", "no-store");
+      response.send(renderGoogleOAuthPopupPage({
+        status: "success",
+        buildingId: stateEntry.buildingId,
+        message: "Google access enabled. Returning to Vibe Research.",
+      }));
+    } catch (error) {
+      response.status(500).send(renderGoogleOAuthPopupPage({
+        buildingId: stateEntry.buildingId,
+        message: error?.message || "Could not save Google OAuth state.",
+      }));
     }
   });
 
@@ -1878,124 +2827,6 @@ export async function createVibeResearchApp({
       backup: status,
       settings: getSettingsState(),
     });
-  });
-
-  app.get("/api/wallet/status", (_request, response) => {
-    response.json({ wallet: walletService.getStatus?.() || null });
-  });
-
-  app.get("/api/wallet/summary", (request, response) => {
-    response.json({
-      wallet: walletService.getSummary?.({ limit: request.query.limit }) || null,
-    });
-  });
-
-  app.post("/api/wallet/setup", async (request, response) => {
-    try {
-      const stripeSecretKey = String(request.body?.stripeSecretKey || request.body?.walletStripeSecretKey || "").trim();
-      const stripeWebhookSecret = String(
-        request.body?.stripeWebhookSecret || request.body?.walletStripeWebhookSecret || "",
-      ).trim();
-      await settingsStore.update({
-        walletStripeSecretKey: stripeSecretKey || undefined,
-        walletStripeWebhookSecret: stripeWebhookSecret || undefined,
-      });
-      response.json({ ok: true, settings: getSettingsState() });
-    } catch (error) {
-      response.status(error.statusCode || 400).json({ error: error.message || "Could not set up wallet payments." });
-    }
-  });
-
-  app.post("/api/wallet/checkout-sessions", async (request, response) => {
-    try {
-      const secretKey = String(settingsStore.settings.walletStripeSecretKey || "").trim();
-      if (!secretKey) {
-        throw buildHttpError("Stripe secret key is required before creating checkout sessions.", 400);
-      }
-
-      const amountCents = normalizeStripeAmountCents(request.body?.amountCents);
-      const baseUrl = String(preferredUrl || helperBaseUrl || `${request.protocol}://${request.get("host") || ""}`)
-        .trim()
-        .replace(/\/+$/, "");
-      const session = await requestStripe({
-        fetchImpl: stripeFetchImpl,
-        secretKey,
-        url: `${STRIPE_API_BASE_URL}/checkout/sessions`,
-        body: {
-          "line_items[0][price_data][currency]": "usd",
-          "line_items[0][price_data][product_data][name]": "Vibe Research credits",
-          "line_items[0][price_data][unit_amount]": String(amountCents),
-          "line_items[0][quantity]": "1",
-          mode: "payment",
-          "metadata[walletCreditCents]": String(amountCents),
-          "metadata[source]": "vibe_research_wallet",
-          success_url: String(request.body?.successUrl || `${baseUrl}/?view=settings&wallet=success`),
-          cancel_url: String(request.body?.cancelUrl || `${baseUrl}/?view=settings&wallet=cancel`),
-        },
-      });
-      response.status(201).json({ checkoutSession: session, ok: true });
-    } catch (error) {
-      response.status(error.statusCode || 400).json({ error: error.message || "Could not create checkout session." });
-    }
-  });
-
-  app.post("/api/wallet/credits/grant", async (request, response) => {
-    try {
-      const result = await walletService.grantCredits({
-        actor: request.body?.actor,
-        amountCents: request.body?.amountCents,
-        description: request.body?.description,
-        idempotencyKey: request.body?.idempotencyKey,
-        metadata: request.body?.metadata,
-        source: request.body?.source,
-      });
-      response.status(201).json({ ok: true, ...result, settings: getSettingsState() });
-    } catch (error) {
-      response.status(error.statusCode || 400).json({ error: error.message || "Could not add wallet credits." });
-    }
-  });
-
-  app.post("/api/wallet/spend/holds", async (request, response) => {
-    try {
-      const result = await walletService.createSpendHold({
-        action: request.body?.action,
-        amountCents: request.body?.amountCents,
-        buildingId: request.body?.buildingId,
-        description: request.body?.description,
-        idempotencyKey: request.body?.idempotencyKey,
-        metadata: request.body?.metadata,
-      });
-      response.status(201).json({ ok: true, ...result, settings: getSettingsState() });
-    } catch (error) {
-      response.status(error.statusCode || 400).json({ error: error.message || "Could not reserve wallet credits." });
-    }
-  });
-
-  app.post("/api/wallet/spend/holds/:holdId/capture", async (request, response) => {
-    try {
-      const result = await walletService.captureSpend({
-        amountCents: request.body?.amountCents,
-        description: request.body?.description,
-        holdId: request.params.holdId,
-        metadata: request.body?.metadata,
-      });
-      response.json({ ok: true, ...result, settings: getSettingsState() });
-    } catch (error) {
-      response.status(error.statusCode || 400).json({ error: error.message || "Could not capture wallet spend." });
-    }
-  });
-
-  app.post("/api/wallet/spend/holds/:holdId/release", async (request, response) => {
-    try {
-      const result = await walletService.releaseSpend({
-        holdId: request.params.holdId,
-        metadata: request.body?.metadata,
-        reason: request.body?.reason,
-      });
-      response.json({ ok: true, ...result, settings: getSettingsState() });
-    } catch (error) {
-      response.status(error.statusCode || 400).json({ error: error.message || "Could not release wallet hold." });
-    }
   });
 
   app.get("/api/agentmail/status", (_request, response) => {
@@ -2142,6 +2973,124 @@ export async function createVibeResearchApp({
     const host = String(request.get("x-forwarded-host") || request.get("host") || "").split(",")[0].trim();
     return new URL(request.originalUrl || request.url || "/", `${protocol}://${host || "127.0.0.1"}`).toString();
   }
+
+  app.get("/api/wallet/status", (_request, response) => {
+    response.json({ wallet: walletService.getStatus?.() || null });
+  });
+
+  app.get("/api/wallet/summary", (request, response) => {
+    response.json({
+      wallet: walletService.getSummary?.({ limit: request.query.limit }) || null,
+    });
+  });
+
+  app.post("/api/wallet/setup", async (request, response) => {
+    try {
+      const stripeSecretKey = String(request.body?.stripeSecretKey || request.body?.walletStripeSecretKey || "").trim();
+      const stripeWebhookSecret = String(
+        request.body?.stripeWebhookSecret || request.body?.walletStripeWebhookSecret || "",
+      ).trim();
+      await settingsStore.update({
+        walletStripeSecretKey: stripeSecretKey || undefined,
+        walletStripeWebhookSecret: stripeWebhookSecret || undefined,
+      });
+      response.json({ ok: true, settings: getSettingsState() });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not set up wallet payments." });
+    }
+  });
+
+  app.post("/api/wallet/checkout-sessions", async (request, response) => {
+    try {
+      const secretKey = String(settingsStore.settings.walletStripeSecretKey || "").trim();
+      if (!secretKey) {
+        throw buildHttpError("Stripe secret key is required before creating checkout sessions.", 400);
+      }
+
+      const amountCents = normalizeStripeAmountCents(request.body?.amountCents);
+      const baseUrl = String(preferredUrl || helperBaseUrl || `${request.protocol}://${request.get("host") || ""}`)
+        .trim()
+        .replace(/\/+$/, "");
+      const session = await requestStripe({
+        fetchImpl: stripeFetchImpl,
+        secretKey,
+        url: `${STRIPE_API_BASE_URL}/checkout/sessions`,
+        body: {
+          "line_items[0][price_data][currency]": "usd",
+          "line_items[0][price_data][product_data][name]": "Vibe Research credits",
+          "line_items[0][price_data][unit_amount]": String(amountCents),
+          "line_items[0][quantity]": "1",
+          mode: "payment",
+          "metadata[walletCreditCents]": String(amountCents),
+          "metadata[source]": "vibe_research_wallet",
+          success_url: String(request.body?.successUrl || `${baseUrl}/?view=settings&wallet=success`),
+          cancel_url: String(request.body?.cancelUrl || `${baseUrl}/?view=settings&wallet=cancel`),
+        },
+      });
+      response.status(201).json({ checkoutSession: session, ok: true });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not create checkout session." });
+    }
+  });
+
+  app.post("/api/wallet/credits/grant", async (request, response) => {
+    try {
+      const result = await walletService.grantCredits({
+        actor: request.body?.actor,
+        amountCents: request.body?.amountCents,
+        description: request.body?.description,
+        idempotencyKey: request.body?.idempotencyKey,
+        metadata: request.body?.metadata,
+        source: request.body?.source,
+      });
+      response.status(201).json({ ok: true, ...result, settings: getSettingsState() });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not add wallet credits." });
+    }
+  });
+
+  app.post("/api/wallet/spend/holds", async (request, response) => {
+    try {
+      const result = await walletService.createSpendHold({
+        action: request.body?.action,
+        amountCents: request.body?.amountCents,
+        buildingId: request.body?.buildingId,
+        description: request.body?.description,
+        idempotencyKey: request.body?.idempotencyKey,
+        metadata: request.body?.metadata,
+      });
+      response.status(201).json({ ok: true, ...result, settings: getSettingsState() });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not reserve wallet credits." });
+    }
+  });
+
+  app.post("/api/wallet/spend/holds/:holdId/capture", async (request, response) => {
+    try {
+      const result = await walletService.captureSpend({
+        amountCents: request.body?.amountCents,
+        description: request.body?.description,
+        holdId: request.params.holdId,
+        metadata: request.body?.metadata,
+      });
+      response.json({ ok: true, ...result, settings: getSettingsState() });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not capture wallet spend." });
+    }
+  });
+
+  app.post("/api/wallet/spend/holds/:holdId/release", async (request, response) => {
+    try {
+      const result = await walletService.releaseSpend({
+        holdId: request.params.holdId,
+        metadata: request.body?.metadata,
+        reason: request.body?.reason,
+      });
+      response.json({ ok: true, ...result, settings: getSettingsState() });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not release wallet hold." });
+    }
+  });
 
   app.get("/api/twilio/status", (_request, response) => {
     response.json({ twilio: twilioService.getStatus() });
@@ -2412,6 +3361,23 @@ export async function createVibeResearchApp({
     }
   });
 
+  async function handleAgentCallback(request, response) {
+    try {
+      const result = await agentCallbackService.handleRequest({
+        body: request.body,
+        headers: request.headers,
+        sessionId: request.params.sessionId,
+        token: request.params.token,
+      });
+      response.json(result);
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not deliver agent callback." });
+    }
+  }
+
+  app.post("/api/agent-callbacks/:sessionId/:token", handleAgentCallback);
+  app.post("/api/agent-callbacks/:sessionId", handleAgentCallback);
+
   app.get("/api/browser-use/sessions", (_request, response) => {
     response.json({ sessions: browserUseService.listSessions() });
   });
@@ -2474,8 +3440,15 @@ export async function createVibeResearchApp({
         return;
       }
 
+      const callerSessionId = String(request.body?.callerSessionId || request.body?.parentSessionId || "").trim();
+      const callbackUrl = String(request.body?.callbackUrl || request.body?.callback_url || "").trim()
+        || (callerSessionId && sessionManager.getSession(callerSessionId)
+          ? agentCallbackService.getCallback(callerSessionId).url
+          : "");
+
       const task = await ottoAuthService.createTask({
-        callerSessionId: request.body?.callerSessionId || request.body?.parentSessionId,
+        callbackUrl,
+        callerSessionId,
         cwd: request.body?.cwd,
         itemUrl: request.body?.itemUrl || request.body?.item_url,
         maxChargeCents: request.body?.maxChargeCents || request.body?.max_charge_cents,
@@ -2801,7 +3774,6 @@ export async function createVibeResearchApp({
         occupationId: agentPromptStore.selectedPromptId,
         initialPrompt: request.body?.initialPrompt,
         initialPromptDelayMs: request.body?.initialPromptDelayMs,
-        sourceBuildingId: request.body?.sourceBuildingId,
       });
 
       response.status(201).json({ session });
@@ -2812,6 +3784,20 @@ export async function createVibeResearchApp({
 
   app.get("/api/sessions", (_request, response) => {
     response.json({ sessions: sessionManager.listSessions() });
+  });
+
+  app.get("/api/sessions/:sessionId/callback", (request, response) => {
+    try {
+      const callback = agentCallbackService.getCallbackForSession(request.params.sessionId);
+      response.json({
+        callback: {
+          sessionId: callback.sessionId,
+          url: callback.url,
+        },
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not read agent callback." });
+    }
   });
 
   const handleSessionRename = (request, response) => {
@@ -2975,6 +3961,7 @@ export async function createVibeResearchApp({
   urls = await accessUrlsProvider(host, resolvedPort);
   preferredUrl = pickPreferredUrl(urls)?.url ?? urls[0]?.url ?? null;
   helperBaseUrl = getHelperBaseUrl(host, resolvedPort);
+  agentCallbackService.setServerBaseUrl(helperBaseUrl);
   sessionManager.setEnvironment(buildSessionManagerEnvironment());
   await syncBuildingAgentGuides({ refreshBuildingHub: true });
   browserUseService.setServerBaseUrl(helperBaseUrl);
@@ -2982,6 +3969,7 @@ export async function createVibeResearchApp({
   videoMemoryService.setServerBaseUrl(helperBaseUrl);
   await writeServerInfo(stateDir, {
     agentMailReplyToken: agentMailService.replyToken,
+    agentCallbackBaseUrl: agentCallbackService.getCallbackBaseUrl(),
     browserUseToken: browserUseService.requestToken,
     ottoAuthToken: ottoAuthService.requestToken,
     telegramReplyToken: telegramService.replyToken,

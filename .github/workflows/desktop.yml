@@ -53,6 +53,47 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      - name: Require Mac App Store secrets for release tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          missing=()
+          for name in MAS_CSC_LINK MAS_CSC_KEY_PASSWORD MAS_PROVISIONING_PROFILE_BASE64 APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Missing required Mac App Store secret(s): %s\n' "${missing[*]}" >&2
+            printf 'Required: MACOS_APPSTORE_CSC_LINK, MACOS_APPSTORE_CSC_KEY_PASSWORD, MAS_PROVISIONING_PROFILE_BASE64, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID\n' >&2
+            exit 1
+          fi
+        env:
+          MAS_CSC_LINK: ${{ secrets.MACOS_APPSTORE_CSC_LINK }}
+          MAS_CSC_KEY_PASSWORD: ${{ secrets.MACOS_APPSTORE_CSC_KEY_PASSWORD }}
+          MAS_PROVISIONING_PROFILE_BASE64: ${{ secrets.MAS_PROVISIONING_PROFILE_BASE64 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Prepare Mac App Store provisioning profile
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          profile_path="$RUNNER_TEMP/vibe-research-mas.provisionprofile"
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          profile = os.environ["MAS_PROVISIONING_PROFILE_BASE64"]
+          out = Path(os.environ["RUNNER_TEMP"]) / "vibe-research-mas.provisionprofile"
+          out.write_bytes(base64.b64decode(profile))
+          PY
+          security cms -D -i "$profile_path" >/dev/null
+          echo "MAS_PROVISIONING_PROFILE=$profile_path" >> "$GITHUB_ENV"
+        env:
+          MAS_PROVISIONING_PROFILE_BASE64: ${{ secrets.MAS_PROVISIONING_PROFILE_BASE64 }}
+
       - name: Build desktop app
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -68,6 +109,31 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      - name: Build Mac App Store package
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          npm --prefix desktop run dist:mas -- --config.mas.provisioningProfile="$MAS_PROVISIONING_PROFILE"
+        env:
+          CSC_LINK: ${{ secrets.MACOS_APPSTORE_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_APPSTORE_CSC_KEY_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MAS_PROVISIONING_PROFILE: ${{ env.MAS_PROVISIONING_PROFILE }}
+
+      - name: Upload Mac App Store package to App Store Connect
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          pkg_file="$(ls -1 desktop/dist/*.pkg | head -n 1)"
+          if [ -z "$pkg_file" ]; then
+            echo "No .pkg found in desktop/dist after MAS build" >&2
+            exit 1
+          fi
+
+          xcrun altool --validate-app -f "$pkg_file" -t osx -u "$APPLE_ID" -p "$APPLE_APP_SPECIFIC_PASSWORD"
+          xcrun altool --upload-app -f "$pkg_file" -t osx -u "$APPLE_ID" -p "$APPLE_APP_SPECIFIC_PASSWORD"
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -75,5 +141,6 @@ jobs:
           path: |
             desktop/dist/*.dmg
             desktop/dist/*.zip
+            desktop/dist/*.pkg
             desktop/dist/*.blockmap
             desktop/dist/latest-mac.yml

@@ -10,15 +10,14 @@ import {
   normalizeBrowserUseMaxTurns,
 } from "./browser-use-service.js";
 import { getDefaultOttoAuthBaseUrl } from "./ottoauth-service.js";
-import {
-  WORKSPACE_LIBRARY_RELATIVE_PATH,
-  WORKSPACE_USER_RELATIVE_PATH,
-} from "./workspace-layout.js";
 
 const SETTINGS_FILE_VERSION = 1;
 const SETTINGS_FILENAME = "settings.json";
 const DEFAULT_WIKI_BACKUP_INTERVAL_MS = 5 * 60 * 1000;
 const LEGACY_WIKI_BACKUP_INTERVAL_MS = 10 * 60 * 1000;
+const WORKSPACE_DATA_FOLDER_NAME = "vibe-research";
+const WORKSPACE_LIBRARY_RELATIVE_PATH = path.join(WORKSPACE_DATA_FOLDER_NAME, "buildings", "library");
+const WORKSPACE_USER_RELATIVE_PATH = path.join(WORKSPACE_DATA_FOLDER_NAME, "user");
 const execFileAsync = promisify(execFile);
 
 function normalizeSecret(value) {
@@ -63,6 +62,15 @@ function normalizeIntervalMs(value) {
     : roundedIntervalMs;
 }
 
+function normalizeNonNegativeCents(value, fallback = "2") {
+  const rawValue = String(value ?? "").trim();
+  const parsed = Number(rawValue);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    return String(fallback);
+  }
+  return String(parsed);
+}
+
 function normalizeGitRemoteName(value) {
   const remoteName = String(value || "origin").trim();
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remoteName) ? remoteName : "origin";
@@ -93,13 +101,37 @@ function normalizeAgentProviderId(value) {
   return /^[a-z0-9_-]+$/.test(providerId) ? providerId : "claude";
 }
 
-function normalizeNonNegativeCents(value, fallback = "2") {
-  const rawValue = String(value ?? "").trim();
-  const parsed = Number(rawValue);
-  if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    return String(fallback);
+function normalizeCommunicationBody(value) {
+  const body = String(value || "freeform").trim().toLowerCase();
+  return ["freeform", "typed", "typed-envelope"].includes(body) ? body : "freeform";
+}
+
+function normalizeCommunicationVisibility(value) {
+  const visibility = String(value || "workspace").trim().toLowerCase();
+  return ["workspace", "private", "public"].includes(visibility) ? visibility : "workspace";
+}
+
+function normalizeCommunicationLimit(value, fallback, { min = 0, max = 50 } = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
   }
-  return String(parsed);
+  return Math.max(min, Math.min(max, Math.floor(number)));
+}
+
+function normalizeGroupInboxes(value) {
+  const source = Array.isArray(value) ? value : String(value || "").split(/[,\n]/);
+  return Array.from(
+    new Set(
+      source
+        .map((entry) => String(entry || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]+/g, "-")
+          .replace(/^-+|-+$/g, ""))
+        .filter(Boolean),
+    ),
+  ).slice(0, 40).join(",");
 }
 
 function normalizePluginIds(value) {
@@ -132,53 +164,17 @@ function normalizeBuildingHubUrl(value) {
   }
 }
 
+function normalizeBuildingHubAuthProvider(value) {
+  const provider = String(value || "").trim().toLowerCase();
+  return provider === "google" || provider === "github" ? provider : "";
+}
+
 const AGENT_AUTOMATION_CADENCES = new Set(["hourly", "six-hours", "daily", "weekday", "weekly"]);
 const AGENT_AUTOMATION_WEEKDAYS = new Set(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
-const AGENT_AUTOMATION_TARGET_MODES = new Set(["new-agent", "existing-agent"]);
 
 function normalizeAutomationTime(value) {
   const time = String(value || "").trim();
   return /^\d{2}:\d{2}$/.test(time) ? time : "09:00";
-}
-
-function normalizeAutomationTargetText(value, maxLength) {
-  const text = String(value || "").trim();
-  return text ? text.slice(0, maxLength) : "";
-}
-
-function normalizeAutomationTarget(value) {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const rawMode = String(value.mode || "").trim().toLowerCase();
-  const rawSessionId = normalizeAutomationTargetText(value.sessionId, 180);
-  const mode = rawMode === "existing-agent" && rawSessionId ? "existing-agent" : "new-agent";
-  const target = {
-    mode: AGENT_AUTOMATION_TARGET_MODES.has(mode) ? mode : "new-agent",
-  };
-  const providerId = normalizeAutomationTargetText(value.providerId, 80);
-  const providerLabel = normalizeAutomationTargetText(value.providerLabel, 120);
-  const cwd = normalizeAutomationTargetText(value.cwd, 4096);
-  const sessionName = normalizeAutomationTargetText(value.sessionName, 160);
-
-  if (target.mode === "existing-agent") {
-    target.sessionId = rawSessionId;
-    if (sessionName) {
-      target.sessionName = sessionName;
-    }
-  }
-  if (providerId) {
-    target.providerId = normalizeAgentProviderId(providerId);
-  }
-  if (providerLabel) {
-    target.providerLabel = providerLabel;
-  }
-  if (cwd) {
-    target.cwd = cwd;
-  }
-
-  return target;
 }
 
 function normalizeAgentAutomations(value) {
@@ -197,9 +193,8 @@ function normalizeAgentAutomations(value) {
       const cadence = String(entry?.cadence || "").trim().toLowerCase();
       const weekday = String(entry?.weekday || "").trim().toLowerCase();
       const createdAt = String(entry?.createdAt || "").trim();
-      const target = normalizeAutomationTarget(entry?.target);
 
-      const automation = {
+      return {
         cadence: AGENT_AUTOMATION_CADENCES.has(cadence) ? cadence : "daily",
         createdAt: Number.isNaN(Date.parse(createdAt)) ? new Date().toISOString() : createdAt,
         enabled: normalizeBoolean(entry?.enabled, true),
@@ -208,10 +203,6 @@ function normalizeAgentAutomations(value) {
         time: normalizeAutomationTime(entry?.time),
         weekday: AGENT_AUTOMATION_WEEKDAYS.has(weekday) ? weekday : "monday",
       };
-      if (target) {
-        automation.target = target;
-      }
-      return automation;
     })
     .filter(Boolean);
 }
@@ -289,6 +280,15 @@ export class SettingsStore {
       agentMailMode: "websocket",
       agentMailProviderId: "claude",
       agentMailUsername: "",
+      agentCommunicationCaptureMessageReads: true,
+      agentCommunicationCaptureMessages: true,
+      agentCommunicationDmBody: "freeform",
+      agentCommunicationDmEnabled: false,
+      agentCommunicationDmVisibility: "workspace",
+      agentCommunicationGroupInboxes: "resource-hall,reviews",
+      agentCommunicationMaxThreadDepth: 6,
+      agentCommunicationMaxUnrepliedPerAgent: 3,
+      agentCommunicationRequireRelatedObject: false,
       agentOpenAiApiKey: "",
       browserUseAnthropicApiKey: String(this.env.ANTHROPIC_API_KEY || this.env.CLAUDE_API_KEY || "").trim(),
       browserUseBrowserPath: "",
@@ -299,9 +299,23 @@ export class SettingsStore {
       browserUseModel: "",
       browserUseProfileDir: getDefaultBrowserUseProfileDir(this.homeDir),
       browserUseWorkerPath: getDefaultBrowserUseWorkerPath(this.homeDir),
+      buildingHubAuthProvider: normalizeBuildingHubAuthProvider(this.env.VIBE_RESEARCH_BUILDINGHUB_AUTH_PROVIDER || ""),
       buildingHubCatalogPath: String(this.env.VIBE_RESEARCH_BUILDINGHUB_PATH || "").trim(),
       buildingHubCatalogUrl: normalizeBuildingHubUrl(this.env.VIBE_RESEARCH_BUILDINGHUB_URL),
       buildingHubEnabled: false,
+      buildingHubProfileUrl: normalizeBuildingHubUrl(this.env.VIBE_RESEARCH_BUILDINGHUB_PROFILE_URL || ""),
+      googleOAuthClientId: String(
+        this.env.VIBE_RESEARCH_GOOGLE_OAUTH_CLIENT_ID ||
+          this.env.REMOTE_VIBES_GOOGLE_OAUTH_CLIENT_ID ||
+          this.env.GOOGLE_OAUTH_CLIENT_ID ||
+          "",
+      ).trim(),
+      googleOAuthClientSecret: String(
+        this.env.VIBE_RESEARCH_GOOGLE_OAUTH_CLIENT_SECRET ||
+          this.env.REMOTE_VIBES_GOOGLE_OAUTH_CLIENT_SECRET ||
+          this.env.GOOGLE_OAUTH_CLIENT_SECRET ||
+          "",
+      ).trim(),
       ottoAuthBaseUrl: String(this.env.OTTOAUTH_BASE_URL || getDefaultOttoAuthBaseUrl()).trim(),
       ottoAuthCallbackUrl: String(this.env.OTTOAUTH_CALLBACK_URL || "").trim(),
       ottoAuthDefaultMaxChargeCents: "",
@@ -337,6 +351,7 @@ export class SettingsStore {
       videoMemoryEnabled: false,
       videoMemoryProviderId: "claude",
       agentAutomations: [],
+      buildingAccessConfirmedIds: [],
       installedPluginIds: [],
       preventSleepEnabled: true,
       wikiGitBackupEnabled: true,
@@ -413,6 +428,41 @@ export class SettingsStore {
       agentMailMode: normalizeAgentMailMode(payload.agentMailMode || defaults.agentMailMode),
       agentMailProviderId: normalizeAgentProviderId(payload.agentMailProviderId || defaults.agentMailProviderId),
       agentMailUsername: String(payload.agentMailUsername || defaults.agentMailUsername || "").trim(),
+      agentCommunicationCaptureMessageReads: normalizeBoolean(
+        payload.agentCommunicationCaptureMessageReads,
+        defaults.agentCommunicationCaptureMessageReads,
+      ),
+      agentCommunicationCaptureMessages: normalizeBoolean(
+        payload.agentCommunicationCaptureMessages,
+        defaults.agentCommunicationCaptureMessages,
+      ),
+      agentCommunicationDmBody: normalizeCommunicationBody(
+        payload.agentCommunicationDmBody || defaults.agentCommunicationDmBody,
+      ),
+      agentCommunicationDmEnabled: normalizeBoolean(
+        payload.agentCommunicationDmEnabled,
+        defaults.agentCommunicationDmEnabled,
+      ),
+      agentCommunicationDmVisibility: normalizeCommunicationVisibility(
+        payload.agentCommunicationDmVisibility || defaults.agentCommunicationDmVisibility,
+      ),
+      agentCommunicationGroupInboxes: normalizeGroupInboxes(
+        payload.agentCommunicationGroupInboxes || defaults.agentCommunicationGroupInboxes,
+      ),
+      agentCommunicationMaxThreadDepth: normalizeCommunicationLimit(
+        payload.agentCommunicationMaxThreadDepth,
+        defaults.agentCommunicationMaxThreadDepth,
+        { min: 1, max: 50 },
+      ),
+      agentCommunicationMaxUnrepliedPerAgent: normalizeCommunicationLimit(
+        payload.agentCommunicationMaxUnrepliedPerAgent,
+        defaults.agentCommunicationMaxUnrepliedPerAgent,
+        { min: 0, max: 50 },
+      ),
+      agentCommunicationRequireRelatedObject: normalizeBoolean(
+        payload.agentCommunicationRequireRelatedObject,
+        defaults.agentCommunicationRequireRelatedObject,
+      ),
       agentOpenAiApiKey:
         payload.agentOpenAiApiKey === undefined
           ? defaults.agentOpenAiApiKey
@@ -438,12 +488,25 @@ export class SettingsStore {
         payload.browserUseWorkerPath || defaults.browserUseWorkerPath,
         this.homeDir,
       ),
+      buildingHubAuthProvider:
+        payload.buildingHubAuthProvider === undefined
+          ? defaults.buildingHubAuthProvider
+          : normalizeBuildingHubAuthProvider(payload.buildingHubAuthProvider),
       buildingHubCatalogPath: normalizeOptionalPath(
         payload.buildingHubCatalogPath || defaults.buildingHubCatalogPath,
         this.homeDir,
       ),
       buildingHubCatalogUrl: normalizeBuildingHubUrl(payload.buildingHubCatalogUrl || defaults.buildingHubCatalogUrl),
       buildingHubEnabled: normalizeBoolean(payload.buildingHubEnabled, defaults.buildingHubEnabled),
+      buildingHubProfileUrl:
+        payload.buildingHubProfileUrl === undefined
+          ? defaults.buildingHubProfileUrl
+          : normalizeBuildingHubUrl(payload.buildingHubProfileUrl),
+      googleOAuthClientId: String(payload.googleOAuthClientId || defaults.googleOAuthClientId || "").trim(),
+      googleOAuthClientSecret:
+        payload.googleOAuthClientSecret === undefined
+          ? defaults.googleOAuthClientSecret
+          : String(payload.googleOAuthClientSecret || "").trim(),
       ottoAuthBaseUrl: String(payload.ottoAuthBaseUrl || defaults.ottoAuthBaseUrl || getDefaultOttoAuthBaseUrl()).trim(),
       ottoAuthCallbackUrl: String(payload.ottoAuthCallbackUrl || defaults.ottoAuthCallbackUrl || "").trim(),
       ottoAuthDefaultMaxChargeCents: String(
@@ -493,6 +556,9 @@ export class SettingsStore {
       videoMemoryEnabled: normalizeBoolean(payload.videoMemoryEnabled, defaults.videoMemoryEnabled),
       videoMemoryProviderId: normalizeAgentProviderId(payload.videoMemoryProviderId || defaults.videoMemoryProviderId),
       agentAutomations: normalizeAgentAutomations(payload.agentAutomations || defaults.agentAutomations),
+      buildingAccessConfirmedIds: normalizePluginIds(
+        payload.buildingAccessConfirmedIds || defaults.buildingAccessConfirmedIds,
+      ),
       installedPluginIds: normalizePluginIds(payload.installedPluginIds || defaults.installedPluginIds),
       preventSleepEnabled: normalizeBoolean(
         payload.preventSleepEnabled,
@@ -712,6 +778,8 @@ export class SettingsStore {
       browserUseAnthropicApiKeyConfigured: Boolean(this.settings.browserUseAnthropicApiKey),
       browserUseStatus,
       buildingHubStatus,
+      googleOAuthClientSecret: "",
+      googleOAuthClientSecretConfigured: Boolean(this.settings.googleOAuthClientSecret),
       ottoAuthPrivateKey: "",
       ottoAuthPrivateKeyConfigured: Boolean(this.settings.ottoAuthPrivateKey),
       ottoAuthStatus,

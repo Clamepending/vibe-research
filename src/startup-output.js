@@ -93,6 +93,18 @@ export function renderQrCode(url) {
   return output;
 }
 
+function pickPreferredProvider(config) {
+  const providers = Array.isArray(config.providers) ? config.providers : [];
+  const defaultId = String(config.defaultProviderId || "").trim();
+  if (defaultId) {
+    const match = providers.find((entry) => entry?.id === defaultId);
+    if (match) {
+      return match;
+    }
+  }
+  return providers.find((entry) => entry?.available) || providers[0] || null;
+}
+
 export function buildStartupOutput(config) {
   const lines = ["", "Vibe Research is live.", `Workspace: ${config.cwd}`, "Available URLs:"];
 
@@ -112,14 +124,17 @@ export function buildStartupOutput(config) {
     lines.push(qrCode);
   }
 
+  const preferredProvider = pickPreferredProvider(config);
+  const providerLabel = preferredProvider?.label || "your preferred agent";
+
   lines.push("");
   lines.push("Get started:");
   lines.push("1. Open the clickable URL above. From another device, use a LAN/Tailscale URL or scan the QR code.");
-  lines.push("2. Choose Claude Code in the agent selector if it is not already selected.");
+  lines.push(`2. Choose ${providerLabel} in the agent selector if it is not already selected.`);
   lines.push(
     `3. Tap New Agent. Vibe Research starts it in the default agent folder${config.defaultSessionCwd ? `: ${config.defaultSessionCwd}` : ""}.`,
   );
-  lines.push("4. If Claude asks you to sign in, follow the prompt in that session.");
+  lines.push(`4. If ${providerLabel} asks you to sign in, follow the prompt in that session.`);
   lines.push("Remote access is optional: if Tailscale is already connected, its URL appears automatically.");
 
   lines.push("");

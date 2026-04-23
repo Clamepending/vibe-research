@@ -27,6 +27,7 @@ Options:
   --title <text>           Short sidebar label
   --shipping-address <s>   Shipping/delivery address or pickup name details
   --max-charge-cents <n>   Spend cap for computeruse tasks
+  --callback-url <url>     Override this agent's callback URL for multi-turn service updates
   --wait                   Poll until the hosted task completes or fails
   --json                   Print machine-readable JSON
 `);
@@ -37,6 +38,7 @@ function parseArgs(argv) {
     itemUrl: "",
     json: false,
     maxChargeCents: null,
+    callbackUrl: "",
     service: "computeruse",
     shippingAddress: "",
     skill: false,
@@ -105,6 +107,11 @@ function parseArgs(argv) {
 
     if (arg === "--max-charge-cents" || arg.startsWith("--max-charge-cents=")) {
       options.maxChargeCents = readValue("--max-charge-cents");
+      continue;
+    }
+
+    if (arg === "--callback-url" || arg.startsWith("--callback-url=")) {
+      options.callbackUrl = readValue("--callback-url");
       continue;
     }
 
@@ -250,6 +257,11 @@ async function main() {
   }
 
   const requestBody = {
+    callbackUrl:
+      options.callbackUrl ||
+      process.env.VIBE_RESEARCH_AGENT_CALLBACK_URL ||
+      process.env.REMOTE_VIBES_AGENT_CALLBACK_URL ||
+      "",
     callerSessionId: String(process.env.VIBE_RESEARCH_SESSION_ID || process.env.REMOTE_VIBES_SESSION_ID || "").trim(),
     cwd: process.cwd(),
     itemUrl: options.itemUrl || "",

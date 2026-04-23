@@ -152,17 +152,35 @@ function normalizeAgentGuideContract(agentGuide) {
 
 function normalizeUiContract(ui) {
   if (!ui || typeof ui !== "object" || Array.isArray(ui)) {
-    return { mode: "panel", entryView: "", workspaceView: "" };
+    return { mode: "panel", entryView: "", workspaceView: "", sidebarTab: null };
   }
 
   const requestedMode = normalizeBuildingId(ui.mode || "panel");
   const mode = ["panel", "wide", "workspace"].includes(requestedMode) ? requestedMode : "panel";
+  const sidebarTab = normalizeSidebarTabContract(ui.sidebarTab);
 
   return {
     ...ui,
     entryView: String(ui.entryView || "").trim(),
     mode,
+    sidebarTab,
     workspaceView: normalizeBuildingId(ui.workspaceView || ""),
+  };
+}
+
+function normalizeSidebarTabContract(sidebarTab) {
+  if (sidebarTab === true) {
+    return { enabled: true, label: "", meta: "" };
+  }
+
+  if (!sidebarTab || typeof sidebarTab !== "object" || Array.isArray(sidebarTab) || sidebarTab.enabled === false) {
+    return null;
+  }
+
+  return {
+    enabled: true,
+    label: String(sidebarTab.label || "").trim(),
+    meta: String(sidebarTab.meta || sidebarTab.description || "").trim(),
   };
 }
 

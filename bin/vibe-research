@@ -48,6 +48,364 @@ resolve_app_dir() {
   printf '%s\n' "$HOME/.vibe-research/app"
 }
 
+resolve_state_dir() {
+  printf '%s\n' "${VIBE_RESEARCH_STATE_DIR:-${REMOTE_VIBES_STATE_DIR:-$HOME/.vibe-research}}"
+}
+
+has_command() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+is_linux() {
+  [ "$(uname -s 2>/dev/null || true)" = "Linux" ]
+}
+
+is_root() {
+  [ "$(id -u)" -eq 0 ]
+}
+
+try_run_as_root() {
+  if is_root; then
+    "$@"
+    return
+  fi
+
+  if has_command sudo; then
+    sudo "$@"
+    return
+  fi
+
+  return 1
+}
+
+canonical_path() {
+  local target dir base
+  target="$1"
+
+  if [ -d "$target" ]; then
+    (cd -P "$target" && pwd)
+    return
+  fi
+
+  dir="$(dirname "$target")"
+  base="$(basename "$target")"
+  if [ -d "$dir" ]; then
+    printf '%s/%s\n' "$(cd -P "$dir" && pwd)" "$base"
+    return
+  fi
+
+  printf '%s\n' "$target"
+}
+
+absolute_link_target() {
+  local link_path link_target link_dir
+  link_path="$1"
+  link_target="$(readlink "$link_path" 2>/dev/null || true)"
+  if [ -z "$link_target" ]; then
+    return 1
+  fi
+
+  case "$link_target" in
+    /*)
+      printf '%s\n' "$link_target"
+      ;;
+    *)
+      link_dir="$(dirname "$link_path")"
+      printf '%s/%s\n' "$(cd -P "$link_dir" && pwd)" "$link_target"
+      ;;
+  esac
+}
+
+same_path() {
+  [ "$(canonical_path "$1")" = "$(canonical_path "$2")" ]
+}
+
+remove_file_path() {
+  local target="$1"
+
+  if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+    return 0
+  fi
+
+  rm -f "$target" 2>/dev/null || try_run_as_root rm -f "$target"
+}
+
+remove_dir_path() {
+  local target="$1"
+
+  if [ ! -e "$target" ]; then
+    return 0
+  fi
+
+  rm -rf "$target" 2>/dev/null || try_run_as_root rm -rf "$target"
+}
+
+dangerous_remove_dir() {
+  local target
+  target="$(canonical_path "$1")"
+
+  case "$target" in
+    ""|"/"|"$HOME"|"/usr"|"/usr/local"|"/opt"|"/etc"|"/var"|"/tmp"|"/private/tmp")
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+looks_like_vibe_research_checkout() {
+  local target="$1"
+
+  [ -d "$target" ] \
+    && [ -f "$target/start.sh" ] \
+    && [ -f "$target/package.json" ] \
+    && [ -f "$target/bin/vibe-research" ]
+}
+
+read_pid_file() {
+  local pid_file="$1"
+  local pid
+
+  if [ ! -f "$pid_file" ]; then
+    return 1
+  fi
+
+  pid="$(tr -d '[:space:]' <"$pid_file" 2>/dev/null || true)"
+  if [ -z "$pid" ]; then
+    return 1
+  fi
+
+  printf '%s\n' "$pid"
+}
+
+is_pid_running() {
+  local pid="$1"
+  kill -0 "$pid" >/dev/null 2>&1
+}
+
+looks_like_vibe_research_server() {
+  local pid="$1"
+  local command
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  case "$command" in
+    *"node src/server.js"*) return 0 ;;
+    *"vibe-research"*"/src/server.js"*) return 0 ;;
+    *"remote-vibes"*"/src/server.js"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+stop_managed_server() {
+  local state_dir pid_file pid attempt
+  state_dir="$1"
+  pid_file="$state_dir/server.pid"
+
+  if ! pid="$(read_pid_file "$pid_file")"; then
+    rm -f "$pid_file" 2>/dev/null || true
+    return
+  fi
+
+  if ! is_pid_running "$pid"; then
+    rm -f "$pid_file" 2>/dev/null || true
+    return
+  fi
+
+  if ! looks_like_vibe_research_server "$pid"; then
+    log "Leaving pid $pid running because it does not look like a managed Vibe Research server."
+    return
+  fi
+
+  log "Stopping Vibe Research server (pid $pid)"
+  kill "$pid" >/dev/null 2>&1 || true
+
+  for attempt in $(seq 1 50); do
+    if ! is_pid_running "$pid"; then
+      rm -f "$pid_file" 2>/dev/null || true
+      return
+    fi
+    sleep 0.2
+  done
+
+  log "Server did not stop in time, sending SIGKILL"
+  kill -9 "$pid" >/dev/null 2>&1 || true
+  rm -f "$pid_file" 2>/dev/null || true
+}
+
+uninstall_systemd_service() {
+  local service_name service_file service_exists
+  service_name="${VIBE_RESEARCH_SERVICE_NAME:-${REMOTE_VIBES_SERVICE_NAME:-vibe-research}}"
+  service_file="${VIBE_RESEARCH_SYSTEMD_SERVICE_DIR:-${REMOTE_VIBES_SYSTEMD_SERVICE_DIR:-/etc/systemd/system}}/${service_name}.service"
+  service_exists=0
+
+  if [ "${VIBE_RESEARCH_UNINSTALL_SERVICE:-${REMOTE_VIBES_UNINSTALL_SERVICE:-1}}" = "0" ]; then
+    return
+  fi
+
+  if ! is_linux || ! has_command systemctl; then
+    return
+  fi
+
+  if try_run_as_root systemctl cat "${service_name}.service" >/dev/null 2>&1; then
+    service_exists=1
+  elif [ -e "$service_file" ]; then
+    service_exists=1
+  fi
+
+  if [ "$service_exists" != "1" ]; then
+    return
+  fi
+
+  log "Disabling systemd service ${service_name}.service"
+  try_run_as_root systemctl stop "${service_name}.service" >/dev/null 2>&1 || log "Could not stop ${service_name}.service; continuing."
+  try_run_as_root systemctl disable "${service_name}.service" >/dev/null 2>&1 || log "Could not disable ${service_name}.service; continuing."
+
+  if [ -e "$service_file" ]; then
+    log "Removing systemd unit: $service_file"
+    remove_file_path "$service_file" || log "Could not remove $service_file"
+  fi
+
+  try_run_as_root systemctl daemon-reload >/dev/null 2>&1 || log "Could not reload systemd; continuing."
+  try_run_as_root systemctl reset-failed "${service_name}.service" >/dev/null 2>&1 || true
+}
+
+remove_launcher_commands() {
+  local app_dir launcher_source command_path candidate link_target canonical_source canonical_target
+  local candidates=()
+  app_dir="$1"
+  launcher_source="$app_dir/bin/vibe-research"
+  canonical_source="$(canonical_path "$launcher_source")"
+
+  if command_path="$(command -v vibe-research 2>/dev/null)" && [ -n "$command_path" ]; then
+    candidates+=("$command_path")
+  fi
+
+  case "${0:-}" in
+    */*) candidates+=("$0") ;;
+  esac
+
+  if [ -n "${VIBE_RESEARCH_BIN_DIR:-${REMOTE_VIBES_BIN_DIR:-}}" ]; then
+    candidates+=("${VIBE_RESEARCH_BIN_DIR:-${REMOTE_VIBES_BIN_DIR:-}}/vibe-research")
+  fi
+
+  candidates+=(
+    "$HOME/.local/bin/vibe-research"
+    "$HOME/bin/vibe-research"
+    "/usr/local/bin/vibe-research"
+    "/opt/homebrew/bin/vibe-research"
+  )
+
+  for candidate in "${candidates[@]}"; do
+    [ -n "$candidate" ] || continue
+
+    if [ ! -L "$candidate" ]; then
+      if [ -e "$candidate" ] && ! same_path "$candidate" "$launcher_source"; then
+        log "Leaving non-symlink command in place: $candidate"
+      fi
+      continue
+    fi
+
+    if ! link_target="$(absolute_link_target "$candidate")"; then
+      continue
+    fi
+
+    canonical_target="$(canonical_path "$link_target")"
+    if [ "$canonical_target" != "$canonical_source" ]; then
+      log "Leaving unrelated vibe-research symlink in place: $candidate"
+      continue
+    fi
+
+    log "Removing terminal command: $candidate"
+    remove_file_path "$candidate" || log "Could not remove $candidate"
+  done
+}
+
+confirm_uninstall() {
+  local app_dir state_dir purge answer
+  app_dir="$1"
+  state_dir="$2"
+  purge="$3"
+
+  if [ "${VIBE_RESEARCH_UNINSTALL_YES:-0}" = "1" ]; then
+    return
+  fi
+
+  log "This will uninstall Vibe Research from this system."
+  log "App checkout: $app_dir"
+  log "State directory: $state_dir ($(if [ "$purge" = "1" ]; then printf 'will remove'; else printf 'will keep'; fi))"
+
+  if [ ! -t 0 ]; then
+    fail "Refusing to uninstall without --yes in a non-interactive shell."
+  fi
+
+  printf 'Uninstall Vibe Research? [y/N] '
+  read -r answer
+  case "$answer" in
+    y|Y|yes|YES|Yes)
+      ;;
+    *)
+      fail "Uninstall cancelled."
+      ;;
+  esac
+}
+
+remove_app_checkout() {
+  local app_dir="$1"
+
+  if [ ! -e "$app_dir" ]; then
+    log "No app checkout found at $app_dir"
+    return
+  fi
+
+  if dangerous_remove_dir "$app_dir"; then
+    fail "Refusing to remove unsafe app directory: $app_dir"
+  fi
+
+  if ! looks_like_vibe_research_checkout "$app_dir"; then
+    fail "Refusing to remove $app_dir because it does not look like a Vibe Research app checkout."
+  fi
+
+  log "Removing app checkout: $app_dir"
+  remove_dir_path "$app_dir" || fail "Could not remove app checkout: $app_dir"
+}
+
+remove_state_dir_if_requested() {
+  local state_dir="$1"
+  local purge="$2"
+
+  if [ "$purge" != "1" ]; then
+    if [ -e "$state_dir" ]; then
+      log "Keeping local state: $state_dir (use --purge to remove it)."
+    fi
+    return
+  fi
+
+  if [ ! -e "$state_dir" ]; then
+    return
+  fi
+
+  if dangerous_remove_dir "$state_dir"; then
+    fail "Refusing to remove unsafe state directory: $state_dir"
+  fi
+
+  log "Removing local state: $state_dir"
+  remove_dir_path "$state_dir" || fail "Could not remove state directory: $state_dir"
+}
+
+uninstall_vibe_research() {
+  local app_dir state_dir purge
+  app_dir="$(resolve_app_dir)"
+  state_dir="$(resolve_state_dir)"
+  purge="$1"
+
+  confirm_uninstall "$app_dir" "$state_dir" "$purge"
+  uninstall_systemd_service
+  stop_managed_server "$state_dir"
+  remove_launcher_commands "$app_dir"
+  remove_app_checkout "$app_dir"
+  remove_state_dir_if_requested "$state_dir" "$purge"
+  log "Uninstall complete."
+}
+
 browser_url() {
   local host port browser_host
   host="${VIBE_RESEARCH_HOST:-${REMOTE_VIBES_HOST:-0.0.0.0}}"
@@ -115,7 +473,9 @@ open_browser() {
 
 print_usage() {
   cat <<'EOF'
-Usage: vibe-research [--no-browser] [--url]
+Usage:
+  vibe-research [--no-browser] [--url]
+  vibe-research uninstall [--yes] [--purge]
 
 Launch Vibe Research if needed and open the local UI in your browser.
 
@@ -123,30 +483,67 @@ Options:
   --no-browser   Start or reuse the server without opening a browser.
   --url          Print the local browser URL and exit.
   -h, --help     Show this help.
+
+Uninstall:
+  uninstall      Stop Vibe Research and remove the terminal command and app checkout.
+  --yes          Do not prompt for confirmation.
+  --purge        Also remove local state under VIBE_RESEARCH_STATE_DIR (default ~/.vibe-research).
 EOF
 }
 
+command_name="launch"
 open_after_start=1
 print_url_only=0
+uninstall_purge=0
+
+case "${1:-}" in
+  uninstall)
+    command_name="uninstall"
+    shift
+    ;;
+esac
 
 while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --no-browser)
-      open_after_start=0
-      ;;
-    --url)
-      print_url_only=1
-      ;;
-    -h|--help)
-      print_usage
-      exit 0
-      ;;
-    *)
-      fail "Unknown option: $1"
-      ;;
-  esac
+  if [ "$command_name" = "uninstall" ]; then
+    case "$1" in
+      --yes|-y)
+        VIBE_RESEARCH_UNINSTALL_YES=1
+        ;;
+      --purge)
+        uninstall_purge=1
+        ;;
+      -h|--help)
+        print_usage
+        exit 0
+        ;;
+      *)
+        fail "Unknown uninstall option: $1"
+        ;;
+    esac
+  else
+    case "$1" in
+      --no-browser)
+        open_after_start=0
+        ;;
+      --url)
+        print_url_only=1
+        ;;
+      -h|--help)
+        print_usage
+        exit 0
+        ;;
+      *)
+        fail "Unknown option: $1"
+        ;;
+    esac
+  fi
   shift
 done
+
+if [ "$command_name" = "uninstall" ]; then
+  uninstall_vibe_research "$uninstall_purge"
+  exit 0
+fi
 
 url="$(browser_url)"
 if [ "$print_url_only" = "1" ]; then

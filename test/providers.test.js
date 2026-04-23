@@ -33,6 +33,50 @@ test("resolveProviderCommand falls back to executable path hints", async () => {
   }
 });
 
+test("resolveProviderCommand verifies hinted executables with their bin directory on PATH", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-provider-verify-path-"));
+  const toolBinDir = path.join(tempDir, "tool-bin");
+  const fakeOpenClawPath = path.join(toolBinDir, "openclaw");
+  const helperPath = path.join(toolBinDir, "openclaw-runtime-helper");
+
+  try {
+    await mkdir(toolBinDir, { recursive: true });
+    await writeFile(helperPath, "#!/usr/bin/env bash\nexit 0\n");
+    await writeFile(
+      fakeOpenClawPath,
+      [
+        "#!/usr/bin/env bash",
+        "openclaw-runtime-helper >/dev/null 2>&1 || exit 1",
+        "if [ \"$1\" = \"--version\" ]; then",
+        "  printf '2026.2.2\\n'",
+        "fi",
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    await chmod(helperPath, 0o755);
+    await chmod(fakeOpenClawPath, 0o755);
+
+    const result = await resolveProviderCommand(
+      {
+        id: "openclaw",
+        label: "OpenClaw",
+        command: "openclaw",
+        launchCommand: "openclaw",
+        verifyArgs: ["--version"],
+        pathHints: [fakeOpenClawPath],
+      },
+      { HOME: tempDir, PATH: "/usr/bin:/bin", SHELL: "/bin/zsh" },
+    );
+
+    assert.deepEqual(result, {
+      available: true,
+      resolvedCommand: fakeOpenClawPath,
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("detectProviders promotes a hinted executable into the launch command", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-provider-"));
   const fakeCodexPath = path.join(tempDir, "codex");
@@ -243,63 +287,6 @@ test("providerDefinitions includes OpenClaw with onboarding metadata", () => {
     "/opt/homebrew/bin/openclaw",
     "/usr/local/bin/openclaw",
   ]);
-});
-
-test("OpenClaw verification uses the managed wrapper to avoid stale PATH node", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-openclaw-provider-"));
-  const fakeBinDir = path.join(tempDir, "bin");
-  const fakeOpenClawPath = path.join(fakeBinDir, "openclaw");
-  const fakeOldNodePath = path.join(fakeBinDir, "node");
-  const fakeNode22Path = path.join(tempDir, "node22");
-
-  try {
-    await mkdir(fakeBinDir, { recursive: true });
-    await writeFile(fakeOpenClawPath, "#!/usr/bin/env node\nprocess.exit(0)\n", "utf8");
-    await writeFile(fakeOldNodePath, "#!/usr/bin/env bash\nexit 42\n", "utf8");
-    await writeFile(
-      fakeNode22Path,
-      [
-        "#!/usr/bin/env bash",
-        "if [ \"$1\" = \"-e\" ]; then",
-        "  exit 0",
-        "fi",
-        "exit 0",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    await chmod(fakeOpenClawPath, 0o755);
-    await chmod(fakeOldNodePath, 0o755);
-    await chmod(fakeNode22Path, 0o755);
-
-    const provider = {
-      id: "openclaw",
-      label: "OpenClaw",
-      command: "openclaw",
-      launchCommand: "openclaw",
-      verifyArgs: ["--version"],
-    };
-    const env = {
-      HOME: tempDir,
-      OPENCLAW_NODE: fakeNode22Path,
-      PATH: `${fakeBinDir}:/usr/bin:/bin`,
-      SHELL: "/bin/zsh",
-    };
-
-    const result = await resolveProviderCommand(provider, env);
-    const detected = await detectProviders([provider], env);
-
-    assert.deepEqual(result, {
-      available: true,
-      resolvedCommand: fakeOpenClawPath,
-    });
-    assert.equal(detected[0].available, true);
-    assert.equal(path.basename(detected[0].launchCommand), "openclaw");
-    assert.equal(path.basename(path.dirname(detected[0].launchCommand)), "bin");
-    assert.notEqual(detected[0].launchCommand, fakeOpenClawPath);
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
 });
 
 test("providerDefinitions includes Claude npm package fallback metadata", () => {

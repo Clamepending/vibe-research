@@ -401,6 +401,7 @@ export class OttoAuthService {
   }
 
   async createTask({
+    callbackUrl = "",
     callerSessionId = "",
     cwd = "",
     itemUrl = "",
@@ -419,6 +420,7 @@ export class OttoAuthService {
     const normalizedServiceId = String(serviceId || service || "computeruse").trim().toLowerCase();
     if (normalizedServiceId === "amazon") {
       return this.createAmazonTask({
+        callbackUrl,
         callerSessionId,
         cwd,
         itemUrl: itemUrl || url,
@@ -432,6 +434,7 @@ export class OttoAuthService {
     }
 
     return this.createComputerUseTask({
+      callbackUrl,
       callerSessionId,
       cwd,
       maxChargeCents,
@@ -445,6 +448,7 @@ export class OttoAuthService {
   }
 
   async createComputerUseTask({
+    callbackUrl = "",
     callerSessionId = "",
     cwd = "",
     maxChargeCents,
@@ -478,6 +482,10 @@ export class OttoAuthService {
     }
     if (maxCharge != null) {
       requestBody.max_charge_cents = maxCharge;
+    }
+    const normalizedCallbackUrl = String(callbackUrl || this.getCallbackUrl() || "").trim();
+    if (normalizedCallbackUrl) {
+      requestBody.callback_url = normalizedCallbackUrl;
     }
 
     const payload = await this.fetchJson(`${baseUrl}/api/services/computeruse/submit-task`, {
@@ -525,6 +533,7 @@ export class OttoAuthService {
   }
 
   async createAmazonTask({
+    callbackUrl = "",
     callerSessionId = "",
     cwd = "",
     itemUrl = "",

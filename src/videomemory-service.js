@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { getBuildingAgentWorkspacePath } from "./workspace-layout.js";
 
-const VIDEOMEMORY_BUILDING_ID = "videomemory";
 const STORE_FILENAME = "videomemory-monitors.json";
 const STORE_VERSION = 1;
 const RECENT_EVENT_LIMIT = 80;
@@ -485,7 +483,6 @@ export class VideoMemoryService {
     suppressedEventPersistMs = SUPPRESSED_EVENT_PERSIST_MS,
     settings = {},
     stateDir,
-    systemRootPath = "",
     wakeCooldownMs = WAKE_COOLDOWN_MS,
   }) {
     this.defaultProviderId = defaultProviderId;
@@ -505,7 +502,6 @@ export class VideoMemoryService {
     this.suppressedEventPersistMs = suppressedEventPersistMs;
     this.settings = settings || {};
     this.stateDir = stateDir;
-    this.systemRootPath = systemRootPath;
     this.storePath = path.join(stateDir, STORE_FILENAME);
     this.videoMemoryDevices = [];
     this.lastRemoteDeviceRefreshAt = 0;
@@ -880,16 +876,10 @@ export class VideoMemoryService {
       };
     }
 
-    const buildingSessionCwd = monitor.cwd ? "" : this.getBuildingSessionCwd();
-    if (buildingSessionCwd) {
-      await mkdir(buildingSessionCwd, { recursive: true });
-    }
-
     const session = this.sessionManager?.createSession?.({
       providerId: monitor.providerId || this.getDefaultProviderId(),
       name: `camera: ${monitor.name || monitor.ioId}`,
-      cwd: monitor.cwd || buildingSessionCwd || undefined,
-      sourceBuildingId: VIDEOMEMORY_BUILDING_ID,
+      cwd: monitor.cwd || undefined,
     });
 
     if (!session?.id) {
@@ -903,14 +893,6 @@ export class VideoMemoryService {
       providerId: session.providerId || monitor.providerId,
       sessionId: session.id,
     };
-  }
-
-  getBuildingSessionCwd() {
-    return getBuildingAgentWorkspacePath({
-      buildingId: VIDEOMEMORY_BUILDING_ID,
-      settings: this.settings,
-      systemRootPath: this.systemRootPath,
-    });
   }
 
   sendPromptToSession({ providerId, prompt, sessionId }) {

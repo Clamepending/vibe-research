@@ -41,7 +41,6 @@ function createSessionManager(initialSessions = []) {
         providerId: input.providerId,
         providerLabel: input.providerId,
         cwd: input.cwd || process.cwd(),
-        sourceBuildingId: input.sourceBuildingId || "",
         status: "running",
       };
       sessions.set(session.id, session);
@@ -542,56 +541,8 @@ test("VideoMemory creates a new provider session when requested", async () => {
     assert.equal(sessionManager.createdSessions.length, 1);
     assert.equal(sessionManager.createdSessions[0].providerId, "gemini");
     assert.equal(sessionManager.createdSessions[0].cwd, stateDir);
-    assert.equal(sessionManager.createdSessions[0].sourceBuildingId, "videomemory");
     assert.equal(sessionManager.writes[0].sessionId, "created-1");
     assert.match(sessionManager.writes[0].input, /A package was placed/);
-  } finally {
-    await rm(stateDir, { recursive: true, force: true });
-  }
-});
-
-test("VideoMemory new sessions without monitor cwd use the building workspace", async () => {
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "vr-videomemory-building-session-"));
-  const workspaceRoot = path.join(stateDir, "workspace");
-  const fetchImpl = createFetch([{ body: { task_id: "100" } }]);
-  const sessionManager = createSessionManager();
-  const service = new VideoMemoryService({
-    defaultProviderId: "claude",
-    fetchImpl,
-    sessionManager,
-    settings: {
-      videoMemoryBaseUrl: "http://127.0.0.1:5050",
-      videoMemoryEnabled: true,
-      videoMemoryProviderId: "claude",
-      workspaceRootPath: workspaceRoot,
-    },
-    stateDir,
-  });
-
-  try {
-    await service.initialize();
-    await service.createMonitor({
-      action: "Watch the door.",
-      ioId: "net2",
-      providerId: "claude",
-      targetMode: "new-session",
-      trigger: "When the door opens",
-    });
-    await service.handleWebhook({
-      headers: { authorization: `Bearer ${service.webhookToken}` },
-      body: {
-        event_id: "evt-building-session",
-        note: "The door opened.",
-        task_id: "100",
-      },
-    });
-
-    assert.equal(sessionManager.createdSessions.length, 1);
-    assert.equal(
-      sessionManager.createdSessions[0].cwd,
-      path.join(workspaceRoot, "vibe-research", "buildings", "videomemory"),
-    );
-    assert.equal(sessionManager.createdSessions[0].sourceBuildingId, "videomemory");
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }

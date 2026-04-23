@@ -1,0 +1,274 @@
+#!/usr/bin/env node
+
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+
+function printHelp() {
+  process.stdout.write(`vr-scaffold-recipe
+
+Export, save, preview, apply, and publish Vibe Research scaffold recipes.
+
+Usage:
+  vr-scaffold-recipe export [--name TEXT] [--tag TAG] [--pretty]
+  vr-scaffold-recipe save-current [--id ID] [--name TEXT] [--description TEXT] [--tag TAG]
+  vr-scaffold-recipe list
+  vr-scaffold-recipe get RECIPE_ID
+  vr-scaffold-recipe preview RECIPE_ID_OR_PATH [--binding key=value] [--pretty]
+  vr-scaffold-recipe apply RECIPE_ID_OR_PATH [--binding key=value] [--apply-occupation]
+  vr-scaffold-recipe publish RECIPE_ID_OR_current [--name TEXT] [--description TEXT] [--tag TAG]
+
+Sources:
+  RECIPE_ID_OR_PATH can be a saved recipe id, a JSON file path, or - for stdin.
+  --binding supplies local/personal/secret values that recipes intentionally do not export.
+`);
+}
+
+function requireValue(args, index, flag) {
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value.`);
+  }
+  return value;
+}
+
+function parseBinding(value) {
+  const text = String(value || "");
+  const splitIndex = text.indexOf("=");
+  if (splitIndex <= 0) {
+    throw new Error(`invalid binding ${JSON.stringify(value)}; use key=value.`);
+  }
+  return [text.slice(0, splitIndex).trim(), text.slice(splitIndex + 1)];
+}
+
+function parseArgs(argv) {
+  const options = {
+    applyOccupation: false,
+    bindings: {},
+    description: "",
+    id: "",
+    name: "",
+    pretty: false,
+    source: "",
+    tags: [],
+  };
+  let command = "";
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!command && !arg.startsWith("-")) {
+      command = arg;
+      continue;
+    }
+
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+    } else if (arg === "--pretty") {
+      options.pretty = true;
+    } else if (arg === "--apply-occupation") {
+      options.applyOccupation = true;
+    } else if (arg === "--id") {
+      options.id = requireValue(argv, index, arg);
+      index += 1;
+    } else if (arg === "--name" || arg === "--title") {
+      options.name = requireValue(argv, index, arg);
+      index += 1;
+    } else if (arg === "--description" || arg === "--summary") {
+      options.description = requireValue(argv, index, arg);
+      index += 1;
+    } else if (arg === "--tag" || arg === "--tags") {
+      options.tags.push(...requireValue(argv, index, arg).split(",").map((entry) => entry.trim()).filter(Boolean));
+      index += 1;
+    } else if (arg === "--binding" || arg === "--local" || arg === "--secret") {
+      const [key, value] = parseBinding(requireValue(argv, index, arg));
+      options.bindings[key] = value;
+      index += 1;
+    } else if (!arg.startsWith("--") && !options.source) {
+      options.source = arg;
+    } else {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+
+  return { command: command || "export", options };
+}
+
+async function readServerInfo(rootDir) {
+  const filePath = path.join(rootDir, "server.json");
+  const raw = await readFile(filePath, "utf8");
+  return JSON.parse(raw);
+}
+
+async function resolveScaffoldRecipesApi() {
+  const directApi = String(
+    process.env.VIBE_RESEARCH_SCAFFOLD_RECIPES_API ||
+      process.env.REMOTE_VIBES_SCAFFOLD_RECIPES_API ||
+      "",
+  ).trim();
+  if (directApi) {
+    return directApi.replace(/\/+$/, "");
+  }
+
+  const rootDir = String(process.env.VIBE_RESEARCH_ROOT || process.env.REMOTE_VIBES_ROOT || "").trim();
+  if (!rootDir) {
+    throw new Error("VIBE_RESEARCH_SCAFFOLD_RECIPES_API or VIBE_RESEARCH_ROOT is required.");
+  }
+
+  const serverInfo = await readServerInfo(rootDir);
+  const baseUrl = String(serverInfo?.helperBaseUrl || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("Vibe Research server metadata does not include helperBaseUrl.");
+  }
+
+  return `${baseUrl}/api/scaffold-recipes`;
+}
+
+async function fetchJsonOrThrow(url, options) {
+  const response = await fetch(url, options);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error || `${response.status} ${response.statusText}`.trim());
+  }
+  return payload;
+}
+
+async function readStdin() {
+  const chunks = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function fileExists(filePath) {
+  try {
+    const stats = await stat(filePath);
+    return stats.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function resolveRecipeInput(apiBase, source) {
+  const value = String(source || "").trim();
+  if (!value) {
+    throw new Error("recipe id or path is required.");
+  }
+
+  if (value === "-") {
+    return JSON.parse(await readStdin());
+  }
+
+  const filePath = path.resolve(value);
+  if (await fileExists(filePath)) {
+    return JSON.parse(await readFile(filePath, "utf8"));
+  }
+
+  const payload = await fetchJsonOrThrow(`${apiBase}/${encodeURIComponent(value)}`);
+  return payload.recipe;
+}
+
+function printJson(payload, { pretty = false } = {}) {
+  process.stdout.write(`${JSON.stringify(payload, null, pretty ? 2 : 0)}\n`);
+}
+
+async function main() {
+  const { command, options } = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    printHelp();
+    return;
+  }
+
+  const apiBase = await resolveScaffoldRecipesApi();
+  if (command === "export" || command === "current") {
+    const query = new URLSearchParams();
+    if (options.name) {
+      query.set("name", options.name);
+    }
+    if (options.tags.length) {
+      query.set("tags", options.tags.join(","));
+    }
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    const payload = await fetchJsonOrThrow(`${apiBase}/current${suffix}`);
+    printJson(payload.recipe, { pretty: options.pretty });
+    return;
+  }
+
+  if (command === "save-current") {
+    const payload = await fetchJsonOrThrow(`${apiBase}/current`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: options.id,
+        name: options.name,
+        description: options.description,
+        tags: options.tags,
+      }),
+    });
+    printJson(payload, { pretty: true });
+    return;
+  }
+
+  if (command === "list") {
+    const payload = await fetchJsonOrThrow(apiBase);
+    printJson(payload, { pretty: true });
+    return;
+  }
+
+  if (command === "get") {
+    const payload = await fetchJsonOrThrow(`${apiBase}/${encodeURIComponent(options.source)}`);
+    printJson(payload.recipe, { pretty: options.pretty || true });
+    return;
+  }
+
+  if (command === "preview") {
+    const recipe = await resolveRecipeInput(apiBase, options.source);
+    const payload = await fetchJsonOrThrow(`${apiBase}/preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipe,
+        localBindings: options.bindings,
+      }),
+    });
+    printJson(payload, { pretty: options.pretty || true });
+    return;
+  }
+
+  if (command === "apply") {
+    const recipe = await resolveRecipeInput(apiBase, options.source);
+    const payload = await fetchJsonOrThrow(`${apiBase}/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        applyOccupation: options.applyOccupation,
+        localBindings: options.bindings,
+        recipe,
+      }),
+    });
+    printJson(payload, { pretty: true });
+    return;
+  }
+
+  if (command === "publish") {
+    const recipeId = options.source || "current";
+    const payload = await fetchJsonOrThrow(`${apiBase}/${encodeURIComponent(recipeId)}/publish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: options.name,
+        description: options.description,
+        tags: options.tags,
+      }),
+    });
+    printJson(payload, { pretty: true });
+    return;
+  }
+
+  throw new Error(`Unknown command: ${command}`);
+}
+
+void main().catch((error) => {
+  process.stderr.write(`vr-scaffold-recipe: ${error.message}\n`);
+  process.exit(1);
+});

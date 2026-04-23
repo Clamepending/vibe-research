@@ -3,12 +3,8 @@ import { access, readFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
 
 const execFileAsync = promisify(execFile);
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const appRootDir = path.resolve(__dirname, "..");
-const openClawWrapperCommand = path.join(appRootDir, "bin", "openclaw");
 
 export const providerDefinitions = [
   {
@@ -167,6 +163,18 @@ function expandPathHint(hint, env = process.env) {
   return value;
 }
 
+function prependPathEntries(existingPath, entries) {
+  const currentEntries = String(existingPath || "")
+    .split(path.delimiter)
+    .filter(Boolean);
+  const nextEntries = (Array.isArray(entries) ? entries : [entries])
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+  const uniqueEntries = nextEntries.filter((entry, index) => nextEntries.indexOf(entry) === index);
+
+  return [...uniqueEntries, ...currentEntries.filter((entry) => !uniqueEntries.includes(entry))].join(path.delimiter);
+}
+
 async function findCommandInHints(pathHints = [], env = process.env) {
   for (const hint of pathHints) {
     const expandedHint = expandPathHint(hint, env);
@@ -231,17 +239,19 @@ async function verifyResolvedCommand(provider, resolvedCommand, env = process.en
     return true;
   }
 
-  try {
-    const command = provider.id === "openclaw" ? openClawWrapperCommand : resolvedCommand;
-    const commandEnv = provider.id === "openclaw"
-      ? {
-          ...env,
-          VIBE_RESEARCH_REAL_OPENCLAW_COMMAND: resolvedCommand,
-        }
-      : env;
+  const resolvedCommandDir = typeof resolvedCommand === "string" && resolvedCommand.includes("/")
+    ? path.dirname(resolvedCommand)
+    : "";
+  const verifyEnv = resolvedCommandDir
+    ? {
+        ...env,
+        PATH: prependPathEntries(env?.PATH || process.env.PATH || "", resolvedCommandDir),
+      }
+    : env;
 
-    await execFileAsync(command, provider.verifyArgs, {
-      env: commandEnv,
+  try {
+    await execFileAsync(resolvedCommand, provider.verifyArgs, {
+      env: verifyEnv,
       timeout: 15_000,
     });
     return true;
@@ -329,9 +339,8 @@ export async function detectProviders(definitions = providerDefinitions, env = p
         return {
           ...providerConfig,
           available,
-          launchCommand: available && provider.id === "openclaw"
-            ? openClawWrapperCommand
-            : available && resolvedCommand?.includes("/")
+          launchCommand:
+            available && resolvedCommand?.includes("/")
               ? resolvedCommand
               : providerConfig.launchCommand,
         };

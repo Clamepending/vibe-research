@@ -15,17 +15,15 @@ test("managed prompts tell terminal agents how to find building guides", async (
     await store.initialize();
 
     const state = await store.getState();
-    assert.match(state.prompt, /vibe-research:building-guides-protocol:v2/);
+    assert.match(state.prompt, /vibe-research:building-guides-protocol:v3/);
     assert.match(state.prompt, /\$VIBE_RESEARCH_BUILDING_GUIDES_INDEX/);
     assert.match(state.prompt, /Codex, Claude Code, OpenClaw, and shell agents/);
-    assert.match(state.prompt, /Vibe Research-provided env vars, helper commands, and local API endpoints/);
-    assert.match(state.prompt, /VIBE_RESEARCH_\*_API/);
-    assert.match(state.prompt, /hard-coded localhost URLs/);
     assert.match(state.prompt, /## Agent Town State/);
     assert.match(state.prompt, /\$VIBE_RESEARCH_AGENT_TOWN_API\/state/);
+    assert.match(state.prompt, /Situational awareness baseline/);
+    assert.match(state.prompt, /Treat that response as the source of truth/);
+    assert.match(state.prompt, /Never claim that Agent Town or the canvas is unavailable/);
     assert.match(state.prompt, /vr-agent-canvas --image <path>/);
-    assert.match(state.prompt, /vr-agent-canvas --url <image-url>/);
-    assert.match(state.prompt, /show me a picture\/image\/screenshot\/mockup of X/);
     assert.match(state.prompt, /satisfied: true/);
     assert.match(state.prompt, /first_building_placed/);
 
@@ -34,11 +32,8 @@ test("managed prompts tell terminal agents how to find building guides", async (
       assert.match(contents, /vibe-research:managed-agent-prompt/);
       assert.match(contents, /## Building Guides/);
       assert.match(contents, /\$VIBE_RESEARCH_BUILDING_GUIDES_DIR\/<building-id>\.md/);
-      assert.match(contents, /local API endpoints as the first choice/);
-      assert.match(contents, /endpoint\/helper is missing or fails/);
       assert.match(contents, /## Agent Town State/);
       assert.match(contents, /latest canvas appears under the agent profile/);
-      assert.match(contents, /terminal chat cannot display images/);
       assert.match(contents, /Never write secrets/);
     }
   } finally {
