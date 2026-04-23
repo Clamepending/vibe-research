@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: ${{ startsWith(github.ref, 'refs/tags/v') && 'desktop-release' || format('desktop-{0}', github.ref) }}
+  group: desktop-release
   cancel-in-progress: true
 
 jobs:
