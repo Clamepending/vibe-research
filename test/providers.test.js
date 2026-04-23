@@ -245,6 +245,63 @@ test("providerDefinitions includes OpenClaw with onboarding metadata", () => {
   ]);
 });
 
+test("OpenClaw verification uses the managed wrapper to avoid stale PATH node", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-openclaw-provider-"));
+  const fakeBinDir = path.join(tempDir, "bin");
+  const fakeOpenClawPath = path.join(fakeBinDir, "openclaw");
+  const fakeOldNodePath = path.join(fakeBinDir, "node");
+  const fakeNode22Path = path.join(tempDir, "node22");
+
+  try {
+    await mkdir(fakeBinDir, { recursive: true });
+    await writeFile(fakeOpenClawPath, "#!/usr/bin/env node\nprocess.exit(0)\n", "utf8");
+    await writeFile(fakeOldNodePath, "#!/usr/bin/env bash\nexit 42\n", "utf8");
+    await writeFile(
+      fakeNode22Path,
+      [
+        "#!/usr/bin/env bash",
+        "if [ \"$1\" = \"-e\" ]; then",
+        "  exit 0",
+        "fi",
+        "exit 0",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(fakeOpenClawPath, 0o755);
+    await chmod(fakeOldNodePath, 0o755);
+    await chmod(fakeNode22Path, 0o755);
+
+    const provider = {
+      id: "openclaw",
+      label: "OpenClaw",
+      command: "openclaw",
+      launchCommand: "openclaw",
+      verifyArgs: ["--version"],
+    };
+    const env = {
+      HOME: tempDir,
+      OPENCLAW_NODE: fakeNode22Path,
+      PATH: `${fakeBinDir}:/usr/bin:/bin`,
+      SHELL: "/bin/zsh",
+    };
+
+    const result = await resolveProviderCommand(provider, env);
+    const detected = await detectProviders([provider], env);
+
+    assert.deepEqual(result, {
+      available: true,
+      resolvedCommand: fakeOpenClawPath,
+    });
+    assert.equal(detected[0].available, true);
+    assert.equal(path.basename(detected[0].launchCommand), "openclaw");
+    assert.equal(path.basename(path.dirname(detected[0].launchCommand)), "bin");
+    assert.notEqual(detected[0].launchCommand, fakeOpenClawPath);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("providerDefinitions includes Claude npm package fallback metadata", () => {
   const provider = providerDefinitions.find((entry) => entry.id === "claude");
 

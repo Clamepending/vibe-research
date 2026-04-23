@@ -3,8 +3,12 @@ import { access, readFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
 const execFileAsync = promisify(execFile);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const appRootDir = path.resolve(__dirname, "..");
+const openClawWrapperCommand = path.join(appRootDir, "bin", "openclaw");
 
 export const providerDefinitions = [
   {
@@ -228,8 +232,16 @@ async function verifyResolvedCommand(provider, resolvedCommand, env = process.en
   }
 
   try {
-    await execFileAsync(resolvedCommand, provider.verifyArgs, {
-      env,
+    const command = provider.id === "openclaw" ? openClawWrapperCommand : resolvedCommand;
+    const commandEnv = provider.id === "openclaw"
+      ? {
+          ...env,
+          VIBE_RESEARCH_REAL_OPENCLAW_COMMAND: resolvedCommand,
+        }
+      : env;
+
+    await execFileAsync(command, provider.verifyArgs, {
+      env: commandEnv,
       timeout: 15_000,
     });
     return true;
@@ -317,8 +329,9 @@ export async function detectProviders(definitions = providerDefinitions, env = p
         return {
           ...providerConfig,
           available,
-          launchCommand:
-            available && resolvedCommand?.includes("/")
+          launchCommand: available && provider.id === "openclaw"
+            ? openClawWrapperCommand
+            : available && resolvedCommand?.includes("/")
               ? resolvedCommand
               : providerConfig.launchCommand,
         };
