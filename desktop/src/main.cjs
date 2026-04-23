@@ -15,6 +15,7 @@ const {
 } = require("./runtime.cjs");
 
 const appName = "Vibe Research";
+const isMacAppStoreBuild = process.mas === true;
 const defaultPort = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4123);
 const localUrl = `http://127.0.0.1:${defaultPort}/`;
 const state = {
@@ -30,6 +31,9 @@ function sourceRootDir() {
 }
 
 function installedAppDir() {
+  if (isMacAppStoreBuild) {
+    return path.join(app.getPath("userData"), "app");
+  }
   return expandHome(process.env.VIBE_RESEARCH_HOME || process.env.REMOTE_VIBES_HOME || "~/.vibe-research/app");
 }
 
@@ -65,7 +69,7 @@ function installerPath() {
 }
 
 function desktopEnv(extra = {}) {
-  const workspaceDir = path.join(os.homedir(), "vibe-projects");
+  const workspaceDir = isMacAppStoreBuild ? path.join(app.getPath("userData"), "workspace") : path.join(os.homedir(), "vibe-projects");
   return {
     ...process.env,
     VIBE_RESEARCH_HOME: installedAppDir(),
@@ -210,6 +214,12 @@ async function ensureExternalNodeRuntime() {
     return;
   }
 
+  if (isMacAppStoreBuild) {
+    throw new Error(
+      "Mac App Store builds cannot install Node.js automatically. Install Node.js 20+ first, then relaunch Vibe Research.",
+    );
+  }
+
   const script = installerPath();
   if (!existsSync(script)) {
     throw new Error(`Could not find install.sh at ${script}`);
@@ -239,6 +249,12 @@ async function ensureExternalNodeRuntime() {
 }
 
 async function installViaShellInstaller() {
+  if (isMacAppStoreBuild) {
+    throw new Error(
+      "Mac App Store builds do not support shell-based installation. Reinstall from the App Store package or use the direct download build.",
+    );
+  }
+
   const script = installerPath();
   if (!existsSync(script)) {
     throw new Error(`Could not find install.sh at ${script}`);
@@ -443,7 +459,7 @@ async function showUpdateReadyDialog(info) {
 }
 
 function configureAutoUpdates() {
-  if (!app.isPackaged || process.env.VIBE_RESEARCH_DESKTOP_AUTO_UPDATE === "0") {
+  if (!app.isPackaged || process.env.VIBE_RESEARCH_DESKTOP_AUTO_UPDATE === "0" || isMacAppStoreBuild) {
     return;
   }
 
@@ -491,6 +507,17 @@ function configureAutoUpdates() {
 }
 
 async function checkForDesktopUpdates({ manual = false } = {}) {
+  if (isMacAppStoreBuild) {
+    if (manual) {
+      await dialog.showMessageBox(state.mainWindow, {
+        type: "info",
+        title: "Updates via App Store",
+        message: "This build updates through the Mac App Store.",
+      });
+    }
+    return;
+  }
+
   if (!app.isPackaged || process.env.VIBE_RESEARCH_DESKTOP_AUTO_UPDATE === "0") {
     if (manual) {
       await dialog.showMessageBox(state.mainWindow, {
@@ -521,7 +548,7 @@ function installMenu() {
         },
         {
           label: "Install Downloaded Update",
-          enabled: state.updateReady,
+          enabled: !isMacAppStoreBuild && state.updateReady,
           click: () => autoUpdater.quitAndInstall(false, true),
         },
         { type: "separator" },

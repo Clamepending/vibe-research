@@ -9,6 +9,7 @@
     "dev": "electron .",
     "pack": "npm run icons && electron-builder --dir",
     "dist": "npm run icons && electron-builder",
+    "dist:mas": "npm run icons && electron-builder --mac mas --universal --publish never",
     "test": "node --test test/*.test.cjs"
   },
   "devDependencies": {
@@ -84,6 +85,13 @@
         "NSBluetoothAlwaysUsageDescription": "Vibe Research does not use Bluetooth directly.",
         "NSBluetoothPeripheralUsageDescription": "Vibe Research does not use Bluetooth directly."
       }
+    },
+    "mas": {
+      "entitlements": "build/entitlements.mas.plist",
+      "entitlementsInherit": "build/entitlements.mas.inherit.plist",
+      "target": [
+        "mas"
+      ]
     },
     "dmg": {
       "contents": [

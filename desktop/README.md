@@ -18,6 +18,7 @@ Development launches from the source checkout. Set `VIBE_RESEARCH_DESKTOP_USE_SO
 ```bash
 npm run desktop:pack
 npm run desktop:dist
+npm --prefix desktop run dist:mas
 ```
 
 macOS artifacts are written to `desktop/dist/`. Local builds use ad-hoc signing unless a Developer ID certificate is available. Public release tags require these GitHub secrets so the build is signed, notarized, and usable without Gatekeeper warnings:
@@ -29,3 +30,20 @@ macOS artifacts are written to `desktop/dist/`. Local builds use ad-hoc signing 
 - `APPLE_TEAM_ID` — Apple Developer team id.
 
 Tag builds publish the DMG, ZIP, blockmaps, and `latest-mac.yml` through `electron-builder` so `electron-updater` can update installed desktop apps from GitHub Releases.
+
+## Mac App Store builds
+
+`dist:mas` creates a Mac App Store package target. This requires App Store signing assets (application + installer identities and a provisioning profile) instead of the Developer ID certificate used for DMG/ZIP notarized builds.
+
+Expected env for MAS builds:
+
+- `MAS_PROVISIONING_PROFILE` — path to the `.provisionprofile` for `net.vibe-research.desktop`.
+- `CSC_LINK` / `CSC_KEY_PASSWORD` — signing certificate export that includes Mac App Store signing identities.
+
+Mac App Store builds disable `electron-updater` and expect App Store-managed updates.
+
+GitHub Actions release tags also require:
+
+- `MACOS_APPSTORE_CSC_LINK`
+- `MACOS_APPSTORE_CSC_KEY_PASSWORD`
+- `MAS_PROVISIONING_PROFILE_BASE64` (base64-encoded `.provisionprofile`)

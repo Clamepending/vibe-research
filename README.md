@@ -22,9 +22,12 @@ Build it locally with:
 ```bash
 npm run desktop:install
 npm run desktop:dist
+npm --prefix desktop run dist:mas
 ```
 
 macOS artifacts are written to `desktop/dist/`. The GitHub Actions `Desktop` workflow builds `.dmg` and `.zip` artifacts plus update metadata. Release tags require Developer ID signing and Apple notarization secrets, then publish the files through GitHub Releases so installed desktop apps can auto-update.
+
+Mac App Store packaging uses the `mas` target and needs App Store signing assets (`MAS_PROVISIONING_PROFILE` plus Mac App Store signing identities in `CSC_LINK`).
 
 ## Official Sources
 
