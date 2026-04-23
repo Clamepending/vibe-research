@@ -82,6 +82,9 @@ async function createCatalogDir() {
               configuredSetting: "linearApiKeyConfigured",
               required: true,
               secret: true,
+              setupUrl: "https://linear.app/settings/api",
+              setupLabel: "Get token",
+              setupHint: "Create a scoped Linear token before enabling writes.",
             },
           ],
           steps: [
@@ -253,6 +256,18 @@ test("BuildingHubService loads local manifest catalogs as safe community buildin
     assert.equal(linear.ui.entryView, "");
     assert.equal(linear.ui.workspaceView, "");
     assert.equal(linear.onboarding.setupSelector, "");
+    assert.deepEqual(linear.onboarding.variables[0], {
+      label: "API token configured",
+      value: "",
+      setting: "",
+      configuredSetting: "linearApiKeyConfigured",
+      required: true,
+      secret: true,
+      suffix: "",
+      setupUrl: "https://linear.app/settings/api",
+      setupLabel: "Get token",
+      setupHint: "Create a scoped Linear token before enabling writes.",
+    });
     assert.deepEqual(linear.onboarding.steps[1].completeWhen, {
       anyConfigured: ["linearPath", "linearUrl"],
     });

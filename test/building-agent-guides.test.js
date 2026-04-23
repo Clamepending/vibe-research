@@ -61,6 +61,22 @@ test("writeBuildingAgentGuides writes an index and one guide per catalog buildin
     assert.match(harborGuide, /Use Harbor only when sandboxed agent evaluation is warranted/);
     assert.match(harborGuide, /harbor run -d/);
     assert.match(harborGuide, /harborframework\.com\/docs/);
+
+    const modalGuide = await readFile(getBuildingAgentGuidePath(systemRootPath, "modal"), "utf8");
+    assert.match(modalGuide, /Modal CLI \+ account token/);
+    assert.match(modalGuide, /modal token info/);
+    assert.match(modalGuide, /modal deploy/);
+    assert.match(modalGuide, /MODAL_TOKEN_SECRET/);
+    assert.match(modalGuide, /modal\.com\/docs/);
+    assert.match(modalGuide, /Ask for human approval before using GPUs/);
+
+    const runPodGuide = await readFile(getBuildingAgentGuidePath(systemRootPath, "runpod"), "utf8");
+    assert.match(runPodGuide, /RunPod API key \+ runpodctl or SDK/);
+    assert.match(runPodGuide, /runpodctl serverless list/);
+    assert.match(runPodGuide, /RUNPOD_API_KEY/);
+    assert.match(runPodGuide, /RUNPOD_ENDPOINT_ID/);
+    assert.match(runPodGuide, /docs\.runpod\.io/);
+    assert.match(runPodGuide, /Ask for human approval before creating/);
   } finally {
     await rm(systemRootPath, { recursive: true, force: true });
   }

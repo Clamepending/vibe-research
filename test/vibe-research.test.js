@@ -1520,6 +1520,12 @@ test("Telegram building detail saves through fetch and opens placement without e
     await page.getByRole("button", { name: "Open Telegram building" }).click();
     await page.waitForFunction(() => new URL(window.location.href).searchParams.get("building") === "telegram");
     await page.getByLabel("Telegram bot token").waitFor({ timeout: 10_000 });
+    await page.locator('[data-plugin-setup-setting="telegramBotToken"]').click();
+    await page.waitForFunction(() => document.activeElement?.getAttribute("name") === "telegramBotToken");
+    assert.equal(
+      await page.locator('a.plugin-onboarding-var-help[href="https://telegram.me/botfather"]').count(),
+      1,
+    );
 
     await page.getByRole("button", { name: "Back to BuildingHub", exact: true }).click();
     await page.waitForFunction(() => !new URL(window.location.href).searchParams.has("building"));
@@ -1972,44 +1978,20 @@ test("Agent Town share falls back to Twitter intent when publishing fails", asyn
   }
 });
 
-test("AgentMall applies and persists the Agent Town theme", async (t) => {
+test("BuildingHub applies and persists the Agent Town theme", async (t) => {
   const executablePath = await resolveBrowserExecutablePath({ env: process.env });
   if (!executablePath) {
-    t.skip("No local Chromium/Chrome executable is available for the AgentMall theme smoke.");
+    t.skip("No local Chromium/Chrome executable is available for the BuildingHub theme smoke.");
     return;
   }
 
-  const workspaceDir = await createTempWorkspace("vibe-research-agentmall-theme-ui-");
-  const stateDir = await createTempWorkspace("vibe-research-agentmall-theme-state-");
+  const workspaceDir = await createTempWorkspace("vibe-research-buildinghub-theme-ui-");
+  const stateDir = await createTempWorkspace("vibe-research-buildinghub-theme-state-");
   const wikiDir = getWorkspaceLibraryDir(workspaceDir);
   await mkdir(wikiDir, { recursive: true });
-  await writeFile(path.join(wikiDir, "index.md"), "# AgentMall Theme Library\n", "utf8");
+  await writeFile(path.join(wikiDir, "index.md"), "# BuildingHub Theme Library\n", "utf8");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
   let browser = null;
-
-  const clickCanvasPoint = async (page, x, y) => {
-    const box = await page.locator("#visual-game-canvas").boundingBox();
-    assert.ok(box, "visual game canvas should be visible");
-    await page.mouse.click(box.x + x, box.y + y);
-  };
-  const findCanvasHoverPoint = async (page, labelText) => {
-    const box = await page.locator("#visual-game-canvas").boundingBox();
-    assert.ok(box, "visual game canvas should be visible");
-
-    for (let y = 8; y <= box.height - 8; y += 20) {
-      for (let x = 8; x <= box.width - 8; x += 20) {
-        await page.mouse.move(box.x + x, box.y + y);
-        const label = await page.locator(".visual-game-hover").textContent();
-
-        if (label?.includes(labelText)) {
-          return { x, y };
-        }
-      }
-    }
-
-    return null;
-  };
-
   try {
     const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
       method: "PATCH",
@@ -2033,32 +2015,41 @@ test("AgentMall applies and persists the Agent Town theme", async (t) => {
     const page = await browser.newPage();
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto(`${baseUrl}/?view=plugins`, { waitUntil: "domcontentloaded" });
-    await page.locator("#plugin-results").getByText("AgentMall", { exact: true }).waitFor({ timeout: 10_000 });
-    assert.equal(await page.getByRole("button", { name: "Install AgentMall" }).count(), 0);
-
-    await page.goto(`${baseUrl}/?view=swarm`, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
-    await page.waitForTimeout(800);
-    assert.equal(await page.locator("#visual-game-canvas").getAttribute("data-agent-town-theme"), "default");
-
-    const agentMallPoint = await findCanvasHoverPoint(page, "AgentMall");
-    assert.ok(agentMallPoint, "AgentMall town building should be clickable");
-    await clickCanvasPoint(page, agentMallPoint.x, agentMallPoint.y);
+    await page.locator("#plugin-results").getByText("BuildingHub", { exact: true }).waitFor({ timeout: 10_000 });
+    assert.equal(await page.locator("#plugin-results").getByText("AgentMall", { exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Install BuildingHub" }).count(), 0);
     await page.getByRole("button", { name: /Snowdrift/ }).click();
-    await page.waitForFunction(
-      () => document.querySelector("#visual-game-canvas")?.getAttribute("data-agent-town-theme") === "snowy",
-      null,
-      { timeout: 10_000 },
-    );
     assert.equal(
       await page.evaluate(() => window.localStorage.getItem("vibe-research-agent-town-theme-v1")),
       "snowy",
     );
 
+    await page.goto(`${baseUrl}/?view=swarm`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
+    await page.waitForTimeout(800);
+    await page.waitForFunction(
+      () => document.querySelector("#visual-game-canvas")?.getAttribute("data-agent-town-theme") === "snowy",
+      null,
+      { timeout: 10_000 },
+    );
+
+    await page.locator("[data-agent-town-builder-toggle]").click();
+    await page.getByRole("tab", { name: /Themes/ }).click();
+    await page.getByRole("button", { name: /Desert/ }).click();
+    await page.waitForFunction(
+      () => document.querySelector("#visual-game-canvas")?.getAttribute("data-agent-town-theme") === "desert",
+      null,
+      { timeout: 10_000 },
+    );
+    assert.equal(
+      await page.evaluate(() => window.localStorage.getItem("vibe-research-agent-town-theme-v1")),
+      "desert",
+    );
+
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
     await page.waitForFunction(
-      () => document.querySelector("#visual-game-canvas")?.getAttribute("data-agent-town-theme") === "snowy",
+      () => document.querySelector("#visual-game-canvas")?.getAttribute("data-agent-town-theme") === "desert",
       null,
       { timeout: 10_000 },
     );
@@ -2548,6 +2539,8 @@ test("external connector buildings open details and install from their building 
     { id: "twitter", name: "Twitter / X", access: /Twitter\/X API/i },
     { id: "sora", name: "Sora", access: /Videos API/i },
     { id: "nano-banana", name: "Nano Banana", access: /GEMINI_API_KEY/i },
+    { id: "modal", name: "Modal", access: /Modal account credentials/i },
+    { id: "runpod", name: "RunPod", access: /RunPod API key/i },
     { id: "phone-imessage", name: "Phone / iMessage", access: /phone or iMessage access/i },
     { id: "home-automation", name: "Home Automation", access: /does not grant device control/i },
   ];

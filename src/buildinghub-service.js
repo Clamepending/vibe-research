@@ -89,6 +89,9 @@ function normalizeOnboardingVariable(variable) {
     required: Boolean(variable.required),
     secret: Boolean(variable.secret),
     suffix: normalizeText(variable.suffix, 40),
+    setupUrl: normalizeOptionalUrl(variable.setupUrl || variable.helpUrl || variable.url),
+    setupLabel: normalizeText(variable.setupLabel || variable.helpLabel, 80),
+    setupHint: normalizeText(variable.setupHint || variable.help, 220),
   };
 }
 

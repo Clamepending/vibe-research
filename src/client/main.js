@@ -137,6 +137,7 @@ const AGENT_TOWN_SHARE_URL = "https://vibe-research.net";
 const AGENT_TOWN_SHARE_INTENT_URL = "https://twitter.com/intent/tweet";
 const AGENT_TOWN_SHARE_CLIPBOARD_TIMEOUT_MS = 1500;
 const AGENT_TOWN_SHARE_CAPTURE_TIMEOUT_MS = 2500;
+const AGENT_TOWN_BUILDINGHUB_SHARE_BASE_URL = "https://buildinghub.vibe-research.net/#/share/layout/";
 const SESSION_WORKING_SPINNER_MS = 900;
 const FILE_IMAGE_MIN_ZOOM = 1;
 const FILE_IMAGE_MAX_ZOOM = 8;
@@ -549,7 +550,7 @@ const AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE = Object.freeze({
   height: AGENT_TOWN_BUILD_GRID_SIZE * 2,
 });
 const AGENT_TOWN_BUILDER_DEFAULT_TAB = "cosmetic";
-const AGENT_TOWN_BUILDER_TABS = new Set(["cosmetic", "functional", "layouts"]);
+const AGENT_TOWN_BUILDER_TABS = new Set(["cosmetic", "themes", "functional", "layouts"]);
 const AGENT_TOWN_BUILDER_COSMETIC_ITEMS = Object.freeze([
   {
     id: "road-square",
@@ -1429,6 +1430,7 @@ const state = {
   pluginDetailId: "",
   pluginInstallActions: {},
   pluginOnboardingOpenId: "",
+  pendingPluginSetupFocus: null,
   buildingHubAdvancedOpen: false,
   brainSetupCloneUrl: "",
   brainSetupClonePath: "",
@@ -12063,6 +12065,51 @@ function getPluginOnboarding(plugin) {
   return plugin?.onboarding && typeof plugin.onboarding === "object" ? plugin.onboarding : null;
 }
 
+function getOnboardingVariableSetting(variable) {
+  return String(variable?.setting || "").trim();
+}
+
+function getOnboardingVariableFocusSelector(variable) {
+  return String(variable?.focusSelector || variable?.setupSelector || variable?.selector || "").trim();
+}
+
+function normalizePluginSetupUrl(value) {
+  const url = String(value || "").trim();
+  return /^https?:\/\//i.test(url) ? url : "";
+}
+
+function getOnboardingVariableSetupUrl(variable) {
+  return normalizePluginSetupUrl(variable?.setupUrl || variable?.helpUrl || variable?.url);
+}
+
+function getOnboardingVariableSetupLabel(variable) {
+  const label = String(variable?.setupLabel || variable?.helpLabel || "").trim();
+  if (label) {
+    return label;
+  }
+  return variable?.secret ? "Get key" : "Open guide";
+}
+
+function getOnboardingVariableActionHint(variable, configured) {
+  const hint = String(variable?.setupHint || variable?.help || "").trim();
+  if (configured) {
+    return hint || "Saved; click to update";
+  }
+  if (hint) {
+    return hint;
+  }
+  return variable?.required ? "Click to fill this in" : "Optional; click to add";
+}
+
+function getOnboardingVariableSetupTarget(plugin, variable) {
+  return {
+    label: String(variable?.label || variable?.setting || "setup field").trim(),
+    pluginId: getPluginId(plugin),
+    selector: getOnboardingVariableFocusSelector(variable),
+    setting: getOnboardingVariableSetting(variable),
+  };
+}
+
 function getPluginAccess(plugin) {
   return plugin?.access && typeof plugin.access === "object" && !Array.isArray(plugin.access) ? plugin.access : null;
 }
@@ -12176,6 +12223,40 @@ function getPluginOnboardingProgress(plugin) {
   };
 }
 
+function getPluginSetupDocs(plugin) {
+  const docs = Array.isArray(plugin?.agentGuide?.docs) ? plugin.agentGuide.docs : [];
+  return docs
+    .map((doc) => {
+      const url = normalizePluginSetupUrl(doc?.url);
+      const label = String(doc?.label || "Setup guide").trim();
+      return url ? { label, url } : null;
+    })
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
+function renderPluginSetupDocLinks(plugin) {
+  const docs = getPluginSetupDocs(plugin);
+  if (!docs.length) {
+    return "";
+  }
+
+  return `
+    <div class="plugin-onboarding-doc-links" aria-label="${escapeHtml(`${plugin.name} setup links`)}">
+      ${docs
+        .map(
+          (doc) => `
+            <a class="ghost-button plugin-onboarding-doc-link" href="${escapeHtml(doc.url)}" target="_blank" rel="noreferrer">
+              <span aria-hidden="true">${renderIcon(BookOpen)}</span>
+              <span>${escapeHtml(doc.label)}</span>
+            </a>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function renderPluginOnboarding(plugin, { force = false } = {}) {
   const onboarding = getPluginOnboarding(plugin);
   if (!onboarding || (!force && !isPluginOnboardingOpen(plugin))) {
@@ -12188,7 +12269,7 @@ function renderPluginOnboarding(plugin, { force = false } = {}) {
   const progressLabel = progress.total ? `${progress.complete}/${progress.total} checks ready` : "setup guide";
 
   return `
-    <section class="plugin-onboarding" aria-label="${escapeHtml(`${plugin.name} setup`)}">
+    <section class="plugin-onboarding" aria-label="${escapeHtml(`${plugin.name} setup`)}" data-plugin-setup-root="${escapeHtml(getPluginId(plugin))}">
       <div class="plugin-onboarding-head">
         <strong>Setup</strong>
         <span>${escapeHtml(progressLabel)}</span>
@@ -12226,10 +12307,39 @@ function renderPluginOnboarding(plugin, { force = false } = {}) {
                   const configured = isOnboardingVariableConfigured(variable);
                   const required = Boolean(variable.required);
                   const status = configured ? "set" : required ? "missing" : "optional";
+                  const target = getOnboardingVariableSetupTarget(plugin, variable);
+                  const actionable = Boolean(target.setting || target.selector);
+                  const setupUrl = getOnboardingVariableSetupUrl(variable);
+                  const label = variable.label || variable.setting || "variable";
+                  const actionHint = actionable ? getOnboardingVariableActionHint(variable, configured) : "";
+                  const main = actionable
+                    ? `
+                      <button
+                        class="plugin-onboarding-var-main"
+                        type="button"
+                        data-plugin-setup-focus="${escapeHtml(target.pluginId)}"
+                        data-plugin-setup-setting="${escapeHtml(target.setting)}"
+                        data-plugin-setup-selector="${escapeHtml(target.selector)}"
+                      >
+                        <span>${escapeHtml(label)}</span>
+                        <strong>${escapeHtml(getOnboardingVariableValueLabel(variable))}</strong>
+                        <em>${escapeHtml(actionHint)}</em>
+                      </button>
+                    `
+                    : `
+                      <div class="plugin-onboarding-var-main">
+                        <span>${escapeHtml(label)}</span>
+                        <strong>${escapeHtml(getOnboardingVariableValueLabel(variable))}</strong>
+                      </div>
+                    `;
                   return `
-                    <div class="plugin-onboarding-var is-${escapeHtml(status)}">
-                      <span>${escapeHtml(variable.label || variable.setting || "variable")}</span>
-                      <strong>${escapeHtml(getOnboardingVariableValueLabel(variable))}</strong>
+                    <div class="plugin-onboarding-var is-${escapeHtml(status)} ${actionable ? "has-action" : ""} ${setupUrl ? "has-help" : ""}">
+                      ${main}
+                      ${
+                        setupUrl
+                          ? `<a class="ghost-button plugin-onboarding-var-help" href="${escapeHtml(setupUrl)}" target="_blank" rel="noreferrer">${escapeHtml(getOnboardingVariableSetupLabel(variable))}</a>`
+                          : ""
+                      }
                     </div>
                   `;
                 })
@@ -12238,6 +12348,7 @@ function renderPluginOnboarding(plugin, { force = false } = {}) {
           `
           : ""
       }
+      ${renderPluginSetupDocLinks(plugin)}
       ${
         renderPluginInstallSetup(plugin) ||
         (isPluginInstalled(plugin)
@@ -13329,6 +13440,7 @@ function renderPluginsView() {
       </div>
       ${renderBuildingHubTownGallery()}
       <div class="plugins-layout">
+        ${renderBuildingHubThemeCatalogPanel()}
         <section class="plugin-grid plugin-store-grid" id="plugin-results" data-plugin-results>${renderPluginCards()}</section>
       </div>
     </section>
@@ -16335,40 +16447,47 @@ function renderToolshedBuildingPanel() {
   `;
 }
 
-function renderAgentMallThemeCard(theme) {
+function renderBuildingHubThemeCard(theme) {
   const active = normalizeAgentTownThemeId(state.visualGame.themeId) === theme.id;
   const preview = theme.preview || {};
   return `
     <button
-      class="agentmall-theme-card ${active ? "is-active" : ""}"
+      class="buildinghub-theme-card ${active ? "is-active" : ""}"
       type="button"
       data-agent-town-theme="${escapeHtml(theme.id)}"
       aria-pressed="${active ? "true" : "false"}"
-      style="--agentmall-ground:${escapeHtml(preview.ground || "#31694b")};--agentmall-path:${escapeHtml(preview.path || "#d1af63")};--agentmall-building:${escapeHtml(preview.building || "#7a5940")};--agentmall-accent:${escapeHtml(preview.accent || "#79bdf8")};"
+      style="--buildinghub-theme-ground:${escapeHtml(preview.ground || "#31694b")};--buildinghub-theme-path:${escapeHtml(preview.path || "#d1af63")};--buildinghub-theme-building:${escapeHtml(preview.building || "#7a5940")};--buildinghub-theme-accent:${escapeHtml(preview.accent || "#79bdf8")};"
     >
-      <span class="agentmall-theme-swatch" aria-hidden="true"></span>
-      <span class="agentmall-theme-copy">
+      <span class="buildinghub-theme-swatch" aria-hidden="true"></span>
+      <span class="buildinghub-theme-copy">
         <strong>${escapeHtml(theme.name)}</strong>
         <em>${escapeHtml(theme.meta)}</em>
         <span>${escapeHtml(theme.description)}</span>
       </span>
-      <span class="agentmall-theme-action">${active ? "Active" : "Apply"}</span>
+      <span class="buildinghub-theme-action">${active ? "Active" : "Apply"}</span>
     </button>
   `;
 }
 
-function renderAgentMallBuildingPanel() {
+function renderBuildingHubThemeGrid(className = "") {
+  return `
+    <section class="buildinghub-theme-grid ${escapeHtml(className)}" aria-label="Agent Town themes">
+      ${AGENT_TOWN_THEMES.map(renderBuildingHubThemeCard).join("")}
+    </section>
+  `;
+}
+
+function renderBuildingHubThemeCatalogPanel() {
   const activeTheme = getAgentTownTheme();
   return `
-    <div class="visual-building-panel-scroll visual-building-agentmall-panel">
-      <section class="visual-building-summary">
-        <span class="main-search-kind">theme catalog</span>
-        <strong>${escapeHtml(activeTheme.name)} is on the town map.</strong>
-      </section>
-      <section class="agentmall-theme-grid" aria-label="Agent Town themes">
-        ${AGENT_TOWN_THEMES.map(renderAgentMallThemeCard).join("")}
-      </section>
-    </div>
+    <section class="buildinghub-theme-catalog" aria-label="Town skins">
+      <div class="buildinghub-theme-catalog-head">
+        <span class="main-search-kind">town skins</span>
+        <strong>${escapeHtml(activeTheme.name)}</strong>
+        <span>${escapeHtml(activeTheme.meta)}</span>
+      </div>
+      ${renderBuildingHubThemeGrid("buildinghub-theme-catalog-grid")}
+    </section>
   `;
 }
 
@@ -16518,10 +16637,6 @@ function renderVisualGameBuildingPanelContent(buildingId, plugin) {
     return renderToolshedBuildingPanel();
   }
 
-  if (buildingId === "agentmall") {
-    return renderAgentMallBuildingPanel();
-  }
-
   if (buildingId === VISUAL_GAME_DOGHOUSE_BUILDING_ID) {
     return renderDoghouseBuildingPanel(plugin);
   }
@@ -16656,6 +16771,18 @@ function renderAgentTownBuilderCosmeticTab() {
           </button>
         `).join("")}
       </div>
+    </div>
+  `;
+}
+
+function renderAgentTownBuilderThemesTab() {
+  const activeTheme = getAgentTownTheme();
+  return `
+    <div class="agent-town-builder-tab-panel agent-town-builder-theme-tab-panel">
+      <div class="agent-town-builder-quick-actions agent-town-builder-theme-summary">
+        <span>${escapeHtml(`${activeTheme.name} active`)}</span>
+      </div>
+      ${renderBuildingHubThemeGrid("agent-town-builder-theme-grid")}
     </div>
   `;
 }
@@ -17099,6 +17226,7 @@ function renderAgentTownBuilderDrawer() {
         ${renderAgentTownBuilderOps()}
         <div class="agent-town-builder-tabs" role="tablist" aria-label="Builder categories">
           <button class="agent-town-builder-tab ${activeTab === "cosmetic" ? "is-active" : ""}" type="button" data-agent-town-builder-tab="cosmetic" role="tab" aria-selected="${activeTab === "cosmetic" ? "true" : "false"}">${renderIcon(Palette)}<span>Cosmetic</span></button>
+          <button class="agent-town-builder-tab ${activeTab === "themes" ? "is-active" : ""}" type="button" data-agent-town-builder-tab="themes" role="tab" aria-selected="${activeTab === "themes" ? "true" : "false"}">${renderIcon(Palette)}<span>Themes</span></button>
           <button class="agent-town-builder-tab ${activeTab === "functional" ? "is-active" : ""} ${unplacedCount ? "has-alert" : ""}" type="button" data-agent-town-builder-tab="functional" role="tab" aria-selected="${activeTab === "functional" ? "true" : "false"}">${renderIcon(Plug)}<span>Functional</span>${unplacedCount ? `<b aria-hidden="true">!</b>` : ""}</button>
           <button class="agent-town-builder-tab ${activeTab === "layouts" ? "is-active" : ""}" type="button" data-agent-town-builder-tab="layouts" role="tab" aria-selected="${activeTab === "layouts" ? "true" : "false"}">${renderIcon(Waypoints)}<span>Layouts</span></button>
         </div>
@@ -17107,7 +17235,9 @@ function renderAgentTownBuilderDrawer() {
             ? renderAgentTownBuilderFunctionalTab()
             : activeTab === "layouts"
               ? renderAgentTownBuilderLayoutsTab()
-              : renderAgentTownBuilderCosmeticTab()
+              : activeTab === "themes"
+                ? renderAgentTownBuilderThemesTab()
+                : renderAgentTownBuilderCosmeticTab()
         }
       </div>
     </aside>
@@ -18907,12 +19037,6 @@ function getAgentTownPluginBuildingPalette(pluginId) {
       trim: "#332b20",
       fixture: "#315f68",
       screen: "#fff0b8",
-    },
-    agentmall: {
-      body: "#72513d",
-      trim: "#3d2b27",
-      fixture: "#3c8b8a",
-      screen: "#f7d884",
     },
     system: {
       body: "#4f5a58",
@@ -25638,6 +25762,7 @@ function renderShell() {
   restoreMainViewScrollSnapshots(mainViewScrollSnapshot);
 
   bindShellEvents();
+  schedulePendingPluginSetupFocus();
 
   const hasVisualGameCanvas = document.querySelector("#visual-game-canvas") instanceof HTMLCanvasElement;
   if (state.currentView === "shell") {
@@ -26470,7 +26595,163 @@ async function setPluginInstalled(pluginId, installed, { force = false, placeAft
   }
 }
 
+function findNamedSetupControl(setting, root = document) {
+  if (!setting) {
+    return null;
+  }
+
+  const controls = root.querySelectorAll("input, select, textarea, button");
+  for (const control of controls) {
+    if (control.getAttribute("name") === setting) {
+      return control;
+    }
+  }
+
+  return null;
+}
+
+function isSetupTargetUsable(element) {
+  return Boolean(element && !element.closest?.("[inert]") && element.getClientRects?.().length);
+}
+
+function findPluginSetupTarget({ pluginId = "", setting = "", selector = "" } = {}) {
+  const roots = [
+    ...document.querySelectorAll(`[data-plugin-setup-root="${pluginId}"]`),
+    document,
+  ];
+
+  for (const root of roots) {
+    if (selector) {
+      try {
+        const target = root.querySelector(selector);
+        if (isSetupTargetUsable(target)) {
+          return target;
+        }
+      } catch {
+        // Manifest selectors are optional hints; an invalid one should not break setup navigation.
+      }
+    }
+
+    const namedControl = findNamedSetupControl(setting, root);
+    if (isSetupTargetUsable(namedControl)) {
+      return namedControl;
+    }
+  }
+
+  return null;
+}
+
+function getSetupHighlightTargets(target) {
+  const targets = new Set([target]);
+  const label = target.closest?.("label");
+  if (label) {
+    targets.add(label);
+  }
+  const id = target.getAttribute?.("id");
+  if (id) {
+    const labelForTarget = [...document.querySelectorAll("label")].find((candidate) => candidate.htmlFor === id);
+    if (labelForTarget) {
+      targets.add(labelForTarget);
+    }
+  }
+  return [...targets];
+}
+
+function highlightSetupTarget(target) {
+  const targets = getSetupHighlightTargets(target);
+  for (const element of targets) {
+    element.classList.remove("setup-target-highlight");
+    // Restart the animation if the same field is clicked twice.
+    void element.offsetWidth;
+    element.classList.add("setup-target-highlight");
+  }
+
+  window.setTimeout(() => {
+    for (const element of targets) {
+      element.classList.remove("setup-target-highlight");
+    }
+  }, 2400);
+}
+
+function focusPluginSetupTarget(target) {
+  const element = findPluginSetupTarget(target);
+  if (!element) {
+    return false;
+  }
+
+  element.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+  window.setTimeout(() => {
+    if (typeof element.focus === "function") {
+      element.focus({ preventScroll: true });
+    }
+    highlightSetupTarget(element);
+  }, 180);
+  return true;
+}
+
+function schedulePendingPluginSetupFocus() {
+  if (!state.pendingPluginSetupFocus) {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      const pending = state.pendingPluginSetupFocus;
+      if (!pending) {
+        return;
+      }
+
+      if (focusPluginSetupTarget(pending)) {
+        state.pendingPluginSetupFocus = null;
+        return;
+      }
+
+      pending.attempts = (pending.attempts || 0) + 1;
+      if (pending.attempts > 4) {
+        state.pendingPluginSetupFocus = null;
+      } else {
+        schedulePendingPluginSetupFocus();
+      }
+    });
+  });
+}
+
+function handlePluginSetupFocus(button) {
+  const pluginId = normalizeBuildingId(button.getAttribute("data-plugin-setup-focus") || "");
+  const target = {
+    pluginId,
+    selector: button.getAttribute("data-plugin-setup-selector") || "",
+    setting: button.getAttribute("data-plugin-setup-setting") || "",
+  };
+
+  if (focusPluginSetupTarget(target)) {
+    return;
+  }
+
+  const plugin = getPluginById(pluginId);
+  if (!plugin) {
+    return;
+  }
+
+  state.pendingPluginSetupFocus = {
+    ...target,
+    attempts: 0,
+  };
+  openPluginDetail(pluginId);
+  schedulePendingPluginSetupFocus();
+}
+
 function bindPluginCardEvents() {
+  document.querySelectorAll("[data-plugin-setup-focus]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+
+      handlePluginSetupFocus(button);
+    });
+  });
+
   document.querySelectorAll("[data-plugin-open]").forEach((button) => {
     button.addEventListener("click", () => {
       if (!(button instanceof HTMLButtonElement)) {
