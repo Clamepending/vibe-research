@@ -32,6 +32,8 @@ SERVICE_NAME="${VIBE_RESEARCH_SERVICE_NAME:-${REMOTE_VIBES_SERVICE_NAME:-vibe-re
 SYSTEMD_SERVICE_DIR="${VIBE_RESEARCH_SYSTEMD_SERVICE_DIR:-${REMOTE_VIBES_SYSTEMD_SERVICE_DIR:-/etc/systemd/system}}"
 NODE_MAJOR="${VIBE_RESEARCH_NODE_MAJOR:-${REMOTE_VIBES_NODE_MAJOR:-22}}"
 MIN_NODE_MAJOR=20
+NODE_INSTALL_ROOT="${VIBE_RESEARCH_NODE_INSTALL_ROOT:-${REMOTE_VIBES_NODE_INSTALL_ROOT:-$HOME/.local/share/vibe-research/node}}"
+NODE_BIN_DIR="${VIBE_RESEARCH_NODE_BIN_DIR:-${REMOTE_VIBES_NODE_BIN_DIR:-$HOME/.local/bin}}"
 APT_UPDATED=0
 MANAGED_PROMPT_MARKER="<!-- vibe-research:managed-agent-prompt -->"
 LEGACY_MANAGED_PROMPT_MARKER="<!-- remote-vibes:managed-agent-prompt -->"
@@ -503,6 +505,100 @@ install_macos_node() {
   esac
 }
 
+linux_node_arch() {
+  case "$(uname -m 2>/dev/null || true)" in
+    x86_64 | amd64)
+      printf 'x64\n'
+      ;;
+    aarch64 | arm64)
+      printf 'arm64\n'
+      ;;
+    armv7l)
+      printf 'armv7l\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+latest_linux_node_tarball_name() {
+  local arch suffix
+  arch="$(linux_node_arch)" || return 1
+  suffix="-linux-${arch}.tar.xz"
+
+  curl -fsSL "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/SHASUMS256.txt" |
+    awk -v suffix="$suffix" '
+      length($2) >= length(suffix) && substr($2, length($2) - length(suffix) + 1) == suffix {
+        print $2
+        exit
+      }
+    '
+}
+
+install_user_node() {
+  local filename base_name tarball_url temp_dir archive_path extracted_dir install_dir tool
+
+  if ! is_linux; then
+    return 1
+  fi
+
+  if ! has_command curl; then
+    fail "Missing curl. Install curl first, then rerun this installer."
+  fi
+
+  if ! has_command tar; then
+    fail "Missing tar. Install tar first, then rerun this installer."
+  fi
+
+  filename="$(latest_linux_node_tarball_name || true)"
+  if [ -z "$filename" ]; then
+    fail "Could not find a Node.js ${NODE_MAJOR}.x Linux tarball for architecture $(uname -m 2>/dev/null || printf unknown). Install Node.js ${NODE_MAJOR}.x manually, then rerun this installer."
+  fi
+
+  base_name="${filename%.tar.xz}"
+  tarball_url="https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/${filename}"
+  temp_dir="$(mktemp -d)"
+  archive_path="$temp_dir/$filename"
+
+  log "Installing Node.js ${NODE_MAJOR}.x for Linux under $NODE_INSTALL_ROOT"
+
+  if ! curl -fsSL "$tarball_url" -o "$archive_path"; then
+    rm -rf "$temp_dir"
+    fail "Failed to download Node.js Linux tarball."
+  fi
+
+  if ! tar -xJf "$archive_path" -C "$temp_dir"; then
+    rm -rf "$temp_dir"
+    fail "Failed to extract Node.js Linux tarball. Install xz/tar support or Node.js ${NODE_MAJOR}.x manually, then rerun this installer."
+  fi
+
+  extracted_dir="$temp_dir/$base_name"
+  if [ ! -x "$extracted_dir/bin/node" ] || [ ! -x "$extracted_dir/bin/npm" ]; then
+    rm -rf "$temp_dir"
+    fail "Downloaded Node.js tarball did not contain node and npm."
+  fi
+
+  mkdir -p "$NODE_INSTALL_ROOT"
+  install_dir="$NODE_INSTALL_ROOT/$base_name"
+  rm -rf "$install_dir"
+  mv "$extracted_dir" "$install_dir"
+  ln -sfn "$install_dir" "$NODE_INSTALL_ROOT/current"
+  rm -rf "$temp_dir"
+
+  mkdir -p "$NODE_BIN_DIR"
+  for tool in node npm npx corepack; do
+    if [ -x "$NODE_INSTALL_ROOT/current/bin/$tool" ]; then
+      if [ -L "$NODE_BIN_DIR/$tool" ] || [ ! -e "$NODE_BIN_DIR/$tool" ]; then
+        ln -sfn "$NODE_INSTALL_ROOT/current/bin/$tool" "$NODE_BIN_DIR/$tool" 2>/dev/null || true
+      fi
+    fi
+  done
+
+  prepend_path_dir "$NODE_BIN_DIR"
+  prepend_path_dir "$NODE_INSTALL_ROOT/current/bin"
+}
+
 ensure_base_packages() {
   if ! can_install_with_apt; then
     return
@@ -519,7 +615,8 @@ install_nodesource_node() {
   fi
 
   if ! can_install_with_apt; then
-    fail "Missing Node.js >=${MIN_NODE_MAJOR} and npm. Install Node.js ${NODE_MAJOR}.x or rerun on a Debian/Raspberry Pi OS system with apt-get."
+    install_user_node
+    return
   fi
 
   apt_install ca-certificates curl gnupg

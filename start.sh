@@ -24,6 +24,8 @@ NPM_FETCH_TIMEOUT="${VIBE_RESEARCH_NPM_FETCH_TIMEOUT:-${REMOTE_VIBES_NPM_FETCH_T
 NODE_MAJOR="${VIBE_RESEARCH_NODE_MAJOR:-${REMOTE_VIBES_NODE_MAJOR:-22}}"
 MIN_NODE_MAJOR=20
 AUTO_INSTALL_NODE="${VIBE_RESEARCH_AUTO_INSTALL_NODE:-${REMOTE_VIBES_AUTO_INSTALL_NODE:-1}}"
+NODE_INSTALL_ROOT="${VIBE_RESEARCH_NODE_INSTALL_ROOT:-${REMOTE_VIBES_NODE_INSTALL_ROOT:-$HOME/.local/share/vibe-research/node}}"
+NODE_BIN_DIR="${VIBE_RESEARCH_NODE_BIN_DIR:-${REMOTE_VIBES_NODE_BIN_DIR:-$HOME/.local/bin}}"
 NPM_TARBALL_PREFETCH="${VIBE_RESEARCH_NPM_TARBALL_PREFETCH:-${REMOTE_VIBES_NPM_TARBALL_PREFETCH:-after-failure}}"
 NPM_TARBALL_PREFETCH_PACKAGES="${VIBE_RESEARCH_NPM_TARBALL_PREFETCH_PACKAGES:-${REMOTE_VIBES_NPM_TARBALL_PREFETCH_PACKAGES:-node-pty,playwright-core,esbuild}}"
 NPM_TARBALL_PREFETCH_RETRIES="${VIBE_RESEARCH_NPM_TARBALL_PREFETCH_RETRIES:-${REMOTE_VIBES_NPM_TARBALL_PREFETCH_RETRIES:-5}}"
@@ -60,7 +62,34 @@ node_is_supported() {
   [ -n "$major" ] && [ "$major" -ge "$MIN_NODE_MAJOR" ]
 }
 
+prepend_path_dir() {
+  local dir="$1"
+
+  if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+    return
+  fi
+
+  case ":$PATH:" in
+    *:"$dir":*) ;;
+    *)
+      PATH="$dir:$PATH"
+      export PATH
+      ;;
+  esac
+}
+
+refresh_managed_node_path() {
+  prepend_path_dir "$NODE_BIN_DIR"
+  prepend_path_dir "$NODE_INSTALL_ROOT/current/bin"
+  hash -r 2>/dev/null || true
+}
+
 ensure_node_runtime() {
+  if node_is_supported && command -v npm >/dev/null 2>&1; then
+    return
+  fi
+
+  refresh_managed_node_path
   if node_is_supported && command -v npm >/dev/null 2>&1; then
     return
   fi
@@ -75,7 +104,7 @@ ensure_node_runtime() {
 
   log "Node.js >=${MIN_NODE_MAJOR} and npm are required; running the installer Node.js step"
   VIBE_RESEARCH_ENSURE_NODE_ONLY=1 REMOTE_VIBES_ENSURE_NODE_ONLY=1 bash "$ROOT_DIR/install.sh" --ensure-node-only
-  hash -r 2>/dev/null || true
+  refresh_managed_node_path
 
   if ! node_is_supported; then
     fail "Node.js $(node -v 2>/dev/null || printf 'missing') is not supported. Vibe Research needs Node.js >=${MIN_NODE_MAJOR}."
