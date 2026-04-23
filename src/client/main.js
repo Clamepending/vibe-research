@@ -316,8 +316,6 @@ const SYSTEM_CHART_COLORS = [
   "#ececef",
 ];
 const CORE_BUILDING_IDS = new Set(BUILDING_CATALOG.map((building) => normalizeBuildingId(building.id)));
-const CORE_BUILDING_ART_IDS = new Set(BUILDING_CATALOG.map((building) => normalizeBuildingId(building.id)));
-const BUILDING_ART_BASE_PATH = "/assets/buildings";
 const BUILDING_SIGN_LOGO_IDS = new Set(["agentmail", "telegram", "instacart"]);
 const PLUGIN_CATALOG = [...BUILDING_CATALOG];
 const AUTOMATION_CADENCE_OPTIONS = [
@@ -12734,97 +12732,6 @@ function renderPluginInstallButton(plugin) {
   `;
 }
 
-const TOWN_BUILDING_SPRITE_CACHE = new Map();
-
-function hasCoreBuildingArt(buildingId) {
-  return CORE_BUILDING_ART_IDS.has(normalizeBuildingId(buildingId));
-}
-
-function getBuildingArtPath(buildingId, variant = "cards") {
-  return `${BUILDING_ART_BASE_PATH}/${variant}/${encodeURIComponent(normalizeBuildingId(buildingId))}.png`;
-}
-
-function renderBuildingArtImage(buildingId, {
-  variant = "cards",
-  className = "plugin-building-art",
-  alt = "",
-  decorative = true,
-} = {}) {
-  const normalizedBuildingId = normalizeBuildingId(buildingId);
-  if (!hasCoreBuildingArt(normalizedBuildingId)) {
-    return "";
-  }
-
-  const ariaHidden = decorative ? " aria-hidden=\"true\"" : "";
-  const altText = decorative ? "" : alt;
-  return `<img class="${escapeHtml(className)}" src="${escapeHtml(getBuildingArtPath(normalizedBuildingId, variant))}" alt="${escapeHtml(altText)}"${ariaHidden} loading="lazy" decoding="async" />`;
-}
-
-function loadTownBuildingSprite(buildingId) {
-  const normalizedBuildingId = normalizeBuildingId(buildingId);
-  if (!hasCoreBuildingArt(normalizedBuildingId)) {
-    return null;
-  }
-
-  if (TOWN_BUILDING_SPRITE_CACHE.has(normalizedBuildingId)) {
-    return TOWN_BUILDING_SPRITE_CACHE.get(normalizedBuildingId);
-  }
-
-  const image = new Image();
-  image.loading = "eager";
-  image.decoding = "async";
-  image.src = getBuildingArtPath(normalizedBuildingId, "town");
-  image.addEventListener("load", () => {
-    if (isVisualInterfaceView() || state.currentView === "plugins") {
-      renderShell();
-    }
-  });
-  TOWN_BUILDING_SPRITE_CACHE.set(normalizedBuildingId, image);
-  return image;
-}
-
-function drawVisualGameBuildingArt(context, hitAreas, place, {
-  buildingId = "",
-  label = "",
-  meta = "",
-  issue = null,
-  action = null,
-} = {}) {
-  const normalizedBuildingId = normalizeBuildingId(buildingId || place?.pluginId || place?.id || "");
-  if (!normalizedBuildingId) {
-    return false;
-  }
-
-  const sprite = loadTownBuildingSprite(normalizedBuildingId);
-  if (!sprite || !sprite.complete || !sprite.naturalWidth || !place?.rect) {
-    return false;
-  }
-
-  const { x, y, width, height } = place.rect;
-  drawVisualGameShadow(context, x + 4, y + height - 2, width - 8, 7);
-  context.drawImage(sprite, x, y, width, height);
-  drawVisualGameBuildingSign(
-    context,
-    x + 8,
-    y + 7,
-    Math.min(width - 16, 88),
-    23,
-    label || place.label || normalizedBuildingId,
-    meta || "",
-  );
-
-  if (issue) {
-    drawVisualGameBuildingIssueBadge(context, place.rect);
-  }
-
-  pushAgentTownPlaceHit(hitAreas, {
-    ...place,
-    rect: place.rect,
-    baseRect: place.baseRect || place.rect,
-  }, action);
-  return true;
-}
-
 function getPluginBuildingShape(plugin) {
   return plugin?.visual?.shape || "plugin";
 }
@@ -12860,19 +12767,6 @@ function renderBuildingIssueBadge(issue) {
 function renderPluginBuilding(plugin, { issue = getPluginBuildingIssue(plugin) } = {}) {
   const pluginId = getPluginId(plugin);
   const shape = getPluginBuildingShape(plugin);
-  const artImage = renderBuildingArtImage(pluginId, {
-    variant: "cards",
-    className: "plugin-building-art",
-  });
-
-  if (artImage) {
-    return `
-      <span class="plugin-building-lot plugin-building-${escapeHtml(pluginId)} plugin-building-shape-${escapeHtml(shape)} is-image-art ${issue ? "has-building-issue" : ""}" aria-hidden="true">
-        ${artImage}
-        ${renderBuildingIssueBadge(issue)}
-      </span>
-    `;
-  }
 
   return `
     <span class="plugin-building-lot plugin-building-${escapeHtml(pluginId)} plugin-building-shape-${escapeHtml(shape)} ${issue ? "has-building-issue" : ""}" aria-hidden="true">
@@ -12890,19 +12784,6 @@ function renderPluginBuilding(plugin, { issue = getPluginBuildingIssue(plugin) }
       <span class="plugin-building-base"></span>
     </span>
   `;
-}
-
-function renderPluginDetailThumbnail(plugin) {
-  const pluginId = getPluginId(plugin);
-  const thumbnailImage = renderBuildingArtImage(pluginId, {
-    variant: "thumbs",
-    className: "plugin-detail-thumbnail-image",
-  });
-  if (!thumbnailImage) {
-    return "";
-  }
-
-  return `<span class="plugin-detail-thumbnail" aria-hidden="true">${thumbnailImage}</span>`;
 }
 
 function renderPluginCards() {
@@ -13052,7 +12933,6 @@ function renderPluginDetailView(plugin) {
       <div class="plugin-detail-layout">
         <section class="plugin-detail-hero">
           ${renderPluginBuilding(plugin, { issue })}
-          ${renderPluginDetailThumbnail(plugin)}
           <div class="plugin-detail-copy">
             <span class="main-search-kind">${escapeHtml(plugin.source || "building")}</span>
             <h2>${escapeHtml(plugin.name)}</h2>
@@ -17129,15 +17009,10 @@ function renderAgentTownBuilderFunctionalCard(plugin) {
     status === "available"
       ? `data-agent-town-builder-install-functional="${escapeHtml(pluginId)}"`
       : `data-agent-town-builder-place-functional="${escapeHtml(pluginId)}"`;
-  const iconImage = renderBuildingArtImage(pluginId, {
-    variant: "icons",
-    className: "agent-town-builder-building-image",
-    decorative: true,
-  });
 
   return `
     <article class="agent-town-builder-card agent-town-builder-functional-card ${active ? "is-active" : ""} is-${escapeHtml(status)} ${issue ? "has-building-issue" : ""}" role="listitem">
-      <span class="agent-town-builder-building-icon" aria-hidden="true">${iconImage || renderIcon(plugin.icon || Plug)}</span>
+      <span class="agent-town-builder-building-icon" aria-hidden="true">${renderIcon(plugin.icon || Plug)}</span>
       <span class="agent-town-builder-card-copy">
         <strong>${escapeHtml(plugin.name)}</strong>
         <em>${escapeHtml(`${statusLabel} · ${health.label}`)}</em>
@@ -21466,17 +21341,6 @@ function drawAgentTownInstalledPluginBuildings(context, hitAreas, time = 0, { ha
       },
     });
     if (blueprint.shape === "portal") {
-      if (
-        drawVisualGameBuildingArt(context, hitAreas, building, {
-          buildingId: blueprint.pluginId,
-          label: blueprint.label,
-          meta: blueprint.meta,
-          issue: blueprint.issue,
-          action: blueprint.action,
-        })
-      ) {
-        continue;
-      }
       drawVisualGamePortalBuilding(context, hitAreas, {
         ...building,
         body: blueprint.body,
@@ -21489,17 +21353,6 @@ function drawAgentTownInstalledPluginBuildings(context, hitAreas, time = 0, { ha
       continue;
     }
     if (blueprint.shape === "lab") {
-      if (
-        drawVisualGameBuildingArt(context, hitAreas, building, {
-          buildingId: blueprint.pluginId,
-          label: blueprint.label,
-          meta: blueprint.meta,
-          issue: blueprint.issue,
-          action: blueprint.action,
-        })
-      ) {
-        continue;
-      }
       drawVisualGameLabBuilding(context, hitAreas, {
         ...building,
         body: blueprint.body,
@@ -21509,17 +21362,6 @@ function drawAgentTownInstalledPluginBuildings(context, hitAreas, time = 0, { ha
         issue: blueprint.issue,
         action: blueprint.action,
       }, time, blueprint.pluginId === "harbor" ? harborAgents : []);
-      continue;
-    }
-    if (
-      drawVisualGameBuildingArt(context, hitAreas, building, {
-        buildingId: blueprint.pluginId,
-        label: blueprint.label,
-        meta: blueprint.meta,
-        issue: blueprint.issue,
-        action: blueprint.action,
-      })
-    ) {
       continue;
     }
     drawVisualGameBuilding(context, hitAreas, {
@@ -21605,19 +21447,6 @@ function drawVisualGameSchool(context, hitAreas, time) {
   const presetLabel = selectedPreset?.label || state.agentPromptSelectedId || "Roles";
   const targetSummary = getAgentPromptTargetSummary();
   const chalkGlow = 0.12 + Math.sin(time / 300) * 0.04;
-  const schoolMeta = issue?.label || targetSummary;
-
-  if (
-    drawVisualGameBuildingArt(context, hitAreas, place, {
-      buildingId: "occupations",
-      label: place.label,
-      meta: schoolMeta,
-      issue,
-      action: { kind: "building", buildingId: "occupations", label: `${place.label} building` },
-    })
-  ) {
-    return;
-  }
 
   drawVisualGameRoomFloor(context, x, y, width, height, {
     floor: "#536f80",
@@ -21654,7 +21483,7 @@ function drawVisualGameSchool(context, hitAreas, time) {
     Math.min(width - 16, 68),
     19,
     place.label,
-    schoolMeta,
+    issue?.label || targetSummary,
   );
   if (issue) {
     drawVisualGameBuildingIssueBadge(context, place.rect);
@@ -21668,19 +21497,6 @@ function drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents) {
   const { x, y, width, height } = place.rect;
   const bookGlow = 0.14 + Math.sin(time / 260) * 0.04;
   const issue = getBuildingIssueById("knowledge-base");
-  const libraryMeta = issue?.label || (libraryAgents.length ? `${libraryAgents.length} reading` : `${model.pathBucketCount} notes`);
-
-  if (
-    drawVisualGameBuildingArt(context, hitAreas, place, {
-      buildingId: "knowledge-base",
-      label: place.label,
-      meta: libraryMeta,
-      issue,
-      action: { kind: "building", buildingId: "knowledge-base", label: place.label },
-    })
-  ) {
-    return;
-  }
 
   drawVisualGameRoomFloor(context, x, y, width, height, {
     floor: "#8a6a42",
@@ -21710,7 +21526,7 @@ function drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents) {
     76,
     20,
     place.label,
-    libraryMeta,
+    issue?.label || (libraryAgents.length ? `${libraryAgents.length} reading` : `${model.pathBucketCount} notes`),
   );
   if (issue) {
     drawVisualGameBuildingIssueBadge(context, place.rect);
@@ -21722,19 +21538,6 @@ function drawVisualGameLibrary(context, hitAreas, model, time, libraryAgents) {
 function drawVisualGameWorkshop(context, hitAreas, time, workingAgents) {
   const place = getVisualGameTownPlace("workshop");
   const { x, y, width, height } = place.rect;
-  const workshopMeta = `${workingAgents.length} at desks`;
-  const workshopAction = { kind: "main-view", view: "visual-interface", label: place.label };
-
-  if (
-    drawVisualGameBuildingArt(context, hitAreas, place, {
-      buildingId: "buildinghub",
-      label: place.label,
-      meta: workshopMeta,
-      action: workshopAction,
-    })
-  ) {
-    return;
-  }
 
   drawVisualGameRoomFloor(context, x, y, width, height, {
     floor: "#262d2d",
@@ -21745,41 +21548,20 @@ function drawVisualGameWorkshop(context, hitAreas, time, workingAgents) {
   context.fillStyle = "#3d2c21";
   context.fillRect(x + 15, y + 56, width - 30, 9);
   context.fillRect(x + 15, y + 97, width - 30, 9);
-  drawVisualGameBuildingSign(context, x + 11, y + 14, Math.min(width - 22, 105), 23, place.label, workshopMeta);
+  drawVisualGameBuildingSign(context, x + 11, y + 14, Math.min(width - 22, 105), 23, place.label, `${workingAgents.length} at desks`);
 
   for (let index = 0; index < 6; index += 1) {
     const desk = getVisualGameDeskSpot(index);
     drawVisualGameComputerStation(context, desk, Boolean(workingAgents[index]), time, index);
   }
 
-  pushAgentTownPlaceHit(hitAreas, place, workshopAction);
+  pushAgentTownPlaceHit(hitAreas, place, { kind: "main-view", view: "visual-interface", label: place.label });
 }
 
 function drawVisualGameBrowserLab(context, hitAreas, time, browserAgents) {
   const place = getVisualGameTownPlace("browser");
   const { x, y, width, height } = place.rect;
   const issue = getBuildingIssueById("browser-use");
-  const browserMeta = issue?.label || (browserAgents.length ? `${browserAgents.length} task${browserAgents.length === 1 ? "" : "s"}` : "Lab");
-  const browserAction = browserAgents[0]?.browserUseSessionId
-    ? {
-      kind: "browser",
-      browserUseSessionId: browserAgents[0].browserUseSessionId,
-      label: `${place.label} Lab`,
-    }
-    : { kind: "building", buildingId: "browser-use", label: `${place.label} Lab` };
-
-  if (
-    drawVisualGameBuildingArt(context, hitAreas, place, {
-      buildingId: "browser-use",
-      label: place.label,
-      meta: browserMeta,
-      issue,
-      action: browserAction,
-    })
-  ) {
-    return;
-  }
-
   drawVisualGameRoomFloor(context, x, y, width, height, {
     floor: "#253433",
     wall: "#4d795d",
@@ -21793,7 +21575,7 @@ function drawVisualGameBrowserLab(context, hitAreas, time, browserAgents) {
     52,
     24,
     place.label,
-    browserMeta,
+    issue?.label || (browserAgents.length ? `${browserAgents.length} task${browserAgents.length === 1 ? "" : "s"}` : "Lab"),
   );
 
   context.fillStyle = "#3d2c21";
@@ -21806,7 +21588,15 @@ function drawVisualGameBrowserLab(context, hitAreas, time, browserAgents) {
   if (issue) {
     drawVisualGameBuildingIssueBadge(context, place.rect);
   }
-  pushAgentTownPlaceHit(hitAreas, place, browserAction);
+  if (browserAgents[0]?.browserUseSessionId) {
+    pushAgentTownPlaceHit(hitAreas, place, {
+      kind: "browser",
+      browserUseSessionId: browserAgents[0].browserUseSessionId,
+      label: `${place.label} Lab`,
+    });
+  } else {
+    pushAgentTownPlaceHit(hitAreas, place, { kind: "building", buildingId: "browser-use", label: `${place.label} Lab` });
+  }
 }
 
 function drawVisualGameOttoAuth(context, hitAreas, time, ottoAuthAgents) {
@@ -21814,20 +21604,6 @@ function drawVisualGameOttoAuth(context, hitAreas, time, ottoAuthAgents) {
   const { x, y, width, height } = place.rect;
   const registerGlow = 0.18 + Math.sin(time / 220) * 0.05;
   const issue = getBuildingIssueById("ottoauth");
-  const ottoMeta = issue?.label || (ottoAuthAgents.length ? `${ottoAuthAgents.length} order${ottoAuthAgents.length === 1 ? "" : "s"}` : "Market");
-
-  if (
-    drawVisualGameBuildingArt(context, hitAreas, place, {
-      buildingId: "ottoauth",
-      label: place.label,
-      meta: ottoMeta,
-      issue,
-      action: { kind: "building", buildingId: "ottoauth", label: `${place.label} building` },
-    })
-  ) {
-    return;
-  }
-
   drawVisualGameRoomFloor(context, x, y, width, height, {
     floor: "#4a3f55",
     wall: "#7b4a70",
@@ -21841,7 +21617,7 @@ function drawVisualGameOttoAuth(context, hitAreas, time, ottoAuthAgents) {
     Math.min(width - 16, 70),
     22,
     place.label,
-    ottoMeta,
+    issue?.label || (ottoAuthAgents.length ? `${ottoAuthAgents.length} order${ottoAuthAgents.length === 1 ? "" : "s"}` : "Market"),
   );
 
   context.fillStyle = "#2c2235";
@@ -21874,7 +21650,6 @@ function drawVisualGameCampanile(context, hitAreas, time) {
   const place = getVisualGameTownPlace("automations");
   const { x, y, width, height } = place.rect;
   const automations = getAgentAutomations();
-  const campanileMeta = automations.length ? `${automations.length} helper${automations.length === 1 ? "" : "s"}` : "Campanile";
   const towerWidth = 40;
   const towerX = Math.round(x + width / 2 - towerWidth / 2);
   const towerY = Math.round(y + 13);
@@ -21882,17 +21657,6 @@ function drawVisualGameCampanile(context, hitAreas, time) {
   const clockX = towerX + Math.floor(towerWidth / 2);
   const clockY = towerY + 49;
   const bellGlow = 0.16 + Math.sin(time / 360) * 0.04;
-
-  if (
-    drawVisualGameBuildingArt(context, hitAreas, place, {
-      buildingId: "automations",
-      label: place.label,
-      meta: campanileMeta,
-      action: { kind: "building", buildingId: "automations", label: `${place.label} Campanile` },
-    })
-  ) {
-    return;
-  }
 
   drawVisualGameShadow(context, x + 13, y + height - 2, width - 26, 7);
   context.fillStyle = "#b89452";
@@ -21961,7 +21725,7 @@ function drawVisualGameCampanile(context, hitAreas, time) {
     Math.min(width - 8, 74),
     21,
     place.label,
-    campanileMeta,
+    automations.length ? `${automations.length} helper${automations.length === 1 ? "" : "s"}` : "Campanile",
   );
 
   pushAgentTownPlaceHit(hitAreas, place, {
@@ -21979,27 +21743,8 @@ function drawVisualGameDoghouse(context, hitAreas, time) {
 
   const { x, y, width, height } = place.rect;
   const dogName = getAgentTownDogName();
-  const issue = getBuildingIssueById(VISUAL_GAME_DOGHOUSE_BUILDING_ID);
-  const doghouseMeta = issue?.label || "roam";
   const signWidth = Math.min(82, Math.max(44, dogName.length * 7 + 18));
   const wagGlow = 0.14 + Math.sin(time / 280) * 0.04;
-
-  if (
-    drawVisualGameBuildingArt(context, hitAreas, place, {
-      buildingId: VISUAL_GAME_DOGHOUSE_BUILDING_ID,
-      label: dogName,
-      meta: doghouseMeta,
-      issue,
-      action: {
-        kind: "building",
-        buildingId: VISUAL_GAME_DOGHOUSE_BUILDING_ID,
-        label: `${dogName}'s ${place.label} building`,
-      },
-    })
-  ) {
-    return;
-  }
-
   drawVisualGameShadow(context, x + 4, y + height - 1, width - 8, 6);
 
   context.fillStyle = "#5d3c28";
@@ -22048,10 +21793,7 @@ function drawVisualGameDoghouse(context, hitAreas, time) {
   context.fillStyle = "#5f2f24";
   context.fillRect(x + width - 15, y + height - 12, 3, 1);
 
-  drawVisualGameBuildingSign(context, x + width / 2 - signWidth / 2, y - 6, signWidth, 19, dogName, doghouseMeta);
-  if (issue) {
-    drawVisualGameBuildingIssueBadge(context, place.rect);
-  }
+  drawVisualGameBuildingSign(context, x + width / 2 - signWidth / 2, y - 6, signWidth, 19, dogName, "roam");
   pushAgentTownPlaceHit(hitAreas, place, {
     kind: "building",
     buildingId: VISUAL_GAME_DOGHOUSE_BUILDING_ID,
@@ -22075,23 +21817,6 @@ function drawVisualGameCameraRoom(context, hitAreas, time, cameraAgents) {
           ? `${deviceCount} cam${deviceCount === 1 ? "" : "s"}`
           : "No cams"
         : "Room");
-
-  if (
-    drawVisualGameBuildingArt(context, hitAreas, place, {
-      buildingId: "videomemory",
-      label: place.label,
-      meta: cameraMeta,
-      issue,
-      action: {
-        kind: "building",
-        buildingId: "videomemory",
-        label: `${place.label} Room`,
-      },
-    })
-  ) {
-    return;
-  }
-
   drawVisualGameRoomFloor(context, x, y, width, height, {
     floor: permissionIssue ? "#4a2d24" : "#173744",
     wall: permissionIssue ? "#a85b45" : "#3f8791",
@@ -22209,45 +21934,6 @@ function drawVisualGameSystemBuilding(context, hitAreas, factories, time) {
   const { x, y, width, height } = place.rect;
   const factoryList = Array.isArray(factories) ? factories : [];
   const factoryArea = getVisualGameSystemFactoryArea(place);
-  const systemMeta = getSystemBuildingStatusText();
-  const systemAction = {
-    kind: "building",
-    buildingId: VISUAL_GAME_SYSTEM_BUILDING_ID,
-    label: `${place.label} building`,
-  };
-
-  if (
-    drawVisualGameBuildingArt(context, hitAreas, place, {
-      buildingId: VISUAL_GAME_SYSTEM_BUILDING_ID,
-      label: place.label,
-      meta: systemMeta,
-      action: systemAction,
-    })
-  ) {
-    drawVisualGameSystemMeter(context, x + width - 82, y + 10, 70, 16);
-
-    if (!factoryList.length) {
-      drawVisualGameSystemEmptyRack(context, factoryArea, time);
-    }
-
-    const packing = getVisualGamePackedItemSlots(factoryArea, factoryList.length, {
-      gap: VISUAL_GAME_GPU_FACTORY_GAP,
-      itemSize: VISUAL_GAME_GPU_FACTORY_SIZE,
-      maxColumns: VISUAL_GAME_GPU_FACTORY_COLUMNS,
-      maxVisible: VISUAL_GAME_GPU_FACTORY_MAX_VISIBLE,
-      padding: VISUAL_GAME_GPU_FACTORY_PADDING,
-    });
-
-    packing.slots.forEach((slot, index) => {
-      const factory = factoryList[index];
-      drawVisualGameGpuFactory(context, hitAreas, factory, slot.x, slot.y, index, time, slot.scale);
-    });
-
-    if (packing.hiddenCount > 0) {
-      drawVisualGameOverflowBadge(context, x + width - 34, y + height - 19, `+${packing.hiddenCount}`);
-    }
-    return;
-  }
 
   drawVisualGamePavedArea(context, x, y, width, height);
   drawVisualGameBuildingSign(
@@ -22257,12 +21943,16 @@ function drawVisualGameSystemBuilding(context, hitAreas, factories, time) {
     Math.min(width - 14, 104),
     23,
     place.label,
-    systemMeta,
+    getSystemBuildingStatusText(),
   );
   drawVisualGameSystemMeter(context, x + width - 82, y + 10, 70, 16);
 
   if (!isAgentTownEditMode()) {
-    pushAgentTownPlaceHit(hitAreas, place, systemAction);
+    pushAgentTownPlaceHit(hitAreas, place, {
+      kind: "building",
+      buildingId: VISUAL_GAME_SYSTEM_BUILDING_ID,
+      label: `${place.label} building`,
+    });
   }
 
   if (!factoryList.length) {
@@ -22287,7 +21977,11 @@ function drawVisualGameSystemBuilding(context, hitAreas, factories, time) {
   }
 
   if (isAgentTownEditMode()) {
-    pushAgentTownPlaceHit(hitAreas, place, systemAction);
+    pushAgentTownPlaceHit(hitAreas, place, {
+      kind: "building",
+      buildingId: VISUAL_GAME_SYSTEM_BUILDING_ID,
+      label: `${place.label} building`,
+    });
   }
 }
 
@@ -22518,8 +22212,6 @@ function drawVisualGameDock(context, hitAreas, time) {
   const { x, y, width, height } = place.rect;
   const ports = isLocalhostAppsEnabled() ? state.ports : [];
   const visiblePorts = ports.slice(0, VISUAL_GAME_DOCK_MAX_SHIPS);
-  const dockMeta = isLocalhostAppsEnabled() ? `${ports.length} ships` : "off";
-  const dockAction = { kind: "building", buildingId: "localhost-apps", label: place.label };
   const water = {
     x: x - 18,
     y: y + 12,
@@ -22538,15 +22230,7 @@ function drawVisualGameDock(context, hitAreas, time) {
     context.fillRect(waveX, waveY, 8, 2);
   }
 
-  const dockRenderedWithArt = drawVisualGameBuildingArt(context, hitAreas, place, {
-    buildingId: "localhost-apps",
-    label: place.label,
-    meta: dockMeta,
-    action: dockAction,
-  });
-  if (!dockRenderedWithArt) {
-    pushAgentTownPlaceHit(hitAreas, place, dockAction);
-  }
+  pushAgentTownPlaceHit(hitAreas, place, { kind: "building", buildingId: "localhost-apps", label: place.label });
 
   visiblePorts.forEach((port, index) => {
     const slot = getVisualGameDockShipSlot(water, index, visiblePorts.length);
@@ -22574,29 +22258,27 @@ function drawVisualGameDock(context, hitAreas, time) {
     context.fillRect(water.x + water.width - 17, water.y + water.height - 13, 5, 5);
   }
 
-  if (!dockRenderedWithArt) {
-    drawVisualGameShadow(context, x + 3, y + height - 1, width, 7);
-    context.fillStyle = "#5a3f2c";
-    context.fillRect(x + width / 2 - 7, y + 8, 14, height + 8);
-    context.fillRect(water.x + 4, y + 22, water.width - 8, 9);
-    context.fillStyle = "#7a5736";
-    for (let plank = 0; plank < 7; plank += 1) {
-      context.fillRect(water.x + 8 + plank * 13, y + 23, 8, 7);
-    }
-    context.fillStyle = "#2c2020";
-    context.fillRect(x + width / 2 - 8, y + 13, 16, 2);
-    context.fillRect(water.x + 5, y + 30, water.width - 10, 2);
-
-    for (let post = 0; post < 4; post += 1) {
-      const postX = water.x + 11 + post * 25;
-      context.fillStyle = "#2c2020";
-      context.fillRect(postX, y + 18, 4, 18);
-      context.fillStyle = "#87613c";
-      context.fillRect(postX + 1, y + 17, 2, 5);
-    }
-
-    drawVisualGameBuildingSign(context, x - 2, y + 2, 62, 22, place.label, dockMeta);
+  drawVisualGameShadow(context, x + 3, y + height - 1, width, 7);
+  context.fillStyle = "#5a3f2c";
+  context.fillRect(x + width / 2 - 7, y + 8, 14, height + 8);
+  context.fillRect(water.x + 4, y + 22, water.width - 8, 9);
+  context.fillStyle = "#7a5736";
+  for (let plank = 0; plank < 7; plank += 1) {
+    context.fillRect(water.x + 8 + plank * 13, y + 23, 8, 7);
   }
+  context.fillStyle = "#2c2020";
+  context.fillRect(x + width / 2 - 8, y + 13, 16, 2);
+  context.fillRect(water.x + 5, y + 30, water.width - 10, 2);
+
+  for (let post = 0; post < 4; post += 1) {
+    const postX = water.x + 11 + post * 25;
+    context.fillStyle = "#2c2020";
+    context.fillRect(postX, y + 18, 4, 18);
+    context.fillStyle = "#87613c";
+    context.fillRect(postX + 1, y + 17, 2, 5);
+  }
+
+  drawVisualGameBuildingSign(context, x - 2, y + 2, 62, 22, place.label, isLocalhostAppsEnabled() ? `${ports.length} ships` : "off");
 }
 
 function getVisualGameDockShipSlot(water, index, count) {

@@ -3369,26 +3369,6 @@ textarea.setup-target-highlight {
   min-height: 238px;
 }
 
-.plugin-detail-thumbnail {
-  display: block;
-  height: 84px;
-  overflow: hidden;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012)),
-    rgba(10, 13, 14, 0.78);
-}
-
-.plugin-detail-thumbnail-image {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center;
-  filter: saturate(1.06) contrast(1.02);
-}
-
 .plugin-detail-copy {
   display: grid;
   align-content: start;
@@ -3481,26 +3461,6 @@ textarea.setup-target-highlight {
     linear-gradient(180deg, rgba(112, 160, 170, 0.18) 0%, rgba(112, 160, 170, 0.04) 46%, transparent 47%),
     linear-gradient(180deg, transparent 0 62%, rgba(15, 22, 18, 0.2) 62%),
     var(--building-ground);
-}
-
-.plugin-building-lot.is-image-art {
-  place-items: stretch;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.008)),
-    rgba(15, 18, 19, 0.84);
-}
-
-.plugin-building-lot.is-image-art::before {
-  display: none;
-}
-
-.plugin-building-art {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center;
-  filter: saturate(1.05) contrast(1.02);
 }
 
 .plugin-building-lot::before {
@@ -7567,14 +7527,6 @@ button.agent-town-builder-card {
   width: 20px;
   height: 20px;
   color: #cdefff;
-}
-
-.agent-town-builder-building-image {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center;
 }
 
 .agent-town-builder-preview-road-square {
@@ -13481,10 +13433,6 @@ select:disabled {
 
   .plugin-detail-hero .plugin-building-lot {
     min-height: 168px;
-  }
-
-  .plugin-detail-thumbnail {
-    height: 66px;
   }
 
   .plugin-copy span {
