@@ -336,6 +336,8 @@ const AUTOMATION_WEEKDAY_OPTIONS = [
   ["saturday", "Saturday"],
   ["sunday", "Sunday"],
 ];
+const AUTOMATION_NEW_AGENT_TARGET_VALUE = "new-agent";
+const AUTOMATION_EXISTING_AGENT_TARGET_PREFIX = "session:";
 const KNOWLEDGE_BASE_GRAPH_COLOR_PALETTE = [
   {
     fill: "rgba(104, 227, 199, 0.66)",
@@ -12903,6 +12905,57 @@ function renderAutomationSelectOptions(options, selectedValue) {
     .join("");
 }
 
+function isAutomationTargetSession(session) {
+  return Boolean(session?.id) && session.providerId !== "shell";
+}
+
+function getAutomationTargetSessions() {
+  return state.sessions.filter(isAutomationTargetSession);
+}
+
+function getAutomationNewAgentProvider() {
+  return (
+    getInstalledAgentProviders().find((provider) => provider.id === state.defaultProviderId)
+    || getInstalledAgentProviders()[0]
+    || getSelectedProvider()
+  );
+}
+
+function getAutomationSessionName(session) {
+  return session?.name || session?.providerLabel || "Agent";
+}
+
+function getAutomationSessionOptionLabel(session) {
+  const name = getAutomationSessionName(session);
+  const projectName = getWorkspacePathLeafName(session?.cwd || "");
+  const detail = [
+    session?.providerLabel && session.providerLabel !== name ? session.providerLabel : "",
+    projectName && projectName !== "folder" ? projectName : "",
+  ].filter(Boolean).join(" · ");
+  return detail ? `${name} · ${detail}` : name;
+}
+
+function getAutomationTargetDefaultValue() {
+  const targetSessions = getAutomationTargetSessions();
+  const activeSession = targetSessions.find((session) => session.id === state.activeSessionId) || targetSessions[0];
+  return activeSession
+    ? `${AUTOMATION_EXISTING_AGENT_TARGET_PREFIX}${activeSession.id}`
+    : AUTOMATION_NEW_AGENT_TARGET_VALUE;
+}
+
+function renderAutomationTargetOptions(selectedValue = getAutomationTargetDefaultValue()) {
+  const newAgentProvider = getAutomationNewAgentProvider();
+  const newAgentLabel = newAgentProvider?.label ? `New ${newAgentProvider.label} agent` : "New agent";
+  const options = [
+    `<option value="${AUTOMATION_NEW_AGENT_TARGET_VALUE}" ${selectedValue === AUTOMATION_NEW_AGENT_TARGET_VALUE ? "selected" : ""}>${escapeHtml(newAgentLabel)}</option>`,
+    ...getAutomationTargetSessions().map((session) => {
+      const value = `${AUTOMATION_EXISTING_AGENT_TARGET_PREFIX}${session.id}`;
+      return `<option value="${escapeHtml(value)}" ${selectedValue === value ? "selected" : ""}>${escapeHtml(getAutomationSessionOptionLabel(session))}</option>`;
+    }),
+  ];
+  return options.join("");
+}
+
 function getAutomationCadenceLabel(cadence) {
   return AUTOMATION_CADENCE_OPTIONS.find(([value]) => value === cadence)?.[1] || "Daily";
 }
@@ -12935,6 +12988,18 @@ function getAutomationScheduleLabel(automation) {
   }
 }
 
+function getAutomationTargetLabel(automation) {
+  const target = automation?.target && typeof automation.target === "object" ? automation.target : null;
+  if (target?.mode === "existing-agent") {
+    const session = state.sessions.find((entry) => entry.id === target.sessionId);
+    return `to ${session ? getAutomationSessionName(session) : target.sessionName || "selected agent"}`;
+  }
+
+  const provider = target?.providerId ? getProviderById(target.providerId) : getAutomationNewAgentProvider();
+  const providerLabel = target?.providerLabel || provider?.label || "";
+  return providerLabel ? `to new ${providerLabel} agent` : "to new agent";
+}
+
 function renderAgentAutomationCards() {
   const automations = Array.isArray(state.settings.agentAutomations) ? state.settings.agentAutomations : [];
   return automations
@@ -12944,6 +13009,7 @@ function renderAgentAutomationCards() {
           <div class="automation-card-icon" aria-hidden="true">${renderIcon(Bot)}</div>
           <span class="main-search-kind">${automation.enabled === false ? "disabled" : "enabled"}</span>
           <strong>${escapeHtml(getAutomationScheduleLabel(automation))}</strong>
+          <div class="agent-automation-target">${escapeHtml(getAutomationTargetLabel(automation))}</div>
           <p>${escapeHtml(getAutomationPromptPreview(automation.prompt))}</p>
           <button
             class="ghost-button toolbar-control"
@@ -12959,6 +13025,7 @@ function renderAgentAutomationCards() {
 }
 
 function renderCreateAutomationCard() {
+  const selectedTargetValue = getAutomationTargetDefaultValue();
   return `
     <article class="automation-card automation-create-card">
       <div class="automation-card-icon" aria-hidden="true">${renderIcon(Plus)}</div>
@@ -12977,6 +13044,10 @@ function renderCreateAutomationCard() {
           <label class="automation-field">
             <span class="field-label">day</span>
             <select class="file-root-input" name="weekday">${renderAutomationSelectOptions(AUTOMATION_WEEKDAY_OPTIONS, "monday")}</select>
+          </label>
+          <label class="automation-field">
+            <span class="field-label">agent</span>
+            <select class="file-root-input" name="targetAgent">${renderAutomationTargetOptions(selectedTargetValue)}</select>
           </label>
         </div>
         <label class="field-label" for="automation-prompt">task prompt</label>
@@ -25714,6 +25785,32 @@ async function saveAgentAutomations(agentAutomations) {
   }
 }
 
+function createAutomationTargetFromForm(formData) {
+  const targetValue = String(formData.get("targetAgent") || AUTOMATION_NEW_AGENT_TARGET_VALUE);
+  if (targetValue.startsWith(AUTOMATION_EXISTING_AGENT_TARGET_PREFIX)) {
+    const sessionId = targetValue.slice(AUTOMATION_EXISTING_AGENT_TARGET_PREFIX.length);
+    const session = state.sessions.find((entry) => entry.id === sessionId);
+    if (isAutomationTargetSession(session)) {
+      return {
+        cwd: session.cwd || "",
+        mode: "existing-agent",
+        providerId: session.providerId || "",
+        providerLabel: session.providerLabel || "",
+        sessionId: session.id,
+        sessionName: getAutomationSessionName(session),
+      };
+    }
+  }
+
+  const provider = getAutomationNewAgentProvider();
+  return {
+    cwd: getAgentSpawnPath(),
+    mode: "new-agent",
+    providerId: provider?.id || state.defaultProviderId || "",
+    providerLabel: provider?.label || "",
+  };
+}
+
 async function createAgentAutomationFromForm(form) {
   const formData = new FormData(form);
   const prompt = String(formData.get("prompt") || "").trim();
@@ -25727,6 +25824,7 @@ async function createAgentAutomationFromForm(form) {
     enabled: true,
     id: createClientId("automation"),
     prompt,
+    target: createAutomationTargetFromForm(formData),
     time: String(formData.get("time") || "09:00"),
     weekday: String(formData.get("weekday") || "monday"),
   };
@@ -25734,7 +25832,13 @@ async function createAgentAutomationFromForm(form) {
   await saveAgentAutomations([...getAgentAutomations(), automation]);
   void recordAgentTownEvent("automation_created", {
     label: automation.prompt.slice(0, 120),
-    metadata: { automationId: automation.id, cadence: automation.cadence, time: automation.time },
+    metadata: {
+      automationId: automation.id,
+      cadence: automation.cadence,
+      targetMode: automation.target.mode,
+      targetSessionId: automation.target.sessionId || "",
+      time: automation.time,
+    },
   });
 }
 

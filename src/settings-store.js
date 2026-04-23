@@ -124,10 +124,51 @@ function normalizeBuildingHubUrl(value) {
 
 const AGENT_AUTOMATION_CADENCES = new Set(["hourly", "six-hours", "daily", "weekday", "weekly"]);
 const AGENT_AUTOMATION_WEEKDAYS = new Set(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
+const AGENT_AUTOMATION_TARGET_MODES = new Set(["new-agent", "existing-agent"]);
 
 function normalizeAutomationTime(value) {
   const time = String(value || "").trim();
   return /^\d{2}:\d{2}$/.test(time) ? time : "09:00";
+}
+
+function normalizeAutomationTargetText(value, maxLength) {
+  const text = String(value || "").trim();
+  return text ? text.slice(0, maxLength) : "";
+}
+
+function normalizeAutomationTarget(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const rawMode = String(value.mode || "").trim().toLowerCase();
+  const rawSessionId = normalizeAutomationTargetText(value.sessionId, 180);
+  const mode = rawMode === "existing-agent" && rawSessionId ? "existing-agent" : "new-agent";
+  const target = {
+    mode: AGENT_AUTOMATION_TARGET_MODES.has(mode) ? mode : "new-agent",
+  };
+  const providerId = normalizeAutomationTargetText(value.providerId, 80);
+  const providerLabel = normalizeAutomationTargetText(value.providerLabel, 120);
+  const cwd = normalizeAutomationTargetText(value.cwd, 4096);
+  const sessionName = normalizeAutomationTargetText(value.sessionName, 160);
+
+  if (target.mode === "existing-agent") {
+    target.sessionId = rawSessionId;
+    if (sessionName) {
+      target.sessionName = sessionName;
+    }
+  }
+  if (providerId) {
+    target.providerId = normalizeAgentProviderId(providerId);
+  }
+  if (providerLabel) {
+    target.providerLabel = providerLabel;
+  }
+  if (cwd) {
+    target.cwd = cwd;
+  }
+
+  return target;
 }
 
 function normalizeAgentAutomations(value) {
@@ -146,8 +187,9 @@ function normalizeAgentAutomations(value) {
       const cadence = String(entry?.cadence || "").trim().toLowerCase();
       const weekday = String(entry?.weekday || "").trim().toLowerCase();
       const createdAt = String(entry?.createdAt || "").trim();
+      const target = normalizeAutomationTarget(entry?.target);
 
-      return {
+      const automation = {
         cadence: AGENT_AUTOMATION_CADENCES.has(cadence) ? cadence : "daily",
         createdAt: Number.isNaN(Date.parse(createdAt)) ? new Date().toISOString() : createdAt,
         enabled: normalizeBoolean(entry?.enabled, true),
@@ -156,6 +198,10 @@ function normalizeAgentAutomations(value) {
         time: normalizeAutomationTime(entry?.time),
         weekday: AGENT_AUTOMATION_WEEKDAYS.has(weekday) ? weekday : "monday",
       };
+      if (target) {
+        automation.target = target;
+      }
+      return automation;
     })
     .filter(Boolean);
 }

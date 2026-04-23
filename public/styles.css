@@ -5257,7 +5257,7 @@ input[readonly][data-folder-picker-target] {
 
 .automation-create-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -5278,6 +5278,16 @@ input[readonly][data-folder-picker-target] {
   justify-self: start;
   min-height: 40px;
   padding: 0 14px;
+}
+
+.agent-automation-target {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-automation-card .toolbar-control {

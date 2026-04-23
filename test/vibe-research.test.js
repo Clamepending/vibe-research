@@ -1069,6 +1069,23 @@ test("settings api persists simple agent automations", async () => {
           },
           {
             cadence: "daily",
+            createdAt: "2026-04-21T10:00:00.000Z",
+            enabled: true,
+            id: "automation-targeted-agent",
+            prompt: "Send a morning status note.",
+            target: {
+              cwd: workspaceDir,
+              mode: "existing-agent",
+              providerId: "codex",
+              providerLabel: "Codex",
+              sessionId: "session-codex-123",
+              sessionName: "Planning agent",
+            },
+            time: "08:15",
+            weekday: "monday",
+          },
+          {
+            cadence: "daily",
             id: "empty-prompt",
             prompt: "",
           },
@@ -1087,6 +1104,23 @@ test("settings api persists simple agent automations", async () => {
         prompt: "Review the project and summarize anything that needs attention.",
         time: "09:30",
         weekday: "tuesday",
+      },
+      {
+        cadence: "daily",
+        createdAt: "2026-04-21T10:00:00.000Z",
+        enabled: true,
+        id: "automation-targeted-agent",
+        prompt: "Send a morning status note.",
+        target: {
+          cwd: workspaceDir,
+          mode: "existing-agent",
+          providerId: "codex",
+          providerLabel: "Codex",
+          sessionId: "session-codex-123",
+          sessionName: "Planning agent",
+        },
+        time: "08:15",
+        weekday: "monday",
       },
     ]);
   } finally {
