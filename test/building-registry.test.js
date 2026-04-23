@@ -28,7 +28,6 @@ test("building registry exposes core building manifests", () => {
   assert.ok(ids.includes("sora"));
   assert.ok(ids.includes("nano-banana"));
   assert.ok(ids.includes("harbor"));
-  assert.ok(ids.includes("lerobot"));
   assert.ok(ids.includes("wandb"));
   assert.ok(ids.includes("modal"));
   assert.ok(ids.includes("runpod"));
@@ -167,17 +166,6 @@ test("building registry exposes core building manifests", () => {
   assert.match(harbor.access.detail, /sandbox/i);
   assert.ok(harbor.agentGuide.commands.some((command) => command.command.includes("harbor run")));
   assert.ok(harbor.agentGuide.docs.some((doc) => doc.url.includes("harborframework.com")));
-
-  const leRobot = BUILDING_CATALOG.find((building) => building.id === "lerobot");
-  assert.equal(leRobot.category, "Robotics");
-  assert.equal(leRobot.visual.shape, "lab");
-  assert.equal(leRobot.status, "hardware setup required");
-  assert.match(leRobot.description, /SO-101/i);
-  assert.match(leRobot.access.detail, /physically connected SO-101/i);
-  assert.ok(leRobot.agentGuide.commands.some((command) => command.command.includes("lerobot-find-port")));
-  assert.ok(leRobot.agentGuide.commands.some((command) => command.command.includes("lerobot-train")));
-  assert.ok(leRobot.agentGuide.docs.some((doc) => doc.url.includes("huggingface.co/docs/lerobot")));
-  assert.ok(leRobot.onboarding.steps.some((step) => step.title === "Confirm procurement"));
 
   const occupations = BUILDING_CATALOG.find((building) => building.id === "occupations");
   assert.equal(occupations.install.system, true);

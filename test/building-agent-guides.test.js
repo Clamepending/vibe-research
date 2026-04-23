@@ -78,12 +78,6 @@ test("writeBuildingAgentGuides writes an index and one guide per catalog buildin
     assert.match(runPodGuide, /docs\.runpod\.io/);
     assert.match(runPodGuide, /Ask for human approval before creating/);
 
-    const leRobotGuide = await readFile(getBuildingAgentGuidePath(systemRootPath, "lerobot"), "utf8");
-    assert.match(leRobotGuide, /LeRobot CLI \+ connected SO-101 hardware/);
-    assert.match(leRobotGuide, /lerobot-find-port/);
-    assert.match(leRobotGuide, /lerobot-train/);
-    assert.match(leRobotGuide, /huggingface\.co\/docs\/lerobot/);
-    assert.match(leRobotGuide, /before purchases, hardware motion, and long GPU training jobs/i);
   } finally {
     await rm(systemRootPath, { recursive: true, force: true });
   }
