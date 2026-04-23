@@ -10182,6 +10182,10 @@ button.visual-town-building:focus-visible {
   color: #92a8bc;
 }
 
+.session-project-icon.is-building {
+  color: #9fc7dd;
+}
+
 .session-project-icon .vr-icon {
   width: 18px;
   height: 18px;

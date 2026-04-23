@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getVibeResearchSystemDir } from "./state-paths.js";
+import { getBuildingAgentWorkspacePath } from "./workspace-layout.js";
 
+const TELEGRAM_BUILDING_ID = "telegram";
 const TELEGRAM_API_BASE_URL = "https://api.telegram.org";
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_POLL_TIMEOUT_SECONDS = 25;
@@ -447,11 +449,12 @@ export class TelegramService {
 
     const chatId = getTelegramChatId(message);
     const messageId = String(message?.message_id || "").trim();
-    const sessionCwd = this.systemRootPath || this.settings.wikiPath || this.cwd;
+    const buildingSessionCwd = this.getBuildingSessionCwd();
+    const sessionCwd = buildingSessionCwd || this.systemRootPath || this.settings.wikiPath || this.cwd;
 
     try {
-      if (this.systemRootPath) {
-        await mkdir(this.systemRootPath, { recursive: true });
+      if (buildingSessionCwd || this.systemRootPath) {
+        await mkdir(sessionCwd, { recursive: true });
       }
 
       const session = this.getOrCreateCommunicationSession({
@@ -507,9 +510,19 @@ export class TelegramService {
       providerId: config.providerId,
       name: sessionName,
       cwd,
+      sourceBuildingId: TELEGRAM_BUILDING_ID,
     });
     this.status.lastSessionId = session.id;
     return session;
+  }
+
+  getBuildingSessionCwd() {
+    return getBuildingAgentWorkspacePath({
+      buildingId: TELEGRAM_BUILDING_ID,
+      cwd: this.cwd,
+      settings: this.settings,
+      systemRootPath: this.systemRootPath,
+    });
   }
 
   getReplyCommand() {

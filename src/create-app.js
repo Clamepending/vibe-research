@@ -771,6 +771,7 @@ export async function createVibeResearchApp({
           sessionManager,
           settings: settingsStore.settings,
           stateDir,
+          systemRootPath,
         });
   await agentRunStore.initialize();
   await agentTownStore.initialize();
@@ -2399,6 +2400,7 @@ export async function createVibeResearchApp({
         occupationId: agentPromptStore.selectedPromptId,
         initialPrompt: request.body?.initialPrompt,
         initialPromptDelayMs: request.body?.initialPromptDelayMs,
+        sourceBuildingId: request.body?.sourceBuildingId,
       });
 
       response.status(201).json({ session });

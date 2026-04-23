@@ -106,6 +106,8 @@ test("Telegram polling queues allowed messages into one dedicated communications
     assert.equal(createdSessions.length, 1);
     assert.equal(createdSessions[0].name, "Telegram communications");
     assert.equal(createdSessions[0].providerId, "claude");
+    assert.equal(createdSessions[0].cwd, path.join(stateDir, "vibe-research-system", "vibe-research", "buildings", "telegram"));
+    assert.equal(createdSessions[0].sourceBuildingId, "telegram");
     assert.match(writes[0].input, /vr-telegram-reply' --chat-id '12345' --message-id '7'/);
     assert.match(writes[0].input, /Can you check the latest run/);
     assert.deepEqual(writes[1], { input: "\r", sessionId: "session-1" });

@@ -26,6 +26,7 @@ import {
 } from "./building-agent-guides.js";
 import { AgentRunTracker } from "./agent-run-tracker.js";
 import { SessionStore } from "./session-store.js";
+import { normalizeBuildingId } from "./client/building-sdk.js";
 import { getLegacyWorkspaceStateDir, getVibeResearchStateDir, getVibeResearchSystemDir } from "./state-paths.js";
 
 const MAX_BUFFER_LENGTH = 2_000_000;
@@ -1880,6 +1881,10 @@ function normalizeSessionOccupationId(occupationId, fallback = "researcher") {
   return normalized || fallback;
 }
 
+function normalizeSessionSourceBuildingId(sourceBuildingId) {
+  return normalizeBuildingId(sourceBuildingId);
+}
+
 function hasGeminiConversationMessages(messages) {
   return Array.isArray(messages) && messages.some((message) => message?.type === "user" || message?.type === "assistant");
 }
@@ -2606,7 +2611,15 @@ export class SessionManager {
     return true;
   }
 
-  createSession({ providerId, name, cwd, occupationId, initialPrompt = "", initialPromptDelayMs = null }) {
+  createSession({
+    providerId,
+    name,
+    cwd,
+    occupationId,
+    initialPrompt = "",
+    initialPromptDelayMs = null,
+    sourceBuildingId = "",
+  }) {
     const provider = this.getProvider(providerId);
 
     if (!provider) {
@@ -2625,6 +2638,7 @@ export class SessionManager {
       providerId: provider.id,
       providerLabel: provider.label,
       occupationId: occupationId || this.occupationId,
+      sourceBuildingId,
       createdAt,
       updatedAt: createdAt,
       restoreOnStartup: true,
@@ -2739,6 +2753,7 @@ export class SessionManager {
       rows: sourceSession.rows,
       providerState: forkProviderState,
       occupationId: sourceSession.occupationId || this.occupationId,
+      sourceBuildingId: sourceSession.sourceBuildingId || "",
       restoreOnStartup: true,
       buffer: [
         `\u001b[1;36m[vibe-research]\u001b[0m forked from: ${sourceSession.name}`,
@@ -3112,6 +3127,7 @@ export class SessionManager {
       providerLabel: session.providerLabel,
       name: session.name,
       cwd: session.cwd,
+      sourceBuildingId: session.sourceBuildingId || "",
       shell: session.shell,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
@@ -3156,12 +3172,14 @@ export class SessionManager {
     providerState = null,
     autoRenameEnabled = false,
     occupationId = this.occupationId,
+    sourceBuildingId = "",
   }) {
     return {
       id,
       providerId,
       providerLabel,
       occupationId: normalizeSessionOccupationId(occupationId, this.occupationId),
+      sourceBuildingId: normalizeSessionSourceBuildingId(sourceBuildingId),
       name,
       shell,
       cwd,
@@ -3880,6 +3898,7 @@ export class SessionManager {
       restoreOnStartup: Boolean(snapshot.restoreOnStartup),
       providerState: snapshot.providerState || null,
       occupationId: snapshot.occupationId || snapshot.promptId || this.occupationId,
+      sourceBuildingId: snapshot.sourceBuildingId || "",
     });
 
     this.sessions.set(session.id, session);

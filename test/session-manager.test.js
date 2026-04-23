@@ -399,6 +399,43 @@ test("sessions record the selected occupation and forks inherit it", async () =>
   }
 });
 
+test("sessions record and persist source building identity", async () => {
+  const { manager, workspaceDir, userHomeDir } = await createManager();
+
+  try {
+    const session = manager.createSession({
+      providerId: "shell",
+      cwd: workspaceDir,
+      sourceBuildingId: "Telegram!",
+    });
+    assert.equal(session.sourceBuildingId, "telegram");
+
+    const fork = manager.forkSession(session.id);
+    assert.equal(fork.sourceBuildingId, "telegram");
+
+    const persisted = manager.serializePersistedSession(manager.getSession(session.id));
+    assert.equal(persisted.sourceBuildingId, "telegram");
+
+    await manager.shutdown({ preserveSessions: false });
+    const restoredManager = new SessionManager({
+      cwd: workspaceDir,
+      providers: fakeAgentProviders,
+      persistSessions: false,
+      stateDir: path.join(workspaceDir, ".vibe-research"),
+      userHomeDir,
+    });
+    restoredManager.restoreSession(persisted);
+    const restored = restoredManager.serializeSession(restoredManager.getSession(session.id));
+    assert.equal(restored?.sourceBuildingId, "telegram");
+    await restoredManager.shutdown({ preserveSessions: false });
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(userHomeDir, { recursive: true, force: true });
+  } catch (error) {
+    await cleanupManager(manager, workspaceDir, userHomeDir);
+    throw error;
+  }
+});
+
 test("agent sessions expose working and done activity states", async () => {
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-manager-"));
   const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-session-home-"));

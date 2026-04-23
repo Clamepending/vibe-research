@@ -5519,11 +5519,24 @@ function renderSystemToasts() {
   `;
 }
 
-function getSessionProjectKey(cwd) {
+function getSessionProjectKey(sessionOrCwd) {
+  const sourceBuildingId = getSessionSourceBuildingId(sessionOrCwd);
+  if (sourceBuildingId) {
+    return `building:${sourceBuildingId}`;
+  }
+
+  const cwd = sessionOrCwd && typeof sessionOrCwd === "object" ? sessionOrCwd.cwd : sessionOrCwd;
   return normalizeWorkspaceRoot(cwd || state.defaultCwd || "") || "__unknown__";
 }
 
-function getSessionProjectName(cwd) {
+function getSessionProjectName(sessionOrCwd) {
+  const sourceBuildingId = getSessionSourceBuildingId(sessionOrCwd);
+  if (sourceBuildingId) {
+    const plugin = getPluginById(sourceBuildingId);
+    return plugin?.name || titleCaseWords(sourceBuildingId);
+  }
+
+  const cwd = sessionOrCwd && typeof sessionOrCwd === "object" ? sessionOrCwd.cwd : sessionOrCwd;
   const normalizedCwd = normalizeWorkspaceRoot(cwd || "");
   if (!normalizedCwd) {
     return "unknown project";
@@ -5533,17 +5546,22 @@ function getSessionProjectName(cwd) {
   return parts.at(-1) || normalizedCwd;
 }
 
-function getSessionProjectMeta(cwd) {
+function getSessionProjectMeta(sessionOrCwd) {
+  const cwd = sessionOrCwd && typeof sessionOrCwd === "object" ? sessionOrCwd.cwd : sessionOrCwd;
   const normalizedCwd = normalizeWorkspaceRoot(cwd || "");
+  const sourceBuildingId = getSessionSourceBuildingId(sessionOrCwd);
+  const plugin = sourceBuildingId ? getPluginById(sourceBuildingId) : null;
   return {
+    buildingId: sourceBuildingId,
     cwd: normalizedCwd,
-    key: getSessionProjectKey(normalizedCwd),
-    name: getSessionProjectName(normalizedCwd),
+    icon: plugin?.icon || (sourceBuildingId === "automations" ? CalendarClock : null),
+    key: getSessionProjectKey(sessionOrCwd),
+    name: getSessionProjectName(sessionOrCwd),
   };
 }
 
-function expandSessionProject(cwd) {
-  const key = getSessionProjectKey(cwd);
+function expandSessionProject(sessionOrCwd) {
+  const key = getSessionProjectKey(sessionOrCwd);
   if (!key) {
     return;
   }
@@ -5628,6 +5646,7 @@ async function createSessionInFolder(
     initialPromptDelayMs = 1400,
     openInTown = false,
     rememberProvider = true,
+    sourceBuildingId = "",
   } = {},
 ) {
   const selectedCwd = normalizeWorkspaceRoot(cwd);
@@ -5637,6 +5656,9 @@ async function createSessionInFolder(
   }
 
   const requestBody = { providerId, cwd: selectedCwd, name };
+  if (sourceBuildingId) {
+    requestBody.sourceBuildingId = sourceBuildingId;
+  }
   if (initialPrompt) {
     requestBody.initialPrompt = initialPrompt;
     requestBody.initialPromptDelayMs = initialPromptDelayMs;
@@ -5657,7 +5679,7 @@ async function createSessionInFolder(
   if (initialInput) {
     queueSessionInput(payload.session.id, initialInput, { delayMs: initialInputDelayMs });
   }
-  expandSessionProject(payload.session.cwd);
+  expandSessionProject(payload.session);
 
   if (openInTown) {
     state.visualGame.selectedSessionId = payload.session.id;
@@ -6304,6 +6326,44 @@ function getWorkspaceLibraryPath(root) {
 
 function getWorkspaceUserPath(root) {
   return joinConfiguredWorkspacePath(root, WORKSPACE_USER_RELATIVE_PATH);
+}
+
+function normalizeBuildingSessionFolderId(value) {
+  const normalized = normalizeBuildingId(value);
+  return normalized === "library" ? "knowledge-base" : normalized;
+}
+
+function getBuildingIdFromWorkspacePath(value) {
+  const normalized = normalizeWorkspaceRoot(value || "").replaceAll("\\", "/");
+  if (!normalized) {
+    return "";
+  }
+
+  const segments = normalized.split("/").filter(Boolean);
+  for (let index = 0; index < segments.length - 2; index += 1) {
+    const segment = normalizeBuildingId(segments[index]);
+    const nextSegment = normalizeBuildingId(segments[index + 1]);
+    if (
+      nextSegment === "buildings" &&
+      (segment === "vibe-research" || segment === VIBE_RESEARCH_SYSTEM_FOLDER_NAME)
+    ) {
+      return normalizeBuildingSessionFolderId(segments[index + 2]);
+    }
+  }
+
+  return "";
+}
+
+function getSessionSourceBuildingId(sessionOrCwd) {
+  if (sessionOrCwd && typeof sessionOrCwd === "object") {
+    return (
+      normalizeBuildingSessionFolderId(sessionOrCwd.buildingId) ||
+      normalizeBuildingSessionFolderId(sessionOrCwd.sourceBuildingId) ||
+      getBuildingIdFromWorkspacePath(sessionOrCwd.cwd)
+    );
+  }
+
+  return getBuildingIdFromWorkspacePath(sessionOrCwd);
 }
 
 function normalizePosixSegments(value) {
@@ -9763,7 +9823,7 @@ function getSessionProjectGroups() {
   const groupsByKey = new Map();
 
   for (const session of state.sessions) {
-    const project = getSessionProjectMeta(session.cwd);
+    const project = getSessionProjectMeta(session);
     if (!groupsByKey.has(project.key)) {
       groupsByKey.set(project.key, {
         ...project,
@@ -9791,12 +9851,12 @@ function ensureSessionProjectDefaults(groups) {
 
   const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) || state.sessions[0];
   if (activeSession) {
-    expandSessionProject(activeSession.cwd);
+    expandSessionProject(activeSession);
     return;
   }
 
   if (groups[0]) {
-    expandSessionProject(groups[0].cwd);
+    expandSessionProject(groups[0]);
   }
 }
 
@@ -10647,7 +10707,7 @@ function openAgentProfileForSession(sessionId, { subagentId = "", browserUseSess
 
   const nextSession = state.sessions.find((session) => session.id === sessionId);
   if (nextSession) {
-    expandSessionProject(nextSession.cwd);
+    expandSessionProject(nextSession);
   }
 
   renderShell();
@@ -10756,6 +10816,23 @@ function renderSessionSubagentCard(subagent, session) {
   `;
 }
 
+function getSessionProjectIcon(group, expanded = false) {
+  if (group?.buildingId) {
+    const plugin = getPluginById(group.buildingId);
+    return group.icon || plugin?.icon || Plug;
+  }
+
+  return getDirectoryIcon(group?.cwd || group?.name, expanded);
+}
+
+function getSessionProjectIconClass(group) {
+  if (group?.buildingId) {
+    return "is-building";
+  }
+
+  return isVibeResearchSystemFolder(group?.cwd || group?.name) ? "is-system" : "";
+}
+
 function renderSessionCards() {
   const groups = getSessionProjectGroups();
   if (!groups.length) {
@@ -10769,6 +10846,7 @@ function renderSessionCards() {
       const expanded = state.sessionProjectExpanded.has(group.key);
       const active = group.sessions.some((session) => session.id === state.activeSessionId);
       const graphSessionId = group.sessions[0]?.id || "";
+      const projectIconClass = getSessionProjectIconClass(group);
       return `
         <section class="session-project ${expanded ? "is-expanded" : ""} ${active ? "has-active-session" : ""}" data-session-project="${escapeHtml(group.key)}">
           <div class="session-project-head">
@@ -10779,8 +10857,8 @@ function renderSessionCards() {
               aria-expanded="${expanded ? "true" : "false"}"
               title="${escapeHtml(group.cwd || group.name)}"
             >
-              <span class="session-project-icon ${isVibeResearchSystemFolder(group.cwd || group.name) ? "is-system" : ""}" aria-hidden="true">
-                ${renderIcon(getDirectoryIcon(group.cwd || group.name, expanded))}
+              <span class="session-project-icon ${escapeHtml(projectIconClass)}" aria-hidden="true">
+                ${renderIcon(getSessionProjectIcon(group, expanded))}
               </span>
               <span class="session-project-copy">
                 <span class="session-project-name">${escapeHtml(group.name)}</span>
@@ -10801,6 +10879,7 @@ function renderSessionCards() {
               class="session-project-new"
               type="button"
               data-create-session-in-cwd="${escapeHtml(group.cwd)}"
+              data-create-session-source-building="${escapeHtml(group.buildingId || "")}"
               aria-label="Create a new session in ${escapeHtml(group.name)}"
               ${tooltipAttributes("New session in this folder")}
             >${renderIcon(MessageSquarePlus)}</button>
@@ -10825,7 +10904,7 @@ function getActiveSidebarTab() {
 }
 
 function getSidebarTabForView(view = state.currentView) {
-  return view === "shell" ? "agents" : "windows";
+  return view === "shell" || isVisualInterfaceView(view) ? "agents" : "windows";
 }
 
 function syncSidebarTabWithView(view = state.currentView, { persist = true } = {}) {
@@ -10899,6 +10978,20 @@ function renderAgentsSidebarPanel() {
         <span class="sidebar-nav-copy">
           <span class="sidebar-nav-label">New Agent</span>
           <span class="sidebar-nav-meta">${escapeHtml(`${getSelectedProviderLabel()} · default folder`)}</span>
+        </span>
+      </button>
+      <button
+        class="sidebar-nav-item sidebar-nav-button"
+        type="button"
+        data-share-agent-town
+        aria-label="Share Agent Town"
+        ${state.agentTownShare.inProgress ? "disabled" : ""}
+        ${tooltipAttributes("Share Agent Town", "right")}
+      >
+        <span class="sidebar-nav-icon" aria-hidden="true">${renderIcon(Share2)}</span>
+        <span class="sidebar-nav-copy">
+          <span class="sidebar-nav-label">Share</span>
+          <span class="sidebar-nav-meta">${escapeHtml(getAgentTownShareNavMeta())}</span>
         </span>
       </button>
       <form class="session-form session-launcher" id="session-form">
@@ -19313,7 +19406,7 @@ async function handleVisualGameHit(hit) {
       metadata: { sessionId: hit.sessionId },
     });
     if (nextSession) {
-      expandSessionProject(nextSession.cwd);
+      expandSessionProject(nextSession);
     }
     renderShell();
     connectToSession(state.activeSessionId);
@@ -25336,7 +25429,8 @@ function bindSessionEvents() {
       }
 
       try {
-        await createSessionInFolder(cwd);
+        const sourceBuildingId = button.getAttribute("data-create-session-source-building") || "";
+        await createSessionInFolder(cwd, { sourceBuildingId });
       } catch (error) {
         window.alert(error.message);
       }
@@ -25512,7 +25606,7 @@ function bindSessionEvents() {
 
         state.sessions = [payload.session, ...state.sessions.filter((session) => session.id !== payload.session.id)];
         state.activeSessionId = payload.session.id;
-        expandSessionProject(payload.session.cwd);
+        expandSessionProject(payload.session);
         setCurrentView("shell");
         renderShell();
         connectToSession(payload.session.id);
@@ -25538,7 +25632,7 @@ function bindSessionEvents() {
           state.activeSessionId = state.sessions[0]?.id ?? null;
           const nextSession = state.sessions.find((session) => session.id === state.activeSessionId);
           if (nextSession) {
-            expandSessionProject(nextSession.cwd);
+            expandSessionProject(nextSession);
           }
           renderShell();
 
@@ -27768,7 +27862,7 @@ async function activateWorkspaceTab(key, { groupId = "" } = {}) {
     }
 
     state.activeSessionId = tab.sessionId;
-    expandSessionProject(session.cwd);
+    expandSessionProject(session);
     setCurrentView("shell");
     markSessionRead(tab.sessionId, { refresh: false });
     closeMobileSidebar();

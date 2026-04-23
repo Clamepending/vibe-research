@@ -10,14 +10,15 @@ import {
   normalizeBrowserUseMaxTurns,
 } from "./browser-use-service.js";
 import { getDefaultOttoAuthBaseUrl } from "./ottoauth-service.js";
+import {
+  WORKSPACE_LIBRARY_RELATIVE_PATH,
+  WORKSPACE_USER_RELATIVE_PATH,
+} from "./workspace-layout.js";
 
 const SETTINGS_FILE_VERSION = 1;
 const SETTINGS_FILENAME = "settings.json";
 const DEFAULT_WIKI_BACKUP_INTERVAL_MS = 5 * 60 * 1000;
 const LEGACY_WIKI_BACKUP_INTERVAL_MS = 10 * 60 * 1000;
-const WORKSPACE_DATA_FOLDER_NAME = "vibe-research";
-const WORKSPACE_LIBRARY_RELATIVE_PATH = path.join(WORKSPACE_DATA_FOLDER_NAME, "buildings", "library");
-const WORKSPACE_USER_RELATIVE_PATH = path.join(WORKSPACE_DATA_FOLDER_NAME, "user");
 const execFileAsync = promisify(execFile);
 
 function normalizeSecret(value) {
