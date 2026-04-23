@@ -25538,24 +25538,23 @@ function restoreExplorerScrollSnapshots(snapshot) {
 function renderUpdateBanner() {
   const update = state.update;
 
-  if (state.updateApplying) {
-    return `
-      <section class="update-card is-applying">
-        <div class="update-copy">
-          <strong>updating vibe research</strong>
-          <span>installing the latest version, then restarting...</span>
-        </div>
-        <button class="ghost-button update-button" type="button" disabled>working</button>
-      </section>
-    `;
-  }
-
   if (!update?.updateAvailable) {
     return "";
   }
 
   const latest = update.latestVersion || update.latestTag || update.latestShort || "latest";
   const isRelease = update.targetType === "release";
+
+  if (update.canUpdate && isRelease && state.updateApplying) {
+    return `
+      <button class="primary-button update-button is-compact is-loading" type="button" id="update-app" disabled>
+        <span class="update-button-content">
+          <span class="update-button-spinner" aria-hidden="true"></span>
+          <span>updating...</span>
+        </span>
+      </button>
+    `;
+  }
 
   if (update.canUpdate && isRelease) {
     return `

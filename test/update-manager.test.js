@@ -349,6 +349,87 @@ test("UpdateManager falls back to the static release channel when GitHub Release
   }
 });
 
+test("UpdateManager ignores stale release-channel tags when remote semver tags are newer", async () => {
+  const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
+  const staleReleaseCommit = await commitSourceVersion(sourceDir, "v2");
+  const latestCommit = await commitSourceVersion(sourceDir, "v3");
+  await git(checkoutDir, ["remote", "set-url", "origin", "git@github.com:Clamepending/vibe-research.git"]);
+
+  try {
+    const manager = new UpdateManager({
+      cwd: checkoutDir,
+      stateDir: path.join(tempRoot, "state"),
+      cacheMs: 0,
+      fetch: async (url) => {
+        if (url === githubLatestUrl) {
+          return {
+            ok: false,
+            status: 503,
+          };
+        }
+
+        assert.equal(url, releaseChannelUrl);
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              name: "Vibe Research",
+              version: "2.0.0",
+              tag: "v2.0.0",
+              releaseUrl: "https://github.com/Clamepending/vibe-research/releases/tag/v2.0.0",
+            };
+          },
+        };
+      },
+      execFile(command, args, options) {
+        if (
+          command === "git" &&
+          args[2] === "ls-remote" &&
+          args[3] === "https://github.com/Clamepending/vibe-research.git" &&
+          args[4] === "refs/tags/v2.0.0"
+        ) {
+          return Promise.resolve({
+            stdout: `${staleReleaseCommit}\trefs/tags/v2.0.0\n`,
+            stderr: "",
+          });
+        }
+
+        if (
+          command === "git" &&
+          args[2] === "ls-remote" &&
+          args[3] === "--tags" &&
+          args[4] === "https://github.com/Clamepending/vibe-research.git" &&
+          args[5] === "refs/tags/v*"
+        ) {
+          return Promise.resolve({
+            stdout: [
+              "1111111111111111111111111111111111111111\trefs/tags/v2.0.0",
+              `${staleReleaseCommit}\trefs/tags/v2.0.0^{}`,
+              "2222222222222222222222222222222222222222\trefs/tags/v3.0.0",
+              `${latestCommit}\trefs/tags/v3.0.0^{}`,
+            ].join("\n"),
+            stderr: "",
+          });
+        }
+
+        return execFile(command, args, options);
+      },
+    });
+
+    const status = await manager.getStatus({ force: true });
+
+    assert.equal(status.status, "available");
+    assert.equal(status.targetType, "release");
+    assert.equal(status.latestVersion, "v3.0.0");
+    assert.equal(status.latestTag, "v3.0.0");
+    assert.equal(status.latestCommit, latestCommit);
+    assert.match(status.releaseCheck, /^git-tags fallback after GitHub release lookup failed with HTTP 503\./);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("UpdateManager prefers GitHub Releases and schedules a tag checkout", async () => {
   const { checkoutDir, sourceDir, tempRoot } = await createRepoPair();
   const latestCommit = await commitSourceVersion(sourceDir, "v2");
@@ -544,6 +625,19 @@ test("UpdateManager does not offer stale release-channel downgrades for newer re
         ) {
           return Promise.resolve({
             stdout: `${staleReleaseCommit}\trefs/tags/v0.2.2\n`,
+            stderr: "",
+          });
+        }
+
+        if (
+          command === "git" &&
+          args[2] === "ls-remote" &&
+          args[3] === "--tags" &&
+          args[4] === "https://github.com/Clamepending/vibe-research.git" &&
+          args[5] === "refs/tags/v*"
+        ) {
+          return Promise.resolve({
+            stdout: "",
             stderr: "",
           });
         }

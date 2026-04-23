@@ -2016,6 +2016,29 @@ input[readonly][data-folder-picker-target] {
   width: 100%;
 }
 
+.update-button-content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.update-button-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  opacity: 0.86;
+  animation: plugin-install-spin 760ms linear infinite;
+}
+
+.update-button.is-loading {
+  cursor: default;
+  transform: none;
+}
+
 .update-button.is-compact {
   width: fit-content;
   max-width: 100%;
