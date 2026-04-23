@@ -704,6 +704,7 @@ export function buildSessionEnv(
     VIBE_RESEARCH_AGENT_CANVAS_COMMAND: "vr-agent-canvas",
     VIBE_RESEARCH_AGENTMAIL_REPLY_COMMAND: "vr-agentmail-reply",
     VIBE_RESEARCH_TELEGRAM_REPLY_COMMAND: "vr-telegram-reply",
+    VIBE_RESEARCH_TWILIO_REPLY_COMMAND: "vr-twilio-reply",
     VIBE_RESEARCH_MAIL_WATCHER: "vr-mailwatch",
     REMOTE_VIBES_APP_ROOT: appRootDir,
     REMOTE_VIBES_BROWSER_COMMAND: "rv-playwright",
@@ -735,6 +736,7 @@ export function buildSessionEnv(
     REMOTE_VIBES_AGENT_CANVAS_COMMAND: "rv-agent-canvas",
     REMOTE_VIBES_AGENTMAIL_REPLY_COMMAND: "rv-agentmail-reply",
     REMOTE_VIBES_TELEGRAM_REPLY_COMMAND: "rv-telegram-reply",
+    REMOTE_VIBES_TWILIO_REPLY_COMMAND: "rv-twilio-reply",
     REMOTE_VIBES_MAIL_WATCHER: "rv-mailwatch",
     TERM: "xterm-256color",
   };

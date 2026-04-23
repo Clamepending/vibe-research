@@ -746,6 +746,47 @@ const CORE_BUILDING_MANIFESTS = [
     },
   },
   {
+    id: "wallet",
+    name: "Wallet",
+    category: "Commerce",
+    description: "Track local credits, reservations, and spend for buildings that call paid APIs.",
+    icon: Database,
+    install: {
+      system: true,
+    },
+    status: "built in",
+    source: "vibe-research",
+    visual: {
+      shape: "market",
+    },
+    agentGuide: {
+      summary: "Use Wallet when a building needs to reserve credits before a paid action and capture or release the hold after the provider call.",
+      useCases: [
+        "Check the current local credit balance before using a paid building.",
+        "Reserve credits for a Twilio SMS, inference API call, browser task, or future paid connector.",
+        "Capture only the final known amount and release failed or canceled holds.",
+      ],
+      commands: [
+        { label: "Read wallet summary", command: "curl -s \"$VIBE_RESEARCH_WALLET_API/summary\"", detail: "Shows available, held, spent, and recent ledger events." },
+        { label: "Create a spend hold", command: "curl -s \"$VIBE_RESEARCH_WALLET_API/spend/holds\" -H 'Content-Type: application/json' -d '{\"amountCents\":25,\"buildingId\":\"example\",\"action\":\"paid-api-call\"}'", detail: "Reserve credits before a paid operation." },
+      ],
+      env: [
+        { name: "VIBE_RESEARCH_WALLET_API", detail: "Base URL for the local wallet API." },
+      ],
+    },
+    onboarding: {
+      setupSelector: ".wallet-plugin-card",
+      variables: [
+        { label: "Credit balance", value: "local ledger", required: false },
+      ],
+      steps: [
+        { title: "Open wallet", detail: "Review available credits and recent spend holds.", completeWhen: { type: "installed" } },
+        { title: "Fund credits", detail: "Add local credits before buildings perform paid API calls." },
+        { title: "Track usage", detail: "Paid buildings reserve, capture, and release credits through the wallet ledger." },
+      ],
+    },
+  },
+  {
     id: "ottoauth",
     name: "OttoAuth",
     category: "Commerce",
@@ -988,6 +1029,65 @@ const CORE_BUILDING_MANIFESTS = [
           completeWhen: { allConfigured: ["telegramBotTokenConfigured"] },
         },
         { title: "Reply from one session", detail: "Incoming Telegram messages are routed into the dedicated Telegram communications session." },
+      ],
+    },
+  },
+  {
+    id: "twilio",
+    name: "Twilio",
+    category: "Communication",
+    description: "Verify phone numbers, route inbound SMS into agent sessions, and send replies through wallet-tracked Twilio spend.",
+    icon: Smartphone,
+    install: {
+      enabledSetting: "twilioEnabled",
+      storedFallback: true,
+    },
+    status: "setup available",
+    source: "vibe-research",
+    visual: {
+      shape: "post",
+    },
+    agentGuide: {
+      summary: "Use Twilio when a verified phone number should be able to text a Vibe Research building and wake a dedicated SMS agent session.",
+      useCases: [
+        "Start or check phone verification before allowing an SMS sender to wake an agent.",
+        "Handle inbound Twilio SMS webhooks and route verified messages into the SMS communications session.",
+        "Reply with vr-twilio-reply so Wallet reserves and captures the SMS estimate around the Twilio send.",
+      ],
+      commands: [
+        { label: "Read Twilio status", command: "curl -s http://127.0.0.1:${VIBE_RESEARCH_PORT:-4123}/api/twilio/status -H 'X-Vibe-Research-API: 1'", detail: "Shows setup readiness, webhook URL, and verified contact count." },
+        { label: "Reply to SMS", command: "vr-twilio-reply --to +15551234567 --message-sid SMxxxxxxxx <<'EOF'\nThanks, I will take a look.\nEOF", detail: "Sends a wallet-tracked SMS reply through the local server." },
+        { label: "Read wallet before paid sends", command: "curl -s \"$VIBE_RESEARCH_WALLET_API/summary\"", detail: "Confirm available credits before a paid Twilio action." },
+      ],
+      env: [
+        { name: "VIBE_RESEARCH_TWILIO_REPLY_COMMAND", detail: "Canonical helper command for SMS replies." },
+        { name: "VIBE_RESEARCH_WALLET_API", detail: "Wallet API used for Twilio SMS spend holds." },
+      ],
+      docs: [
+        { label: "Twilio Verify API", url: "https://www.twilio.com/docs/verify/api" },
+        { label: "Twilio Messages API", url: "https://www.twilio.com/docs/messaging/api/message-resource" },
+        { label: "Twilio webhook security", url: "https://www.twilio.com/docs/usage/webhooks/webhooks-security" },
+      ],
+    },
+    onboarding: {
+      setupSelector: ".communications-plugin-card",
+      variables: [
+        { label: "Account SID", setting: "twilioAccountSid", configuredSetting: "twilioAccountSidConfigured", secret: true, required: true },
+        { label: "Auth token", setting: "twilioAuthToken", configuredSetting: "twilioAuthTokenConfigured", secret: true, required: true },
+        { label: "Verify Service SID", setting: "twilioVerifyServiceSid", configuredSetting: "twilioVerifyServiceSidConfigured", secret: true, required: true },
+        { label: "Sender number", setting: "twilioFromNumber", required: true },
+        { label: "SMS agent", setting: "twilioProviderId", required: true },
+        { label: "SMS estimate", setting: "twilioSmsEstimateCents", suffix: "cents", required: false },
+      ],
+      steps: [
+        { title: "Create Twilio resources", detail: "Set up a Twilio phone number and Verify Service.", completeWhen: { type: "installed" } },
+        {
+          title: "Save SMS variables",
+          detail: "Add the account SID, auth token, Verify Service SID, sender number, and agent.",
+          completeWhen: { allConfigured: ["twilioAccountSidConfigured", "twilioAuthTokenConfigured", "twilioVerifyServiceSidConfigured", "twilioFromNumber"] },
+        },
+        { title: "Set webhook", detail: "Point the Twilio messaging webhook at the generated Vibe Research webhook URL." },
+        { title: "Verify a phone", detail: "Send a code, check it, then text the Twilio number to wake the SMS agent." },
       ],
     },
   },

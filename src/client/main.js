@@ -1440,6 +1440,17 @@ const state = {
     telegramEnabled: false,
     telegramProviderId: "claude",
     telegramStatus: null,
+    twilioAccountSidConfigured: false,
+    twilioAuthTokenConfigured: false,
+    twilioEnabled: false,
+    twilioFromNumber: "",
+    twilioProviderId: "claude",
+    twilioSmsEstimateCents: "2",
+    twilioStatus: null,
+    twilioVerifyServiceSidConfigured: false,
+    walletStripeSecretKeyConfigured: false,
+    walletStripeWebhookSecretConfigured: false,
+    walletStatus: null,
     videoMemoryBaseUrl: "http://127.0.0.1:5050",
     videoMemoryEnabled: false,
     videoMemoryProviderId: "claude",
@@ -5202,6 +5213,55 @@ function getTelegramStatusText() {
   }
 
   return status?.lastStatus || "connecting";
+}
+
+function formatCents(amountCents) {
+  const cents = Number(amountCents) || 0;
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+function getTwilioStatusText() {
+  const status = state.settings.twilioStatus;
+  if (!state.settings.twilioEnabled) {
+    return state.settings.twilioAccountSidConfigured || state.settings.twilioAuthTokenConfigured || state.settings.twilioFromNumber
+      ? "configured but disabled"
+      : "not configured";
+  }
+
+  if (!state.settings.twilioAccountSidConfigured) {
+    return "add a Twilio account SID";
+  }
+
+  if (!state.settings.twilioAuthTokenConfigured) {
+    return "add a Twilio auth token";
+  }
+
+  if (!state.settings.twilioFromNumber) {
+    return "add a Twilio sender number";
+  }
+
+  if (!state.settings.twilioVerifyServiceSidConfigured) {
+    return "add a Verify Service SID";
+  }
+
+  if (String(status?.lastStatus || "").startsWith("queued")) {
+    return "SMS queued for communications agent";
+  }
+
+  if (status?.lastStatus === "replied") {
+    return "last SMS replied";
+  }
+
+  if (status?.lastStatus === "error") {
+    return status.lastError || "Twilio listener error";
+  }
+
+  return status?.webhookUrl ? "ready for verified SMS" : status?.lastStatus || "connecting";
+}
+
+function getWalletStatusText() {
+  const wallet = state.settings.walletStatus || {};
+  return `${formatCents(wallet.availableCents)} available · ${formatCents(wallet.heldCents)} held`;
 }
 
 function getBrowserUseStatusText() {
@@ -12118,12 +12178,16 @@ function renderPluginInstallSetup(plugin) {
       return renderBuildingHubPluginPanel({ install: true });
     case "browser-use":
       return renderBrowserUseInstallForm();
+    case "wallet":
+      return renderWalletInstallForm();
     case "ottoauth":
       return renderOttoAuthInstallForm();
     case "agentmail":
       return renderAgentMailInstallForm();
     case "telegram":
       return renderTelegramInstallForm();
+    case "twilio":
+      return renderTwilioInstallForm();
     case "videomemory":
       return renderVideoMemoryInstallForm();
     default:
@@ -12190,6 +12254,22 @@ function renderBrowserUseInstallForm() {
         <button class="ghost-button plugin-install-cancel-button" type="button" data-plugin-cancel-install="browser-use">back</button>
       </div>
       <div class="settings-status">${escapeHtml(getBrowserUseStatusText())}</div>
+    </form>
+  `;
+}
+
+function renderWalletInstallForm() {
+  return `
+    <form class="settings-form plugin-install-form wallet-form">
+      <label class="field-label" for="install-wallet-credit-cents">credit amount</label>
+      <input class="file-root-input" id="install-wallet-credit-cents" name="walletCreditCents" type="number" min="1" step="1" value="1000" autocomplete="off" />
+      <label class="field-label" for="install-wallet-credit-note">note</label>
+      <input class="file-root-input" id="install-wallet-credit-note" name="walletCreditDescription" type="text" value="manual credit" autocomplete="off" />
+      <div class="plugin-onboarding-actions">
+        <button class="primary-button plugin-install-finish-button" type="submit" data-wallet-action="grant">add credits</button>
+        <button class="ghost-button plugin-install-cancel-button" type="button" data-plugin-cancel-install="wallet">back</button>
+      </div>
+      <div class="settings-status">${escapeHtml(getWalletStatusText())}</div>
     </form>
   `;
 }
@@ -12276,6 +12356,46 @@ function renderTelegramInstallForm() {
         <button class="ghost-button plugin-install-cancel-button" type="button" data-plugin-cancel-install="telegram">back</button>
       </div>
       <div class="settings-status">${escapeHtml(getTelegramStatusText())}</div>
+    </form>
+  `;
+}
+
+function renderTwilioInstallForm() {
+  const status = state.settings.twilioStatus || {};
+  const actionLabel = isPluginIdInstalled("twilio") ? "save Twilio" : "save and install";
+  return `
+    <form class="settings-form plugin-install-form communications-form">
+      <input type="hidden" name="twilioEnabled" value="on" />
+      <label class="field-label" for="install-twilio-account-sid">Twilio account SID</label>
+      <input class="file-root-input" id="install-twilio-account-sid" name="twilioAccountSid" type="password" placeholder="${escapeHtml(state.settings.twilioAccountSidConfigured ? "saved; leave blank to keep" : "AC...")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+      <label class="field-label" for="install-twilio-auth-token">Twilio auth token</label>
+      <input class="file-root-input" id="install-twilio-auth-token" name="twilioAuthToken" type="password" placeholder="${escapeHtml(state.settings.twilioAuthTokenConfigured ? "saved; leave blank to keep" : "auth token")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+      <div class="knowledge-settings-remote-grid">
+        <label>
+          <span class="field-label">Verify Service SID</span>
+          <input class="file-root-input" name="twilioVerifyServiceSid" type="password" placeholder="${escapeHtml(state.settings.twilioVerifyServiceSidConfigured ? "saved; leave blank to keep" : "VA...")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+        </label>
+        <label>
+          <span class="field-label">sender number</span>
+          <input class="file-root-input" name="twilioFromNumber" type="tel" value="${escapeHtml(state.settings.twilioFromNumber || status.fromNumber || "")}" placeholder="+15551234567" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+        </label>
+      </div>
+      <div class="knowledge-settings-remote-grid">
+        <label>
+          <span class="field-label">SMS agent</span>
+          <select class="file-root-input" name="twilioProviderId">${renderProviderOptions(state.settings.twilioProviderId || state.defaultProviderId)}</select>
+        </label>
+        <label>
+          <span class="field-label">SMS estimate cents</span>
+          <input class="file-root-input" name="twilioSmsEstimateCents" type="number" min="0" step="1" value="${escapeHtml(String(state.settings.twilioSmsEstimateCents || status.smsEstimateCents || "2"))}" autocomplete="off" />
+        </label>
+      </div>
+      <div class="plugin-onboarding-actions">
+        <button class="primary-button plugin-install-finish-button" type="submit" data-communications-action="setup">${escapeHtml(actionLabel)}</button>
+        <button class="ghost-button plugin-install-cancel-button" type="button" data-plugin-cancel-install="twilio">back</button>
+      </div>
+      <div class="settings-status">${escapeHtml(getTwilioStatusText())}</div>
+      ${status.webhookUrl ? `<p class="mcp-import-paths">Webhook: <code>${escapeHtml(status.webhookUrl)}</code></p>` : ""}
     </form>
   `;
 }
@@ -12796,6 +12916,65 @@ function renderBrowserUsePluginPanel() {
   `;
 }
 
+function renderWalletPluginPanel() {
+  const wallet = state.settings.walletStatus || {};
+  const recentEvents = Array.isArray(wallet.events) ? wallet.events.slice(0, 4) : [];
+
+  return `
+    <aside class="mcp-import-card wallet-plugin-card">
+      <span class="main-search-kind">credits ledger</span>
+      <strong>Wallet</strong>
+      <p>One local credit balance for paid buildings, API calls, and spend holds.</p>
+      <div class="system-metric-grid">
+        <div class="system-metric">
+          <span>available</span>
+          <strong>${escapeHtml(formatCents(wallet.availableCents))}</strong>
+        </div>
+        <div class="system-metric">
+          <span>held</span>
+          <strong>${escapeHtml(formatCents(wallet.heldCents))}</strong>
+        </div>
+        <div class="system-metric">
+          <span>spent</span>
+          <strong>${escapeHtml(formatCents(wallet.spentCents))}</strong>
+        </div>
+      </div>
+      <form class="settings-form wallet-form" id="wallet-form">
+        <div class="knowledge-settings-remote-grid">
+          <label>
+            <span class="field-label">Stripe secret key</span>
+            <input class="file-root-input" name="walletStripeSecretKey" type="password" placeholder="${escapeHtml(state.settings.walletStripeSecretKeyConfigured ? "saved; leave blank to keep" : "sk_...")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+          </label>
+          <label>
+            <span class="field-label">Stripe webhook secret</span>
+            <input class="file-root-input" name="walletStripeWebhookSecret" type="password" placeholder="${escapeHtml(state.settings.walletStripeWebhookSecretConfigured ? "saved; leave blank to keep" : "whsec_...")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+          </label>
+        </div>
+        <div class="knowledge-settings-remote-grid">
+          <label>
+            <span class="field-label">credit amount</span>
+            <input class="file-root-input" name="walletCreditCents" type="number" min="1" step="1" value="1000" autocomplete="off" />
+          </label>
+          <label>
+            <span class="field-label">note</span>
+            <input class="file-root-input" name="walletCreditDescription" type="text" value="manual credit" autocomplete="off" />
+          </label>
+        </div>
+        <div class="knowledge-settings-actions">
+          <button class="primary-button settings-save-button" type="submit" data-wallet-action="grant">add credits</button>
+          <button class="ghost-button toolbar-control" type="button" data-wallet-action="save-stripe">save Stripe</button>
+          <div class="settings-status" id="wallet-settings-status">${escapeHtml(getWalletStatusText())}</div>
+        </div>
+      </form>
+      ${
+        recentEvents.length
+          ? `<p class="mcp-import-paths">${escapeHtml(recentEvents.map((event) => `${event.type}: ${formatCents(event.amountCents)}`).join(" · "))}</p>`
+          : `<p class="mcp-import-paths">Tool: <code>curl -s "$VIBE_RESEARCH_WALLET_API/summary"</code></p>`
+      }
+    </aside>
+  `;
+}
+
 function renderOttoAuthPluginPanel() {
   const status = state.settings.ottoAuthStatus || {};
   const skillUrl = status.skillUrl || "https://ottoauth.vercel.app/skill.md";
@@ -12889,6 +13068,7 @@ function renderOttoAuthPluginPanel() {
 function renderCommunicationsPluginPanel() {
   const agentMailStatus = state.settings.agentMailStatus || {};
   const telegramStatus = state.settings.telegramStatus || {};
+  const twilioStatus = state.settings.twilioStatus || {};
   const telegramAllowedChatIdsText = Array.isArray(telegramStatus.allowedChatIds)
     ? telegramStatus.allowedChatIds.join(", ")
     : "";
@@ -12896,7 +13076,7 @@ function renderCommunicationsPluginPanel() {
   return `
     <aside class="mcp-import-card communications-plugin-card">
       <span class="main-search-kind">communications agent</span>
-      <strong>Telegram + AgentMail</strong>
+      <strong>SMS + Telegram + AgentMail</strong>
       <p>Route human messages into dedicated long-lived agent sessions instead of scattering replies across ad hoc runs.</p>
       <form class="settings-form communications-form" id="communications-form">
         <label class="checkbox-row browser-use-compact-checkbox">
@@ -12970,14 +13150,109 @@ function renderCommunicationsPluginPanel() {
         <select class="file-root-input" id="telegram-provider" name="telegramProviderId">
           ${renderProviderOptions(state.settings.telegramProviderId || state.defaultProviderId)}
         </select>
+        <label class="checkbox-row browser-use-compact-checkbox">
+          <input type="checkbox" name="twilioEnabled" ${state.settings.twilioEnabled ? "checked" : ""} />
+          <span>enable Twilio SMS</span>
+        </label>
+        <label class="field-label" for="twilio-account-sid">Twilio account SID</label>
+        <input
+          class="file-root-input"
+          id="twilio-account-sid"
+          name="twilioAccountSid"
+          type="password"
+          placeholder="${escapeHtml(state.settings.twilioAccountSidConfigured ? "saved; leave blank to keep" : "AC...")}"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <label class="field-label" for="twilio-auth-token">Twilio auth token</label>
+        <input
+          class="file-root-input"
+          id="twilio-auth-token"
+          name="twilioAuthToken"
+          type="password"
+          placeholder="${escapeHtml(state.settings.twilioAuthTokenConfigured ? "saved; leave blank to keep" : "auth token")}"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <div class="knowledge-settings-remote-grid">
+          <label>
+            <span class="field-label">Verify Service SID</span>
+            <input
+              class="file-root-input"
+              name="twilioVerifyServiceSid"
+              type="password"
+              placeholder="${escapeHtml(state.settings.twilioVerifyServiceSidConfigured ? "saved; leave blank to keep" : "VA...")}"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="none"
+              spellcheck="false"
+            />
+          </label>
+          <label>
+            <span class="field-label">sender number</span>
+            <input
+              class="file-root-input"
+              name="twilioFromNumber"
+              type="tel"
+              value="${escapeHtml(state.settings.twilioFromNumber || twilioStatus.fromNumber || "")}"
+              placeholder="+15551234567"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="none"
+              spellcheck="false"
+            />
+          </label>
+        </div>
+        <div class="knowledge-settings-remote-grid">
+          <label>
+            <span class="field-label">SMS agent</span>
+            <select class="file-root-input" name="twilioProviderId">
+              ${renderProviderOptions(state.settings.twilioProviderId || state.defaultProviderId)}
+            </select>
+          </label>
+          <label>
+            <span class="field-label">SMS estimate cents</span>
+            <input
+              class="file-root-input"
+              name="twilioSmsEstimateCents"
+              type="number"
+              min="0"
+              step="1"
+              value="${escapeHtml(String(state.settings.twilioSmsEstimateCents || twilioStatus.smsEstimateCents || "2"))}"
+              autocomplete="off"
+            />
+          </label>
+        </div>
         <div class="knowledge-settings-actions">
           <button class="primary-button settings-save-button" type="submit" data-communications-action="setup">save communications</button>
           <div class="settings-status" id="communications-settings-status">
-            ${escapeHtml(`mail: ${getAgentMailStatusText()} · telegram: ${getTelegramStatusText()}`)}
+            ${escapeHtml(`mail: ${getAgentMailStatusText()} · telegram: ${getTelegramStatusText()} · SMS: ${getTwilioStatusText()}`)}
           </div>
         </div>
       </form>
-      <p class="mcp-import-paths">Tools: <code>vr-agentmail-reply</code> · <code>vr-telegram-reply</code></p>
+      <form class="settings-form twilio-verify-form">
+        <div class="knowledge-settings-remote-grid">
+          <label>
+            <span class="field-label">verified phone</span>
+            <input class="file-root-input" name="twilioVerifyPhoneNumber" type="tel" placeholder="+15551234567" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+          </label>
+          <label>
+            <span class="field-label">code</span>
+            <input class="file-root-input" name="twilioVerifyCode" type="text" inputmode="numeric" autocomplete="one-time-code" />
+          </label>
+        </div>
+        <div class="knowledge-settings-actions">
+          <button class="ghost-button toolbar-control" type="button" data-twilio-verify-action="start">send code</button>
+          <button class="primary-button settings-save-button" type="button" data-twilio-verify-action="check">verify phone</button>
+          <div class="settings-status">${escapeHtml(`${twilioStatus.verifiedContactCount || 0} verified · ${getWalletStatusText()}`)}</div>
+        </div>
+      </form>
+      ${twilioStatus.webhookUrl ? `<p class="mcp-import-paths">Twilio webhook: <code>${escapeHtml(twilioStatus.webhookUrl)}</code></p>` : ""}
+      <p class="mcp-import-paths">Tools: <code>vr-agentmail-reply</code> · <code>vr-telegram-reply</code> · <code>vr-twilio-reply</code></p>
     </aside>
   `;
 }
@@ -13157,6 +13432,7 @@ function renderSettingsView() {
           <div class="settings-advanced-grid">
             ${renderWikiRemoteSettingsPanel()}
             ${renderBuildingHubPluginPanel()}
+            ${renderWalletPluginPanel()}
             ${renderOttoAuthPluginPanel()}
             ${renderCommunicationsPluginPanel()}
             ${renderBrowserUsePluginPanel()}
@@ -25249,6 +25525,14 @@ function flushDeferredSelectableRefreshes({ force = false } = {}) {
     refreshOttoAuthPluginUi({ force: true });
   }
 
+  if (refreshes.has("wallet")) {
+    refreshWalletPluginUi({ force: true });
+  }
+
+  if (refreshes.has("communications")) {
+    refreshCommunicationsPluginUi({ force: true });
+  }
+
   if (refreshes.has("videomemory")) {
     refreshVideoMemoryPluginUi({ force: true });
   }
@@ -25424,12 +25708,12 @@ function bindSessionEvents() {
     button.addEventListener("click", async (event) => {
       event.stopPropagation();
       const cwd = button.getAttribute("data-create-session-in-cwd") || "";
+      const sourceBuildingId = button.getAttribute("data-create-session-source-building") || "";
       if (!cwd) {
         return;
       }
 
       try {
-        const sourceBuildingId = button.getAttribute("data-create-session-source-building") || "";
         await createSessionInFolder(cwd, { sourceBuildingId });
       } catch (error) {
         window.alert(error.message);
@@ -25774,7 +26058,9 @@ function refreshPluginSearchUi() {
   bindPluginCardEvents();
   bindBrowserUseForm();
   bindOttoAuthForm();
+  bindWalletForm();
   bindCommunicationsForm();
+  bindTwilioVerifyForm();
   bindVideoMemoryForm();
 }
 
@@ -26188,6 +26474,26 @@ function refreshOttoAuthPluginUi({ force = false } = {}) {
   bindOttoAuthForm();
 }
 
+function refreshWalletPluginUi({ force = false } = {}) {
+  const card = document.querySelector(".wallet-plugin-card");
+  if (!card) {
+    return;
+  }
+
+  if (shouldDeferSelectableRefresh({ force })) {
+    deferSelectableRefresh("wallet");
+    return;
+  }
+
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLElement && activeElement.closest(".wallet-form")) {
+    return;
+  }
+
+  card.outerHTML = renderWalletPluginPanel();
+  bindWalletForm();
+}
+
 function refreshCommunicationsPluginUi({ force = false } = {}) {
   const card = document.querySelector(".communications-plugin-card");
   if (!card) {
@@ -26206,6 +26512,7 @@ function refreshCommunicationsPluginUi({ force = false } = {}) {
 
   card.outerHTML = renderCommunicationsPluginPanel();
   bindCommunicationsForm();
+  bindTwilioVerifyForm();
 }
 
 function refreshVideoMemoryPluginUi({ force = false } = {}) {
@@ -26284,6 +26591,64 @@ function bindOttoAuthForm() {
   }));
 }
 
+function bindWalletForm() {
+  document.querySelectorAll(".wallet-form").forEach((formElement) => {
+    formElement.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+
+      if (!(form instanceof HTMLFormElement)) {
+        return;
+      }
+
+      const button = form.querySelector('[data-wallet-action="grant"]');
+      if (button instanceof HTMLButtonElement) {
+        button.disabled = true;
+        button.textContent = "adding...";
+      }
+
+      try {
+        await setupWalletCreditsFromForm(form);
+        renderShell();
+      } catch (error) {
+        window.alert(error.message);
+        if (button instanceof HTMLButtonElement) {
+          button.disabled = false;
+          button.textContent = "add credits";
+        }
+      }
+    });
+
+    formElement.querySelectorAll('[data-wallet-action="save-stripe"]').forEach((buttonElement) => {
+      buttonElement.addEventListener("click", async (event) => {
+        event.preventDefault();
+        const button = event.currentTarget;
+        const form = button instanceof HTMLElement ? button.closest(".wallet-form") : null;
+        if (!(form instanceof HTMLFormElement)) {
+          return;
+        }
+
+        if (button instanceof HTMLButtonElement) {
+          button.disabled = true;
+          button.textContent = "saving...";
+        }
+
+        try {
+          await setupWalletStripeFromForm(form);
+          renderShell();
+        } catch (error) {
+          window.alert(error.message);
+        }
+
+        if (button instanceof HTMLButtonElement) {
+          button.disabled = false;
+          button.textContent = "save Stripe";
+        }
+      });
+    });
+  });
+}
+
 function bindCommunicationsForm() {
   document.querySelectorAll(".communications-form").forEach((formElement) => formElement.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -26302,10 +26667,12 @@ function bindCommunicationsForm() {
     try {
       const wasAgentMailInstalled = isPluginIdInstalled("agentmail");
       const wasTelegramInstalled = isPluginIdInstalled("telegram");
+      const wasTwilioInstalled = isPluginIdInstalled("twilio");
       await setupCommunicationsFromForm(form);
       const newlyInstalled = [
         !wasAgentMailInstalled && isPluginIdInstalled("agentmail") ? "agentmail" : "",
         !wasTelegramInstalled && isPluginIdInstalled("telegram") ? "telegram" : "",
+        !wasTwilioInstalled && isPluginIdInstalled("twilio") ? "twilio" : "",
       ].filter((pluginId) => isAgentTownFunctionalPlugin(getPluginById(pluginId)));
       if (newlyInstalled.length) {
         for (const pluginId of newlyInstalled) {
@@ -26324,6 +26691,41 @@ function bindCommunicationsForm() {
       }
     }
   }));
+}
+
+function bindTwilioVerifyForm() {
+  document.querySelectorAll(".twilio-verify-form").forEach((formElement) => {
+    formElement.querySelectorAll("[data-twilio-verify-action]").forEach((buttonElement) => {
+      buttonElement.addEventListener("click", async (event) => {
+        event.preventDefault();
+        const button = event.currentTarget;
+        const form = button instanceof HTMLElement ? button.closest(".twilio-verify-form") : null;
+        const action = button instanceof HTMLElement ? button.getAttribute("data-twilio-verify-action") : "";
+
+        if (!(form instanceof HTMLFormElement)) {
+          return;
+        }
+
+        if (button instanceof HTMLButtonElement) {
+          button.disabled = true;
+          button.textContent = action === "check" ? "verifying..." : "sending...";
+        }
+
+        try {
+          const payload = await runTwilioVerificationAction(form, action);
+          const verificationStatus = payload.verification?.status || "ok";
+          window.alert(action === "check" ? `Phone verification ${verificationStatus}.` : `Verification code ${verificationStatus}.`);
+          renderShell();
+        } catch (error) {
+          window.alert(error.message);
+          if (button instanceof HTMLButtonElement) {
+            button.disabled = false;
+            button.textContent = action === "check" ? "verify phone" : "send code";
+          }
+        }
+      });
+    });
+  });
 }
 
 function bindVideoMemoryForm() {
@@ -28779,7 +29181,9 @@ function applySettingsState(payload) {
   const browserUseStatus = settings.browserUseStatus || settings.browserUse || state.settings.browserUseStatus;
   const ottoAuthStatus = settings.ottoAuthStatus || settings.ottoAuth || state.settings.ottoAuthStatus;
   const telegramStatus = settings.telegramStatus || settings.telegram || state.settings.telegramStatus;
+  const twilioStatus = settings.twilioStatus || settings.twilio || state.settings.twilioStatus;
   const videoMemoryStatus = settings.videoMemoryStatus || settings.videoMemory || state.settings.videoMemoryStatus;
+  const walletStatus = settings.walletStatus || settings.wallet || state.settings.walletStatus;
   const buildingHubStatus = settings.buildingHubStatus || settings.buildingHub || state.settings.buildingHubStatus;
 
   state.settings = {
@@ -28903,6 +29307,42 @@ function applySettingsState(payload) {
     telegramProviderId:
       settings.telegramProviderId || state.settings.telegramProviderId || "claude",
     telegramStatus: telegramStatus || null,
+    twilioAccountSidConfigured:
+      settings.twilioAccountSidConfigured === undefined
+        ? state.settings.twilioAccountSidConfigured
+        : Boolean(settings.twilioAccountSidConfigured),
+    twilioAuthTokenConfigured:
+      settings.twilioAuthTokenConfigured === undefined
+        ? state.settings.twilioAuthTokenConfigured
+        : Boolean(settings.twilioAuthTokenConfigured),
+    twilioEnabled:
+      settings.twilioEnabled === undefined
+        ? state.settings.twilioEnabled
+        : Boolean(settings.twilioEnabled),
+    twilioFromNumber:
+      settings.twilioFromNumber === undefined
+        ? state.settings.twilioFromNumber || ""
+        : String(settings.twilioFromNumber || ""),
+    twilioProviderId:
+      settings.twilioProviderId || state.settings.twilioProviderId || "claude",
+    twilioSmsEstimateCents:
+      settings.twilioSmsEstimateCents === undefined
+        ? state.settings.twilioSmsEstimateCents || "2"
+        : String(settings.twilioSmsEstimateCents || "0"),
+    twilioStatus: twilioStatus || null,
+    twilioVerifyServiceSidConfigured:
+      settings.twilioVerifyServiceSidConfigured === undefined
+        ? state.settings.twilioVerifyServiceSidConfigured
+        : Boolean(settings.twilioVerifyServiceSidConfigured),
+    walletStripeSecretKeyConfigured:
+      settings.walletStripeSecretKeyConfigured === undefined
+        ? state.settings.walletStripeSecretKeyConfigured
+        : Boolean(settings.walletStripeSecretKeyConfigured),
+    walletStripeWebhookSecretConfigured:
+      settings.walletStripeWebhookSecretConfigured === undefined
+        ? state.settings.walletStripeWebhookSecretConfigured
+        : Boolean(settings.walletStripeWebhookSecretConfigured),
+    walletStatus: walletStatus || null,
     videoMemoryBaseUrl:
       settings.videoMemoryBaseUrl === undefined
         ? state.settings.videoMemoryBaseUrl || "http://127.0.0.1:5050"
@@ -30151,7 +30591,9 @@ function bindShellEvents() {
   });
   bindBrowserUseForm();
   bindOttoAuthForm();
+  bindWalletForm();
   bindCommunicationsForm();
+  bindTwilioVerifyForm();
   bindVideoMemoryForm();
   document.querySelector("#backup-wiki-now")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
@@ -31686,7 +32128,38 @@ async function setupOttoAuthFromForm(form) {
   applySettingsState(payload.settings);
 }
 
-function getCommunicationsInstalledPluginIds({ agentMailEnabled, telegramEnabled }) {
+async function setupWalletCreditsFromForm(form) {
+  const formData = new FormData(form);
+  const stripeSecretKey = String(formData.get("walletStripeSecretKey") || "").trim();
+  const stripeWebhookSecret = String(formData.get("walletStripeWebhookSecret") || "").trim();
+  if (stripeSecretKey || stripeWebhookSecret) {
+    await setupWalletStripeFromForm(form);
+  }
+  const amountCents = Number(formData.get("walletCreditCents") || 0);
+  const payload = await fetchJson("/api/wallet/credits/grant", {
+    method: "POST",
+    body: JSON.stringify({
+      amountCents,
+      description: String(formData.get("walletCreditDescription") || "manual credit"),
+      source: "manual",
+    }),
+  });
+  applySettingsState(payload.settings || { walletStatus: payload.summary });
+}
+
+async function setupWalletStripeFromForm(form) {
+  const formData = new FormData(form);
+  const payload = await fetchJson("/api/wallet/setup", {
+    method: "POST",
+    body: JSON.stringify({
+      stripeSecretKey: String(formData.get("walletStripeSecretKey") || "").trim() || undefined,
+      stripeWebhookSecret: String(formData.get("walletStripeWebhookSecret") || "").trim() || undefined,
+    }),
+  });
+  applySettingsState(payload.settings);
+}
+
+function getCommunicationsInstalledPluginIds({ agentMailEnabled, telegramEnabled, twilioEnabled }) {
   const pluginIds = getInstalledPluginIds();
   if (agentMailEnabled) {
     pluginIds.add("agentmail");
@@ -31698,6 +32171,11 @@ function getCommunicationsInstalledPluginIds({ agentMailEnabled, telegramEnabled
   } else {
     pluginIds.delete("telegram");
   }
+  if (twilioEnabled) {
+    pluginIds.add("twilio");
+  } else {
+    pluginIds.delete("twilio");
+  }
   return [...pluginIds].sort();
 }
 
@@ -31706,9 +32184,13 @@ async function setupCommunicationsFromForm(form) {
   const hasField = (name) => Boolean(form.querySelector(`[name="${name}"]`));
   const agentMailEnabled = hasField("agentMailEnabled") ? formData.get("agentMailEnabled") === "on" : Boolean(state.settings.agentMailEnabled);
   const telegramEnabled = hasField("telegramEnabled") ? formData.get("telegramEnabled") === "on" : Boolean(state.settings.telegramEnabled);
-  const installedPluginIds = getCommunicationsInstalledPluginIds({ agentMailEnabled, telegramEnabled });
+  const twilioEnabled = hasField("twilioEnabled") ? formData.get("twilioEnabled") === "on" : Boolean(state.settings.twilioEnabled);
+  const installedPluginIds = getCommunicationsInstalledPluginIds({ agentMailEnabled, telegramEnabled, twilioEnabled });
   const agentMailApiKey = String(formData.get("agentMailApiKey") || "").trim();
   const telegramBotToken = String(formData.get("telegramBotToken") || "").trim();
+  const twilioAccountSid = String(formData.get("twilioAccountSid") || "").trim();
+  const twilioAuthToken = String(formData.get("twilioAuthToken") || "").trim();
+  const twilioVerifyServiceSid = String(formData.get("twilioVerifyServiceSid") || "").trim();
   let payload = null;
 
   if (agentMailEnabled) {
@@ -31763,6 +32245,50 @@ async function setupCommunicationsFromForm(form) {
   if (payload.agentPrompt) {
     applyAgentPromptState(payload.agentPrompt);
   }
+
+  if (twilioEnabled) {
+    payload = await fetchJson("/api/twilio/setup", {
+      method: "POST",
+      body: JSON.stringify({
+        accountSid: twilioAccountSid || undefined,
+        authToken: twilioAuthToken || undefined,
+        enabled: true,
+        fromNumber: String(formData.get("twilioFromNumber") || state.settings.twilioFromNumber || ""),
+        installedPluginIds,
+        providerId: String(formData.get("twilioProviderId") || state.settings.twilioProviderId || state.defaultProviderId || "claude"),
+        smsEstimateCents: String(formData.get("twilioSmsEstimateCents") || state.settings.twilioSmsEstimateCents || "2"),
+        verifyServiceSid: twilioVerifyServiceSid || undefined,
+      }),
+    });
+  } else {
+    payload = await fetchJson("/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify({
+        installedPluginIds,
+        twilioEnabled: false,
+        twilioFromNumber: String(formData.get("twilioFromNumber") || state.settings.twilioFromNumber || ""),
+        twilioProviderId: String(formData.get("twilioProviderId") || state.settings.twilioProviderId || state.defaultProviderId || "claude"),
+        twilioSmsEstimateCents: String(formData.get("twilioSmsEstimateCents") || state.settings.twilioSmsEstimateCents || "2"),
+      }),
+    });
+  }
+  applySettingsState(payload.settings);
+  if (payload.agentPrompt) {
+    applyAgentPromptState(payload.agentPrompt);
+  }
+}
+
+async function runTwilioVerificationAction(form, action) {
+  const formData = new FormData(form);
+  const phoneNumber = String(formData.get("twilioVerifyPhoneNumber") || "").trim();
+  const code = String(formData.get("twilioVerifyCode") || "").trim();
+  const endpoint = action === "check" ? "/api/twilio/verify/check" : "/api/twilio/verify/start";
+  const payload = await fetchJson(endpoint, {
+    method: "POST",
+    body: JSON.stringify(action === "check" ? { code, phoneNumber } : { phoneNumber }),
+  });
+  applySettingsState(payload.settings);
+  return payload;
 }
 
 async function setupVideoMemoryFromForm(form) {

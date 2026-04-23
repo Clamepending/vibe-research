@@ -15,6 +15,7 @@
     "vr-playwright": "./bin/vr-playwright",
     "vr-session-name": "./bin/vr-session-name",
     "vr-telegram-reply": "./bin/vr-telegram-reply",
+    "vr-twilio-reply": "./bin/vr-twilio-reply",
     "vr-videomemory": "./bin/vr-videomemory",
     "rv-browser": "./bin/rv-browser",
     "rv-agent-canvas": "./bin/rv-agent-canvas",
@@ -24,6 +25,7 @@
     "rv-ottoauth": "./bin/rv-ottoauth",
     "rv-session-name": "./bin/rv-session-name",
     "rv-telegram-reply": "./bin/rv-telegram-reply",
+    "rv-twilio-reply": "./bin/rv-twilio-reply",
     "rv-videomemory": "./bin/rv-videomemory",
     "rv-playwright": "./bin/rv-playwright",
     "playwright-cli": "./bin/playwright-cli"
@@ -46,7 +48,7 @@
     "desktop:pack": "npm --prefix desktop run pack",
     "desktop:dist": "npm --prefix desktop run dist",
     "desktop:test": "npm --prefix desktop test",
-    "test": "npm run build && node --test test/*.test.js"
+    "test": "npm run build && node --test --test-concurrency=1 test/*.test.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

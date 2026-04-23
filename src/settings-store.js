@@ -93,6 +93,15 @@ function normalizeAgentProviderId(value) {
   return /^[a-z0-9_-]+$/.test(providerId) ? providerId : "claude";
 }
 
+function normalizeNonNegativeCents(value, fallback = "2") {
+  const rawValue = String(value ?? "").trim();
+  const parsed = Number(rawValue);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    return String(fallback);
+  }
+  return String(parsed);
+}
+
 function normalizePluginIds(value) {
   if (!Array.isArray(value)) {
     return [];
@@ -303,6 +312,23 @@ export class SettingsStore {
       telegramBotToken: String(this.env.TELEGRAM_BOT_TOKEN || "").trim(),
       telegramEnabled: false,
       telegramProviderId: "claude",
+      twilioAccountSid: String(this.env.TWILIO_ACCOUNT_SID || "").trim(),
+      twilioAuthToken: String(this.env.TWILIO_AUTH_TOKEN || "").trim(),
+      twilioEnabled: false,
+      twilioFromNumber: String(this.env.TWILIO_FROM_NUMBER || this.env.TWILIO_PHONE_NUMBER || "").trim(),
+      twilioProviderId: "claude",
+      twilioSmsEstimateCents: normalizeNonNegativeCents(this.env.TWILIO_SMS_ESTIMATE_CENTS || "2", "2"),
+      twilioVerifyServiceSid: String(this.env.TWILIO_VERIFY_SERVICE_SID || "").trim(),
+      walletStripeSecretKey: String(
+        this.env.VIBE_RESEARCH_WALLET_STRIPE_SECRET_KEY ||
+          this.env.STRIPE_SECRET_KEY ||
+          "",
+      ).trim(),
+      walletStripeWebhookSecret: String(
+        this.env.VIBE_RESEARCH_WALLET_STRIPE_WEBHOOK_SECRET ||
+          this.env.STRIPE_WEBHOOK_SECRET ||
+          "",
+      ).trim(),
       videoMemoryBaseUrl: String(
         this.env.VIDEOMEMORY_BASE_URL ||
           this.env.VIDEOMEMORY_BASE ||
@@ -436,6 +462,33 @@ export class SettingsStore {
           : String(payload.telegramBotToken || "").trim(),
       telegramEnabled: normalizeBoolean(payload.telegramEnabled, defaults.telegramEnabled),
       telegramProviderId: normalizeAgentProviderId(payload.telegramProviderId || defaults.telegramProviderId),
+      twilioAccountSid:
+        payload.twilioAccountSid === undefined
+          ? defaults.twilioAccountSid
+          : String(payload.twilioAccountSid || "").trim(),
+      twilioAuthToken:
+        payload.twilioAuthToken === undefined
+          ? defaults.twilioAuthToken
+          : String(payload.twilioAuthToken || "").trim(),
+      twilioEnabled: normalizeBoolean(payload.twilioEnabled, defaults.twilioEnabled),
+      twilioFromNumber: String(payload.twilioFromNumber || defaults.twilioFromNumber || "").trim(),
+      twilioProviderId: normalizeAgentProviderId(payload.twilioProviderId || defaults.twilioProviderId),
+      twilioSmsEstimateCents: normalizeNonNegativeCents(
+        payload.twilioSmsEstimateCents ?? defaults.twilioSmsEstimateCents,
+        defaults.twilioSmsEstimateCents || "2",
+      ),
+      twilioVerifyServiceSid:
+        payload.twilioVerifyServiceSid === undefined
+          ? defaults.twilioVerifyServiceSid
+          : String(payload.twilioVerifyServiceSid || "").trim(),
+      walletStripeSecretKey:
+        payload.walletStripeSecretKey === undefined
+          ? defaults.walletStripeSecretKey
+          : String(payload.walletStripeSecretKey || "").trim(),
+      walletStripeWebhookSecret:
+        payload.walletStripeWebhookSecret === undefined
+          ? defaults.walletStripeWebhookSecret
+          : String(payload.walletStripeWebhookSecret || "").trim(),
       videoMemoryBaseUrl: String(payload.videoMemoryBaseUrl || defaults.videoMemoryBaseUrl || "").trim(),
       videoMemoryEnabled: normalizeBoolean(payload.videoMemoryEnabled, defaults.videoMemoryEnabled),
       videoMemoryProviderId: normalizeAgentProviderId(payload.videoMemoryProviderId || defaults.videoMemoryProviderId),
@@ -636,6 +689,8 @@ export class SettingsStore {
     ottoAuthStatus = null,
     sleepStatus = null,
     telegramStatus = null,
+    twilioStatus = null,
+    walletStatus = null,
     videoMemoryStatus = null,
   } = {}) {
     return {
@@ -663,6 +718,18 @@ export class SettingsStore {
       telegramBotToken: "",
       telegramBotTokenConfigured: Boolean(this.settings.telegramBotToken),
       telegramStatus,
+      twilioAccountSid: "",
+      twilioAccountSidConfigured: Boolean(this.settings.twilioAccountSid),
+      twilioAuthToken: "",
+      twilioAuthTokenConfigured: Boolean(this.settings.twilioAuthToken),
+      twilioStatus,
+      twilioVerifyServiceSid: "",
+      twilioVerifyServiceSidConfigured: Boolean(this.settings.twilioVerifyServiceSid),
+      walletStripeSecretKey: "",
+      walletStripeSecretKeyConfigured: Boolean(this.settings.walletStripeSecretKey),
+      walletStripeWebhookSecret: "",
+      walletStripeWebhookSecretConfigured: Boolean(this.settings.walletStripeWebhookSecret),
+      walletStatus,
       videoMemoryStatus,
       wikiRelativePath: formatRelativePath(this.cwd, this.settings.wikiPath),
       wikiRelativeRoot: formatRelativePath(this.cwd, this.settings.wikiPath),

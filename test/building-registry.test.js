@@ -80,6 +80,17 @@ test("building registry exposes core building manifests", () => {
   const telegram = BUILDING_CATALOG.find((building) => building.id === "telegram");
   assert.equal(telegram.visual.logo, "telegram");
 
+  const wallet = BUILDING_CATALOG.find((building) => building.id === "wallet");
+  assert.equal(wallet.category, "Commerce");
+  assert.equal(wallet.install.system, true);
+  assert.match(wallet.agentGuide.commands[0].command, /WALLET_API/);
+
+  const twilio = BUILDING_CATALOG.find((building) => building.id === "twilio");
+  assert.equal(twilio.category, "Communication");
+  assert.equal(twilio.install.enabledSetting, "twilioEnabled");
+  assert.equal(twilio.visual.shape, "post");
+  assert.ok(twilio.agentGuide.commands.some((command) => command.command.includes("vr-twilio-reply")));
+
   const doghouse = BUILDING_CATALOG.find((building) => building.id === "doghouse");
   assert.equal(doghouse.install.system, true);
   assert.equal(doghouse.visual.shape, "doghouse");

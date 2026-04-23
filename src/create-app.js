@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import httpProxy from "http-proxy";
 import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, networkInterfaces } from "node:os";
@@ -37,8 +37,10 @@ import { collectSystemMetrics } from "./system-metrics.js";
 import { SystemMetricsHistoryStore } from "./system-metrics-history.js";
 import { TailscaleServeManager } from "./tailscale-serve.js";
 import { TelegramService } from "./telegram-service.js";
+import { TwilioService } from "./twilio-service.js";
 import { UpdateManager } from "./update-manager.js";
 import { VideoMemoryService } from "./videomemory-service.js";
+import { WalletService } from "./wallet-service.js";
 import { WikiBackupService } from "./wiki-backup.js";
 import { detectProviders, getDefaultProviderId } from "./providers.js";
 import { listKnowledgeBase, readKnowledgeBaseNote } from "./knowledge-base.js";
@@ -59,6 +61,8 @@ const TAILSCALE_HTTPS_SERVE_ENABLED =
   (process.env.VIBE_RESEARCH_TAILSCALE_HTTPS ?? process.env.REMOTE_VIBES_TAILSCALE_HTTPS) !== "0";
 const DEFAULT_TAILSCALE_HTTPS_SERVE_PORTS = [443, 8443, 10000];
 const JSON_BODY_LIMIT = "25mb";
+const STRIPE_API_BASE_URL = "https://api.stripe.com/v1";
+const STRIPE_API_VERSION = "2026-02-25.clover";
 const PROVIDER_INSTALL_TIMEOUT_MS = Number(
   process.env.VIBE_RESEARCH_PROVIDER_INSTALL_TIMEOUT_MS || process.env.REMOTE_VIBES_PROVIDER_INSTALL_TIMEOUT_MS || 20 * 60 * 1000,
 );
@@ -162,6 +166,86 @@ function buildHttpError(message, statusCode = 400) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
+}
+
+function safeCompare(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""));
+  const rightBuffer = Buffer.from(String(right || ""));
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function normalizeStripeAmountCents(value) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 100) {
+    throw buildHttpError("Stripe checkout amount must be at least 100 cents.", 400);
+  }
+  return parsed;
+}
+
+function getStripeSignatureParts(headerValue) {
+  const parts = {};
+  String(headerValue || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .forEach((entry) => {
+      const [key, ...rest] = entry.split("=");
+      const value = rest.join("=");
+      if (!key || !value) {
+        return;
+      }
+      if (!parts[key]) {
+        parts[key] = [];
+      }
+      parts[key].push(value);
+    });
+  return parts;
+}
+
+function verifyStripeWebhookSignature({ payload, signatureHeader, webhookSecret }) {
+  const secret = String(webhookSecret || "").trim();
+  const parts = getStripeSignatureParts(signatureHeader);
+  const timestamp = parts.t?.[0] || "";
+  const signatures = parts.v1 || [];
+  if (!secret || !timestamp || !signatures.length) {
+    return false;
+  }
+
+  const expected = createHmac("sha256", secret).update(`${timestamp}.${payload}`).digest("hex");
+  return signatures.some((signature) => safeCompare(signature, expected));
+}
+
+async function requestStripe({ body, fetchImpl, secretKey, url }) {
+  if (typeof fetchImpl !== "function") {
+    throw buildHttpError("fetch is not available in this Node.js runtime.", 500);
+  }
+
+  const response = await fetchImpl(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Stripe-Version": STRIPE_API_VERSION,
+    },
+    body: new URLSearchParams(body).toString(),
+  });
+  const raw = await response.text().catch(() => "");
+  let payload = {};
+  try {
+    payload = raw ? JSON.parse(raw) : {};
+  } catch {
+    payload = raw ? { message: raw } : {};
+  }
+
+  if (!response.ok) {
+    const message = payload?.error?.message || payload?.message || `Stripe request failed (${response.status})`;
+    throw buildHttpError(message, response.status || 400);
+  }
+
+  return payload;
 }
 
 function normalizeAttachmentSource(value) {
@@ -652,7 +736,10 @@ export async function createVibeResearchApp({
   browserUseServiceFactory = null,
   ottoAuthServiceFactory = null,
   telegramServiceFactory = null,
+  twilioServiceFactory = null,
   videoMemoryServiceFactory = null,
+  walletServiceFactory = null,
+  stripeFetchImpl = globalThis.fetch,
   wikiBackupServiceFactory = null,
   systemMetricsProvider = collectSystemMetrics,
   systemMetricsSampleIntervalMs = 60_000,
@@ -680,6 +767,10 @@ export async function createVibeResearchApp({
   let sessionDefaultCwd = await ensureDefaultSessionCwd(settingsStore.settings.agentSpawnPath || defaultSessionCwd, cwd);
   await mkdir(systemRootPath, { recursive: true });
   await systemMetricsHistoryStore.initialize();
+  const walletService =
+    typeof walletServiceFactory === "function"
+      ? walletServiceFactory(settingsStore.settings, { cwd, stateDir, systemRootPath })
+      : new WalletService({ stateDir });
   const buildingHubService =
     typeof buildingHubServiceFactory === "function"
       ? buildingHubServiceFactory(settingsStore.settings, { cwd, stateDir, systemRootPath })
@@ -757,6 +848,17 @@ export async function createVibeResearchApp({
           stateDir,
           systemRootPath,
         });
+  const twilioService =
+    typeof twilioServiceFactory === "function"
+      ? twilioServiceFactory(settingsStore.settings, { cwd, sessionManager, stateDir, systemRootPath, walletService })
+      : new TwilioService({
+          cwd,
+          sessionManager,
+          settings: settingsStore.settings,
+          stateDir,
+          systemRootPath,
+          walletService,
+        });
   videoMemoryService =
     typeof videoMemoryServiceFactory === "function"
       ? videoMemoryServiceFactory(settingsStore.settings, {
@@ -776,8 +878,10 @@ export async function createVibeResearchApp({
   await agentRunStore.initialize();
   await agentTownStore.initialize();
   await portAliasStore.initialize();
+  await walletService.initialize?.();
   await browserUseService.initialize();
   await ottoAuthService.initialize();
+  await twilioService.initialize?.();
   await videoMemoryService.initialize();
   await sessionManager.initialize();
   await agentPromptStore.initialize();
@@ -785,6 +889,7 @@ export async function createVibeResearchApp({
   wikiBackupService.start();
   agentMailService.start();
   telegramService.start();
+  twilioService.start();
   if (settingsStore.settings.wikiGitRemoteEnabled && settingsStore.settings.wikiGitRemoteUrl) {
     void wikiBackupService.runBackup({ reason: "startup" });
   }
@@ -893,6 +998,8 @@ export async function createVibeResearchApp({
       ottoAuthStatus: ottoAuthService.getStatus(),
       sleepStatus: sleepPreventionService.getStatus(),
       telegramStatus: telegramService.getStatus(),
+      twilioStatus: twilioService.getStatus(),
+      walletStatus: walletService.getSummary?.({ limit: 4 }) || walletService.getStatus?.() || null,
       videoMemoryStatus: videoMemoryService.getStatus(),
     });
   }
@@ -908,6 +1015,8 @@ export async function createVibeResearchApp({
       VIBE_RESEARCH_SERVER_URL: helperBaseUrl || "",
       VIBE_RESEARCH_URL: preferredUrl || helperBaseUrl || "",
       VIBE_RESEARCH_AGENT_TOWN_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/agent-town`,
+      VIBE_RESEARCH_WALLET_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/wallet`,
+      REMOTE_VIBES_WALLET_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/wallet`,
     };
   }
 
@@ -955,6 +1064,7 @@ export async function createVibeResearchApp({
     buildingHubService.restart(settingsStore.settings);
     ottoAuthService.restart(settingsStore.settings);
     telegramService.restart(settingsStore.settings);
+    twilioService.restart(settingsStore.settings);
     videoMemoryService.restart(settingsStore.settings);
     agentMailService.restart(settingsStore.settings);
     sessionManager.setEnvironment(buildSessionManagerEnvironment());
@@ -1178,7 +1288,52 @@ export async function createVibeResearchApp({
     return systemMetricsSamplePromise;
   }
 
+  app.post("/api/wallet/stripe/webhook", express.raw({ type: "application/json", limit: JSON_BODY_LIMIT }), async (request, response) => {
+    try {
+      const webhookSecret = String(settingsStore.settings.walletStripeWebhookSecret || "").trim();
+      if (!webhookSecret) {
+        throw buildHttpError("Stripe webhook secret is not configured.", 400);
+      }
+
+      const rawBody = Buffer.isBuffer(request.body) ? request.body.toString("utf8") : String(request.body || "");
+      const signatureHeader = request.get("stripe-signature") || "";
+      if (!verifyStripeWebhookSignature({ payload: rawBody, signatureHeader, webhookSecret })) {
+        throw buildHttpError("Invalid Stripe webhook signature.", 400);
+      }
+
+      const event = JSON.parse(rawBody || "{}");
+      if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
+        const session = event.data?.object || {};
+        if (!["paid", "no_payment_required"].includes(String(session.payment_status || ""))) {
+          response.json({ received: true, skipped: "payment-not-complete" });
+          return;
+        }
+
+        const amountCents = normalizeStripeAmountCents(
+          session.metadata?.walletCreditCents || session.amount_total || session.amount_subtotal,
+        );
+        await walletService.grantCredits({
+          actor: "stripe",
+          amountCents,
+          description: `Stripe deposit ${session.id || event.id || ""}`.trim(),
+          idempotencyKey: `stripe:${event.id || session.id}`,
+          metadata: {
+            checkoutSessionId: session.id || "",
+            customer: session.customer || "",
+            paymentIntent: session.payment_intent || "",
+          },
+          source: "stripe_checkout",
+        });
+      }
+
+      response.json({ received: true });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not process Stripe webhook." });
+    }
+  });
+
   app.use(express.json({ limit: JSON_BODY_LIMIT }));
+  app.use(express.urlencoded({ extended: false, limit: JSON_BODY_LIMIT }));
 
   app.use((request, response, next) => {
     if (request.path.startsWith("/api/") && request.get("X-Vibe-Research-API") === "1") {
@@ -1612,6 +1767,15 @@ export async function createVibeResearchApp({
         telegramBotToken: request.body?.telegramBotToken,
         telegramEnabled: request.body?.telegramEnabled,
         telegramProviderId: request.body?.telegramProviderId,
+        twilioAccountSid: request.body?.twilioAccountSid,
+        twilioAuthToken: request.body?.twilioAuthToken,
+        twilioEnabled: request.body?.twilioEnabled,
+        twilioFromNumber: request.body?.twilioFromNumber,
+        twilioProviderId: request.body?.twilioProviderId,
+        twilioSmsEstimateCents: request.body?.twilioSmsEstimateCents,
+        twilioVerifyServiceSid: request.body?.twilioVerifyServiceSid,
+        walletStripeSecretKey: request.body?.walletStripeSecretKey,
+        walletStripeWebhookSecret: request.body?.walletStripeWebhookSecret,
         videoMemoryBaseUrl: request.body?.videoMemoryBaseUrl,
         videoMemoryEnabled: request.body?.videoMemoryEnabled,
         videoMemoryProviderId: request.body?.videoMemoryProviderId,
@@ -1714,6 +1878,124 @@ export async function createVibeResearchApp({
       backup: status,
       settings: getSettingsState(),
     });
+  });
+
+  app.get("/api/wallet/status", (_request, response) => {
+    response.json({ wallet: walletService.getStatus?.() || null });
+  });
+
+  app.get("/api/wallet/summary", (request, response) => {
+    response.json({
+      wallet: walletService.getSummary?.({ limit: request.query.limit }) || null,
+    });
+  });
+
+  app.post("/api/wallet/setup", async (request, response) => {
+    try {
+      const stripeSecretKey = String(request.body?.stripeSecretKey || request.body?.walletStripeSecretKey || "").trim();
+      const stripeWebhookSecret = String(
+        request.body?.stripeWebhookSecret || request.body?.walletStripeWebhookSecret || "",
+      ).trim();
+      await settingsStore.update({
+        walletStripeSecretKey: stripeSecretKey || undefined,
+        walletStripeWebhookSecret: stripeWebhookSecret || undefined,
+      });
+      response.json({ ok: true, settings: getSettingsState() });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not set up wallet payments." });
+    }
+  });
+
+  app.post("/api/wallet/checkout-sessions", async (request, response) => {
+    try {
+      const secretKey = String(settingsStore.settings.walletStripeSecretKey || "").trim();
+      if (!secretKey) {
+        throw buildHttpError("Stripe secret key is required before creating checkout sessions.", 400);
+      }
+
+      const amountCents = normalizeStripeAmountCents(request.body?.amountCents);
+      const baseUrl = String(preferredUrl || helperBaseUrl || `${request.protocol}://${request.get("host") || ""}`)
+        .trim()
+        .replace(/\/+$/, "");
+      const session = await requestStripe({
+        fetchImpl: stripeFetchImpl,
+        secretKey,
+        url: `${STRIPE_API_BASE_URL}/checkout/sessions`,
+        body: {
+          "line_items[0][price_data][currency]": "usd",
+          "line_items[0][price_data][product_data][name]": "Vibe Research credits",
+          "line_items[0][price_data][unit_amount]": String(amountCents),
+          "line_items[0][quantity]": "1",
+          mode: "payment",
+          "metadata[walletCreditCents]": String(amountCents),
+          "metadata[source]": "vibe_research_wallet",
+          success_url: String(request.body?.successUrl || `${baseUrl}/?view=settings&wallet=success`),
+          cancel_url: String(request.body?.cancelUrl || `${baseUrl}/?view=settings&wallet=cancel`),
+        },
+      });
+      response.status(201).json({ checkoutSession: session, ok: true });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not create checkout session." });
+    }
+  });
+
+  app.post("/api/wallet/credits/grant", async (request, response) => {
+    try {
+      const result = await walletService.grantCredits({
+        actor: request.body?.actor,
+        amountCents: request.body?.amountCents,
+        description: request.body?.description,
+        idempotencyKey: request.body?.idempotencyKey,
+        metadata: request.body?.metadata,
+        source: request.body?.source,
+      });
+      response.status(201).json({ ok: true, ...result, settings: getSettingsState() });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not add wallet credits." });
+    }
+  });
+
+  app.post("/api/wallet/spend/holds", async (request, response) => {
+    try {
+      const result = await walletService.createSpendHold({
+        action: request.body?.action,
+        amountCents: request.body?.amountCents,
+        buildingId: request.body?.buildingId,
+        description: request.body?.description,
+        idempotencyKey: request.body?.idempotencyKey,
+        metadata: request.body?.metadata,
+      });
+      response.status(201).json({ ok: true, ...result, settings: getSettingsState() });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not reserve wallet credits." });
+    }
+  });
+
+  app.post("/api/wallet/spend/holds/:holdId/capture", async (request, response) => {
+    try {
+      const result = await walletService.captureSpend({
+        amountCents: request.body?.amountCents,
+        description: request.body?.description,
+        holdId: request.params.holdId,
+        metadata: request.body?.metadata,
+      });
+      response.json({ ok: true, ...result, settings: getSettingsState() });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not capture wallet spend." });
+    }
+  });
+
+  app.post("/api/wallet/spend/holds/:holdId/release", async (request, response) => {
+    try {
+      const result = await walletService.releaseSpend({
+        holdId: request.params.holdId,
+        metadata: request.body?.metadata,
+        reason: request.body?.reason,
+      });
+      response.json({ ok: true, ...result, settings: getSettingsState() });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not release wallet hold." });
+    }
   });
 
   app.get("/api/agentmail/status", (_request, response) => {
@@ -1850,6 +2132,125 @@ export async function createVibeResearchApp({
       response.json({ ok: true, reply });
     } catch (error) {
       response.status(400).json({ error: error.message || "Could not send Telegram reply." });
+    }
+  });
+
+  function getExternalRequestUrl(request) {
+    const protocol = String(request.get("x-forwarded-proto") || request.protocol || "http")
+      .split(",")[0]
+      .trim();
+    const host = String(request.get("x-forwarded-host") || request.get("host") || "").split(",")[0].trim();
+    return new URL(request.originalUrl || request.url || "/", `${protocol}://${host || "127.0.0.1"}`).toString();
+  }
+
+  app.get("/api/twilio/status", (_request, response) => {
+    response.json({ twilio: twilioService.getStatus() });
+  });
+
+  app.post("/api/twilio/setup", async (request, response) => {
+    try {
+      const accountSid = String(request.body?.accountSid || request.body?.twilioAccountSid || "").trim();
+      const authToken = String(request.body?.authToken || request.body?.twilioAuthToken || "").trim();
+      const enabled = request.body?.enabled ?? request.body?.twilioEnabled;
+      const enabledBoolean = enabled === true || enabled === "true" || enabled === "on";
+      const fromNumber = String(request.body?.fromNumber || request.body?.twilioFromNumber || "").trim();
+      const verifyServiceSid = String(request.body?.verifyServiceSid || request.body?.twilioVerifyServiceSid || "").trim();
+
+      if (enabledBoolean) {
+        if (!accountSid && !settingsStore.settings.twilioAccountSid) {
+          throw new Error("Twilio account SID is required.");
+        }
+        if (!authToken && !settingsStore.settings.twilioAuthToken) {
+          throw new Error("Twilio auth token is required.");
+        }
+        if (!fromNumber && !settingsStore.settings.twilioFromNumber) {
+          throw new Error("Twilio sender number is required.");
+        }
+      }
+
+      await settingsStore.update({
+        installedPluginIds: request.body?.installedPluginIds,
+        twilioAccountSid: accountSid || undefined,
+        twilioAuthToken: authToken || undefined,
+        twilioEnabled: enabledBoolean,
+        twilioFromNumber: fromNumber || settingsStore.settings.twilioFromNumber,
+        twilioProviderId: request.body?.twilioProviderId || request.body?.providerId,
+        twilioSmsEstimateCents: request.body?.twilioSmsEstimateCents ?? request.body?.smsEstimateCents,
+        twilioVerifyServiceSid: verifyServiceSid || undefined,
+      });
+      twilioService.restart(settingsStore.settings);
+
+      response.json({
+        settings: getSettingsState(),
+        twilio: twilioService.getStatus(),
+      });
+    } catch (error) {
+      response.status(400).json({ error: error.message || "Could not set up Twilio." });
+    }
+  });
+
+  app.post("/api/twilio/verify/start", async (request, response) => {
+    try {
+      const verification = await twilioService.startVerification({
+        phoneNumber: request.body?.phoneNumber,
+      });
+      response.status(201).json({
+        ok: true,
+        settings: getSettingsState(),
+        verification,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not start phone verification." });
+    }
+  });
+
+  app.post("/api/twilio/verify/check", async (request, response) => {
+    try {
+      const verification = await twilioService.checkVerification({
+        code: request.body?.code,
+        phoneNumber: request.body?.phoneNumber,
+      });
+      response.json({
+        ok: true,
+        settings: getSettingsState(),
+        verification,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not check phone verification." });
+    }
+  });
+
+  app.post("/api/twilio/sms", async (request, response) => {
+    try {
+      const requestUrl = getExternalRequestUrl(request);
+      if (!twilioService.verifyWebhook({ body: request.body || {}, headers: request.headers || {}, url: requestUrl })) {
+        response.status(403).type("text/plain").send("Invalid Twilio webhook signature.");
+        return;
+      }
+
+      await twilioService.handleIncomingMessage(request.body || {}, { source: "webhook" });
+      response.type("text/xml").send("<Response></Response>");
+    } catch (error) {
+      response.status(error.statusCode || 400).type("text/plain").send(error.message || "Could not process Twilio webhook.");
+    }
+  });
+
+  app.post("/api/twilio/reply", async (request, response) => {
+    try {
+      const token = String(request.headers["x-vibe-research-twilio-token"] || request.body?.token || "").trim();
+      if (!token || token !== twilioService.replyToken) {
+        response.status(403).json({ error: "Invalid Twilio reply token." });
+        return;
+      }
+
+      const reply = await twilioService.replyToMessage({
+        messageSid: request.body?.messageSid,
+        text: request.body?.text,
+        to: request.body?.to,
+      });
+      response.json({ ok: true, reply, settings: getSettingsState() });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not send Twilio reply." });
     }
   });
 
@@ -2577,12 +2978,15 @@ export async function createVibeResearchApp({
   sessionManager.setEnvironment(buildSessionManagerEnvironment());
   await syncBuildingAgentGuides({ refreshBuildingHub: true });
   browserUseService.setServerBaseUrl(helperBaseUrl);
+  twilioService.setServerBaseUrl?.(preferredUrl || helperBaseUrl);
   videoMemoryService.setServerBaseUrl(helperBaseUrl);
   await writeServerInfo(stateDir, {
     agentMailReplyToken: agentMailService.replyToken,
     browserUseToken: browserUseService.requestToken,
     ottoAuthToken: ottoAuthService.requestToken,
     telegramReplyToken: telegramService.replyToken,
+    twilioReplyToken: twilioService.replyToken,
+    twilioWebhookUrl: twilioService.getWebhookUrl?.() || "",
     videoMemoryToken: videoMemoryService.requestToken,
     videoMemoryWebhookToken: videoMemoryService.webhookToken,
     videoMemoryWebhookUrl: videoMemoryService.getWebhookUrl(),
@@ -2678,6 +3082,7 @@ export async function createVibeResearchApp({
       await removeServerInfo(stateDir);
       agentMailService.stop();
       telegramService.stop();
+      twilioService.stop();
       wikiBackupService.stop();
       sleepPreventionService.stop();
       if (systemMetricsTimer) {
