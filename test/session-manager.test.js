@@ -1614,6 +1614,59 @@ exit 0
   }
 });
 
+test("older tmux without new-session environment args falls back to a plain terminal", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-old-tmux-workspace-"));
+  const userHomeDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-old-tmux-home-"));
+  const fakeTmuxPath = path.join(userHomeDir, "fake-tmux");
+  const manager = new SessionManager({
+    cwd: workspaceDir,
+    env: {
+      ...process.env,
+      VIBE_RESEARCH_TMUX_COMMAND: fakeTmuxPath,
+    },
+    persistentTerminals: true,
+    persistSessions: false,
+    providers: fakeAgentProviders,
+    stateDir: path.join(workspaceDir, ".vibe-research"),
+    userHomeDir,
+  });
+
+  await createExecutableScript(
+    fakeTmuxPath,
+    `#!/bin/sh
+case "$1" in
+  -V)
+    printf 'tmux 2.7\\n'
+    exit 0
+    ;;
+esac
+exit 0
+`,
+  );
+  await manager.initialize();
+
+  try {
+    const session = manager.buildSessionRecord({
+      providerId: "claude",
+      providerLabel: "Claude Code",
+      name: "Claude 1",
+      cwd: workspaceDir,
+    });
+    const provider = manager.getProvider("claude");
+    const env = manager.buildSessionEnvironment(session, provider.id);
+
+    assert.equal(manager.isTmuxAvailable(env), true);
+    assert.equal(manager.tmuxSupportsEnvironmentArgs(env), false);
+    assert.equal(manager.shouldUsePersistentTerminal(provider, env), false);
+
+    const terminalLaunch = manager.getTerminalLaunch(session, provider, env, workspaceDir);
+    assert.equal(terminalLaunch.backend, null);
+    assert.equal(terminalLaunch.command, session.shell);
+  } finally {
+    await cleanupManager(manager, workspaceDir, userHomeDir);
+  }
+});
+
 test("forkSession carries the source provider session id into the fork", async () => {
   const { manager, workspaceDir, userHomeDir } = await createManager();
 

@@ -1983,6 +1983,7 @@ export class SessionManager {
     this.extraSubagentsProvider = typeof extraSubagentsProvider === "function" ? extraSubagentsProvider : null;
     this.occupationId = normalizeSessionOccupationId(occupationId);
     this.tmuxAvailable = null;
+    this.tmuxEnvironmentArgsAvailable = null;
     this.userHomeDir = getProviderHomeDir(userHomeDir);
     this.sessionActivityIdleMs = Math.max(500, Number(sessionActivityIdleMs) || SESSION_ACTIVITY_IDLE_MS);
     this.setTimeoutFn = setTimeoutFn;
@@ -2022,6 +2023,7 @@ export class SessionManager {
   setEnvironment(env = process.env) {
     this.env = env && typeof env === "object" ? { ...env } : { ...process.env };
     this.tmuxAvailable = null;
+    this.tmuxEnvironmentArgsAvailable = null;
   }
 
   setSystemRootPath(systemRootPath) {
@@ -2273,6 +2275,28 @@ export class SessionManager {
     return this.tmuxAvailable;
   }
 
+  tmuxSupportsEnvironmentArgs(env) {
+    if (this.tmuxEnvironmentArgsAvailable !== null) {
+      return this.tmuxEnvironmentArgsAvailable;
+    }
+
+    try {
+      const output = execFileSync(getTmuxCommand(env), ["-V"], {
+        encoding: "utf8",
+        env,
+        timeout: 1_500,
+      }).trim();
+      const match = output.match(/\btmux\s+(\d+)\.(\d+)/i);
+      const major = Number(match?.[1] || 0);
+      const minor = Number(match?.[2] || 0);
+      this.tmuxEnvironmentArgsAvailable = major > 3 || (major === 3 && minor >= 2);
+    } catch {
+      this.tmuxEnvironmentArgsAvailable = false;
+    }
+
+    return this.tmuxEnvironmentArgsAvailable;
+  }
+
   tmuxSessionExists(sessionName, env) {
     if (!sessionName || !this.isTmuxAvailable(env)) {
       return false;
@@ -2380,7 +2404,7 @@ export class SessionManager {
       return false;
     }
 
-    return this.isTmuxAvailable(env);
+    return this.isTmuxAvailable(env) && this.tmuxSupportsEnvironmentArgs(env);
   }
 
   getTerminalLaunch(session, provider, env, sessionCwd) {
