@@ -111,11 +111,13 @@ export default defineBuilding({
 
 BuildingHub is the installed system building for the local building catalog and the community catalog path for people who want to contribute buildings without editing Vibe Research itself. Community catalog loading is off by default. It is intentionally manifest-only: catalogs can add building cards, install checklist copy, required variables, access notes, visual treatment, docs links, capability descriptions, and `agentGuide` manuals, but they cannot register executable client code, add custom workspace routes, reserve special Agent Town places, or toggle arbitrary local settings.
 
-Vibe Research can load BuildingHub from a local folder such as `/Users/mark/Desktop/projects/buildinghub`, a direct JSON file, or a reviewed remote registry JSON URL. A folder source may contain a top-level `registry.json`, `buildinghub.json`, or `catalog.json`, plus individual manifests at `buildings/<slug>/building.json`.
+Vibe Research can load BuildingHub from a local folder such as `/Users/mark/Desktop/projects/buildinghub`, a direct JSON file, or a reviewed remote registry JSON URL. A folder source may contain a top-level `registry.json`, `buildinghub.json`, or `catalog.json`, plus individual manifests at `buildings/<slug>/building.json`, Agent Town layouts at `layouts/<slug>/layout.json`, and scaffold recipes at `recipes/<slug>/recipe.json`.
 
 Community manifests are normalized on the server by `src/buildinghub-service.js` before they reach the browser. The loader forces `source: "buildinghub"`, strips `install.enabledSetting`, disables `install.system`, clears `onboarding.setupSelector`, coerces workspace UI modes back to panel/wide, prevents `visual.specialTownPlace`, and sanitizes `agentGuide` strings and docs URLs. The browser also refuses community manifests whose normalized id collides with a core building id.
 
-The app exposes `GET /api/buildinghub/catalog?force=1` for explicit refreshes and includes `{ buildingHub: { buildings, status } }` in `GET /api/state`. Runtime configuration lives in settings keys:
+Scaffold recipes are portable setup snapshots for sharing a whole working Vibe Research shape: building set, portable settings, communication policy, occupation metadata, sandbox assumptions, Library binding requirements, and Agent Town layout. They intentionally do not carry secrets, personal identity values, or machine-local paths; those are expressed as local bindings that must be supplied during apply. See `docs/scaffold-recipes.md`.
+
+The app exposes `GET /api/buildinghub/catalog?force=1` for explicit refreshes and includes `{ buildingHub: { buildings, layouts, recipes, status } }` in `GET /api/state`. Runtime configuration lives in settings keys:
 
 - `buildingHubEnabled`
 - `buildingHubCatalogPath`

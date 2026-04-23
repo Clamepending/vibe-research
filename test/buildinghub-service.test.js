@@ -9,8 +9,10 @@ async function createCatalogDir() {
   const catalogDir = await mkdtemp(path.join(os.tmpdir(), "vr-buildinghub-"));
   const buildingDir = path.join(catalogDir, "buildings", "community-linear");
   const layoutDir = path.join(catalogDir, "layouts", "community-main-street");
+  const recipeDir = path.join(catalogDir, "recipes", "research-bench");
   await mkdir(buildingDir, { recursive: true });
   await mkdir(layoutDir, { recursive: true });
+  await mkdir(recipeDir, { recursive: true });
   await writeFile(
     path.join(buildingDir, "building.json"),
     JSON.stringify(
@@ -129,6 +131,47 @@ async function createCatalogDir() {
   );
 
   await writeFile(
+    path.join(recipeDir, "recipe.json"),
+    JSON.stringify(
+      {
+        schema: "vibe-research.scaffold.recipe.v1",
+        id: "Research Bench",
+        name: "Research Bench",
+        description: "A portable recipe for repeatable research evaluations.",
+        settings: {
+          portable: {
+            agentCommunicationDmEnabled: true,
+            agentOpenAiApiKey: "sk-should-not-load",
+            buildingHubEnabled: true,
+            customToken: "also-secret",
+          },
+        },
+        communication: {
+          dm: {
+            enabled: true,
+            body: "freeform",
+            visibility: "workspace",
+          },
+          groupInboxes: ["resource-hall"],
+        },
+        buildings: [
+          { id: "community-linear", name: "Community Linear", required: true },
+        ],
+        layout: {
+          decorations: [
+            { id: "road-c", itemId: "road-square", x: 224, y: 252 },
+          ],
+          functional: {
+            "community-linear": { x: 252, y: 224 },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  await writeFile(
     path.join(catalogDir, "registry.json"),
     JSON.stringify(
       {
@@ -149,6 +192,23 @@ async function createCatalogDir() {
                 { id: "road-a", itemId: "road-square", x: 252, y: 224 },
                 { id: "road-b", itemId: "road-square", x: 280, y: 224 },
               ],
+            },
+          },
+        ],
+        recipes: [
+          {
+            schema: "vibe-research.scaffold.recipe.v1",
+            id: "registry-research",
+            name: "Registry Research",
+            communication: {
+              dm: {
+                enabled: false,
+              },
+            },
+            settings: {
+              portable: {
+                buildingHubEnabled: true,
+              },
             },
           },
         ],
@@ -178,6 +238,8 @@ test("BuildingHubService loads local manifest catalogs as safe community buildin
     assert.equal(buildings.length, 2);
     const layouts = service.listLayouts();
     assert.equal(layouts.length, 2);
+    const recipes = service.listRecipes();
+    assert.equal(recipes.length, 2);
 
     const linear = buildings.find((building) => building.id === "community-linear");
     assert.ok(linear);
@@ -242,14 +304,30 @@ test("BuildingHubService loads local manifest catalogs as safe community buildin
     assert.ok(registryGrid);
     assert.equal(registryGrid.layout.decorations.length, 2);
 
+    const researchBench = recipes.find((recipe) => recipe.id === "research-bench");
+    assert.ok(researchBench);
+    assert.equal(researchBench.source.kind, "buildinghub");
+    assert.equal(researchBench.source.sourceId, "local");
+    assert.equal(researchBench.communication.dm.enabled, true);
+    assert.equal(researchBench.settings.portable.buildingHubEnabled, true);
+    assert.equal(researchBench.settings.portable.agentOpenAiApiKey, undefined);
+    assert.equal(researchBench.settings.portable.customToken, undefined);
+    assert.deepEqual(researchBench.communication.groupInboxes, ["resource-hall"]);
+
+    const registryResearch = recipes.find((recipe) => recipe.id === "registry-research");
+    assert.ok(registryResearch);
+    assert.equal(registryResearch.source.sourceId, "local");
+
     const status = service.getStatus();
     assert.equal(status.enabled, true);
     assert.equal(status.buildingCount, 2);
     assert.equal(status.layoutCount, 2);
+    assert.equal(status.recipeCount, 2);
     assert.equal(status.sources.length, 1);
     assert.equal(status.sources[0].status, "ok");
     assert.equal(status.sources[0].count, 2);
     assert.equal(status.sources[0].layoutCount, 2);
+    assert.equal(status.sources[0].recipeCount, 2);
     assert.equal(status.lastRefreshError, "");
   } finally {
     await rm(catalogDir, { recursive: true, force: true });
@@ -270,8 +348,10 @@ test("BuildingHubService stays inert when disabled", async () => {
     await service.refresh({ force: true });
     assert.deepEqual(service.listBuildings(), []);
     assert.deepEqual(service.listLayouts(), []);
+    assert.deepEqual(service.listRecipes(), []);
     assert.equal(service.getStatus().buildingCount, 0);
     assert.equal(service.getStatus().layoutCount, 0);
+    assert.equal(service.getStatus().recipeCount, 0);
     assert.equal(service.getStatus().sources.length, 0);
   } finally {
     await rm(catalogDir, { recursive: true, force: true });
@@ -292,6 +372,7 @@ test("BuildingHubService restart invalidates cached disabled refreshes", async (
     await service.refresh({ force: true });
     assert.equal(service.getStatus().buildingCount, 0);
     assert.equal(service.getStatus().layoutCount, 0);
+    assert.equal(service.getStatus().recipeCount, 0);
 
     service.restart({
       buildingHubCatalogPath: catalogDir,
@@ -301,6 +382,7 @@ test("BuildingHubService restart invalidates cached disabled refreshes", async (
 
     assert.equal(service.getStatus().buildingCount, 2);
     assert.equal(service.getStatus().layoutCount, 2);
+    assert.equal(service.getStatus().recipeCount, 2);
   } finally {
     await rm(catalogDir, { recursive: true, force: true });
   }
@@ -365,4 +447,42 @@ test("BuildingHub layout normalization rejects unsafe layouts and trims payloads
   ]);
   assert.deepEqual(layout.layout.functional.github, { x: 89, y: 91, rotation: 1 });
   assert.equal(layout.buildingHub.sourceId, "test-source");
+});
+
+test("BuildingHub recipe normalization accepts scaffold recipes without secret values", () => {
+  assert.equal(testInternals.normalizeBuildingHubRecipe(null), null);
+  assert.equal(testInternals.normalizeBuildingHubRecipe({ id: "", name: "" }), null);
+
+  const recipe = testInternals.normalizeBuildingHubRecipe({
+    schema: "vibe-research.scaffold.recipe.v1",
+    id: "GPU Bench!",
+    name: "GPU Bench",
+    repositoryUrl: "https://github.com/example/buildinghub/tree/main/recipes/gpu-bench",
+    settings: {
+      portable: {
+        agentCommunicationDmEnabled: true,
+        agentOpenAiApiKey: "sk-should-not-survive",
+        buildingHubEnabled: true,
+      },
+    },
+    communication: {
+      dm: {
+        enabled: true,
+        body: "freeform",
+        visibility: "workspace",
+      },
+      groupInboxes: ["resource-hall"],
+    },
+    buildings: [{ id: "Harbor", name: "Harbor", required: true }],
+  }, { sourceId: "test-source" });
+
+  assert.equal(recipe.id, "gpu-bench");
+  assert.equal(recipe.source.kind, "buildinghub");
+  assert.equal(recipe.source.sourceId, "test-source");
+  assert.equal(recipe.source.repositoryUrl, "https://github.com/example/buildinghub/tree/main/recipes/gpu-bench");
+  assert.equal(recipe.settings.portable.buildingHubEnabled, true);
+  assert.equal(recipe.settings.portable.agentOpenAiApiKey, undefined);
+  assert.equal(recipe.communication.dm.enabled, true);
+  assert.deepEqual(recipe.communication.groupInboxes, ["resource-hall"]);
+  assert.equal(recipe.buildings[0].id, "harbor");
 });

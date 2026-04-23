@@ -92,6 +92,39 @@ function normalizeAgentProviderId(value) {
   return /^[a-z0-9_-]+$/.test(providerId) ? providerId : "claude";
 }
 
+function normalizeCommunicationBody(value) {
+  const body = String(value || "freeform").trim().toLowerCase();
+  return ["freeform", "typed", "typed-envelope"].includes(body) ? body : "freeform";
+}
+
+function normalizeCommunicationVisibility(value) {
+  const visibility = String(value || "workspace").trim().toLowerCase();
+  return ["workspace", "private", "public"].includes(visibility) ? visibility : "workspace";
+}
+
+function normalizeCommunicationLimit(value, fallback, { min = 0, max = 50 } = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.floor(number)));
+}
+
+function normalizeGroupInboxes(value) {
+  const source = Array.isArray(value) ? value : String(value || "").split(/[,\n]/);
+  return Array.from(
+    new Set(
+      source
+        .map((entry) => String(entry || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]+/g, "-")
+          .replace(/^-+|-+$/g, ""))
+        .filter(Boolean),
+    ),
+  ).slice(0, 40).join(",");
+}
+
 function normalizePluginIds(value) {
   if (!Array.isArray(value)) {
     return [];
@@ -233,6 +266,15 @@ export class SettingsStore {
       agentMailMode: "websocket",
       agentMailProviderId: "claude",
       agentMailUsername: "",
+      agentCommunicationCaptureMessageReads: true,
+      agentCommunicationCaptureMessages: true,
+      agentCommunicationDmBody: "freeform",
+      agentCommunicationDmEnabled: false,
+      agentCommunicationDmVisibility: "workspace",
+      agentCommunicationGroupInboxes: "resource-hall,reviews",
+      agentCommunicationMaxThreadDepth: 6,
+      agentCommunicationMaxUnrepliedPerAgent: 3,
+      agentCommunicationRequireRelatedObject: false,
       agentOpenAiApiKey: "",
       browserUseAnthropicApiKey: String(this.env.ANTHROPIC_API_KEY || this.env.CLAUDE_API_KEY || "").trim(),
       browserUseBrowserPath: "",
@@ -340,6 +382,41 @@ export class SettingsStore {
       agentMailMode: normalizeAgentMailMode(payload.agentMailMode || defaults.agentMailMode),
       agentMailProviderId: normalizeAgentProviderId(payload.agentMailProviderId || defaults.agentMailProviderId),
       agentMailUsername: String(payload.agentMailUsername || defaults.agentMailUsername || "").trim(),
+      agentCommunicationCaptureMessageReads: normalizeBoolean(
+        payload.agentCommunicationCaptureMessageReads,
+        defaults.agentCommunicationCaptureMessageReads,
+      ),
+      agentCommunicationCaptureMessages: normalizeBoolean(
+        payload.agentCommunicationCaptureMessages,
+        defaults.agentCommunicationCaptureMessages,
+      ),
+      agentCommunicationDmBody: normalizeCommunicationBody(
+        payload.agentCommunicationDmBody || defaults.agentCommunicationDmBody,
+      ),
+      agentCommunicationDmEnabled: normalizeBoolean(
+        payload.agentCommunicationDmEnabled,
+        defaults.agentCommunicationDmEnabled,
+      ),
+      agentCommunicationDmVisibility: normalizeCommunicationVisibility(
+        payload.agentCommunicationDmVisibility || defaults.agentCommunicationDmVisibility,
+      ),
+      agentCommunicationGroupInboxes: normalizeGroupInboxes(
+        payload.agentCommunicationGroupInboxes || defaults.agentCommunicationGroupInboxes,
+      ),
+      agentCommunicationMaxThreadDepth: normalizeCommunicationLimit(
+        payload.agentCommunicationMaxThreadDepth,
+        defaults.agentCommunicationMaxThreadDepth,
+        { min: 1, max: 50 },
+      ),
+      agentCommunicationMaxUnrepliedPerAgent: normalizeCommunicationLimit(
+        payload.agentCommunicationMaxUnrepliedPerAgent,
+        defaults.agentCommunicationMaxUnrepliedPerAgent,
+        { min: 0, max: 50 },
+      ),
+      agentCommunicationRequireRelatedObject: normalizeBoolean(
+        payload.agentCommunicationRequireRelatedObject,
+        defaults.agentCommunicationRequireRelatedObject,
+      ),
       agentOpenAiApiKey:
         payload.agentOpenAiApiKey === undefined
           ? defaults.agentOpenAiApiKey

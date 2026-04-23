@@ -628,6 +628,64 @@ const CORE_BUILDING_MANIFESTS = [
     },
   },
   {
+    id: "scaffold-recipes",
+    name: "Scaffold Recipes",
+    category: "Vibe Research",
+    description: "Export, import, and share complete Vibe Research setups: buildings, layout, portable settings, communication policy, sandbox assumptions, Library bindings, and occupation metadata.",
+    icon: Notebook,
+    install: {
+      system: true,
+    },
+    status: "built in",
+    source: "vibe-research",
+    visual: {
+      shape: "library",
+    },
+    access: {
+      label: "Local setup snapshot",
+      detail: "Recipes include portable settings and local binding placeholders. Secrets, personal values, and machine paths are recorded as required bindings, not exported as values.",
+    },
+    agentGuide: {
+      summary: "Use Scaffold Recipes when an agent needs to snapshot a working Vibe Research setup, preview someone else's setup before applying it, or publish a reusable setup to BuildingHub.",
+      useCases: [
+        "Capture the current occupation, building set, communication policy, and Agent Town layout before a meta-experiment.",
+        "Preview a shared setup and identify missing buildings or local bindings before changing settings.",
+        "Apply a recipe with explicit local bindings supplied by the human or local environment.",
+        "Publish a portable setup to BuildingHub after verifying secrets and personal values are redacted.",
+      ],
+      commands: [
+        { label: "Export current recipe", command: "vr-scaffold-recipe export --pretty", detail: "Prints the current setup without secret, personal, or local path values." },
+        { label: "List saved recipes", command: "vr-scaffold-recipe list", detail: "Shows recipes saved in this Vibe Research state directory." },
+        { label: "Preview a recipe", command: "vr-scaffold-recipe preview recipe.json --pretty", detail: "Reports settings changes, missing buildings, layout summary, and local bindings required." },
+        { label: "Apply with binding", command: "vr-scaffold-recipe apply recipe.json --binding workspaceRootPath=$PWD", detail: "Applies portable settings and only the local bindings explicitly supplied." },
+        { label: "Read recipe API", command: "curl -s \"$VIBE_RESEARCH_SCAFFOLD_RECIPES_API/current\"", detail: "Raw API endpoint used by the helper command." },
+      ],
+      env: [
+        { name: "VIBE_RESEARCH_SCAFFOLD_RECIPES_API", detail: "Base URL for scaffold recipe export, preview, apply, and publish endpoints." },
+        { name: "VIBE_RESEARCH_SCAFFOLD_RECIPE_COMMAND", detail: "Canonical helper command for local agents." },
+        { name: "VIBE_RESEARCH_BUILDING_GUIDES_INDEX", detail: "Generated building guide index; read before using or setting up buildings." },
+      ],
+      setup: [
+        "Preview before applying a recipe; do not silently overwrite local setup values.",
+        "Treat localBindingsRequired as a checklist of values to source from the local machine or the human.",
+        "Never paste secrets into result docs, Library notes, logs, screenshots, or published recipes.",
+        "Use BuildingHub publishing only after confirming redactions are present for configured secrets, personal values, and local paths.",
+      ],
+    },
+    onboarding: {
+      variables: [
+        { label: "Saved recipes", value: "$VIBE_RESEARCH_ROOT/scaffold-recipes.json", required: false },
+        { label: "Current setup API", value: "$VIBE_RESEARCH_SCAFFOLD_RECIPES_API/current", required: true },
+        { label: "BuildingHub checkout", setting: "buildingHubCatalogPath", required: false },
+      ],
+      steps: [
+        { title: "Export current setup", detail: "Create a portable scaffold recipe from the current Vibe Research state.", completeWhen: { type: "installed" } },
+        { title: "Preview before applying", detail: "Inspect missing buildings and required local bindings before mutating settings or layout." },
+        { title: "Share deliberately", detail: "Publish only redacted recipes to BuildingHub after verifying the generated JSON." },
+      ],
+    },
+  },
+  {
     id: "sora",
     name: "Sora",
     category: "Generative Media",

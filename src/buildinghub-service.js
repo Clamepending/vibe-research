@@ -1,11 +1,13 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { defineBuilding, normalizeBuildingId } from "./client/building-sdk.js";
+import { SCAFFOLD_RECIPE_SCHEMA, normalizeScaffoldRecipe } from "./scaffold-recipe-service.js";
 
 const DEFAULT_REFRESH_INTERVAL_MS = 60_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 8_000;
 const MAX_BUILDINGS_PER_SOURCE = 200;
 const MAX_LAYOUTS_PER_SOURCE = 200;
+const MAX_RECIPES_PER_SOURCE = 200;
 const MAX_TEXT_LENGTH = 2_000;
 const CATALOG_FILENAMES = ["registry.json", "buildinghub.json", "catalog.json"];
 
@@ -350,6 +352,38 @@ function extractCatalogLayouts(payload) {
   return [];
 }
 
+function extractCatalogRecipes(payload) {
+  if (!isPlainObject(payload)) {
+    return [];
+  }
+
+  if (Array.isArray(payload.recipes)) {
+    return payload.recipes;
+  }
+
+  if (Array.isArray(payload.scaffolds)) {
+    return payload.scaffolds;
+  }
+
+  if (Array.isArray(payload.registry?.recipes)) {
+    return payload.registry.recipes;
+  }
+
+  if (Array.isArray(payload.registry?.scaffolds)) {
+    return payload.registry.scaffolds;
+  }
+
+  return [];
+}
+
+function isScaffoldRecipePayload(payload) {
+  return isPlainObject(payload) && (
+    payload.schema === SCAFFOLD_RECIPE_SCHEMA ||
+    payload.recipeSchema === SCAFFOLD_RECIPE_SCHEMA ||
+    (Array.isArray(payload.buildings) && isPlainObject(payload.communication) && isPlainObject(payload.settings))
+  );
+}
+
 function normalizeLayoutTags(value) {
   return [...new Set(safeArray(value).map((entry) => normalizeText(entry, 60)).filter(Boolean))].slice(0, 20);
 }
@@ -500,6 +534,43 @@ function normalizeBuildingHubLayout(layout, { sourceId = "buildinghub" } = {}) {
   };
 }
 
+function normalizeBuildingHubRecipe(recipe, { sourceId = "buildinghub" } = {}) {
+  if (!isPlainObject(recipe)) {
+    return null;
+  }
+
+  const id = normalizeBuildingId(recipe.id || recipe.recipeId || recipe.name);
+  const name = normalizeText(recipe.name || recipe.title || id, 120);
+  if (!id || !name) {
+    return null;
+  }
+
+  const normalized = normalizeScaffoldRecipe({
+    ...recipe,
+    id,
+    name,
+    source: {
+      ...(isPlainObject(recipe.source) ? recipe.source : {}),
+      kind: "buildinghub",
+      sourceId,
+      repositoryUrl: recipe.repositoryUrl || recipe.repoUrl || recipe.repository || recipe.source?.repositoryUrl,
+      recipeUrl: recipe.recipeUrl || recipe.homepageUrl || recipe.url || recipe.source?.recipeUrl,
+      commit: recipe.commit || recipe.source?.commit,
+      commitUrl: recipe.commitUrl || recipe.source?.commitUrl,
+      publishedAt: recipe.publishedAt || recipe.source?.publishedAt,
+    },
+  });
+
+  return {
+    ...normalized,
+    source: {
+      ...normalized.source,
+      kind: "buildinghub",
+      sourceId,
+    },
+  };
+}
+
 async function readJsonFile(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
 }
@@ -562,6 +633,35 @@ async function listLayoutManifestFiles(rootPath) {
   return files.sort();
 }
 
+async function listRecipeManifestFiles(rootPath) {
+  const files = [];
+  const recipesPath = path.join(rootPath, "recipes");
+  let entries = [];
+  try {
+    entries = await readdir(recipesPath, { withFileTypes: true });
+  } catch {
+    return files;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const filePath = path.join(recipesPath, entry.name, "recipe.json");
+    try {
+      const stats = await stat(filePath);
+      if (stats.isFile()) {
+        files.push(filePath);
+      }
+    } catch {
+      // Missing recipe.json files are ignored so drafts do not break the whole catalog.
+    }
+  }
+
+  return files.sort();
+}
+
 async function readLocalCatalogPayloads(sourcePath) {
   const resolvedPath = path.resolve(String(sourcePath || ""));
   const stats = await stat(resolvedPath);
@@ -595,6 +695,10 @@ async function readLocalCatalogPayloads(sourcePath) {
     payloads.push({ payload: await readJsonFile(filePath), path: filePath });
   }
 
+  for (const filePath of await listRecipeManifestFiles(resolvedPath)) {
+    payloads.push({ payload: await readJsonFile(filePath), path: filePath });
+  }
+
   if (!payloads.length) {
     throw new Error(`No BuildingHub catalog files found in ${resolvedPath}`);
   }
@@ -624,6 +728,17 @@ function dedupeLayouts(layouts) {
   return [...byId.values()].sort((left, right) => String(left.name).localeCompare(String(right.name)));
 }
 
+function dedupeRecipes(recipes) {
+  const byId = new Map();
+  for (const recipe of recipes) {
+    if (!recipe?.id || byId.has(recipe.id)) {
+      continue;
+    }
+    byId.set(recipe.id, recipe);
+  }
+  return [...byId.values()].sort((left, right) => String(left.name).localeCompare(String(right.name)));
+}
+
 export class BuildingHubService {
   constructor({
     fetchImpl = globalThis.fetch,
@@ -633,6 +748,7 @@ export class BuildingHubService {
   } = {}) {
     this.buildings = [];
     this.layouts = [];
+    this.recipes = [];
     this.fetchImpl = fetchImpl;
     this.fetchTimeoutMs = fetchTimeoutMs;
     this.lastRefreshAt = 0;
@@ -693,9 +809,23 @@ export class BuildingHubService {
       : await readLocalCatalogPayloads(source.path);
     const buildings = [];
     const layouts = [];
+    const recipes = [];
     for (const { payload } of payloads) {
+      const recipeCandidates = extractCatalogRecipes(payload);
+      const recipeList = recipeCandidates.length
+        ? recipeCandidates
+        : isScaffoldRecipePayload(payload) ? [payload] : [];
+      for (const recipeCandidate of recipeList.slice(0, MAX_RECIPES_PER_SOURCE)) {
+        const recipe = normalizeBuildingHubRecipe(recipeCandidate, { sourceId: source.id });
+        if (recipe) {
+          recipes.push(recipe);
+        }
+      }
+
       const candidates = extractCatalogBuildings(payload);
-      const manifestList = candidates.length ? candidates : payload?.layout && payload?.id ? [] : [payload];
+      const manifestList = candidates.length
+        ? candidates
+        : payload?.layout && payload?.id || isScaffoldRecipePayload(payload) ? [] : [payload];
       for (const manifest of manifestList.slice(0, MAX_BUILDINGS_PER_SOURCE)) {
         const building = normalizeBuildingHubManifest(manifest, { sourceId: source.id });
         if (building) {
@@ -705,7 +835,7 @@ export class BuildingHubService {
       const layoutCandidates = extractCatalogLayouts(payload);
       const layoutList = layoutCandidates.length
         ? layoutCandidates
-        : payload?.layout && payload?.id ? [payload] : [];
+        : payload?.layout && payload?.id && !isScaffoldRecipePayload(payload) ? [payload] : [];
       for (const layoutCandidate of layoutList.slice(0, MAX_LAYOUTS_PER_SOURCE)) {
         const layout = normalizeBuildingHubLayout(layoutCandidate, { sourceId: source.id });
         if (layout) {
@@ -716,6 +846,7 @@ export class BuildingHubService {
     return {
       buildings: dedupeBuildings(buildings),
       layouts: dedupeLayouts(layouts),
+      recipes: dedupeRecipes(recipes),
     };
   }
 
@@ -730,19 +861,22 @@ export class BuildingHubService {
     const nextSources = [];
     const nextBuildings = [];
     const nextLayouts = [];
+    const nextRecipes = [];
     const errors = [];
 
     for (const source of configuredSources) {
       try {
-        const { buildings, layouts } = await this.readSource(source);
+        const { buildings, layouts, recipes } = await this.readSource(source);
         nextSources.push({
           ...source,
           count: buildings.length,
           layoutCount: layouts.length,
+          recipeCount: recipes.length,
           status: "ok",
         });
         nextBuildings.push(...buildings);
         nextLayouts.push(...layouts);
+        nextRecipes.push(...recipes);
       } catch (error) {
         const message = error.message || "Could not load BuildingHub source.";
         errors.push(`${source.label}: ${message}`);
@@ -750,6 +884,7 @@ export class BuildingHubService {
           ...source,
           count: 0,
           layoutCount: 0,
+          recipeCount: 0,
           error: message,
           status: "error",
         });
@@ -759,6 +894,7 @@ export class BuildingHubService {
     this.sources = nextSources;
     this.buildings = dedupeBuildings(nextBuildings);
     this.layouts = dedupeLayouts(nextLayouts);
+    this.recipes = dedupeRecipes(nextRecipes);
     this.lastRefreshError = errors.join(" ");
   }
 
@@ -792,6 +928,10 @@ export class BuildingHubService {
     }));
   }
 
+  listRecipes() {
+    return this.recipes.map((recipe) => JSON.parse(JSON.stringify(recipe)));
+  }
+
   getStatus() {
     return {
       buildingCount: this.buildings.length,
@@ -799,6 +939,7 @@ export class BuildingHubService {
       lastRefreshAt: this.lastRefreshAt ? new Date(this.lastRefreshAt).toISOString() : null,
       lastRefreshError: this.lastRefreshError,
       layoutCount: this.layouts.length,
+      recipeCount: this.recipes.length,
       sources: this.sources.map((source) => ({ ...source })),
     };
   }
@@ -807,6 +948,8 @@ export class BuildingHubService {
 export const testInternals = {
   extractCatalogBuildings,
   extractCatalogLayouts,
+  extractCatalogRecipes,
+  normalizeBuildingHubRecipe,
   normalizeBuildingHubLayout,
   normalizeBuildingHubManifest,
 };

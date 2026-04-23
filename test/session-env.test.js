@@ -54,6 +54,8 @@ test("buildSessionEnv exposes helper and common CLI directories on PATH", () => 
     assert.equal(env.VIBE_RESEARCH_BROWSER_FALLBACK_COMMAND, "vr-browser");
     assert.equal(env.VIBE_RESEARCH_BROWSER_USE_COMMAND, "vr-browser-use");
     assert.equal(env.VIBE_RESEARCH_OTTOAUTH_COMMAND, "vr-ottoauth");
+    assert.equal(env.VIBE_RESEARCH_SCAFFOLD_RECIPE_COMMAND, "vr-scaffold-recipe");
+    assert.equal(env.VIBE_RESEARCH_SCAFFOLD_RECIPE_HELP, "vr-scaffold-recipe export --pretty");
     assert.equal(env.VIBE_RESEARCH_PLAYWRIGHT_COMMAND, "vr-playwright");
     assert.equal(env.VIBE_RESEARCH_PLAYWRIGHT_SKILL, path.join(rootDir, "skills", "playwright", "SKILL.md"));
     assert.equal(
@@ -72,6 +74,8 @@ test("buildSessionEnv exposes helper and common CLI directories on PATH", () => 
     );
     assert.equal(env.VIBE_RESEARCH_AGENT_CANVAS_COMMAND, "vr-agent-canvas");
     assert.equal(env.REMOTE_VIBES_AGENT_CANVAS_COMMAND, "rv-agent-canvas");
+    assert.equal(env.REMOTE_VIBES_SCAFFOLD_RECIPE_COMMAND, "rv-scaffold-recipe");
+    assert.equal(env.REMOTE_VIBES_SCAFFOLD_RECIPE_HELP, "rv-scaffold-recipe export --pretty");
     assert.match(env.VIBE_RESEARCH_AGENT_CANVAS_HELP, /vr-agent-canvas --image results\/chart\.png/);
     assert.match(env.REMOTE_VIBES_AGENT_CANVAS_HELP, /rv-agent-canvas --image results\/chart\.png/);
   } finally {

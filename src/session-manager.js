@@ -669,6 +669,8 @@ export function buildSessionEnv(
     VIBE_RESEARCH_BROWSER_FALLBACK_COMMAND: "vr-browser",
     VIBE_RESEARCH_BROWSER_USE_COMMAND: "vr-browser-use",
     VIBE_RESEARCH_OTTOAUTH_COMMAND: "vr-ottoauth",
+    VIBE_RESEARCH_SCAFFOLD_RECIPE_COMMAND: "vr-scaffold-recipe",
+    VIBE_RESEARCH_SCAFFOLD_RECIPE_HELP: "vr-scaffold-recipe export --pretty",
     VIBE_RESEARCH_VIDEOMEMORY_COMMAND: "vr-videomemory",
     VIBE_RESEARCH_BROWSER_DESCRIBE:
       "vr-browser describe 4173 --prompt \"What visual issues stand out in the rendered UI?\"",
@@ -709,6 +711,8 @@ export function buildSessionEnv(
     REMOTE_VIBES_BROWSER_FALLBACK_COMMAND: "rv-browser",
     REMOTE_VIBES_BROWSER_USE_COMMAND: "rv-browser-use",
     REMOTE_VIBES_OTTOAUTH_COMMAND: "rv-ottoauth",
+    REMOTE_VIBES_SCAFFOLD_RECIPE_COMMAND: "rv-scaffold-recipe",
+    REMOTE_VIBES_SCAFFOLD_RECIPE_HELP: "rv-scaffold-recipe export --pretty",
     REMOTE_VIBES_VIDEOMEMORY_COMMAND: "rv-videomemory",
     REMOTE_VIBES_PLAYWRIGHT_COMMAND: "rv-playwright",
     REMOTE_VIBES_PLAYWRIGHT_SKILL: path.join(appRootDir, "skills", "playwright", "SKILL.md"),

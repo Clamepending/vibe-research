@@ -23,6 +23,7 @@ import { AgentPromptStore } from "./agent-prompt-store.js";
 import { AgentRunStore } from "./agent-run-store.js";
 import { AgentTownStore } from "./agent-town-store.js";
 import { publishTownShareToBuildingHub } from "./buildinghub-layout-publisher.js";
+import { publishScaffoldRecipeToBuildingHub } from "./buildinghub-scaffold-publisher.js";
 import { writeBuildingAgentGuides } from "./building-agent-guides.js";
 import { BuildingHubService } from "./buildinghub-service.js";
 import { BrowserUseService } from "./browser-use-service.js";
@@ -31,6 +32,12 @@ import { createFolderEntry, listFolderEntries } from "./folder-browser.js";
 import { OttoAuthService } from "./ottoauth-service.js";
 import { PortAliasStore } from "./port-alias-store.js";
 import { listListeningPorts } from "./ports.js";
+import {
+  buildScaffoldRecipe,
+  createScaffoldRecipeApplyPlan,
+  previewScaffoldRecipe,
+  ScaffoldRecipeService,
+} from "./scaffold-recipe-service.js";
 import { buildAgentCredentialEnv, SettingsStore } from "./settings-store.js";
 import { SessionManager } from "./session-manager.js";
 import { SleepPreventionService } from "./sleep-prevention.js";
@@ -52,6 +59,7 @@ import {
 } from "./workspace-files.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const appRootDir = path.resolve(__dirname, "..");
 const publicDir = path.resolve(__dirname, "..", "public");
 const masterplanIndexPath = path.join(publicDir, "masterplan", "index.html");
 const execFileAsync = promisify(execFile);
@@ -868,6 +876,7 @@ export async function createVibeResearchApp({
   onTerminate = null,
   agentMailServiceFactory = null,
   buildingHubServiceFactory = null,
+  scaffoldRecipeServiceFactory = null,
   browserUseServiceFactory = null,
   ottoAuthServiceFactory = null,
   telegramServiceFactory = null,
@@ -905,6 +914,10 @@ export async function createVibeResearchApp({
       : new BuildingHubService({
           settings: settingsStore.settings,
         });
+  const scaffoldRecipeService =
+    typeof scaffoldRecipeServiceFactory === "function"
+      ? scaffoldRecipeServiceFactory(settingsStore.settings, { cwd, stateDir, systemRootPath })
+      : new ScaffoldRecipeService({ stateDir });
   const browserUseService =
     typeof browserUseServiceFactory === "function"
       ? browserUseServiceFactory(settingsStore.settings, { cwd, stateDir, systemRootPath })
@@ -1014,6 +1027,7 @@ export async function createVibeResearchApp({
   await ottoAuthService.initialize();
   await videoMemoryService.initialize();
   await agentCallbackService.initialize();
+  await scaffoldRecipeService.initialize();
   await sessionManager.initialize();
   await agentPromptStore.initialize();
   sessionManager.setOccupationId(agentPromptStore.selectedPromptId);
@@ -1132,6 +1146,61 @@ export async function createVibeResearchApp({
     });
   }
 
+  async function getAppMetadata() {
+    let version = "";
+    try {
+      const packageJson = JSON.parse(await readFile(path.join(appRootDir, "package.json"), "utf8"));
+      version = String(packageJson.version || "").trim();
+    } catch {
+      version = "";
+    }
+
+    let commit = "";
+    let branch = "";
+    try {
+      const { stdout = "" } = await execFileAsync("git", ["-C", appRootDir, "rev-parse", "HEAD"]);
+      commit = stdout.trim();
+    } catch {
+      commit = "";
+    }
+    try {
+      const { stdout = "" } = await execFileAsync("git", ["-C", appRootDir, "branch", "--show-current"]);
+      branch = stdout.trim();
+    } catch {
+      branch = "";
+    }
+
+    return { version, commit, branch };
+  }
+
+  async function buildCurrentScaffoldRecipe({ name = "Current Vibe Research scaffold", tags = [] } = {}) {
+    await buildingHubService.refresh();
+    return buildScaffoldRecipe({
+      agentPrompt: await agentPromptStore.getState(),
+      app: await getAppMetadata(),
+      buildingHub: {
+        buildings: buildingHubService.listBuildings(),
+        layouts: buildingHubService.listLayouts(),
+        recipes: buildingHubService.listRecipes ? buildingHubService.listRecipes() : [],
+        status: buildingHubService.getStatus(),
+      },
+      coreBuildings: BUILDING_CATALOG,
+      defaultProviderId,
+      layout: agentTownStore.getState().layout,
+      name,
+      providers,
+      settings: settingsStore.settings,
+      tags,
+    });
+  }
+
+  function getAvailableBuildingIds() {
+    return [
+      ...BUILDING_CATALOG.map((building) => building.id),
+      ...buildingHubService.listBuildings().map((building) => building.id),
+    ];
+  }
+
   function buildSessionManagerEnvironment() {
     const resolvedPort = exposedPort || port;
     return {
@@ -1140,11 +1209,13 @@ export async function createVibeResearchApp({
       REMOTE_VIBES_SERVER_URL: helperBaseUrl || "",
       REMOTE_VIBES_URL: preferredUrl || helperBaseUrl || "",
       REMOTE_VIBES_AGENT_CALLBACK_BASE_URL: agentCallbackService.getCallbackBaseUrl(),
+      REMOTE_VIBES_SCAFFOLD_RECIPES_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/scaffold-recipes`,
       VIBE_RESEARCH_PORT: String(resolvedPort),
       VIBE_RESEARCH_SERVER_URL: helperBaseUrl || "",
       VIBE_RESEARCH_URL: preferredUrl || helperBaseUrl || "",
       VIBE_RESEARCH_AGENT_CALLBACK_BASE_URL: agentCallbackService.getCallbackBaseUrl(),
       VIBE_RESEARCH_AGENT_TOWN_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/agent-town`,
+      VIBE_RESEARCH_SCAFFOLD_RECIPES_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/scaffold-recipes`,
     };
   }
 
@@ -1490,6 +1561,7 @@ export async function createVibeResearchApp({
       buildingHub: {
         buildings: buildingHubService.listBuildings(),
         layouts: buildingHubService.listLayouts(),
+        recipes: buildingHubService.listRecipes ? buildingHubService.listRecipes() : [],
         status: buildingHubService.getStatus(),
       },
       cwd,
@@ -1512,10 +1584,204 @@ export async function createVibeResearchApp({
       response.json({
         buildings: buildingHubService.listBuildings(),
         layouts: buildingHubService.listLayouts(),
+        recipes: buildingHubService.listRecipes ? buildingHubService.listRecipes() : [],
         buildingHub: buildingHubService.getStatus(),
       });
     } catch (error) {
       response.status(error.statusCode || 400).json({ error: error.message || "Could not load BuildingHub catalog." });
+    }
+  });
+
+  app.get("/api/scaffold-recipes/current", async (request, response) => {
+    try {
+      const tags = String(request.query.tags || "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      const recipe = await buildCurrentScaffoldRecipe({
+        name: request.query.name || "Current Vibe Research scaffold",
+        tags,
+      });
+      response.json({
+        recipe,
+        preview: previewScaffoldRecipe(recipe, {
+          availableBuildingIds: getAvailableBuildingIds(),
+          settings: settingsStore.settings,
+        }),
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not export scaffold recipe." });
+    }
+  });
+
+  app.get("/api/scaffold-recipes", (_request, response) => {
+    response.json({
+      recipes: scaffoldRecipeService.listRecipes(),
+    });
+  });
+
+  app.post("/api/scaffold-recipes", async (request, response) => {
+    try {
+      const recipe = await scaffoldRecipeService.saveRecipe(request.body?.recipe || request.body || {});
+      response.status(201).json({ recipe });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not save scaffold recipe." });
+    }
+  });
+
+  app.post("/api/scaffold-recipes/current", async (request, response) => {
+    try {
+      const recipe = await buildCurrentScaffoldRecipe({
+        name: request.body?.name || "Current Vibe Research scaffold",
+        tags: request.body?.tags || [],
+      });
+      const saved = await scaffoldRecipeService.saveRecipe({
+        ...recipe,
+        id: request.body?.id || recipe.id,
+        name: request.body?.name || recipe.name,
+        description: request.body?.description || recipe.description,
+      });
+      response.status(201).json({ recipe: saved });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not save current scaffold recipe." });
+    }
+  });
+
+  app.get("/api/scaffold-recipes/:recipeId", (request, response) => {
+    const recipe = scaffoldRecipeService.getRecipe(request.params.recipeId);
+    if (!recipe) {
+      response.status(404).json({ error: "Scaffold recipe not found." });
+      return;
+    }
+    response.json({ recipe });
+  });
+
+  app.delete("/api/scaffold-recipes/:recipeId", async (request, response) => {
+    try {
+      const recipe = await scaffoldRecipeService.deleteRecipe(request.params.recipeId);
+      response.json({ recipe });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not delete scaffold recipe." });
+    }
+  });
+
+  app.post("/api/scaffold-recipes/preview", async (request, response) => {
+    try {
+      await buildingHubService.refresh();
+      const preview = previewScaffoldRecipe(request.body?.recipe || request.body || {}, {
+        availableBuildingIds: getAvailableBuildingIds(),
+        localBindings: request.body?.localBindings || {},
+        settings: settingsStore.settings,
+      });
+      response.json({ preview, recipe: preview.recipe });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not preview scaffold recipe." });
+    }
+  });
+
+  async function applyScaffoldRecipeInput(input = {}) {
+    const plan = createScaffoldRecipeApplyPlan(input.recipe || input, {
+      localBindings: input.localBindings || {},
+    });
+    await settingsStore.update({
+      ...plan.settingsPatch,
+      ...plan.localSettingsPatch,
+    });
+    await applyRuntimeSettings(settingsStore.settings, {
+      backupReason: shouldSyncLibraryForSettingsPatch(plan.localSettingsPatch) ? "scaffold-recipe" : false,
+    });
+    let layoutPayload = null;
+    if (plan.layout) {
+      layoutPayload = await agentTownStore.importLayout({
+        layout: plan.layout,
+        reason: `apply scaffold recipe ${plan.recipe.name}`,
+      });
+    }
+    if (input.applyOccupation && plan.occupation?.selectedPromptId) {
+      await agentPromptStore.save({
+        selectedPromptId: plan.occupation.selectedPromptId,
+      });
+      sessionManager.setOccupationId(agentPromptStore.selectedPromptId);
+    }
+    await syncBuildingAgentGuides({ refreshBuildingHub: true });
+    return {
+      agentPrompt: await agentPromptStore.getState(),
+      agentTown: layoutPayload?.state || agentTownStore.getState(),
+      plan,
+      preview: previewScaffoldRecipe(plan.recipe, {
+        availableBuildingIds: getAvailableBuildingIds(),
+        localBindings: input.localBindings || {},
+        settings: settingsStore.settings,
+      }),
+      recipe: plan.recipe,
+      settings: getSettingsState(),
+    };
+  }
+
+  app.post("/api/scaffold-recipes/apply", async (request, response) => {
+    try {
+      response.json(await applyScaffoldRecipeInput(request.body || {}));
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not apply scaffold recipe." });
+    }
+  });
+
+  app.post("/api/scaffold-recipes/:recipeId/apply", async (request, response) => {
+    try {
+      const recipe = scaffoldRecipeService.getRecipe(request.params.recipeId);
+      if (!recipe) {
+        response.status(404).json({ error: "Scaffold recipe not found." });
+        return;
+      }
+      response.json(await applyScaffoldRecipeInput({
+        ...request.body,
+        recipe,
+      }));
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not apply scaffold recipe." });
+    }
+  });
+
+  app.post("/api/scaffold-recipes/:recipeId/publish", async (request, response) => {
+    try {
+      const recipe = request.params.recipeId === "current"
+        ? await buildCurrentScaffoldRecipe({
+            name: request.body?.name || "Current Vibe Research scaffold",
+            tags: request.body?.tags || [],
+          })
+        : scaffoldRecipeService.getRecipe(request.params.recipeId);
+      if (!recipe) {
+        response.status(404).json({ error: "Scaffold recipe not found." });
+        return;
+      }
+      const buildingHub = await publishScaffoldRecipeToBuildingHub({
+        recipe: {
+          ...recipe,
+          name: request.body?.name || recipe.name,
+          description: request.body?.description || recipe.description,
+        },
+        settings: settingsStore.settings,
+        cwd,
+        env: serverEnv,
+      });
+      const saved = await scaffoldRecipeService.saveRecipe({
+        ...recipe,
+        source: {
+          ...recipe.source,
+          kind: "buildinghub",
+          sourceId: "local",
+          ...buildingHub,
+        },
+      });
+      await buildingHubService.refresh({ force: true });
+      await syncBuildingAgentGuides();
+      response.status(201).json({
+        recipe: saved,
+        buildingHub,
+        buildingHubStatus: buildingHubService.getStatus(),
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not publish scaffold recipe." });
     }
   });
 
@@ -2023,6 +2289,15 @@ export async function createVibeResearchApp({
         agentMailMode: request.body?.agentMailMode,
         agentMailProviderId: request.body?.agentMailProviderId,
         agentMailUsername: request.body?.agentMailUsername,
+        agentCommunicationCaptureMessageReads: request.body?.agentCommunicationCaptureMessageReads,
+        agentCommunicationCaptureMessages: request.body?.agentCommunicationCaptureMessages,
+        agentCommunicationDmBody: request.body?.agentCommunicationDmBody,
+        agentCommunicationDmEnabled: request.body?.agentCommunicationDmEnabled,
+        agentCommunicationDmVisibility: request.body?.agentCommunicationDmVisibility,
+        agentCommunicationGroupInboxes: request.body?.agentCommunicationGroupInboxes,
+        agentCommunicationMaxThreadDepth: request.body?.agentCommunicationMaxThreadDepth,
+        agentCommunicationMaxUnrepliedPerAgent: request.body?.agentCommunicationMaxUnrepliedPerAgent,
+        agentCommunicationRequireRelatedObject: request.body?.agentCommunicationRequireRelatedObject,
         agentOpenAiApiKey: request.body?.agentOpenAiApiKey,
         browserUseAnthropicApiKey: request.body?.browserUseAnthropicApiKey,
         browserUseBrowserPath: request.body?.browserUseBrowserPath,
