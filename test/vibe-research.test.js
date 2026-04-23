@@ -1738,7 +1738,7 @@ test("BuildingHub is the catalog entry point instead of an installable detail", 
   }
 });
 
-test("Agent Town share opens Twitter intent with a BuildingHub town link", async (t) => {
+test("Agent Town share opens and copies a BuildingHub town link", async (t) => {
   const executablePath = await resolveBrowserExecutablePath({ env: process.env });
   if (!executablePath) {
     t.skip("No local Chromium/Chrome executable is available for the Agent Town share smoke.");
@@ -1794,6 +1794,7 @@ test("Agent Town share opens Twitter intent with a BuildingHub town link", async
     const page = await browser.newPage();
     await page.addInitScript(() => {
       window.__agentTownShareOpenCalls = [];
+      window.__agentTownShareClipboardText = "";
       window.open = (url) => {
         window.__agentTownShareOpenCalls.push(String(url || ""));
         return {
@@ -1816,6 +1817,14 @@ test("Agent Town share opens Twitter intent with a BuildingHub town link", async
           opener: window,
         };
       };
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: async (text) => {
+            window.__agentTownShareClipboardText = String(text || "");
+          },
+        },
+      });
     });
 
     await page.setViewportSize({ width: 1280, height: 720 });
@@ -1823,23 +1832,23 @@ test("Agent Town share opens Twitter intent with a BuildingHub town link", async
     await page.locator("[data-share-agent-town]").click();
     await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
     await page.waitForFunction(
-      () => window.__agentTownShareOpenCalls.some((url) => url.includes("twitter.com/intent/tweet")),
+      () => window.__agentTownShareOpenCalls.some((url) => url.includes("buildinghub.example.test/catalog/layouts/")),
       null,
       { timeout: 10_000 },
     );
 
     const shareState = await page.evaluate(() => ({
-      openedUrl: window.__agentTownShareOpenCalls.find((url) => url.includes("twitter.com/intent/tweet")) || "",
+      clipboardText: window.__agentTownShareClipboardText || "",
+      openedUrl: window.__agentTownShareOpenCalls.find((url) => url.includes("buildinghub.example.test/catalog/layouts/")) || "",
       toastText: document.querySelector("#system-toasts")?.textContent || "",
     }));
 
-    assert.match(shareState.openedUrl, /twitter\.com\/intent\/tweet/);
-    assert.equal(new URL(shareState.openedUrl).searchParams.get("text"), "I set up my vibe-research.net town!");
     assert.match(
-      new URL(shareState.openedUrl).searchParams.get("url") || "",
+      shareState.openedUrl,
       /^https:\/\/buildinghub\.example\.test\/catalog\/layouts\/town-[a-f0-9]+\/$/,
     );
-    assert.match(shareState.toastText, /Agent Town link ready/);
+    assert.equal(shareState.clipboardText, shareState.openedUrl);
+    assert.match(shareState.toastText, /BuildingHub link copied/);
 
     const townSharesResponse = await fetch(`${baseUrl}/api/agent-town/town-shares`);
     assert.equal(townSharesResponse.status, 200);
@@ -1863,7 +1872,7 @@ test("Agent Town share opens Twitter intent with a BuildingHub town link", async
   }
 });
 
-test("Agent Town share falls back to Twitter intent when publishing fails", async (t) => {
+test("Agent Town share reports BuildingHub export failure when publishing fails", async (t) => {
   const executablePath = await resolveBrowserExecutablePath({ env: process.env });
   if (!executablePath) {
     t.skip("No local Chromium/Chrome executable is available for the Agent Town share timeout smoke.");
@@ -1912,8 +1921,6 @@ test("Agent Town share falls back to Twitter intent when publishing fails", asyn
     });
     await page.addInitScript(() => {
       window.__agentTownShareOpenCalls = [];
-      window.__agentTownClipboardWriteCount = 0;
-      window.__agentTownShareClipboardTimeoutMs = 50;
       window.open = (url) => {
         window.__agentTownShareOpenCalls.push(String(url || ""));
         return {
@@ -1936,16 +1943,6 @@ test("Agent Town share falls back to Twitter intent when publishing fails", asyn
           opener: window,
         };
       };
-      window.ClipboardItem = class TestClipboardItem {};
-      Object.defineProperty(navigator, "clipboard", {
-        configurable: true,
-        value: {
-          write: async () => {
-            window.__agentTownClipboardWriteCount += 1;
-            await new Promise(() => {});
-          },
-        },
-      });
     });
 
     await page.setViewportSize({ width: 1280, height: 720 });
@@ -1954,22 +1951,18 @@ test("Agent Town share falls back to Twitter intent when publishing fails", asyn
     await page.waitForTimeout(100);
     await page.locator("[data-share-agent-town]").click();
     await page.waitForFunction(
-      () => window.__agentTownShareOpenCalls.some((url) => url.includes("twitter.com/intent/tweet")),
+      () => /BuildingHub export failed/.test(document.querySelector("#system-toasts")?.textContent || ""),
       null,
       { timeout: 10_000 },
     );
 
     const shareState = await page.evaluate(() => ({
-      clipboardWriteCount: window.__agentTownClipboardWriteCount || 0,
-      openedUrl: window.__agentTownShareOpenCalls.find((url) => url.includes("twitter.com/intent/tweet")) || "",
+      openedUrls: window.__agentTownShareOpenCalls,
       toastText: document.querySelector("#system-toasts")?.textContent || "",
     }));
 
-    assert.equal(shareState.clipboardWriteCount, 1);
-    assert.match(shareState.openedUrl, /twitter\.com\/intent\/tweet/);
-    assert.equal(new URL(shareState.openedUrl).searchParams.get("text"), "I set up my vibe-research.net town!");
-    assert.equal(new URL(shareState.openedUrl).searchParams.get("url"), "https://vibe-research.net");
-    assert.match(shareState.toastText, /taking too long/);
+    assert.deepEqual(shareState.openedUrls, ["about:blank"]);
+    assert.match(shareState.toastText, /share publish failed/);
   } finally {
     await browser?.close().catch(() => {});
     await app.close();

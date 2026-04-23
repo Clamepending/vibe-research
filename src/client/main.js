@@ -132,12 +132,7 @@ const ROUTED_MAIN_VIEWS = new Set([
 ]);
 const AGENT_SETUP_STORAGE_KEY = "vibeResearch.agentSetupComplete.v1";
 const AGENT_SETUP_PENDING_STORAGE_KEY = "vibeResearch.agentSetupPending.v1";
-const AGENT_TOWN_SHARE_TEXT = "I set up my vibe-research.net town!";
-const AGENT_TOWN_SHARE_URL = "https://vibe-research.net";
-const AGENT_TOWN_SHARE_INTENT_URL = "https://twitter.com/intent/tweet";
-const AGENT_TOWN_SHARE_CLIPBOARD_TIMEOUT_MS = 1500;
 const AGENT_TOWN_SHARE_CAPTURE_TIMEOUT_MS = 2500;
-const AGENT_TOWN_BUILDINGHUB_SHARE_BASE_URL = "https://buildinghub.vibe-research.net/#/share/layout/";
 const SESSION_WORKING_SPINNER_MS = 900;
 const FILE_IMAGE_MIN_ZOOM = 1;
 const FILE_IMAGE_MAX_ZOOM = 8;
@@ -11064,7 +11059,7 @@ function renderSidebarNav() {
 }
 
 function getAgentTownShareNavMeta() {
-  return state.agentTownShare.inProgress ? "capturing..." : "X/Twitter";
+  return state.agentTownShare.inProgress ? "exporting..." : "BuildingHub";
 }
 
 function refreshAgentTownShareButtonUi() {
@@ -11111,13 +11106,6 @@ function setAgentTownShareToast({ type = "info", title, message } = {}) {
   }
 
   refreshSystemToastsUi({ force: true });
-}
-
-function getAgentTownShareIntentUrl(shareUrl = AGENT_TOWN_SHARE_URL) {
-  const url = new URL(AGENT_TOWN_SHARE_INTENT_URL);
-  url.searchParams.set("text", AGENT_TOWN_SHARE_TEXT);
-  url.searchParams.set("url", shareUrl || AGENT_TOWN_SHARE_URL);
-  return url.toString();
 }
 
 function waitForAnimationFrames(count = 1) {
@@ -11227,58 +11215,6 @@ function blobToDataUrl(blob) {
   });
 }
 
-async function copyAgentTownScreenshotToClipboard(blob) {
-  if (
-    !(blob instanceof Blob) ||
-    typeof globalThis.ClipboardItem !== "function" ||
-    typeof navigator.clipboard?.write !== "function"
-  ) {
-    return false;
-  }
-
-  try {
-    await navigator.clipboard.write([
-      new globalThis.ClipboardItem({
-        [blob.type || "image/png"]: blob,
-      }),
-    ]);
-    return true;
-  } catch (error) {
-    console.warn("[vibe-research] Agent Town screenshot clipboard copy failed", error);
-    return false;
-  }
-}
-
-function getAgentTownShareClipboardTimeoutMs() {
-  const testOverride = Number(globalThis.__agentTownShareClipboardTimeoutMs);
-  if (Number.isFinite(testOverride) && testOverride >= 0) {
-    return testOverride;
-  }
-
-  return AGENT_TOWN_SHARE_CLIPBOARD_TIMEOUT_MS;
-}
-
-async function copyAgentTownScreenshotToClipboardWithTimeout() {
-  const timedOut = Symbol("agent-town-share-timeout");
-  const copyPromise = (async () => {
-    const screenshotBlob = await captureAgentTownScreenshotBlob();
-    return copyAgentTownScreenshotToClipboard(screenshotBlob);
-  })().catch((error) => {
-    console.warn("[vibe-research] Agent Town screenshot capture failed", error);
-    return false;
-  });
-
-  const result = await Promise.race([
-    copyPromise,
-    delay(getAgentTownShareClipboardTimeoutMs(), timedOut),
-  ]);
-
-  return {
-    copied: result === true,
-    timedOut: result === timedOut,
-  };
-}
-
 function openAgentTownSharePlaceholderWindow() {
   try {
     const targetWindow = window.open("about:blank", "_blank");
@@ -11288,11 +11224,9 @@ function openAgentTownSharePlaceholderWindow() {
 
     targetWindow.opener = null;
     targetWindow.document.title = "Share Agent Town";
-    const intentUrl = getAgentTownShareIntentUrl();
     targetWindow.document.body.innerHTML = `
       <main style="display:grid;gap:12px;place-items:center;align-content:center;min-height:100vh;margin:0;background:#111114;color:#f4f4f2;font:16px sans-serif;text-align:center;">
-        <div>Publishing Agent Town to BuildingHub...</div>
-        <a href="${escapeHtml(intentUrl)}" style="color:#8ab4f8;">Open Twitter now</a>
+        <div>Exporting Agent Town to BuildingHub...</div>
       </main>
     `;
     return targetWindow;
@@ -11301,11 +11235,32 @@ function openAgentTownSharePlaceholderWindow() {
   }
 }
 
-function openAgentTownTwitterIntent(targetWindow = null, shareUrl = AGENT_TOWN_SHARE_URL) {
-  const intentUrl = getAgentTownShareIntentUrl(shareUrl);
+function showAgentTownSharePlaceholderError(targetWindow, message) {
+  try {
+    if (!targetWindow || targetWindow.closed) {
+      return;
+    }
+    targetWindow.document.title = "BuildingHub share failed";
+    targetWindow.document.body.innerHTML = `
+      <main style="display:grid;gap:12px;place-items:center;align-content:center;min-height:100vh;margin:0;background:#111114;color:#f4f4f2;font:16px sans-serif;text-align:center;">
+        <div>BuildingHub export failed.</div>
+        <p style="max-width:48ch;margin:0;color:#cfc8bc;">${escapeHtml(message || "The Agent Town layout could not be exported.")}</p>
+      </main>
+    `;
+  } catch {
+    // The popup may be cross-origin or closed by the user.
+  }
+}
+
+function openAgentTownShareUrl(url, targetWindow = null) {
+  const shareUrl = String(url || "").trim();
+  if (!shareUrl) {
+    return false;
+  }
+
   try {
     if (targetWindow && !targetWindow.closed) {
-      targetWindow.location.href = intentUrl;
+      targetWindow.location.href = shareUrl;
       try {
         targetWindow.focus?.();
       } catch {
@@ -11315,18 +11270,32 @@ function openAgentTownTwitterIntent(targetWindow = null, shareUrl = AGENT_TOWN_S
     }
   } catch {
     try {
-      targetWindow.location.replace(intentUrl);
+      targetWindow.location.replace(shareUrl);
       return true;
     } catch {
       // Fall back to opening a fresh window below.
     }
   }
 
-  const opened = window.open(intentUrl, "_blank", "noopener,noreferrer");
+  const opened = window.open(shareUrl, "_blank", "noopener,noreferrer");
   if (!opened) {
-    window.location.href = intentUrl;
+    window.location.href = shareUrl;
   }
   return Boolean(opened);
+}
+
+async function copyAgentTownShareUrlToClipboard(shareUrl) {
+  if (typeof navigator.clipboard?.writeText !== "function") {
+    return false;
+  }
+
+  try {
+    await navigator.clipboard.writeText(shareUrl);
+    return true;
+  } catch (error) {
+    console.warn("[vibe-research] Agent Town share link copy failed", error);
+    return false;
+  }
 }
 
 async function publishAgentTownShare({ name = "Agent Town", description = "" } = {}) {
@@ -11347,47 +11316,36 @@ async function publishAgentTownShare({ name = "Agent Town", description = "" } =
   return payload.townShare || null;
 }
 
-function getAgentTownShareToastMessage({ screenshotCopied = false, screenshotTimedOut = false } = {}) {
-  if (screenshotCopied) {
-    return "Twitter opened with the share text. Paste the copied screenshot into the post if it is not attached automatically.";
-  }
-
-  if (screenshotTimedOut) {
-    return "Twitter opened with the share text. The screenshot copy is taking too long, so add the image manually if needed.";
-  }
-
-  return "Twitter opened with the share text. This browser did not allow copying the Agent Town screenshot.";
-}
-
-async function shareAgentTownToTwitter({ targetWindow = null } = {}) {
+async function shareAgentTownToBuildingHub({ targetWindow = null } = {}) {
   if (state.agentTownShare.inProgress) {
     return;
   }
 
   setAgentTownShareInProgress(true);
-  let screenshotCopied = false;
-  let screenshotTimedOut = false;
 
   try {
     const townShare = await publishAgentTownShare();
     const shareUrl = getAgentTownShareUrl(townShare);
-    openAgentTownTwitterIntent(targetWindow, shareUrl);
+    if (!shareUrl) {
+      throw new Error("BuildingHub did not return a share link.");
+    }
+    const linkCopied = await copyAgentTownShareUrlToClipboard(shareUrl);
+    openAgentTownShareUrl(shareUrl, targetWindow);
     setAgentTownShareToast({
       type: "success",
-      title: "Agent Town link ready",
-      message: "Twitter opened with a BuildingHub link that includes your latest town snapshot.",
+      title: linkCopied ? "BuildingHub link copied" : "BuildingHub link ready",
+      message: linkCopied
+        ? "Your latest Agent Town state was exported to BuildingHub and the share link is on your clipboard."
+        : "Your latest Agent Town state was exported to BuildingHub. Copy the opened page URL to share it.",
     });
     renderShell();
-  } catch (publishError) {
-    console.error(publishError);
-    const screenshotResult = await copyAgentTownScreenshotToClipboardWithTimeout();
-    screenshotCopied = screenshotResult.copied;
-    screenshotTimedOut = screenshotResult.timedOut;
-    openAgentTownTwitterIntent(targetWindow);
+  } catch (error) {
+    console.error(error);
+    showAgentTownSharePlaceholderError(targetWindow, error.message);
     setAgentTownShareToast({
-      type: screenshotCopied ? "info" : "error",
-      title: screenshotCopied ? "Agent Town screenshot copied" : "Agent Town share fallback",
-      message: getAgentTownShareToastMessage({ screenshotCopied, screenshotTimedOut }),
+      type: "error",
+      title: "BuildingHub export failed",
+      message: error.message || "The Agent Town layout could not be exported to BuildingHub.",
     });
   } finally {
     setAgentTownShareInProgress(false);
@@ -11397,7 +11355,7 @@ async function shareAgentTownToTwitter({ targetWindow = null } = {}) {
 function handleAgentTownShareClick() {
   closeMobileSidebar();
   const targetWindow = openAgentTownSharePlaceholderWindow();
-  void shareAgentTownToTwitter({ targetWindow });
+  void shareAgentTownToBuildingHub({ targetWindow });
 }
 
 async function publishCurrentAgentTownShareFromUi() {
@@ -11426,7 +11384,7 @@ async function publishCurrentAgentTownShareFromUi() {
   }
 }
 
-function shareSavedAgentTownToTwitter(shareId) {
+async function copySavedAgentTownShareLink(shareId) {
   const townShare = state.agentTown.townShares.find((candidate) => candidate.id === shareId);
   const shareUrl = getAgentTownShareUrl(townShare);
   if (!shareUrl) {
@@ -11438,7 +11396,13 @@ function shareSavedAgentTownToTwitter(shareId) {
     return;
   }
 
-  openAgentTownTwitterIntent(null, shareUrl);
+  const copied = await copyAgentTownShareUrlToClipboard(shareUrl);
+  openAgentTownShareUrl(shareUrl);
+  setAgentTownShareToast({
+    type: copied ? "success" : "info",
+    title: copied ? "BuildingHub link copied" : "BuildingHub link opened",
+    message: copied ? "The saved town link is on your clipboard." : "Copy the opened BuildingHub page URL to share it.",
+  });
 }
 
 async function importSavedAgentTownShare(shareId) {
@@ -12963,7 +12927,7 @@ function renderBuildingHubTownShareCard(townShare) {
         <p>${escapeHtml(getTownShareSummaryText(townShare))}</p>
         <div class="buildinghub-town-card-actions">
           <a class="icon-button toolbar-control" href="${escapeHtml(openUrl)}" target="_blank" rel="noreferrer" aria-label="Open town link" ${tooltipAttributes("Open town link")}>${renderIcon(Waypoints)}</a>
-          <button class="icon-button toolbar-control" type="button" data-town-share-twitter="${escapeHtml(townShare.id)}" aria-label="Share town to X" ${tooltipAttributes("Share to X")} ${shareUrl ? "" : "disabled"}>${renderIcon(Share2)}</button>
+          <button class="icon-button toolbar-control" type="button" data-town-share-copy="${escapeHtml(townShare.id)}" aria-label="Copy town link" ${tooltipAttributes("Copy town link")} ${shareUrl ? "" : "disabled"}>${renderIcon(Share2)}</button>
           <button class="ghost-button toolbar-control" type="button" data-town-share-import="${escapeHtml(townShare.id)}">import</button>
         </div>
       </div>
@@ -30761,10 +30725,10 @@ function bindShellEvents() {
     });
   });
 
-  document.querySelectorAll("[data-town-share-twitter]").forEach((button) => {
+  document.querySelectorAll("[data-town-share-copy]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();
-      shareSavedAgentTownToTwitter(button.getAttribute("data-town-share-twitter") || "");
+      void copySavedAgentTownShareLink(button.getAttribute("data-town-share-copy") || "");
     });
   });
 
