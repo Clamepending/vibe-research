@@ -478,6 +478,7 @@ const SIDEBAR_DEFAULT_WIDTH = 276;
 const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 520;
 const SIDEBAR_COLLAPSED_RAIL_WIDTH = 0;
+const SIDEBAR_TAB_IDS = new Set(["agents", "windows", "files"]);
 const WORKSPACE_FILE_PREVIEW_DEFAULT_WIDTH = 460;
 const WORKSPACE_FILE_PREVIEW_MIN_WIDTH = 280;
 const WORKSPACE_TERMINAL_MIN_WIDTH = 320;
@@ -1020,6 +1021,11 @@ function getStoredLayoutNumber(value, fallback) {
   return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
+function normalizeSidebarTab(value) {
+  const tab = String(value || "").trim().toLowerCase();
+  return SIDEBAR_TAB_IDS.has(tab) ? tab : "agents";
+}
+
 function loadLayoutPreferences() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(LAYOUT_STORAGE_KEY) || "{}");
@@ -1029,6 +1035,7 @@ function loadLayoutPreferences() {
 
     return {
       sidebarCollapsed: Boolean(parsed.sidebarCollapsed),
+      sidebarTab: normalizeSidebarTab(parsed.sidebarTab),
       sidebarWidth: getStoredLayoutNumber(parsed.sidebarWidth, SIDEBAR_DEFAULT_WIDTH),
       filePreviewWidth: getStoredLayoutNumber(parsed.filePreviewWidth, WORKSPACE_FILE_PREVIEW_DEFAULT_WIDTH),
       visualGameSidePanelWidth: getStoredLayoutNumber(
@@ -1553,6 +1560,7 @@ const state = {
   resizeBound: false,
   mobileSidebar: null,
   sidebarCollapsed: Boolean(layoutPreferences.sidebarCollapsed),
+  sidebarTab: normalizeSidebarTab(layoutPreferences.sidebarTab),
   sidebarWidth: layoutPreferences.sidebarWidth || SIDEBAR_DEFAULT_WIDTH,
   filePreviewWidth: layoutPreferences.filePreviewWidth || WORKSPACE_FILE_PREVIEW_DEFAULT_WIDTH,
   visualGameSidePanelWidth: layoutPreferences.visualGameSidePanelWidth || VISUAL_GAME_SIDE_PANEL_DEFAULT_WIDTH,
@@ -1602,6 +1610,7 @@ function saveLayoutPreferences() {
       LAYOUT_STORAGE_KEY,
       JSON.stringify({
         sidebarCollapsed: state.sidebarCollapsed,
+        sidebarTab: state.sidebarTab,
         sidebarWidth: state.sidebarWidth,
         filePreviewWidth: state.filePreviewWidth,
         visualGameSidePanelWidth: state.visualGameSidePanelWidth,
@@ -10811,6 +10820,136 @@ function getSelectedProviderLabel() {
   return getSelectedProvider()?.label || "agent";
 }
 
+function getActiveSidebarTab() {
+  return normalizeSidebarTab(state.sidebarTab);
+}
+
+function getSidebarTabForView(view = state.currentView) {
+  return view === "shell" ? "agents" : "windows";
+}
+
+function syncSidebarTabWithView(view = state.currentView, { persist = true } = {}) {
+  const nextTab = getSidebarTabForView(view);
+  if (state.sidebarTab === nextTab) {
+    return;
+  }
+
+  state.sidebarTab = nextTab;
+  if (persist) {
+    saveLayoutPreferences();
+  }
+}
+
+function setSidebarTab(nextTab, { persist = true, render = true } = {}) {
+  const sidebarTab = normalizeSidebarTab(nextTab);
+  if (state.sidebarTab === sidebarTab) {
+    return false;
+  }
+
+  state.sidebarTab = sidebarTab;
+  if (persist) {
+    saveLayoutPreferences();
+  }
+  if (render) {
+    renderShell();
+  }
+  return true;
+}
+
+function renderSidebarTabs(activeTab = getActiveSidebarTab()) {
+  const tabs = [
+    { id: "agents", label: "Agents", icon: Bot },
+    { id: "windows", label: "Windows", icon: AppWindow },
+    { id: "files", label: "Files", icon: Folder },
+  ];
+
+  return `
+    <nav class="sidebar-activity-bar" role="tablist" aria-label="Sidebar tabs">
+      ${tabs
+        .map((tab) => {
+          const active = activeTab === tab.id;
+          return `
+            <button
+              class="icon-button sidebar-tab-button ${active ? "is-active" : ""}"
+              type="button"
+              role="tab"
+              aria-selected="${active ? "true" : "false"}"
+              aria-controls="sidebar-tab-panel"
+              data-sidebar-tab="${escapeHtml(tab.id)}"
+              ${tooltipAttributes(tab.label, "right")}
+            >
+              ${renderIcon(tab.icon)}
+              <span class="sr-only">${escapeHtml(tab.label)}</span>
+            </button>
+          `;
+        })
+        .join("")}
+    </nav>
+  `;
+}
+
+function renderAgentsSidebarPanel() {
+  return `
+    <section class="sidebar-section">
+      <div class="section-head">
+        <span>Agents</span>
+      </div>
+      <button class="sidebar-nav-item sidebar-nav-button" type="button" data-start-new-agent ${tooltipAttributes("New Agent", "right")}>
+        <span class="sidebar-nav-icon" aria-hidden="true">${renderIcon(Plus)}</span>
+        <span class="sidebar-nav-copy">
+          <span class="sidebar-nav-label">New Agent</span>
+          <span class="sidebar-nav-meta">${escapeHtml(`${getSelectedProviderLabel()} · default folder`)}</span>
+        </span>
+      </button>
+      <form class="session-form session-launcher" id="session-form">
+        ${renderSessionProviderPicker()}
+      </form>
+    </section>
+
+    <section class="sidebar-section sessions-section">
+      <div class="section-head">
+        <span>Threads</span>
+        <div class="section-actions">
+          <button class="icon-button sidebar-head-button" type="button" data-start-new-agent aria-label="New agent" ${tooltipAttributes("New agent")}>${renderIcon(FolderPlus)}</button>
+        </div>
+      </div>
+      <div class="list-shell" id="sessions-list">${renderSessionCards()}</div>
+    </section>
+  `;
+}
+
+function renderFilesSidebarPanel() {
+  return `
+    <section class="sidebar-section">
+      <div class="section-head">
+        <span>files</span>
+        <div class="section-actions">
+          <button class="ghost-button files-root-reset" type="button" id="auto-files-root" aria-label="Use automatic files root" ${tooltipAttributes("Use automatic files root")} ${state.filesRootOverride ? "" : "disabled"}>auto</button>
+          <button class="icon-button" type="button" id="refresh-files" aria-label="Refresh files" ${tooltipAttributes("Refresh files")}>${renderIcon(RefreshCw)}</button>
+        </div>
+      </div>
+      <form class="file-root-form" id="files-root-form">
+        <input
+          class="file-root-input"
+          id="files-root-input"
+          name="root"
+          type="text"
+          value="${escapeHtml(state.filesRoot || state.defaultCwd || "")}"
+          placeholder="${escapeHtml(state.defaultCwd || "workspace path")}"
+          readonly
+          data-folder-picker-target="files"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+        <button class="ghost-button file-root-submit" type="button" data-folder-picker-target="files">choose</button>
+      </form>
+      <div class="file-tree" id="files-tree" data-files-root="${escapeHtml(state.filesRoot || "")}">${renderFileTree()}</div>
+    </section>
+  `;
+}
+
 function renderSidebarNav() {
   const wikiLabel = state.settings.wikiRelativeRoot || state.agentPromptWikiRoot || "wiki";
   const shareMeta = getAgentTownShareNavMeta();
@@ -10867,16 +11006,6 @@ function renderSidebarNav() {
   return `
     <div class="sidebar-nav-stack">
       <nav class="sidebar-nav sidebar-primary-nav" aria-label="Main views">
-        <button class="sidebar-nav-item sidebar-nav-button" type="button" data-start-new-agent ${tooltipAttributes("New Agent", "right")}>
-          <span class="sidebar-nav-icon" aria-hidden="true">${renderIcon(Plus)}</span>
-          <span class="sidebar-nav-copy">
-            <span class="sidebar-nav-label">New Agent</span>
-            <span class="sidebar-nav-meta">${escapeHtml(`${getSelectedProviderLabel()} · default folder`)}</span>
-          </span>
-        </button>
-        <form class="session-form session-launcher" id="session-form">
-          ${renderSessionProviderPicker()}
-        </form>
         ${primaryItems.map(renderItem).join("")}
         <button
           class="sidebar-nav-item sidebar-nav-button"
@@ -10896,6 +11025,54 @@ function renderSidebarNav() {
       <nav class="sidebar-nav sidebar-workspace-nav" aria-label="Workspace views">
         ${workspaceItems.map(renderItem).join("")}
       </nav>
+    </div>
+  `;
+}
+
+function renderWindowsSidebarPanel() {
+  return `
+    <section class="sidebar-section">
+      <div class="section-head">
+        <span>windows</span>
+      </div>
+      ${renderSidebarNav()}
+    </section>
+    ${
+      isLocalhostAppsEnabled()
+        ? `
+    <section class="sidebar-section ports-section">
+      <div class="section-head">
+        <span>ports</span>
+        <button class="icon-button" type="button" id="refresh-ports" aria-label="Refresh ports" ${tooltipAttributes("Refresh ports")}>${renderIcon(RefreshCw)}</button>
+      </div>
+      <div class="list-shell" id="ports-list">${renderPortCards()}</div>
+    </section>`
+        : ""
+    }
+  `;
+}
+
+function renderSidebarPanel() {
+  const activeTab = getActiveSidebarTab();
+  const panelLabel = activeTab === "files" ? "Files" : activeTab === "windows" ? "Windows" : "Agents";
+  const panelContent =
+    activeTab === "files"
+      ? renderFilesSidebarPanel()
+      : activeTab === "windows"
+        ? renderWindowsSidebarPanel()
+        : renderAgentsSidebarPanel();
+
+  return `
+    ${renderSidebarTabs(activeTab)}
+    <div
+      class="sidebar-tab-panel"
+      id="sidebar-tab-panel"
+      role="tabpanel"
+      data-sidebar-active-panel="${escapeHtml(activeTab)}"
+      aria-label="${escapeHtml(panelLabel)}"
+    >
+      <div class="update-slot" id="update-banner">${renderUpdateBanner()}</div>
+      ${panelContent}
     </div>
   `;
 }
@@ -24441,12 +24618,15 @@ function restoreMainViewScrollSnapshots(snapshot) {
 
 function captureExplorerScrollSnapshots() {
   const sidebarBody = document.querySelector('[data-sidebar-panel="left"] .sidebar-body');
+  const sidebarTabPanel = document.querySelector("[data-sidebar-active-panel]");
   const filesTree = document.querySelector("#files-tree");
   const folderPickerList = document.querySelector(".folder-picker-list");
 
   return {
     sidebarBody: captureScrollSnapshot('[data-sidebar-panel="left"] .sidebar-body'),
     sidebarBodyPresent: sidebarBody instanceof HTMLElement,
+    sidebarTab: sidebarTabPanel instanceof HTMLElement ? sidebarTabPanel.dataset.sidebarActivePanel || "" : "",
+    sidebarTabPanel: captureScrollSnapshot("[data-sidebar-active-panel]"),
     filesTree: captureScrollSnapshot("#files-tree"),
     filesRoot: filesTree instanceof HTMLElement ? filesTree.dataset.filesRoot || "" : "",
     folderPickerList: captureScrollSnapshot(".folder-picker-list"),
@@ -24457,6 +24637,14 @@ function captureExplorerScrollSnapshots() {
 function restoreExplorerScrollSnapshots(snapshot) {
   if (snapshot?.sidebarBodyPresent) {
     restoreScrollSnapshot('[data-sidebar-panel="left"] .sidebar-body', snapshot.sidebarBody);
+  }
+
+  const sidebarTabPanel = document.querySelector("[data-sidebar-active-panel]");
+  if (
+    sidebarTabPanel instanceof HTMLElement &&
+    sidebarTabPanel.dataset.sidebarActivePanel === snapshot?.sidebarTab
+  ) {
+    restoreScrollSnapshot("[data-sidebar-active-panel]", snapshot.sidebarTabPanel);
   }
 
   const filesTree = document.querySelector("#files-tree");
@@ -24793,60 +24981,7 @@ function renderShell() {
         </div>
 
         <div class="sidebar-body">
-          <div class="update-slot" id="update-banner">${renderUpdateBanner()}</div>
-
-          ${renderSidebarNav()}
-
-          <section class="sidebar-section sessions-section">
-            <div class="section-head">
-              <span>Threads</span>
-              <div class="section-actions">
-                <button class="icon-button sidebar-head-button" type="button" data-start-new-agent aria-label="New agent" ${tooltipAttributes("New agent")}>${renderIcon(FolderPlus)}</button>
-              </div>
-            </div>
-            <div class="list-shell" id="sessions-list">${renderSessionCards()}</div>
-          </section>
-
-          <section class="sidebar-section">
-            <div class="section-head">
-              <span>files</span>
-              <div class="section-actions">
-                <button class="ghost-button files-root-reset" type="button" id="auto-files-root" aria-label="Use automatic files root" ${tooltipAttributes("Use automatic files root")} ${state.filesRootOverride ? "" : "disabled"}>auto</button>
-                <button class="icon-button" type="button" id="refresh-files" aria-label="Refresh files" ${tooltipAttributes("Refresh files")}>${renderIcon(RefreshCw)}</button>
-              </div>
-            </div>
-            <form class="file-root-form" id="files-root-form">
-              <input
-                class="file-root-input"
-                id="files-root-input"
-                name="root"
-                type="text"
-                value="${escapeHtml(state.filesRoot || state.defaultCwd || "")}"
-                placeholder="${escapeHtml(state.defaultCwd || "workspace path")}"
-                readonly
-                data-folder-picker-target="files"
-                autocomplete="off"
-                autocorrect="off"
-                autocapitalize="none"
-                spellcheck="false"
-              />
-              <button class="ghost-button file-root-submit" type="button" data-folder-picker-target="files">choose</button>
-            </form>
-            <div class="file-tree" id="files-tree" data-files-root="${escapeHtml(state.filesRoot || "")}">${renderFileTree()}</div>
-          </section>
-
-          ${
-            isLocalhostAppsEnabled()
-              ? `
-          <section class="sidebar-section ports-section">
-            <div class="section-head">
-              <span>ports</span>
-              <button class="icon-button" type="button" id="refresh-ports" aria-label="Refresh ports" ${tooltipAttributes("Refresh ports")}>${renderIcon(RefreshCw)}</button>
-            </div>
-            <div class="list-shell" id="ports-list">${renderPortCards()}</div>
-          </section>`
-              : ""
-          }
+          ${renderSidebarPanel()}
         </div>
 
         <div class="sidebar-footer">
@@ -28744,6 +28879,9 @@ function syncViewFromLocation() {
   const route = getRouteState();
   const previousView = state.currentView;
   state.currentView = route.view;
+  if (state.currentView !== "shell") {
+    syncSidebarTabWithView(state.currentView, { persist: false });
+  }
   state.pluginDetailId =
     route.view === "plugins" && normalizeBuildingId(route.buildingId) !== "buildinghub" && getPluginById(route.buildingId)
       ? normalizeBuildingId(route.buildingId)
@@ -28780,6 +28918,7 @@ function setCurrentView(nextView, {
   if (nextView === "knowledge-base") {
     state.currentView = "knowledge-base";
     state.pluginDetailId = "";
+    syncSidebarTabWithView(state.currentView);
     if (previousView !== "knowledge-base") {
       requestKnowledgeBaseGraphReplay();
     }
@@ -28790,6 +28929,7 @@ function setCurrentView(nextView, {
   if (nextView === "agent-prompt") {
     state.currentView = "agent-prompt";
     state.pluginDetailId = "";
+    syncSidebarTabWithView(state.currentView);
     updateRoute({ view: "agent-prompt" });
     return;
   }
@@ -28800,12 +28940,14 @@ function setCurrentView(nextView, {
       nextView === "plugins" && normalizeBuildingId(buildingId) !== "buildinghub" && getPluginById(buildingId)
         ? normalizeBuildingId(buildingId)
         : "";
+    syncSidebarTabWithView(state.currentView);
     updateRoute({ view: nextView, buildingId: state.pluginDetailId });
     return;
   }
 
   state.currentView = "shell";
   state.pluginDetailId = "";
+  syncSidebarTabWithView(state.currentView);
   updateRoute({ view: state.currentView });
 }
 
@@ -29459,6 +29601,13 @@ function bindShellEvents() {
   bindFolderPickerDragEvents();
   bindLayoutResizeEvents();
   bindWorkspaceTabEvents();
+
+  document.querySelectorAll("[data-sidebar-tab]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      setSidebarTab(button.getAttribute("data-sidebar-tab") || "agents");
+    });
+  });
 
   document.querySelectorAll("[data-open-main-view]").forEach((link) => {
     link.addEventListener("click", (event) => {

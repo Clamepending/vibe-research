@@ -1089,14 +1089,89 @@ body.is-resizing-layout iframe {
 
 .sidebar-body {
   display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  align-items: stretch;
   gap: 10px;
+  min-height: 0;
+  overflow: hidden;
+  padding-right: 0;
+  scrollbar-width: none;
+}
+
+.sidebar-body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.sidebar-activity-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+  padding: 2px 7px 2px 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+.icon-button.sidebar-tab-button {
+  position: relative;
+  width: 36px;
+  min-width: 36px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(232, 236, 240, 0.62);
+  box-shadow: none;
+}
+
+.icon-button.sidebar-tab-button:hover,
+.icon-button.sidebar-tab-button:focus-visible {
+  border-color: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(244, 247, 251, 0.92);
+  transform: none;
+}
+
+.icon-button.sidebar-tab-button.is-active {
+  border-color: rgba(242, 138, 104, 0.16);
+  background: rgba(242, 138, 104, 0.12);
+  color: var(--accent);
+}
+
+.icon-button.sidebar-tab-button.is-active::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: -7px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 14px rgba(242, 138, 104, 0.32);
+}
+
+.sidebar-tab-button .vr-icon {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2.25;
+}
+
+.sidebar-tab-panel {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
   padding-right: 1px;
   scrollbar-width: none;
 }
 
-.sidebar-body::-webkit-scrollbar {
+.sidebar-tab-panel::-webkit-scrollbar {
   width: 0;
   height: 0;
 }
