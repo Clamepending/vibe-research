@@ -1764,6 +1764,69 @@ exit 99
   }
 });
 
+test("install.sh skips service setup when sudo would require a password", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-systemd-sudo-password-"));
+  const installDir = path.join(installRoot, "vibe-research");
+  const fakeBin = path.join(installRoot, "bin");
+  const serviceDir = path.join(installRoot, "systemd");
+  const systemctlLog = path.join(installRoot, "systemctl.log");
+  const sudoLog = path.join(installRoot, "sudo.log");
+
+  try {
+    await mkdir(fakeBin, { recursive: true });
+    await mkdir(serviceDir, { recursive: true });
+    await writeFile(path.join(fakeBin, "uname"), "#!/usr/bin/env sh\nprintf 'Linux\\n'\n");
+    await writeFile(
+      path.join(fakeBin, "systemctl"),
+      `#!/usr/bin/env sh
+printf '%s\\n' "$*" >> ${JSON.stringify(systemctlLog)}
+if [ "\${1:-}" = "cat" ]; then
+  exit 1
+fi
+if [ "\${1:-}" = "is-system-running" ]; then
+  printf 'running\\n'
+  exit 0
+fi
+exit 1
+`,
+    );
+    await writeFile(
+      path.join(fakeBin, "sudo"),
+      `#!/usr/bin/env sh
+printf '%s\\n' "$*" >> ${JSON.stringify(sudoLog)}
+if [ "\${1:-}" = "-n" ]; then
+  exit 1
+fi
+exit 99
+`,
+    );
+    await execFile("chmod", ["+x", ...["uname", "systemctl", "sudo"].map((name) => path.join(fakeBin, name))]);
+
+    const result = await execFile("bash", [installScript], {
+      env: installTestEnv({
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+        VIBE_RESEARCH_HOME: installDir,
+        VIBE_RESEARCH_REPO_URL: repoDir,
+        VIBE_RESEARCH_INSTALL_SERVICE: "1",
+        VIBE_RESEARCH_SKIP_RUN: "1",
+        VIBE_RESEARCH_SYSTEMD_SERVICE_DIR: serviceDir,
+      }),
+    });
+
+    assert.match(result.stdout, /Skipping service install because sudo is not available without a password/);
+    await assert.rejects(() => stat(path.join(serviceDir, "vibe-research.service")));
+    assert.deepEqual((await readFile(systemctlLog, "utf8")).trim().split("\n"), [
+      "cat vibe-research.service",
+      "is-system-running",
+    ]);
+    assert.deepEqual((await readFile(sudoLog, "utf8")).trim().split("\n"), ["-n true"]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
 test("start.sh refuses to reuse a different workspace already running on the requested port", async () => {
   const { tempRoot, repoDir } = await createWorkingTreeRepoSnapshot();
   const port = await getFreePort();

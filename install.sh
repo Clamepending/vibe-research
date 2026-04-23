@@ -427,6 +427,14 @@ try_run_as_root_noninteractive() {
   return 1
 }
 
+can_run_as_root_noninteractive() {
+  if is_root; then
+    return 0
+  fi
+
+  has_command sudo && sudo -n true >/dev/null 2>&1
+}
+
 can_install_with_apt() {
   [ "$INSTALL_SYSTEM_DEPS" != "0" ] && has_command apt-get
 }
@@ -707,7 +715,7 @@ can_prepare_launcher_dir() {
     return 0
   fi
 
-  is_root || has_command sudo
+  can_run_as_root_noninteractive
 }
 
 resolve_launcher_bin_dir() {
@@ -1192,7 +1200,7 @@ wait_for_systemd_service_active() {
   max_attempts="${VIBE_RESEARCH_SYSTEMD_START_ATTEMPTS:-${REMOTE_VIBES_SYSTEMD_START_ATTEMPTS:-6}}"
   attempt=1
   while [ "$attempt" -le "$max_attempts" ]; do
-    if try_run_as_root systemctl is-active --quiet "${SERVICE_NAME}.service" >/dev/null 2>&1; then
+    if try_run_as_root_noninteractive systemctl is-active --quiet "${SERVICE_NAME}.service" >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -1257,8 +1265,8 @@ install_systemd_service() {
     return
   fi
 
-  if ! is_root && ! has_command sudo; then
-    log "Skipping service install because sudo is not available"
+  if ! can_run_as_root_noninteractive; then
+    log "Skipping service install because sudo is not available without a password"
     return
   fi
 
@@ -1297,7 +1305,7 @@ WantedBy=multi-user.target
 EOF
 
   log "Installing systemd service $SERVICE_NAME.service"
-  if ! try_run_as_root install -m 0644 "$temp_file" "$service_file"; then
+  if ! try_run_as_root_noninteractive install -m 0644 "$temp_file" "$service_file"; then
     rm -f "$temp_file"
     log "Could not install systemd service; Vibe Research is still running for this session"
     return
@@ -1305,17 +1313,17 @@ EOF
 
   rm -f "$temp_file"
 
-  if ! try_run_as_root systemctl daemon-reload; then
+  if ! try_run_as_root_noninteractive systemctl daemon-reload; then
     log "Could not reload systemd; Vibe Research is still running for this session"
     return
   fi
 
-  if ! try_run_as_root systemctl enable "${SERVICE_NAME}.service"; then
+  if ! try_run_as_root_noninteractive systemctl enable "${SERVICE_NAME}.service"; then
     log "Could not enable systemd service; Vibe Research is still running for this session"
     return
   fi
 
-  if ! try_run_as_root systemctl restart "${SERVICE_NAME}.service" >/dev/null 2>&1; then
+  if ! try_run_as_root_noninteractive systemctl restart "${SERVICE_NAME}.service" >/dev/null 2>&1; then
     log "systemd restart did not report success; checking ${SERVICE_NAME}.service status"
     if ! wait_for_systemd_service_active; then
       if wait_for_vibe_research_server "$state_dir" "$port"; then
@@ -1550,21 +1558,22 @@ prepare_app_checkout() {
 install_launcher_command() {
   local launcher_source launcher_dir launcher_path path_was_ready
   launcher_source="$INSTALL_DIR/bin/vibe-research"
-  launcher_dir="$(resolve_launcher_bin_dir)"
-  launcher_path="$launcher_dir/vibe-research"
-  path_was_ready=0
 
   if [ ! -f "$launcher_source" ]; then
     log "Skipping terminal command because $launcher_source is missing"
     return
   fi
 
+  launcher_dir="$(resolve_launcher_bin_dir)"
+  launcher_path="$launcher_dir/vibe-research"
+  path_was_ready=0
+
   if path_contains_dir "$launcher_dir"; then
     path_was_ready=1
   fi
 
   if ! mkdir -p "$launcher_dir" 2>/dev/null; then
-    try_run_as_root mkdir -p "$launcher_dir" || {
+    try_run_as_root_noninteractive mkdir -p "$launcher_dir" || {
       log "Could not create $launcher_dir; skipping terminal command"
       return
     }
@@ -1578,14 +1587,14 @@ install_launcher_command() {
   fi
 
   if [ -L "$launcher_path" ]; then
-    rm -f "$launcher_path" 2>/dev/null || try_run_as_root rm -f "$launcher_path" || {
+    rm -f "$launcher_path" 2>/dev/null || try_run_as_root_noninteractive rm -f "$launcher_path" || {
       log "Could not update existing $launcher_path; skipping terminal command"
       return
     }
   fi
 
   if ! ln -s "$launcher_source" "$launcher_path" 2>/dev/null; then
-    try_run_as_root ln -s "$launcher_source" "$launcher_path" || {
+    try_run_as_root_noninteractive ln -s "$launcher_source" "$launcher_path" || {
       log "Could not install $launcher_path; run $launcher_source directly or set VIBE_RESEARCH_BIN_DIR to a writable directory."
       return
     }
