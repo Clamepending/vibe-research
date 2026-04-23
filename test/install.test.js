@@ -13,6 +13,7 @@ const execFile = promisify(execFileCallback);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const installScript = path.join(rootDir, "install.sh");
+const fakeSudoScript = "#!/usr/bin/env sh\nif [ \"${1:-}\" = \"-n\" ]; then shift; fi\nexec \"$@\"\n";
 
 async function createSourceRepo() {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-source-"));
@@ -677,7 +678,7 @@ esac
 exit 0
 `,
     );
-    await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await writeFile(path.join(fakeBin, "sudo"), fakeSudoScript);
     await execFile("chmod", ["+x", ...["uname", "node", "npm", "curl", "installer", "sudo"].map((name) => path.join(fakeBin, name))]);
 
     const result = await execFile("bash", [installScript], {
@@ -834,7 +835,7 @@ esac
 exit 0
 `,
     );
-    await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await writeFile(path.join(fakeBin, "sudo"), fakeSudoScript);
     await execFile("chmod", ["+x", ...["uname", "node", "npm", "curl", "installer", "sudo"].map((name) => path.join(fakeBin, name))]);
 
     const result = await execFile("bash", [path.join(repoDir, "start.sh")], {
@@ -1114,7 +1115,7 @@ test("install.sh starts tailscaled before Tailscale login on Linux", async () =>
   try {
     await mkdir(fakeBin, { recursive: true });
     await writeFile(path.join(fakeBin, "uname"), "#!/usr/bin/env sh\nprintf 'Linux\\n'\n");
-    await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await writeFile(path.join(fakeBin, "sudo"), fakeSudoScript);
     await writeFile(path.join(fakeBin, "service"), "#!/usr/bin/env sh\nexit 1\n");
     await writeFile(
       path.join(fakeBin, "systemctl"),
@@ -1211,7 +1212,7 @@ test("install.sh retries Tailscale login after a tailscaled startup race", async
   try {
     await mkdir(fakeBin, { recursive: true });
     await writeFile(path.join(fakeBin, "uname"), "#!/usr/bin/env sh\nprintf 'Linux\\n'\n");
-    await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await writeFile(path.join(fakeBin, "sudo"), fakeSudoScript);
     await writeFile(path.join(fakeBin, "service"), "#!/usr/bin/env sh\nexit 1\n");
     await writeFile(
       path.join(fakeBin, "systemctl"),
@@ -1462,7 +1463,7 @@ fi
 exit 0
 `,
     );
-    await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await writeFile(path.join(fakeBin, "sudo"), fakeSudoScript);
     await execFile("chmod", ["+x", ...["uname", "ps", "systemctl", "sudo"].map((name) => path.join(fakeBin, name))]);
 
     const result = await execFile("bash", [installScript], {
@@ -1551,7 +1552,7 @@ fi
 exit 0
 `,
     );
-    await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await writeFile(path.join(fakeBin, "sudo"), fakeSudoScript);
     await execFile("chmod", ["+x", ...["uname", "ps", "systemctl", "sudo"].map((name) => path.join(fakeBin, name))]);
 
     const result = await execFile("bash", [installScript], {
@@ -1620,7 +1621,7 @@ exit 0
 `,
     );
     await writeFile(path.join(fakeBin, "curl"), "#!/usr/bin/env sh\nprintf '{\"appName\":\"Vibe Research\"}\\n'\n");
-    await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await writeFile(path.join(fakeBin, "sudo"), fakeSudoScript);
     await execFile("chmod", ["+x", ...["uname", "ps", "systemctl", "curl", "sudo"].map((name) => path.join(fakeBin, name))]);
 
     const result = await execFile("bash", [installScript], {
@@ -1677,7 +1678,7 @@ fi
 exit 1
 `,
     );
-    await writeFile(path.join(fakeBin, "sudo"), "#!/usr/bin/env sh\nexec \"$@\"\n");
+    await writeFile(path.join(fakeBin, "sudo"), fakeSudoScript);
     await execFile("chmod", ["+x", ...["uname", "systemctl", "sudo"].map((name) => path.join(fakeBin, name))]);
 
     const result = await execFile("bash", [installScript], {
@@ -1697,6 +1698,66 @@ exit 1
       "cat vibe-research.service",
       "is-system-running",
     ]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(installRoot, { recursive: true, force: true });
+  }
+});
+
+test("install.sh does not ask sudo while checking for an absent systemd service", async () => {
+  const { tempRoot, repoDir } = await createSourceRepo();
+  const installRoot = await mkdtemp(path.join(os.tmpdir(), "vibe-research-systemd-no-sudo-prompt-"));
+  const installDir = path.join(installRoot, "vibe-research");
+  const fakeBin = path.join(installRoot, "bin");
+  const serviceDir = path.join(installRoot, "systemd");
+  const systemctlLog = path.join(installRoot, "systemctl.log");
+  const sudoLog = path.join(installRoot, "sudo.log");
+
+  try {
+    await mkdir(fakeBin, { recursive: true });
+    await mkdir(serviceDir, { recursive: true });
+    await writeFile(path.join(fakeBin, "uname"), "#!/usr/bin/env sh\nprintf 'Linux\\n'\n");
+    await writeFile(
+      path.join(fakeBin, "systemctl"),
+      `#!/usr/bin/env sh
+printf '%s\\n' "$*" >> ${JSON.stringify(systemctlLog)}
+if [ "\${1:-}" = "cat" ]; then
+  exit 1
+fi
+if [ "\${1:-}" = "is-system-running" ]; then
+  printf 'offline\\n'
+  exit 1
+fi
+exit 1
+`,
+    );
+    await writeFile(
+      path.join(fakeBin, "sudo"),
+      `#!/usr/bin/env sh
+printf '%s\\n' "$*" >> ${JSON.stringify(sudoLog)}
+exit 99
+`,
+    );
+    await execFile("chmod", ["+x", ...["uname", "systemctl", "sudo"].map((name) => path.join(fakeBin, name))]);
+
+    const result = await execFile("bash", [installScript], {
+      env: installTestEnv({
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+        VIBE_RESEARCH_HOME: installDir,
+        VIBE_RESEARCH_REPO_URL: repoDir,
+        VIBE_RESEARCH_INSTALL_SERVICE: "1",
+        VIBE_RESEARCH_SKIP_RUN: "1",
+        VIBE_RESEARCH_SYSTEMD_SERVICE_DIR: serviceDir,
+      }),
+    });
+
+    assert.doesNotMatch(result.stdout, /Stopping existing systemd service/);
+    assert.match(result.stdout, /Skipping service install because systemd is not available/);
+    assert.deepEqual((await readFile(systemctlLog, "utf8")).trim().split("\n"), [
+      "cat vibe-research.service",
+      "is-system-running",
+    ]);
+    await assert.rejects(() => stat(sudoLog));
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     await rm(installRoot, { recursive: true, force: true });

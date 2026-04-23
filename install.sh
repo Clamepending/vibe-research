@@ -413,6 +413,20 @@ try_run_as_root() {
   return 1
 }
 
+try_run_as_root_noninteractive() {
+  if is_root; then
+    "$@"
+    return
+  fi
+
+  if has_command sudo; then
+    sudo -n "$@"
+    return
+  fi
+
+  return 1
+}
+
 can_install_with_apt() {
   [ "$INSTALL_SYSTEM_DEPS" != "0" ] && has_command apt-get
 }
@@ -1162,17 +1176,13 @@ stop_existing_systemd_service() {
     return
   fi
 
-  if ! is_root && ! has_command sudo; then
-    return
-  fi
-
-  if ! try_run_as_root systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1; then
+  if ! systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1; then
     return
   fi
 
   log "Stopping existing systemd service ${SERVICE_NAME}.service before update"
-  if ! try_run_as_root systemctl stop "${SERVICE_NAME}.service"; then
-    log "Could not stop existing systemd service; continuing with foreground launch"
+  if ! try_run_as_root_noninteractive systemctl stop "${SERVICE_NAME}.service"; then
+    log "Could not stop existing systemd service without sudo; continuing with foreground launch"
   fi
 }
 
