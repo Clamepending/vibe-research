@@ -1424,7 +1424,6 @@ test("BuildingHub is the catalog entry point instead of an installable detail", 
 
     return null;
   };
-
   try {
     browser = await chromium.launch({ executablePath, headless: true });
     const page = await browser.newPage();
@@ -1632,7 +1631,6 @@ test("AgentMall applies and persists the Agent Town theme", async (t) => {
 
     return null;
   };
-
   try {
     const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
       method: "PATCH",
@@ -1801,6 +1799,116 @@ test("placed cosmetic buildings open an Agent Town drawer", async (t) => {
     assert.ok(rotatedDecoration, "pressing r before placement should persist a rotated shed");
     assert.equal(rotatedDecoration.x % 30, 0);
     assert.equal(rotatedDecoration.y % 30, 0);
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
+  }
+});
+
+test("Agent Town builder arranges enabled functional buildings and keeps them visible", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for the functional builder smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("vibe-research-functional-builder-ui-");
+  const stateDir = await createTempWorkspace("vibe-research-functional-builder-state-");
+  const wikiDir = getWorkspaceLibraryDir(workspaceDir);
+  await mkdir(wikiDir, { recursive: true });
+  await writeFile(path.join(wikiDir, "index.md"), "# Functional Builder Library\n", "utf8");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
+  let browser = null;
+
+  const findCanvasHoverPoint = async (page, labelText) => {
+    const box = await page.locator("#visual-game-canvas").boundingBox();
+    assert.ok(box, "visual game canvas should be visible");
+
+    for (let y = 8; y <= box.height - 8; y += 16) {
+      for (let x = 8; x <= box.width - 8; x += 16) {
+        await page.mouse.move(box.x + x, box.y + y);
+        const label = await page.locator(".visual-game-hover").textContent();
+
+        if (label?.includes(labelText)) {
+          return { x, y };
+        }
+      }
+    }
+
+    return null;
+  };
+  const gotoSwarmView = async (page) => {
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await page.goto(`${baseUrl}/?view=swarm`, { waitUntil: "commit", timeout: 120_000 });
+        return;
+      } catch (error) {
+        lastError = error;
+        await page.waitForTimeout(1_000);
+      }
+    }
+    throw lastError;
+  };
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        installedPluginIds: ["discord"],
+        preventSleepEnabled: false,
+        wikiGitRemoteEnabled: false,
+        wikiPath: wikiDir,
+      }),
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "shell", cwd: workspaceDir, name: "Builder Agent" }),
+    });
+    assert.equal(createResponse.status, 201);
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    page.setDefaultTimeout(90_000);
+    page.setDefaultNavigationTimeout(120_000);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await gotoSwarmView(page);
+    await page.waitForSelector("#visual-game-canvas", { timeout: 90_000 });
+    await page.waitForTimeout(800);
+
+    const discordPoint = await findCanvasHoverPoint(page, "Discord");
+    assert.ok(discordPoint, "enabled Discord building should appear without manual placement");
+
+    await page.locator("[data-agent-town-builder-toggle]").click();
+    await page.getByRole("tab", { name: /Functional/ }).click();
+    await page.locator(".agent-town-builder-summary").waitFor({ timeout: 10_000 });
+    await page.getByRole("button", { name: "Arrange by district" }).click();
+    await page.waitForFunction(() => {
+      const layout = JSON.parse(window.localStorage.getItem("vibe-research-agent-town-layout-v1") || "{}");
+      return Boolean(layout.functional?.discord && layout.functional?.github);
+    });
+
+    const arrangedLayout = await page.evaluate(() => JSON.parse(window.localStorage.getItem("vibe-research-agent-town-layout-v1") || "{}"));
+    assert.ok(arrangedLayout.functional.discord, "district arrange should persist an enabled connector");
+    assert.ok(arrangedLayout.functional.github, "district arrange should include default active functional buildings");
+
+    await page.getByRole("button", { name: "Return to auto spots" }).click();
+    await page.waitForFunction(() => {
+      const layout = JSON.parse(window.localStorage.getItem("vibe-research-agent-town-layout-v1") || "{}");
+      return !layout.functional || Object.keys(layout.functional).length === 0;
+    });
+
+    await page.getByRole("button", { name: "Close builder" }).click();
+    await page.waitForFunction(() => !document.querySelector(".agent-town-builder-panel"));
+    await page.waitForTimeout(200);
+    const resetDiscordPoint = await findCanvasHoverPoint(page, "Discord");
+    assert.ok(resetDiscordPoint, "enabled Discord building should remain visible after returning to auto spots");
   } finally {
     await browser?.close().catch(() => {});
     await app.close();

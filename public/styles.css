@@ -6741,6 +6741,10 @@ button.visual-agent-tile:focus-visible,
   overflow: hidden;
 }
 
+.agent-town-builder-functional-tab-panel {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
 .agent-town-builder-tabs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6789,6 +6793,44 @@ button.visual-agent-tile:focus-visible,
   padding: 4px 12px 14px;
 }
 
+.agent-town-builder-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 4px 12px 10px;
+}
+
+.agent-town-builder-stat {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+  padding: 8px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  text-align: center;
+}
+
+.agent-town-builder-stat strong {
+  color: #f0fbff;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.agent-town-builder-stat em {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-size: 0.68rem;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-town-builder-stat.is-attention strong {
+  color: #ffd770;
+}
+
 .agent-town-builder-quick-actions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -6796,6 +6838,10 @@ button.visual-agent-tile:focus-visible,
   gap: 8px;
   min-width: 0;
   padding: 2px 12px 8px;
+}
+
+.agent-town-builder-layout-actions {
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
 }
 
 .agent-town-builder-quick-actions span {
@@ -6985,6 +7031,45 @@ button.agent-town-builder-card {
 
 .agent-town-builder-functional-card.is-unplaced {
   border-color: rgba(255, 207, 87, 0.54);
+}
+
+.agent-town-builder-functional-card.is-placed {
+  border-color: rgba(124, 218, 148, 0.32);
+}
+
+.agent-town-builder-functional-card.is-auto {
+  border-color: rgba(123, 195, 255, 0.24);
+}
+
+.agent-town-builder-functional-card.has-building-issue {
+  border-color: rgba(255, 173, 106, 0.58);
+}
+
+.agent-town-builder-functional-card.is-placed .agent-town-builder-building-icon::after,
+.agent-town-builder-functional-card.is-auto .agent-town-builder-building-icon::after,
+.agent-town-builder-functional-card.is-unplaced .agent-town-builder-building-icon::after,
+.agent-town-builder-functional-card.has-building-issue .agent-town-builder-building-icon::after {
+  content: "";
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid rgba(8, 10, 12, 0.78);
+  border-radius: 999px;
+  background: #79bdf8;
+}
+
+.agent-town-builder-functional-card.is-placed .agent-town-builder-building-icon::after {
+  background: #77d895;
+}
+
+.agent-town-builder-functional-card.is-unplaced .agent-town-builder-building-icon::after {
+  background: #f2c85f;
+}
+
+.agent-town-builder-functional-card.has-building-issue .agent-town-builder-building-icon::after {
+  background: #ffad6a;
 }
 
 .visual-game-session-head {

@@ -501,18 +501,82 @@ const AGENT_TOWN_DORM_SLOT_RECTS = [
   { x: 130, y: 112, width: 82, height: 58 },
   { x: 224, y: 112, width: 82, height: 58 },
 ];
-const AGENT_TOWN_PLUGIN_BUILDING_RECTS = [
+const AGENT_TOWN_SYSTEM_BUILDING_RECTS = [
+  { x: 806, y: 18, width: 82, height: 58 },
+  { x: 806, y: 82, width: 82, height: 58 },
+  { x: 806, y: 146, width: 82, height: 58 },
+  { x: 806, y: 210, width: 82, height: 58 },
+  { x: 806, y: 274, width: 82, height: 58 },
   { x: 34, y: 395, width: 82, height: 58 },
   { x: 130, y: 395, width: 82, height: 58 },
-  { x: 520, y: 395, width: 82, height: 58 },
-  { x: 616, y: 395, width: 82, height: 58 },
-  { x: 806, y: 36, width: 82, height: 58 },
-  { x: 806, y: 124, width: 82, height: 58 },
   { x: 34, y: 470, width: 82, height: 58 },
   { x: 130, y: 470, width: 82, height: 58 },
+];
+const AGENT_TOWN_CUSTOM_BUILDING_RECTS = [
+  { x: 806, y: 334, width: 82, height: 58 },
+  { x: 520, y: 395, width: 82, height: 58 },
+  { x: 616, y: 395, width: 82, height: 58 },
+  { x: 224, y: 252, width: 82, height: 58 },
+  { x: 318, y: 252, width: 82, height: 58 },
+  { x: 544, y: 212, width: 82, height: 58 },
+  { x: 638, y: 212, width: 82, height: 58 },
+  { x: 708, y: 210, width: 82, height: 58 },
   { x: 520, y: 470, width: 82, height: 58 },
   { x: 616, y: 470, width: 82, height: 58 },
+  { x: 708, y: 470, width: 82, height: 58 },
 ];
+const AGENT_TOWN_AUTO_ARRANGE_PRESETS = new Set(["simple", "districts"]);
+const AGENT_TOWN_DISTRICT_BUILDING_RECTS = {
+  "vibe-research": [
+    { x: 806, y: 18, width: 82, height: 58 },
+    { x: 806, y: 82, width: 82, height: 58 },
+    { x: 806, y: 146, width: 82, height: 58 },
+    { x: 806, y: 210, width: 82, height: 58 },
+    { x: 34, y: 395, width: 82, height: 58 },
+    { x: 130, y: 395, width: 82, height: 58 },
+  ],
+  coding: [
+    { x: 520, y: 395, width: 82, height: 58 },
+    { x: 616, y: 395, width: 82, height: 58 },
+    { x: 520, y: 470, width: 82, height: 58 },
+    { x: 616, y: 470, width: 82, height: 58 },
+  ],
+  knowledge: [
+    { x: 224, y: 252, width: 82, height: 58 },
+    { x: 318, y: 252, width: 82, height: 58 },
+    { x: 224, y: 395, width: 82, height: 58 },
+    { x: 318, y: 395, width: 82, height: 58 },
+  ],
+  planning: [
+    { x: 544, y: 212, width: 82, height: 58 },
+    { x: 638, y: 212, width: 82, height: 58 },
+    { x: 708, y: 210, width: 82, height: 58 },
+  ],
+  communications: [
+    { x: 34, y: 470, width: 82, height: 58 },
+    { x: 130, y: 470, width: 82, height: 58 },
+    { x: 708, y: 470, width: 82, height: 58 },
+    { x: 806, y: 334, width: 82, height: 58 },
+  ],
+  commerce: [
+    { x: 224, y: 395, width: 82, height: 58 },
+    { x: 318, y: 395, width: 82, height: 58 },
+    { x: 224, y: 470, width: 82, height: 58 },
+    { x: 318, y: 470, width: 82, height: 58 },
+  ],
+  media: [
+    { x: 544, y: 212, width: 82, height: 58 },
+    { x: 638, y: 212, width: 82, height: 58 },
+    { x: 708, y: 210, width: 82, height: 58 },
+    { x: 806, y: 334, width: 82, height: 58 },
+  ],
+  labs: [
+    { x: 520, y: 470, width: 82, height: 58 },
+    { x: 616, y: 470, width: 82, height: 58 },
+    { x: 708, y: 470, width: 82, height: 58 },
+    { x: 806, y: 334, width: 82, height: 58 },
+  ],
+};
 const AGENT_TOWN_SCENERY_FENCES = Object.freeze([
   { x: 520, y: 52, length: 116, orientation: "vertical" },
   { x: 520, y: 168, length: 135, orientation: "horizontal" },
@@ -16066,13 +16130,242 @@ function getAgentTownFunctionalStatus(plugin) {
   if (!isPluginInstalled(plugin)) {
     return "available";
   }
-  if (isAgentTownFunctionalPending(pluginId)) {
-    return "unplaced";
-  }
   if (getAgentTownFunctionalPlacement(pluginId)) {
     return "placed";
   }
+  if (isAgentTownFunctionalPending(pluginId)) {
+    return "unplaced";
+  }
   return "auto";
+}
+
+function getAgentTownFunctionalStatusLabel(status) {
+  if (status === "available") {
+    return "not installed";
+  }
+  if (status === "unplaced") {
+    return "ready to place";
+  }
+  if (status === "placed") {
+    return "manual spot";
+  }
+  return "auto spot";
+}
+
+function getAgentTownBuildingMapStatus(plugin, issue = getPluginBuildingIssue(plugin)) {
+  if (issue || !isAgentTownFunctionalPlugin(plugin)) {
+    return "";
+  }
+  const status = getAgentTownFunctionalStatus(plugin);
+  return status === "available" ? "" : status;
+}
+
+function getAgentTownFunctionalActionLabel(status, pendingAction) {
+  if (pendingAction) {
+    return pendingAction === "installing" ? "Installing..." : "Removing...";
+  }
+  if (status === "available") {
+    return "Install";
+  }
+  if (status === "unplaced") {
+    return "Place";
+  }
+  return "Move";
+}
+
+function getAgentTownInstalledFunctionalPlugins() {
+  return getAgentTownFunctionalPlugins().filter((plugin) => isPluginInstalled(plugin));
+}
+
+function getAgentTownBuilderFunctionalSummary() {
+  const plugins = getAgentTownFunctionalPlugins();
+  const installedPlugins = plugins.filter((plugin) => isPluginInstalled(plugin));
+  const statusCounts = installedPlugins.reduce((counts, plugin) => {
+    const status = getAgentTownFunctionalStatus(plugin);
+    counts[status] = (counts[status] || 0) + 1;
+    return counts;
+  }, {});
+  const issueCount = installedPlugins.filter((plugin) => getPluginBuildingIssue(plugin)).length;
+
+  return {
+    activeCount: installedPlugins.length,
+    autoCount: statusCounts.auto || 0,
+    manualCount: statusCounts.placed || 0,
+    pendingCount: statusCounts.unplaced || 0,
+    availableCount: Math.max(0, plugins.length - installedPlugins.length),
+    issueCount,
+    customized: Boolean(
+      Object.keys(getAgentTownFunctionalPlacements()).length ||
+      getAgentTownPendingFunctionalIds().length,
+    ),
+  };
+}
+
+function normalizeAgentTownAutoArrangePreset(preset) {
+  const normalized = String(preset || "").trim().toLowerCase();
+  return AGENT_TOWN_AUTO_ARRANGE_PRESETS.has(normalized) ? normalized : "simple";
+}
+
+function getAgentTownArrangementGroupKey(plugin) {
+  const category = normalizeBuildingId(plugin?.category || "");
+  if (category === "vibe-research") {
+    return "vibe-research";
+  }
+  if (category === "coding") {
+    return "coding";
+  }
+  if (category === "knowledge") {
+    return "knowledge";
+  }
+  if (category === "planning") {
+    return "planning";
+  }
+  if (category === "communication" || category === "communications" || category === "social") {
+    return "communications";
+  }
+  if (category === "commerce" || category === "home") {
+    return "commerce";
+  }
+  if (category === "generative-media") {
+    return "media";
+  }
+  if (category === "evals" || category === "observability" || getPluginBuildingShape(plugin) === "lab") {
+    return "labs";
+  }
+  if (category === "networking") {
+    return "planning";
+  }
+  return isPluginSystemApp(plugin) ? "vibe-research" : "labs";
+}
+
+function cloneAgentTownRect(rect) {
+  return rect
+    ? {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      }
+    : null;
+}
+
+function getAgentTownArrangementSlotCandidates(plugin, preset, indexes) {
+  if (preset === "simple") {
+    return [
+      getAgentTownDefaultBuildingRect(plugin, indexes),
+      ...AGENT_TOWN_SYSTEM_BUILDING_RECTS,
+      ...AGENT_TOWN_CUSTOM_BUILDING_RECTS,
+    ].filter(Boolean);
+  }
+
+  const groupKey = getAgentTownArrangementGroupKey(plugin);
+  const groupSlots = AGENT_TOWN_DISTRICT_BUILDING_RECTS[groupKey] || [];
+  const groupIndexes = indexes.districts || {};
+  const groupIndex = groupIndexes[groupKey] || 0;
+  groupIndexes[groupKey] = groupIndex + 1;
+  indexes.districts = groupIndexes;
+  const preferredGroupSlots = groupSlots.length
+    ? [...groupSlots.slice(groupIndex), ...groupSlots.slice(0, groupIndex)]
+    : [];
+
+  return [
+    ...preferredGroupSlots,
+    ...(isPluginSystemApp(plugin) ? AGENT_TOWN_SYSTEM_BUILDING_RECTS : AGENT_TOWN_CUSTOM_BUILDING_RECTS),
+    ...AGENT_TOWN_CUSTOM_BUILDING_RECTS,
+    ...AGENT_TOWN_SYSTEM_BUILDING_RECTS,
+  ].filter(Boolean);
+}
+
+function getAgentTownAutoArrangementRect(plugin, preset, indexes, usedRects) {
+  const candidates = getAgentTownArrangementSlotCandidates(plugin, preset, indexes);
+  const candidateKeys = new Set();
+  for (const candidate of candidates) {
+    const rect = cloneAgentTownRect(candidate);
+    if (!rect) {
+      continue;
+    }
+    const key = `${rect.x}:${rect.y}:${rect.width}:${rect.height}`;
+    if (candidateKeys.has(key)) {
+      continue;
+    }
+    candidateKeys.add(key);
+    if (!usedRects.some((usedRect) => visualGameRectsOverlap(rect, usedRect, 2))) {
+      usedRects.push(rect);
+      return rect;
+    }
+  }
+  return null;
+}
+
+function arrangeAgentTownFunctionalBuildings(preset = "simple", { render = true } = {}) {
+  const normalizedPreset = normalizeAgentTownAutoArrangePreset(preset);
+  const plugins = getAgentTownInstalledFunctionalPlugins();
+  const indexes = { system: 0, custom: 0, districts: {} };
+  const usedRects = [];
+  const placements = [];
+
+  for (const plugin of plugins) {
+    const rect = getAgentTownAutoArrangementRect(plugin, normalizedPreset, indexes, usedRects);
+    if (!rect) {
+      continue;
+    }
+    placements.push([getPluginId(plugin), rect]);
+  }
+
+  state.visualGame.customLayout.functional = {};
+  state.visualGame.customLayout.pendingFunctional = [];
+  placements.forEach(([pluginId, rect]) => {
+    setAgentTownFunctionalPlacement(pluginId, rect);
+  });
+  state.visualGame.builderPlacement = null;
+  saveAgentTownLayoutPreferences();
+  setAgentTownBuilderFeedback(
+    placements.length
+      ? `${placements.length} active building${placements.length === 1 ? "" : "s"} arranged`
+      : "No active buildings to arrange",
+    placements.length ? "success" : "info",
+  );
+  if (render) {
+    renderShell();
+  }
+  return placements.length;
+}
+
+function clearAgentTownFunctionalLayout({ render = true } = {}) {
+  const hadLayout = Boolean(
+    Object.keys(getAgentTownFunctionalPlacements()).length ||
+    getAgentTownPendingFunctionalIds().length,
+  );
+  state.visualGame.customLayout.functional = {};
+  state.visualGame.customLayout.pendingFunctional = [];
+  state.visualGame.builderPlacement = null;
+  saveAgentTownLayoutPreferences();
+  setAgentTownBuilderFeedback(hadLayout ? "Functional buildings returned to auto spots" : "Functional buildings already use auto spots", hadLayout ? "success" : "info");
+  if (render) {
+    renderShell();
+  }
+  return hadLayout;
+}
+
+function renderAgentTownBuilderFunctionalSummary(summary = getAgentTownBuilderFunctionalSummary()) {
+  const stats = [
+    ["active", summary.activeCount],
+    ["manual", summary.manualCount],
+    ["auto", summary.autoCount + summary.pendingCount],
+    ["attention", summary.issueCount],
+  ];
+  return `
+    <div class="agent-town-builder-summary" aria-label="Functional building summary">
+      ${stats
+        .map(([label, value]) => `
+          <span class="agent-town-builder-stat is-${escapeHtml(label)}">
+            <strong>${escapeHtml(String(value))}</strong>
+            <em>${escapeHtml(label)}</em>
+          </span>
+        `)
+        .join("")}
+    </div>
+  `;
 }
 
 function renderAgentTownBuilderFunctionalCard(plugin) {
@@ -16081,23 +16374,9 @@ function renderAgentTownBuilderFunctionalCard(plugin) {
   const pendingAction = getPluginPendingAction(plugin);
   const installing = Boolean(pendingAction);
   const active = state.visualGame.builderPlacement?.kind === "functional" && state.visualGame.builderPlacement.pluginId === pluginId;
-  const issue = getPluginBuildingIssue(plugin);
-  const statusLabel =
-    status === "available"
-      ? "not installed"
-      : status === "unplaced"
-        ? "needs spot"
-        : status === "placed"
-          ? "placed"
-          : "auto placed";
-  const actionLabel =
-    installing
-      ? pendingAction === "installing" ? "Installing..." : "Removing..."
-      : status === "available"
-        ? "Install"
-        : status === "unplaced"
-          ? "Place"
-          : "Move";
+  const issue = status === "available" ? null : getPluginBuildingIssue(plugin);
+  const statusLabel = issue?.label || getAgentTownFunctionalStatusLabel(status);
+  const actionLabel = getAgentTownFunctionalActionLabel(status, pendingAction);
   const actionAttr =
     status === "available"
       ? `data-agent-town-builder-install-functional="${escapeHtml(pluginId)}"`
@@ -16123,8 +16402,16 @@ function renderAgentTownBuilderFunctionalCard(plugin) {
 
 function renderAgentTownBuilderFunctionalTab() {
   const plugins = getAgentTownFunctionalPlugins();
+  const summary = getAgentTownBuilderFunctionalSummary();
   return `
-    <div class="agent-town-builder-tab-panel">
+    <div class="agent-town-builder-tab-panel agent-town-builder-functional-tab-panel">
+      ${renderAgentTownBuilderFunctionalSummary(summary)}
+      <div class="agent-town-builder-quick-actions agent-town-builder-layout-actions">
+        <span>${escapeHtml(summary.availableCount ? `${summary.availableCount} available` : "all cataloged buildings active")}</span>
+        <button class="icon-button toolbar-control" type="button" data-agent-town-builder-arrange-functional="simple" aria-label="Simple auto-arrange" ${tooltipAttributes("Simple auto-arrange")}>${renderIcon(RefreshCw)}</button>
+        <button class="icon-button toolbar-control" type="button" data-agent-town-builder-arrange-functional="districts" aria-label="Arrange by district" ${tooltipAttributes("Arrange by district")}>${renderIcon(Waypoints)}</button>
+        <button class="icon-button toolbar-control" type="button" data-agent-town-builder-clear-functional-layout aria-label="Return to auto spots" ${tooltipAttributes("Return to auto spots")} ${summary.customized ? "" : "disabled"}>${renderIcon(RotateCcw)}</button>
+      </div>
       <div class="agent-town-builder-list" role="list">
         ${plugins.map(renderAgentTownBuilderFunctionalCard).join("")}
       </div>
@@ -16443,7 +16730,7 @@ function setAgentTownBuilderPulse(rect, tone = "success") {
 function getAgentTownBuilderConstructionSourcePoint() {
   const hubPlace = getAgentTownPluginBuildingPlaces().find((place) => place.pluginId === "buildinghub");
   const fallbackBlueprint = getAgentTownPluginBuildingBlueprints().find((blueprint) => blueprint.pluginId === "buildinghub");
-  const rect = hubPlace?.rect || fallbackBlueprint?.baseRect || AGENT_TOWN_PLUGIN_BUILDING_RECTS[0];
+  const rect = hubPlace?.rect || fallbackBlueprint?.baseRect || AGENT_TOWN_SYSTEM_BUILDING_RECTS[0];
   return {
     x: rect.x + rect.width / 2,
     y: rect.y + rect.height + 10,
@@ -17674,33 +17961,44 @@ function getAgentTownFunctionalPlugins() {
 function getAgentTownUnplacedFunctionalPlugins() {
   return getAgentTownFunctionalPlugins()
     .filter((plugin) => isPluginInstalled(plugin))
-    .filter((plugin) => isAgentTownFunctionalPending(getPluginId(plugin)));
+    .filter((plugin) => getAgentTownFunctionalStatus(plugin) === "unplaced");
 }
 
 function getAgentTownPlacedFunctionalPluginIds() {
   return new Set(
     getAgentTownFunctionalPlugins()
-      .filter((plugin) => isPluginInstalled(plugin) && !isAgentTownFunctionalPending(getPluginId(plugin)))
+      .filter((plugin) => isPluginInstalled(plugin) && getAgentTownFunctionalStatus(plugin) !== "unplaced")
       .map(getPluginId),
   );
+}
+
+function getAgentTownDefaultBuildingRect(plugin, indexes) {
+  const slots = isPluginSystemApp(plugin) ? AGENT_TOWN_SYSTEM_BUILDING_RECTS : AGENT_TOWN_CUSTOM_BUILDING_RECTS;
+  const key = isPluginSystemApp(plugin) ? "system" : "custom";
+  const index = indexes[key];
+  indexes[key] += 1;
+  const slot = slots[index];
+  if (slot || key !== "system") {
+    return slot || null;
+  }
+
+  const customIndex = indexes.custom;
+  indexes.custom += 1;
+  return AGENT_TOWN_CUSTOM_BUILDING_RECTS[customIndex] || null;
 }
 
 function getAgentTownPluginBuildingBlueprints() {
   const installedPlugins = PLUGIN_CATALOG
     .filter((plugin) => isPluginInstalled(plugin))
-    .filter(isAgentTownPluginBuilding)
-    .filter((plugin) => {
-      const pluginId = getPluginId(plugin);
-      return pluginId === "buildinghub" || !isAgentTownFunctionalPending(pluginId);
-    });
+    .filter(isAgentTownPluginBuilding);
 
-  let autoSlotIndex = 0;
+  const autoSlotIndexes = { system: 0, custom: 0 };
   return installedPlugins.map((plugin) => {
     const pluginId = getPluginId(plugin);
     const issue = getPluginBuildingIssue(plugin);
     const shape = getPluginBuildingShape(plugin);
     const placedRect = getAgentTownFunctionalPlacement(pluginId);
-    const autoRect = placedRect ? null : AGENT_TOWN_PLUGIN_BUILDING_RECTS[autoSlotIndex++];
+    const autoRect = placedRect ? null : getAgentTownDefaultBuildingRect(plugin, autoSlotIndexes);
     const baseRect = placedRect || autoRect;
     if (!baseRect) {
       return null;
@@ -17713,6 +18011,7 @@ function getAgentTownPluginBuildingBlueprints() {
       label: plugin.name,
       meta: pluginId === "tailscale" ? getTailscaleBuildingMeta() : getPluginStatusBadgeLabel(plugin, issue) || plugin.category || "building",
       shape,
+      statusKind: getAgentTownBuildingMapStatus(plugin, issue),
       baseRect,
       action: {
         kind: "building",
@@ -19569,6 +19868,8 @@ function drawVisualGameBuilding(context, hitAreas, building) {
 
   if (issue) {
     drawVisualGameBuildingIssueBadge(context, rect);
+  } else if (building.statusKind) {
+    drawVisualGameBuildingStatusBadge(context, rect, building.statusKind);
   }
 
   pushAgentTownPlaceHit(hitAreas, { ...building, rect, baseRect: building.baseRect || rect }, action);
@@ -19676,6 +19977,8 @@ function drawVisualGamePortalBuilding(context, hitAreas, building, time = 0) {
 
   if (issue) {
     drawVisualGameBuildingIssueBadge(context, rect);
+  } else if (building.statusKind) {
+    drawVisualGameBuildingStatusBadge(context, rect, building.statusKind);
   }
 
   pushAgentTownPlaceHit(hitAreas, { ...building, rect, baseRect: building.baseRect || rect }, action);
@@ -19751,6 +20054,8 @@ function drawVisualGameLabBuilding(context, hitAreas, building, time = 0, labAge
   }
   if (issue) {
     drawVisualGameBuildingIssueBadge(context, rect);
+  } else if (building.statusKind) {
+    drawVisualGameBuildingStatusBadge(context, rect, building.statusKind);
   }
 
   pushAgentTownPlaceHit(hitAreas, { ...building, rect, baseRect: building.baseRect || rect }, action);
@@ -19775,6 +20080,7 @@ function drawAgentTownInstalledPluginBuildings(context, hitAreas, time = 0, { ha
         fixture: blueprint.fixture,
         screen: blueprint.screen,
         issue: blueprint.issue,
+        statusKind: blueprint.statusKind,
         action: blueprint.action,
       }, time);
       continue;
@@ -19787,6 +20093,7 @@ function drawAgentTownInstalledPluginBuildings(context, hitAreas, time = 0, { ha
         fixture: blueprint.fixture,
         screen: blueprint.screen,
         issue: blueprint.issue,
+        statusKind: blueprint.statusKind,
         action: blueprint.action,
       }, time, blueprint.pluginId === "harbor" ? harborAgents : []);
       continue;
@@ -19798,6 +20105,7 @@ function drawAgentTownInstalledPluginBuildings(context, hitAreas, time = 0, { ha
       fixture: blueprint.fixture,
       screen: blueprint.screen,
       issue: blueprint.issue,
+      statusKind: blueprint.statusKind,
       action: blueprint.action,
     });
   }
@@ -21529,6 +21837,53 @@ function drawVisualGameBuildingIssueBadge(context, rect) {
   context.fillStyle = "#331711";
   context.fillRect(badgeX + 9, badgeY + 5, 4, 9);
   context.fillRect(badgeX + 9, badgeY + 16, 4, 3);
+}
+
+function drawVisualGameBuildingStatusBadge(context, rect, statusKind = "auto") {
+  if (!rect) {
+    return;
+  }
+
+  const badgeSize = 16;
+  const badgeX = Math.round(rect.x + 5);
+  const badgeY = Math.round(rect.y + 5);
+  const palettes = {
+    placed: { fill: "#77d895", trim: "#173221", mark: "#f5fff5" },
+    unplaced: { fill: "#f2c85f", trim: "#3a2a10", mark: "#2f210c" },
+    auto: { fill: "#79bdf8", trim: "#102a3f", mark: "#f4fbff" },
+  };
+  const palette = palettes[statusKind] || palettes.auto;
+
+  context.fillStyle = "rgba(8, 13, 16, 0.4)";
+  context.fillRect(badgeX + 2, badgeY + 2, badgeSize, badgeSize);
+  context.fillStyle = palette.trim;
+  context.fillRect(badgeX, badgeY, badgeSize, badgeSize);
+  context.fillStyle = palette.fill;
+  context.fillRect(badgeX + 2, badgeY + 2, badgeSize - 4, badgeSize - 4);
+  context.strokeStyle = palette.mark;
+  context.fillStyle = palette.mark;
+  context.lineWidth = 2;
+  context.lineCap = "square";
+
+  if (statusKind === "placed") {
+    context.beginPath();
+    context.moveTo(badgeX + 4, badgeY + 9);
+    context.lineTo(badgeX + 7, badgeY + 12);
+    context.lineTo(badgeX + 12, badgeY + 5);
+    context.stroke();
+    return;
+  }
+
+  if (statusKind === "unplaced") {
+    context.fillRect(badgeX + 7, badgeY + 4, 2, 8);
+    context.fillRect(badgeX + 4, badgeY + 7, 8, 2);
+    context.fillRect(badgeX + 7, badgeY + 12, 2, 2);
+    return;
+  }
+
+  context.fillRect(badgeX + 5, badgeY + 5, 6, 6);
+  context.fillRect(badgeX + 7, badgeY + 3, 2, 10);
+  context.fillRect(badgeX + 3, badgeY + 7, 10, 2);
 }
 
 function drawVisualGamePaintedWallSign(context, x, y, width, height, label, meta) {
@@ -24974,11 +25329,10 @@ async function setPluginInstalled(pluginId, installed, { force = false, placeAft
 
     if (installed && isAgentTownFunctionalPlugin(plugin) && !wasInstalled) {
       if (placeAfterInstall) {
-        startAgentTownFunctionalPlacement(normalizedPluginId, { markPending: true });
+        startAgentTownFunctionalPlacement(normalizedPluginId);
         return;
       }
-      setAgentTownFunctionalPending(normalizedPluginId, true);
-      saveAgentTownLayoutPreferences();
+      setAgentTownFunctionalPending(normalizedPluginId, false);
     }
 
     if (surfaceOpen) {
@@ -28653,6 +29007,20 @@ function bindAgentTownBuilderEvents() {
       event.preventDefault();
       const cleared = clearAgentTownDecorations();
       setAgentTownBuilderFeedback(cleared ? "Cosmetics cleared" : "No cosmetics placed", cleared ? "success" : "info", { render: true });
+    });
+  });
+
+  document.querySelectorAll("[data-agent-town-builder-arrange-functional]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      arrangeAgentTownFunctionalBuildings(button.getAttribute("data-agent-town-builder-arrange-functional") || "simple");
+    });
+  });
+
+  document.querySelectorAll("[data-agent-town-builder-clear-functional-layout]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      clearAgentTownFunctionalLayout();
     });
   });
 
