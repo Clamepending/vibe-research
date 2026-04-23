@@ -561,8 +561,8 @@ const AGENT_TOWN_BUILDER_COSMETIC_ITEMS = Object.freeze([
   },
   {
     id: "fence-horizontal",
-    label: "Fence",
-    meta: "horizontal",
+    label: "Log Fence",
+    meta: "connects",
     width: AGENT_TOWN_BUILD_GRID_SIZE,
     height: AGENT_TOWN_BUILD_GRID_SIZE,
     kind: "fence",
@@ -570,10 +570,11 @@ const AGENT_TOWN_BUILDER_COSMETIC_ITEMS = Object.freeze([
   },
   {
     id: "fence-vertical",
-    label: "Fence",
-    meta: "vertical",
+    label: "Log Fence",
+    meta: "connects",
     width: AGENT_TOWN_BUILD_GRID_SIZE,
     height: AGENT_TOWN_BUILD_GRID_SIZE,
+    hidden: true,
     kind: "fence",
     orientation: "vertical",
   },
@@ -1130,14 +1131,6 @@ function getAgentTownCosmeticItemSize(item, rotation = 0) {
 
 function getAgentTownFunctionalBuildingSize(rotation = 0) {
   return getAgentTownRotatedSize(AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE, rotation);
-}
-
-function getAgentTownFenceOrientation(item, rotation = 0) {
-  const baseOrientation = item?.orientation === "vertical" ? "vertical" : "horizontal";
-  if (!normalizeAgentTownRotation(rotation)) {
-    return baseOrientation;
-  }
-  return baseOrientation === "vertical" ? "horizontal" : "vertical";
 }
 
 function normalizeAgentTownDecoration(value) {
@@ -16646,7 +16639,7 @@ function renderAgentTownBuilderCosmeticTab() {
           : ""
       }
       <div class="agent-town-builder-list" role="list">
-        ${AGENT_TOWN_BUILDER_COSMETIC_ITEMS.map((item) => `
+        ${AGENT_TOWN_BUILDER_COSMETIC_ITEMS.filter((item) => !item.hidden).map((item) => `
           <button
             class="agent-town-builder-card ${state.visualGame.builderPlacement?.kind === "cosmetic" && state.visualGame.builderPlacement.itemId === item.id ? "is-active" : ""}"
             type="button"
@@ -20022,7 +20015,7 @@ function drawAgentTownPlacedCosmetics(context, hitAreas, time, visibleWorld, pal
       continue;
     }
     drawAgentTownCosmeticItem(context, item, rect, palette, time, {
-      rotation: rect.rotation,
+      fenceConnections: item.kind === "fence" ? getAgentTownFenceConnections(decoration, rect) : null,
     });
     if (!isAgentTownEditMode()) {
       hitAreas.push({
@@ -20036,31 +20029,164 @@ function drawAgentTownPlacedCosmetics(context, hitAreas, time, visibleWorld, pal
   }
 }
 
-function drawAgentTownCosmeticItem(context, item, rect, palette, time, { rotation = rect?.rotation } = {}) {
+function getAgentTownFenceCenter(rect) {
+  return {
+    x: rect.x + rect.width / 2,
+    y: rect.y + rect.height / 2,
+  };
+}
+
+function isAgentTownFenceNeighbor(rect, otherRect, direction) {
+  const tolerance = Math.max(2, Math.round(AGENT_TOWN_BUILD_GRID_SIZE * 0.1));
+  const center = getAgentTownFenceCenter(rect);
+  const otherCenter = getAgentTownFenceCenter(otherRect);
+  const horizontalAlignment = Math.abs(center.x - otherCenter.x) <= Math.max(rect.width, otherRect.width) * 0.35;
+  const verticalAlignment = Math.abs(center.y - otherCenter.y) <= Math.max(rect.height, otherRect.height) * 0.35;
+
+  if (direction === "up") {
+    return horizontalAlignment && Math.abs(otherRect.y + otherRect.height - rect.y) <= tolerance;
+  }
+  if (direction === "down") {
+    return horizontalAlignment && Math.abs(rect.y + rect.height - otherRect.y) <= tolerance;
+  }
+  if (direction === "left") {
+    return verticalAlignment && Math.abs(otherRect.x + otherRect.width - rect.x) <= tolerance;
+  }
+  if (direction === "right") {
+    return verticalAlignment && Math.abs(rect.x + rect.width - otherRect.x) <= tolerance;
+  }
+  return false;
+}
+
+function getAgentTownFenceConnections(decoration, rect) {
+  const connections = { up: false, right: false, down: false, left: false };
+  if (!rect) {
+    return connections;
+  }
+
+  for (const otherDecoration of getAgentTownDecorations()) {
+    if (decoration?.id && otherDecoration.id === decoration.id) {
+      continue;
+    }
+
+    const otherItem = getAgentTownCosmeticItem(otherDecoration.itemId);
+    if (otherItem?.kind !== "fence") {
+      continue;
+    }
+
+    const otherRect = getAgentTownDecorationRect(otherDecoration, otherItem);
+    if (!otherRect) {
+      continue;
+    }
+
+    connections.up = connections.up || isAgentTownFenceNeighbor(rect, otherRect, "up");
+    connections.right = connections.right || isAgentTownFenceNeighbor(rect, otherRect, "right");
+    connections.down = connections.down || isAgentTownFenceNeighbor(rect, otherRect, "down");
+    connections.left = connections.left || isAgentTownFenceNeighbor(rect, otherRect, "left");
+
+    if (connections.up && connections.right && connections.down && connections.left) {
+      break;
+    }
+  }
+
+  return connections;
+}
+
+function drawAgentTownFenceConnector(context, segment, palette) {
+  context.fillStyle = palette.fenceShadow;
+  context.fillRect(segment.x + 1, segment.y + 2, segment.width, segment.height);
+  context.fillStyle = palette.fenceDark;
+  context.fillRect(segment.x, segment.y, segment.width, segment.height);
+  context.fillStyle = palette.fence;
+  context.fillRect(segment.x + 1, segment.y + 1, Math.max(1, segment.width - 2), Math.max(1, segment.height - 2));
+  context.fillStyle = palette.fenceLight;
+  if (segment.width >= segment.height) {
+    context.fillRect(segment.x + 2, segment.y + 2, Math.max(1, segment.width - 4), 2);
+  } else {
+    context.fillRect(segment.x + 2, segment.y + 2, 2, Math.max(1, segment.height - 4));
+  }
+}
+
+function drawAgentTownConnectedFencePost(context, rect, connections, palette) {
+  const centerX = Math.round(rect.x + rect.width / 2);
+  const centerY = Math.round(rect.y + rect.height / 2);
+  const radius = Math.max(7, Math.round(Math.min(rect.width, rect.height) * 0.28));
+  const connectorWidth = Math.max(8, Math.round(radius * 1.05));
+  const halfConnector = Math.floor(connectorWidth / 2);
+  const segments = [];
+
+  if (connections?.up) {
+    segments.push({
+      x: centerX - halfConnector,
+      y: rect.y,
+      width: connectorWidth,
+      height: Math.max(1, centerY - rect.y),
+    });
+  }
+  if (connections?.right) {
+    segments.push({
+      x: centerX,
+      y: centerY - halfConnector,
+      width: Math.max(1, rect.x + rect.width - centerX),
+      height: connectorWidth,
+    });
+  }
+  if (connections?.down) {
+    segments.push({
+      x: centerX - halfConnector,
+      y: centerY,
+      width: connectorWidth,
+      height: Math.max(1, rect.y + rect.height - centerY),
+    });
+  }
+  if (connections?.left) {
+    segments.push({
+      x: rect.x,
+      y: centerY - halfConnector,
+      width: Math.max(1, centerX - rect.x),
+      height: connectorWidth,
+    });
+  }
+
+  for (const segment of segments) {
+    drawAgentTownFenceConnector(context, segment, palette);
+  }
+
+  context.fillStyle = palette.fenceShadow;
+  context.beginPath();
+  context.arc(centerX + 2, centerY + 3, radius + 2, 0, Math.PI * 2);
+  context.fill();
+
+  context.fillStyle = palette.fenceDark;
+  context.beginPath();
+  context.arc(centerX, centerY, radius + 2, 0, Math.PI * 2);
+  context.fill();
+
+  context.fillStyle = palette.fence;
+  context.beginPath();
+  context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+  context.fill();
+
+  context.strokeStyle = palette.fenceDark;
+  context.lineWidth = 1.5;
+  context.beginPath();
+  context.arc(centerX, centerY, Math.max(2, radius - 3), 0, Math.PI * 2);
+  context.stroke();
+
+  context.fillStyle = palette.fenceLight;
+  context.beginPath();
+  context.arc(centerX - 2, centerY - 2, Math.max(2, radius - 5), 0, Math.PI * 2);
+  context.fill();
+}
+
+function drawAgentTownCosmeticItem(context, item, rect, palette, time, { fenceConnections = null } = {}) {
   if (item.kind === "road") {
     drawVisualGamePathRect(context, rect.x, rect.y, rect.width, rect.height);
     return;
   }
 
   if (item.kind === "fence") {
-    const orientation = getAgentTownFenceOrientation(item, rotation);
-    const fenceThickness = 17;
-    const centeredFence = orientation === "vertical"
-      ? {
-          x: rect.x + Math.round((rect.width - fenceThickness) / 2),
-          y: rect.y,
-          length: rect.height - 5,
-          orientation: "vertical",
-        }
-      : {
-          x: rect.x,
-          y: rect.y + Math.round((rect.height - fenceThickness) / 2),
-          length: rect.width - 5,
-          orientation: "horizontal",
-        };
-    drawAgentTownFence(context, {
-      ...centeredFence,
-    }, palette);
+    drawAgentTownConnectedFencePost(context, rect, fenceConnections || getAgentTownFenceConnections(null, rect), palette);
     return;
   }
 
@@ -20429,7 +20555,7 @@ function drawAgentTownBuilderPlacementGhost(context, placement, rect, time) {
       return;
     }
     drawAgentTownCosmeticItem(context, item, rect, getAgentTownSceneryPalette(), time, {
-      rotation: getAgentTownBuilderPlacementRotation(placement),
+      fenceConnections: item.kind === "fence" ? getAgentTownFenceConnections(null, rect) : null,
     });
     return;
   }
