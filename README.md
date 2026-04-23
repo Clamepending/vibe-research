@@ -11,11 +11,11 @@ Minimal browser terminal to vibe code on your server/cluster/Mac/Raspberry Pi vi
 
 Tailscale is optional for first setup. If it is already installed and connected, Vibe Research will print a Tailscale URL too. To have the installer install/start Tailscale onboarding for private remote access, run the quickstart with `VIBE_RESEARCH_INSTALL_TAILSCALE=1`.
 
-Vibe Research is a local control plane for your machine. Do not expose port `4123` or a Vibe Research URL to the open internet unless you add a separate authentication layer. Prefer the Local URL, trusted LAN, or private Tailscale access.
+Vibe Research is a local control plane for your machine. Do not expose port `4826` or a Vibe Research URL to the open internet unless you add a separate authentication layer. Prefer the Local URL, trusted LAN, or private Tailscale access.
 
 ## Desktop App
 
-There is now a thin desktop launcher in `desktop/` for people who should not have to paste a curl command. Release builds open a native window, copy a bundled Vibe Research source template into `~/.vibe-research/app`, ensure Node.js exists, start the local server, then load the UI at `http://127.0.0.1:4123/`. This avoids requiring Git for a first-run desktop install.
+There is now a thin desktop launcher in `desktop/` for people who should not have to paste a curl command. Release builds open a native window, copy a bundled Vibe Research source template into `~/.vibe-research/app`, ensure Node.js exists, start the local server, then load the UI at `http://127.0.0.1:4826/`. This avoids requiring Git for a first-run desktop install.
 
 Build it locally with:
 

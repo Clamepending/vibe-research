@@ -3,7 +3,7 @@ import { createVibeResearchApp } from "./create-app.js";
 import { buildStartupOutput } from "./startup-output.js";
 
 const configuredHost = process.env.VIBE_RESEARCH_HOST || process.env.REMOTE_VIBES_HOST || "0.0.0.0";
-const configuredPort = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4123);
+const configuredPort = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4826);
 
 function relaunchCurrentServer() {
   const child = spawn(process.execPath, process.argv.slice(1), {

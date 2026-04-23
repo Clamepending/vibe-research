@@ -743,7 +743,7 @@ stop_existing_server() {
 healthcheck_url() {
   local host port probe_host
   host="${VIBE_RESEARCH_HOST:-${REMOTE_VIBES_HOST:-0.0.0.0}}"
-  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4123}}"
+  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4826}}"
 
   case "$host" in
     0.0.0.0|'')
@@ -889,14 +889,14 @@ process.stdin.on("end", () => {
 fail_for_foreign_workspace() {
   local workspace_cwd="$1"
   local port
-  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4123}}"
+  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4826}}"
 
   fail "Port $port is already serving Vibe Research from $workspace_cwd. Stop that server or relaunch with VIBE_RESEARCH_PORT=<free-port>."
 }
 
 terminate_running_vibe_research() {
   local port
-  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4123}}"
+  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4826}}"
 
   log "Stopping existing Vibe Research server on port $port"
   curl -fsS -X POST "$(terminate_url)" >/dev/null 2>&1 || true

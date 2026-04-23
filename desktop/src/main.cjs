@@ -16,7 +16,7 @@ const {
 
 const appName = "Vibe Research";
 const isMacAppStoreBuild = process.mas === true;
-const defaultPort = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4123);
+const defaultPort = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4826);
 const localUrl = `http://127.0.0.1:${defaultPort}/`;
 const state = {
   booting: false,

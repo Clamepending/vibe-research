@@ -49,7 +49,7 @@ Include:
 ## Deployment Guidance
 
 Vibe Research is intended for localhost, trusted LAN, or private Tailscale use.
-Do not expose port `4123` or any Vibe Research URL to the open internet unless
+Do not expose port `4826` or any Vibe Research URL to the open internet unless
 you put a separate authentication layer in front of it.
 
 For safest local-only use:

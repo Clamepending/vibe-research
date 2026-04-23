@@ -2147,7 +2147,7 @@ test("start.sh retries dependency install after a transient npm network failure"
       path.join(repoDir, "src", "server.js"),
       `import http from "node:http";
 
-const port = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4123);
+const port = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4826);
 const server = http.createServer((request, response) => {
   if (request.url === "/api/state") {
     response.setHeader("Content-Type", "application/json");

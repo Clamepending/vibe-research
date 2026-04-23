@@ -1032,7 +1032,7 @@ function isDirectlyReachablePort(portEntry, tailscaleBaseUrl) {
 
 export async function createVibeResearchApp({
   host = process.env.VIBE_RESEARCH_HOST || process.env.REMOTE_VIBES_HOST || "0.0.0.0",
-  port = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4123),
+  port = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4826),
   cwd = process.cwd(),
   stateDir = getVibeResearchStateDir({ cwd }),
   persistSessions = true,

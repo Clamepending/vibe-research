@@ -275,7 +275,7 @@ export class UpdateManager {
     spawn = spawnCallback,
     fetch: fetchImpl = globalThis.fetch?.bind(globalThis),
     env = process.env,
-    port = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4123),
+    port = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4826),
     channel = env.VIBE_RESEARCH_UPDATE_CHANNEL || env.REMOTE_VIBES_UPDATE_CHANNEL || DEFAULT_UPDATE_CHANNEL,
   } = {}) {
     this.cwd = cwd;

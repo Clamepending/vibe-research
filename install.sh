@@ -1274,7 +1274,7 @@ install_systemd_service() {
   state_dir="${VIBE_RESEARCH_STATE_DIR:-${REMOTE_VIBES_STATE_DIR:-$HOME/.vibe-research}}"
   wiki_dir="${VIBE_RESEARCH_WIKI_DIR:-${REMOTE_VIBES_WIKI_DIR:-}}"
   workspace_dir="${VIBE_RESEARCH_WORKSPACE_DIR:-${REMOTE_VIBES_WORKSPACE_DIR:-$HOME/vibe-projects}}"
-  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4123}}"
+  port="${VIBE_RESEARCH_PORT:-${REMOTE_VIBES_PORT:-4826}}"
   service_file="$SYSTEMD_SERVICE_DIR/${SERVICE_NAME}.service"
   temp_file="$(mktemp)"
 

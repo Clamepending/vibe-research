@@ -2,7 +2,7 @@
 
 This package builds a thin desktop launcher and first-run installer for Vibe Research.
 
-The desktop app does not run the server inside Electron. Release builds bundle a Vibe Research source template, copy it into `~/.vibe-research/app`, ensure a local Node.js runtime exists, start the normal local server, then load `http://127.0.0.1:4123/` in an Electron window. That keeps the terminal and native dependency path the same as the shell installer while avoiding a first-run Git dependency for nontechnical macOS users.
+The desktop app does not run the server inside Electron. Release builds bundle a Vibe Research source template, copy it into `~/.vibe-research/app`, ensure a local Node.js runtime exists, start the normal local server, then load `http://127.0.0.1:4826/` in an Electron window. That keeps the terminal and native dependency path the same as the shell installer while avoiding a first-run Git dependency for nontechnical macOS users.
 
 ## Development
 

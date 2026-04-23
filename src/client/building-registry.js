@@ -99,7 +99,8 @@ const CORE_BUILDING_MANIFESTS = [
         { label: "Wait for first building", command: "curl -s \"$VIBE_RESEARCH_AGENT_TOWN_API/wait\" -H 'Content-Type: application/json' -d '{\"predicate\":\"first_building_placed\",\"timeoutMs\":30000}'", detail: "Long-polls until the browser mirrors a placed building or the timeout expires." },
       ],
       env: [
-        { name: "VIBE_RESEARCH_AGENT_TOWN_API", detail: "Base URL for the local Agent Town API, such as http://127.0.0.1:4123/api/agent-town." },
+        { name: "VIBE_RESEARCH_URL", detail: "Base URL for the local Vibe Research app. Prefer this over hard-coded ports when a guide does not provide a narrower API URL." },
+        { name: "VIBE_RESEARCH_AGENT_TOWN_API", detail: "Base URL for the local Agent Town API, such as http://127.0.0.1:4826/api/agent-town." },
         { name: "VIBE_RESEARCH_AGENT_CALLBACK_URL", detail: "Per-agent webhook URL for buildings or services that need to send later notifications back to this session." },
         { name: "VIBE_RESEARCH_AGENT_CANVAS_HELP", detail: "Example command for publishing the current session's visible canvas image." },
       ],
@@ -151,7 +152,7 @@ const CORE_BUILDING_MANIFESTS = [
       commands: [
         { label: "Check local Tailscale status", command: "tailscale status", detail: "Shows whether the machine is logged into a tailnet." },
         { label: "Check Serve config", command: "tailscale serve status", detail: "Shows active Tailscale Serve forwards." },
-        { label: "List app ports", command: "curl -s http://127.0.0.1:${VIBE_RESEARCH_PORT:-4123}/api/ports -H 'X-Vibe-Research-API: 1'", detail: "Use the current app port when known; browser UI usually exposes ports directly." },
+        { label: "List app ports", command: "curl -s http://127.0.0.1:${VIBE_RESEARCH_PORT:-4826}/api/ports -H 'X-Vibe-Research-API: 1'", detail: "Use the current app port when known; browser UI usually exposes ports directly." },
       ],
       docs: [
         { label: "Tailscale Serve docs", url: "https://tailscale.com/kb/1242/tailscale-serve" },
@@ -321,8 +322,8 @@ const CORE_BUILDING_MANIFESTS = [
         "Inspect recent system metric history when diagnosing host pressure.",
       ],
       commands: [
-        { label: "Read current metrics", command: "curl -s http://127.0.0.1:${VIBE_RESEARCH_PORT:-4123}/api/system -H 'X-Vibe-Research-API: 1'", detail: "Shows current storage, CPU, memory, GPU, accelerator, and agent usage metrics." },
-        { label: "Read one-hour history", command: "curl -s 'http://127.0.0.1:${VIBE_RESEARCH_PORT:-4123}/api/system/history?range=1h' -H 'X-Vibe-Research-API: 1'", detail: "Shows the sampled history backing the System charts." },
+        { label: "Read current metrics", command: "curl -s http://127.0.0.1:${VIBE_RESEARCH_PORT:-4826}/api/system -H 'X-Vibe-Research-API: 1'", detail: "Shows current storage, CPU, memory, GPU, accelerator, and agent usage metrics." },
+        { label: "Read one-hour history", command: "curl -s 'http://127.0.0.1:${VIBE_RESEARCH_PORT:-4826}/api/system/history?range=1h' -H 'X-Vibe-Research-API: 1'", detail: "Shows the sampled history backing the System charts." },
       ],
       env: [
         { name: "VIBE_RESEARCH_PORT", detail: "Current Vibe Research server port when available." },
@@ -614,7 +615,7 @@ const CORE_BUILDING_MANIFESTS = [
         "Diagnose prompt sync conflicts without writing secrets or credentials into managed instruction files.",
       ],
       commands: [
-        { label: "Read current occupation", command: "curl -s http://127.0.0.1:${VIBE_RESEARCH_PORT:-4123}/api/agent-prompt -H 'X-Vibe-Research-API: 1'", detail: "Shows the selected occupation, source path, and managed target files." },
+        { label: "Read current occupation", command: "curl -s http://127.0.0.1:${VIBE_RESEARCH_PORT:-4826}/api/agent-prompt -H 'X-Vibe-Research-API: 1'", detail: "Shows the selected occupation, source path, and managed target files." },
         { label: "Open prompt source", command: "sed -n '1,220p' \"$VIBE_RESEARCH_AGENT_PROMPT_PATH\"", detail: "Read the active prompt file from the agent environment when available." },
       ],
       env: [
@@ -1417,7 +1418,7 @@ const CORE_BUILDING_MANIFESTS = [
         "Expose eligible localhost-only ports through the Tailscale portal when available.",
       ],
       commands: [
-        { label: "List discovered ports", command: "curl -s http://127.0.0.1:${VIBE_RESEARCH_PORT:-4123}/api/ports -H 'X-Vibe-Research-API: 1'", detail: "Use the runtime app port if it differs from 4123." },
+        { label: "List discovered ports", command: "curl -s http://127.0.0.1:${VIBE_RESEARCH_PORT:-4826}/api/ports -H 'X-Vibe-Research-API: 1'", detail: "Use the runtime app port if it differs from 4826." },
         { label: "Open with Playwright", command: "vr-playwright open http://127.0.0.1:4173 && vr-playwright snapshot", detail: "Inspect a local app with a real browser." },
       ],
       env: [
