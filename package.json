@@ -1,6 +1,6 @@
 {
   "name": "vibe-research",
-  "version": "0.2.33",
+  "version": "1.0.0",
   "description": "Minimal browser-based terminal sessions for local coding agents over Tailscale.",
   "private": true,
   "type": "module",
