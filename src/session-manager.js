@@ -699,7 +699,7 @@ export function buildSessionEnv(
     VIBE_RESEARCH_AGENT_INBOX: path.join(agentDir, "inbox"),
     VIBE_RESEARCH_AGENT_PROCESSED_DIR: path.join(agentDir, "processed"),
     VIBE_RESEARCH_AGENT_CANVAS_HELP:
-      "vr-agent-canvas --image results/chart.png --title \"Latest graph\" --caption \"Best qualitative result so far.\"",
+      "vr-agent-canvas --image results/chart.png --title \"Latest graph\" --caption \"Best qualitative result so far.\" # or: vr-agent-canvas --url https://example.com/image.png --title \"Reference image\"",
     VIBE_RESEARCH_AGENT_CANVAS_COMMAND: "vr-agent-canvas",
     VIBE_RESEARCH_AGENTMAIL_REPLY_COMMAND: "vr-agentmail-reply",
     VIBE_RESEARCH_TELEGRAM_REPLY_COMMAND: "vr-telegram-reply",
@@ -730,7 +730,7 @@ export function buildSessionEnv(
     REMOTE_VIBES_AGENT_INBOX: path.join(agentDir, "inbox"),
     REMOTE_VIBES_AGENT_PROCESSED_DIR: path.join(agentDir, "processed"),
     REMOTE_VIBES_AGENT_CANVAS_HELP:
-      "rv-agent-canvas --image results/chart.png --title \"Latest graph\" --caption \"Best qualitative result so far.\"",
+      "rv-agent-canvas --image results/chart.png --title \"Latest graph\" --caption \"Best qualitative result so far.\" # or: rv-agent-canvas --url https://example.com/image.png --title \"Reference image\"",
     REMOTE_VIBES_AGENT_CANVAS_COMMAND: "rv-agent-canvas",
     REMOTE_VIBES_AGENTMAIL_REPLY_COMMAND: "rv-agentmail-reply",
     REMOTE_VIBES_TELEGRAM_REPLY_COMMAND: "rv-telegram-reply",

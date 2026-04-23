@@ -54,9 +54,11 @@ Agent canvases are intentionally current, not archival. Agents should keep their
 
 ```sh
 vr-agent-canvas --image results/chart.png --title "Latest graph" --caption "Best qualitative result so far."
+vr-agent-canvas --url https://example.com/image.png --title "Reference image"
 ```
 
 Researchers should prefer the most significant qualitative result so far: the graph, sample, screenshot, or other image that best helps the human understand the run without opening the full transcript. Engineers should use the canvas when a screenshot or visual regression result is the clearest status signal.
+Direct user requests to see a picture, screenshot, mockup, graph, or generated sample should also route through the canvas when a suitable image can be created, fetched, screenshotted, or linked.
 
 Supported action item kinds:
 
@@ -125,7 +127,8 @@ Community BuildingHub entries stay manifest-only unless they are reviewed into f
 - The town is the desktop. Agent Inbox is the taskbar/notification center. Buildings are apps. Library is memory.
 - Every visible object should map to a durable system concept.
 - Agents should create one small ActionItem at a time instead of giving users long checklists.
-- Agents should publish the visual artifact they most want the user to inspect to their agent canvas.
+- Agents should use Vibe Research-provided endpoints, env vars, and helper commands as the source of truth for app coordination before scraping UI, writing ad hoc state files, or asking the human to report state manually.
+- Agents should publish the visual artifact they most want the user to inspect to their agent canvas, including direct "show me a picture" requests when a suitable image can be created, fetched, screenshotted, or linked.
 - Agents should wait on predicates when the UI can prove completion.
 - Sensitive work should become an Approval before it continues.
 - Terminals remain available, but nontechnical flows should prefer cards, panels, approvals, files, and artifacts.

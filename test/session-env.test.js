@@ -73,7 +73,9 @@ test("buildSessionEnv exposes helper and common CLI directories on PATH", () => 
     assert.equal(env.VIBE_RESEARCH_AGENT_CANVAS_COMMAND, "vr-agent-canvas");
     assert.equal(env.REMOTE_VIBES_AGENT_CANVAS_COMMAND, "rv-agent-canvas");
     assert.match(env.VIBE_RESEARCH_AGENT_CANVAS_HELP, /vr-agent-canvas --image results\/chart\.png/);
+    assert.match(env.VIBE_RESEARCH_AGENT_CANVAS_HELP, /vr-agent-canvas --url https:\/\/example\.com\/image\.png/);
     assert.match(env.REMOTE_VIBES_AGENT_CANVAS_HELP, /rv-agent-canvas --image results\/chart\.png/);
+    assert.match(env.REMOTE_VIBES_AGENT_CANVAS_HELP, /rv-agent-canvas --url https:\/\/example\.com\/image\.png/);
   } finally {
     process.env.PATH = originalPath;
   }
