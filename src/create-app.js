@@ -1001,6 +1001,15 @@ function getPublicBaseUrl(host, port, urls = [], env = process.env) {
   return normalizePublicBaseUrl(pickPreferredUrl(urls)?.url || urls[0]?.url || "") || getHelperBaseUrl(host, port);
 }
 
+function getBuildingHubAuthCallbackBaseUrl(port, env = process.env) {
+  const normalizedPort = normalizePort(port);
+  if (!normalizedPort) {
+    return "";
+  }
+
+  return getConfiguredPublicBaseUrl(env) || `http://127.0.0.1:${normalizedPort}`;
+}
+
 async function writeServerInfo(stateDir, payload) {
   const filePath = getServerInfoPath(stateDir);
   const tempPath = `${filePath}.tmp`;
@@ -1903,22 +1912,12 @@ export async function createVibeResearchApp({
   }
 
   function getBuildingHubGitHubOAuthRedirectUri(callbackPort) {
-    const normalizedPort = normalizePort(callbackPort);
-    if (!normalizedPort) {
-      return "";
-    }
-
-    const callbackBaseUrl = publicBaseUrl || getPublicBaseUrl(host, normalizedPort, urls, serverEnv);
+    const callbackBaseUrl = getBuildingHubAuthCallbackBaseUrl(callbackPort, serverEnv);
     return callbackBaseUrl ? `${callbackBaseUrl}${BUILDINGHUB_GITHUB_OAUTH_CALLBACK_PATH}` : "";
   }
 
   function getBuildingHubAccountCompletionUrl(callbackPort) {
-    const normalizedPort = normalizePort(callbackPort);
-    if (!normalizedPort) {
-      return "";
-    }
-
-    const callbackBaseUrl = publicBaseUrl || getPublicBaseUrl(host, normalizedPort, urls, serverEnv);
+    const callbackBaseUrl = getBuildingHubAuthCallbackBaseUrl(callbackPort, serverEnv);
     return callbackBaseUrl ? `${callbackBaseUrl}${BUILDINGHUB_ACCOUNT_AUTH_COMPLETE_PATH}` : "";
   }
 
