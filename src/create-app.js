@@ -3993,6 +3993,87 @@ export async function createVibeResearchApp({
     }).id;
   }
 
+  const AGENT_POINTER_DEFAULT_MS = 15000;
+  const AGENT_POINTER_MAX_MS = 120000;
+  let activeAgentPointer = null;
+  let agentPointerClearTimer = null;
+
+  function clearAgentPointerTimer() {
+    if (agentPointerClearTimer) {
+      clearTimeout(agentPointerClearTimer);
+      agentPointerClearTimer = null;
+    }
+  }
+
+  function setAgentPointer(payload = {}) {
+    const rawTarget = payload.target;
+    const target = typeof rawTarget === "string"
+      ? rawTarget.trim()
+      : rawTarget && typeof rawTarget === "object"
+        ? rawTarget
+        : "";
+    if (!target) {
+      const error = new Error("pointer target is required (string token or {x,y} coords).");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const durationMs = Math.min(
+      AGENT_POINTER_MAX_MS,
+      Math.max(500, Number(payload.durationMs) || AGENT_POINTER_DEFAULT_MS),
+    );
+    const now = Date.now();
+    const pointer = {
+      id: randomUUID(),
+      target,
+      reason: typeof payload.reason === "string" ? payload.reason.trim().slice(0, 500) : "",
+      sourceSessionId: typeof payload.sourceSessionId === "string" ? payload.sourceSessionId : "",
+      createdAt: now,
+      expiresAt: now + durationMs,
+    };
+    activeAgentPointer = pointer;
+
+    clearAgentPointerTimer();
+    agentPointerClearTimer = setTimeout(() => {
+      if (activeAgentPointer?.id === pointer.id) {
+        activeAgentPointer = null;
+        broadcastToAllClients({ type: "agent-pointer", pointer: null });
+      }
+    }, durationMs);
+
+    broadcastToAllClients({ type: "agent-pointer", pointer });
+    return pointer;
+  }
+
+  function clearAgentPointer() {
+    clearAgentPointerTimer();
+    const hadPointer = Boolean(activeAgentPointer);
+    activeAgentPointer = null;
+    if (hadPointer) {
+      broadcastToAllClients({ type: "agent-pointer", pointer: null });
+    }
+  }
+
+  app.get("/api/agent-town/pointer", (_request, response) => {
+    response.json({ pointer: activeAgentPointer });
+  });
+
+  app.post("/api/agent-town/pointer", (request, response) => {
+    try {
+      const pointer = setAgentPointer(request.body || {});
+      response.status(201).json({ pointer });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({
+        error: error.message || "Could not set agent pointer.",
+      });
+    }
+  });
+
+  app.delete("/api/agent-town/pointer", (_request, response) => {
+    clearAgentPointer();
+    response.json({ pointer: null });
+  });
+
   const stopLibraryActivityWatcher = startLibraryActivityWatcher({
     wikiPath: settingsStore.settings.wikiPath,
     resolveSessionForPath,

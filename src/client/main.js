@@ -1423,6 +1423,7 @@ const state = {
   portsLoadedAt: 0,
   currentView: "shell",
   workspaceEmpty: false,
+  agentPointer: null,
   globalSearchQuery: "",
   pluginSearchQuery: "",
   pluginDetailId: "",
@@ -16570,7 +16571,7 @@ function renderVisualPixelGame(graph, { controls = true } = {}) {
             ? `
               <div class="agent-town-floating-controls" role="toolbar" aria-label="Agent Town controls">
                 <button class="icon-button toolbar-control hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
-                <button class="icon-button toolbar-control ${isAgentTownEditMode() ? "is-active" : ""}" type="button" id="visual-game-edit-town" aria-label="${escapeHtml(editTownLabel)}" aria-pressed="${isAgentTownEditMode() ? "true" : "false"}" ${tooltipAttributes(editTownLabel)}>${renderIcon(Pencil)}</button>
+                <button class="icon-button toolbar-control ${isAgentTownEditMode() ? "is-active" : ""}" type="button" id="visual-game-edit-town" data-agent-target="agent-town-edit-layout" aria-label="${escapeHtml(editTownLabel)}" aria-pressed="${isAgentTownEditMode() ? "true" : "false"}" ${tooltipAttributes(editTownLabel)}>${renderIcon(Pencil)}</button>
                 <button class="icon-button toolbar-control" type="button" id="visual-game-zoom-out" aria-label="Zoom out map" ${tooltipAttributes("Zoom out map")}>${renderIcon(ZoomOut)}</button>
                 <button class="icon-button toolbar-control" type="button" id="visual-game-reset-camera" aria-label="Reset map view" ${tooltipAttributes("Reset map view")}>${renderIcon(RefreshCw)}</button>
                 <button class="icon-button toolbar-control" type="button" id="visual-game-zoom-in" aria-label="Zoom in map" ${tooltipAttributes("Zoom in map")}>${renderIcon(ZoomIn)}</button>
@@ -32932,6 +32933,11 @@ function connectToSession(sessionId) {
       return;
     }
 
+    if (payload.type === "agent-pointer") {
+      handleIncomingAgentPointer(payload.pointer || null);
+      return;
+    }
+
     if (payload.type === "session-deleted") {
       state.sessions = state.sessions.filter((session) => session.id !== payload.sessionId);
       const visualSelectionPruned = pruneVisualGameSessionSelection();
@@ -33936,4 +33942,274 @@ async function bootstrapApp() {
   }, 3000);
 }
 
+const AGENT_POINTER_AUTO_DISMISS_ELEMENT_CLICK = true;
+const agentPointerRuntime = {
+  expiryTimer: 0,
+  frameHandle: 0,
+  overlay: null,
+  lastTargetElement: null,
+  cleanupListeners: null,
+};
+
+function handleIncomingAgentPointer(pointer) {
+  clearAgentPointerOverlay();
+  if (!pointer) {
+    state.agentPointer = null;
+    return;
+  }
+
+  state.agentPointer = pointer;
+
+  const autoNavView = getAgentPointerAutoNavView(pointer.target);
+  if (autoNavView && state.currentView !== autoNavView) {
+    void openMainView(autoNavView).then(() => startAgentPointerOverlay());
+  } else {
+    startAgentPointerOverlay();
+  }
+
+  const remainingMs = Math.max(0, (pointer.expiresAt || 0) - Date.now());
+  agentPointerRuntime.expiryTimer = window.setTimeout(() => {
+    if (state.agentPointer?.id === pointer.id) {
+      clearAgentPointerOverlay();
+      state.agentPointer = null;
+    }
+  }, remainingMs + 200);
+}
+
+function getAgentPointerAutoNavView(target) {
+  if (!target || typeof target !== "string") return "";
+  if (target.startsWith("building:")) return "visual-interface";
+  if (target.startsWith("plugin-card:")) return "plugins";
+  if (target.startsWith("view:")) return target.slice("view:".length);
+  return "";
+}
+
+function resolveAgentPointerTarget(target) {
+  if (!target) return null;
+
+  if (typeof target === "object") {
+    const x = Number(target.x);
+    const y = Number(target.y);
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      return { rect: { left: x - 12, top: y - 12, width: 24, height: 24 }, element: null };
+    }
+    return null;
+  }
+
+  if (target.startsWith("view:")) {
+    const view = target.slice("view:".length);
+    const node = document.querySelector(`[data-open-main-view="${cssEscape(view)}"]`);
+    return node ? { element: node, rect: node.getBoundingClientRect() } : null;
+  }
+
+  if (target.startsWith("workspace-tab:")) {
+    const key = target.slice("workspace-tab:".length);
+    const node =
+      document.querySelector(`[data-workspace-tab="${cssEscape(key)}"]`)
+      || document.querySelector(`[data-workspace-tab="view:${cssEscape(key)}"]`);
+    return node ? { element: node, rect: node.getBoundingClientRect() } : null;
+  }
+
+  if (target.startsWith("plugin-card:")) {
+    const pluginId = target.slice("plugin-card:".length);
+    const node = document.querySelector(`[data-plugin-open="${cssEscape(pluginId)}"]`);
+    return node ? { element: node, rect: node.getBoundingClientRect() } : null;
+  }
+
+  if (target.startsWith("element:")) {
+    const token = target.slice("element:".length);
+    const node = document.querySelector(`[data-agent-target="${cssEscape(token)}"]`);
+    return node ? { element: node, rect: node.getBoundingClientRect() } : null;
+  }
+
+  if (target.startsWith("building:")) {
+    const buildingId = target.slice("building:".length);
+    const rect = getAgentPointerBuildingRect(buildingId);
+    return rect ? { element: null, rect } : null;
+  }
+
+  return null;
+}
+
+function getAgentPointerBuildingRect(buildingId) {
+  const canvas = document.querySelector("#visual-game-canvas");
+  if (!(canvas instanceof HTMLCanvasElement)) return null;
+  const hit = (state.visualGame.hitAreas || []).find(
+    (area) => area.kind === "building" && area.buildingId === buildingId,
+  );
+  if (!hit) return null;
+  const camera = state.visualGame.camera || { x: 0, y: 0, zoom: 1 };
+  const canvasRect = canvas.getBoundingClientRect();
+  const left = canvasRect.left + (hit.x - camera.x) * camera.zoom;
+  const top = canvasRect.top + (hit.y - camera.y) * camera.zoom;
+  const width = Math.max(24, hit.width * camera.zoom);
+  const height = Math.max(24, hit.height * camera.zoom);
+  return { left, top, width, height };
+}
+
+function cssEscape(value) {
+  return String(value).replace(/["\\]/g, "\\$&");
+}
+
+function ensureAgentPointerOverlay() {
+  if (agentPointerRuntime.overlay && document.body.contains(agentPointerRuntime.overlay)) {
+    return agentPointerRuntime.overlay;
+  }
+
+  const overlay = document.createElement("div");
+  overlay.className = "agent-pointer-overlay";
+  overlay.setAttribute("aria-hidden", "true");
+  overlay.innerHTML = `
+    <div class="agent-pointer" role="presentation">
+      <svg class="agent-pointer-arrow" viewBox="0 0 48 48" width="56" height="56" aria-hidden="true" focusable="false">
+        <path d="M24 4 L44 44 L24 34 L4 44 Z" fill="#ffb951" stroke="#1b1610" stroke-width="2" stroke-linejoin="round"/>
+      </svg>
+      <div class="agent-pointer-reason"></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  agentPointerRuntime.overlay = overlay;
+  return overlay;
+}
+
+function startAgentPointerOverlay() {
+  stopAgentPointerOverlayLoop();
+  const pointer = state.agentPointer;
+  if (!pointer) return;
+
+  const overlay = ensureAgentPointerOverlay();
+  const reasonNode = overlay.querySelector(".agent-pointer-reason");
+  if (reasonNode) {
+    reasonNode.textContent = pointer.reason || "";
+    reasonNode.style.display = pointer.reason ? "" : "none";
+  }
+  overlay.classList.add("is-visible");
+
+  const onDocumentClick = (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    if (!AGENT_POINTER_AUTO_DISMISS_ELEMENT_CLICK) return;
+    const current = agentPointerRuntime.lastTargetElement;
+    if (current && current.contains(target)) {
+      void dismissAgentPointer("click");
+    }
+  };
+
+  const onKeyDown = (event) => {
+    if (event.key === "Escape") {
+      void dismissAgentPointer("escape");
+    }
+  };
+
+  document.addEventListener("click", onDocumentClick, true);
+  document.addEventListener("keydown", onKeyDown);
+  agentPointerRuntime.cleanupListeners = () => {
+    document.removeEventListener("click", onDocumentClick, true);
+    document.removeEventListener("keydown", onKeyDown);
+  };
+
+  const tick = () => {
+    agentPointerRuntime.frameHandle = 0;
+    if (!state.agentPointer) {
+      overlay.classList.remove("is-visible");
+      return;
+    }
+
+    const resolved = resolveAgentPointerTarget(state.agentPointer.target);
+    if (!resolved || !resolved.rect) {
+      overlay.classList.add("is-waiting");
+      agentPointerRuntime.lastTargetElement = null;
+      agentPointerRuntime.frameHandle = window.requestAnimationFrame(tick);
+      return;
+    }
+
+    overlay.classList.remove("is-waiting");
+    agentPointerRuntime.lastTargetElement = resolved.element || null;
+    positionAgentPointerOverlay(overlay, resolved.rect);
+    agentPointerRuntime.frameHandle = window.requestAnimationFrame(tick);
+  };
+
+  agentPointerRuntime.frameHandle = window.requestAnimationFrame(tick);
+}
+
+function positionAgentPointerOverlay(overlay, rect) {
+  const pointerNode = overlay.querySelector(".agent-pointer");
+  if (!(pointerNode instanceof HTMLElement)) return;
+
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const targetCenterX = rect.left + rect.width / 2;
+  const targetCenterY = rect.top + rect.height / 2;
+
+  const padding = 18;
+  const arrowSize = 56;
+  const reasonEl = overlay.querySelector(".agent-pointer-reason");
+  const reasonHeight = reasonEl instanceof HTMLElement && reasonEl.offsetParent ? reasonEl.offsetHeight : 0;
+
+  let arrowX = targetCenterX - arrowSize / 2;
+  let arrowY = rect.top - arrowSize - padding;
+  let direction = "down";
+
+  if (arrowY < 8) {
+    arrowY = rect.top + rect.height + padding;
+    direction = "up";
+  }
+
+  arrowX = Math.max(8, Math.min(viewportWidth - arrowSize - 8, arrowX));
+  arrowY = Math.max(8, Math.min(viewportHeight - arrowSize - reasonHeight - 8, arrowY));
+
+  pointerNode.style.left = `${arrowX}px`;
+  pointerNode.style.top = `${arrowY}px`;
+  pointerNode.dataset.direction = direction;
+}
+
+function stopAgentPointerOverlayLoop() {
+  if (agentPointerRuntime.frameHandle) {
+    window.cancelAnimationFrame(agentPointerRuntime.frameHandle);
+    agentPointerRuntime.frameHandle = 0;
+  }
+  if (agentPointerRuntime.cleanupListeners) {
+    agentPointerRuntime.cleanupListeners();
+    agentPointerRuntime.cleanupListeners = null;
+  }
+}
+
+function clearAgentPointerOverlay() {
+  stopAgentPointerOverlayLoop();
+  if (agentPointerRuntime.expiryTimer) {
+    window.clearTimeout(agentPointerRuntime.expiryTimer);
+    agentPointerRuntime.expiryTimer = 0;
+  }
+  agentPointerRuntime.lastTargetElement = null;
+  if (agentPointerRuntime.overlay) {
+    agentPointerRuntime.overlay.classList.remove("is-visible", "is-waiting");
+  }
+}
+
+async function dismissAgentPointer(_reason) {
+  const pointer = state.agentPointer;
+  state.agentPointer = null;
+  clearAgentPointerOverlay();
+  if (!pointer) return;
+  try {
+    await fetch("/api/agent-town/pointer", { method: "DELETE" });
+  } catch {
+    // Network hiccup; server pointer expires on its own TTL.
+  }
+}
+
+async function bootstrapAgentPointer() {
+  try {
+    const res = await fetch("/api/agent-town/pointer", { headers: { Accept: "application/json" } });
+    if (!res.ok) return;
+    const payload = await res.json();
+    if (payload && payload.pointer && payload.pointer.expiresAt > Date.now()) {
+      handleIncomingAgentPointer(payload.pointer);
+    }
+  } catch {
+    // No pointer endpoint / offline; no-op.
+  }
+}
+
 bootstrapApp();
+void bootstrapAgentPointer();
