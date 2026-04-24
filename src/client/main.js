@@ -5016,9 +5016,15 @@ function renderRichSessionSurface(activeSession) {
   const canSend = Boolean(activeSession && activeSession.status !== "exited");
   const draft = getRichSessionComposerDraft(activeSession?.id);
   const richActive = isRichSessionSurfaceActive(activeSession);
+  const isWorking = Boolean(activeSession?.streamWorking);
+  const providerLabel = activeSession?.providerLabel || "Agent";
   return `
     <div class="rich-session-surface ${richActive ? "is-active" : ""}" id="rich-session-surface" aria-hidden="${richActive ? "false" : "true"}">
       <div class="rich-session-feed" id="rich-session-feed">${renderRichSessionFeedHtml(activeSession)}</div>
+      <div class="rich-session-working ${isWorking ? "is-active" : ""}" id="rich-session-working" aria-live="polite" aria-hidden="${isWorking ? "false" : "true"}">
+        <span class="rich-session-thinking-spinner" aria-hidden="true"></span>
+        <span>${escapeHtml(`${providerLabel} is working…`)}</span>
+      </div>
       <form class="rich-session-composer" id="rich-session-form">
         <label class="sr-only" for="rich-session-input">Send input</label>
         <textarea
@@ -5128,6 +5134,18 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
     input.disabled = !canSend;
     input.placeholder = `Message ${activeSession?.providerLabel || "agent"}...`;
     syncRichSessionComposerHeight(input);
+  }
+
+  // Update the persistent "agent is working" indicator without rebuilding it.
+  const workingIndicator = document.querySelector("#rich-session-working");
+  if (workingIndicator instanceof HTMLElement) {
+    const isWorking = Boolean(activeSession?.streamWorking);
+    workingIndicator.classList.toggle("is-active", isWorking);
+    workingIndicator.setAttribute("aria-hidden", isWorking ? "false" : "true");
+    const label = workingIndicator.querySelector("span:last-of-type");
+    if (label instanceof HTMLElement) {
+      label.textContent = `${activeSession?.providerLabel || "Agent"} is working…`;
+    }
   }
 
   if (sendButton instanceof HTMLButtonElement) {

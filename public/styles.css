@@ -13461,8 +13461,39 @@ body.is-reordering-file-tabs {
 
 .rich-session-surface.is-active {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   gap: 12px;
+}
+
+/* Persistent "<provider> is working…" status, parked between the feed and
+   the composer. Visible from when the user hits send until the underlying
+   stream session emits turn-complete, so the user has a single signal
+   that survives across the pending / streaming / tool phases. */
+.rich-session-working {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  margin: 0 max(18px, calc((100% - 1080px) / 2));
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(244, 244, 242, 0.72);
+  font-size: 0.84rem;
+  letter-spacing: 0.01em;
+  width: fit-content;
+}
+
+.rich-session-working.is-active {
+  display: inline-flex;
+}
+
+.rich-session-working .rich-session-thinking-spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid rgba(244, 244, 242, 0.18);
+  border-top-color: rgba(244, 244, 242, 0.6);
+  border-radius: 999px;
+  animation: rich-session-thinking-spin 0.9s linear infinite;
 }
 
 .rich-session-surface.is-attachment-dragover {

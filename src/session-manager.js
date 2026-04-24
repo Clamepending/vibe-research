@@ -3588,6 +3588,7 @@ export class SessionManager {
 
       try {
         session.streamSession.send(line);
+        session.streamWorking = true;
         sentAny = true;
       } catch (error) {
         this.pushNativeNarrativeEntry(session, {
@@ -3879,6 +3880,7 @@ export class SessionManager {
       backgroundActivity,
       subagents,
       streamMode: Boolean(session.streamMode),
+      streamWorking: Boolean(session.streamWorking),
     };
   }
 
@@ -3978,6 +3980,12 @@ export class SessionManager {
       // assistant entry's `updatedAt`). Sequence numbers don't have that
       // problem — first observation wins and they're stable across re-parses.
       entrySeqCounter: 0,
+      // True between when the user sends a prompt and the underlying stream
+      // session emits turn-complete. Lets the client render a persistent
+      // "agent is working" indicator that survives across the pending /
+      // streaming / tool-use phases — a single source of truth for "is the
+      // agent done yet?".
+      streamWorking: false,
     };
   }
 
@@ -5097,6 +5105,7 @@ export class SessionManager {
     });
 
     streamSession.on("turn-complete", () => {
+      session.streamWorking = false;
       this.scheduleSessionMetaBroadcast(session, { immediate: true });
       this.schedulePersist();
     });
@@ -5124,6 +5133,7 @@ export class SessionManager {
       session.exitCode = code;
       session.exitSignal = signal;
       session.streamSession = null;
+      session.streamWorking = false;
       this.pushNativeNarrativeEntry(session, {
         kind: "status",
         label: "Exited",
@@ -5222,6 +5232,7 @@ export class SessionManager {
     });
 
     streamSession.on("turn-complete", () => {
+      session.streamWorking = false;
       // Persist the codex thread id so reloads can resume in the same thread.
       if (streamSession.threadId) {
         this.updateProviderState(session, { sessionId: streamSession.threadId });
@@ -5253,6 +5264,7 @@ export class SessionManager {
       session.exitCode = code;
       session.exitSignal = signal;
       session.streamSession = null;
+      session.streamWorking = false;
       this.pushNativeNarrativeEntry(session, {
         kind: "status",
         label: "Exited",
