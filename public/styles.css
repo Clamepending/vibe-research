@@ -13522,7 +13522,6 @@ body.is-reordering-file-tabs {
   box-shadow: none;
 }
 
-.rich-session-entry.is-user,
 .rich-session-entry.is-tool,
 .rich-session-entry.is-status,
 .rich-session-entry.is-empty,
@@ -13532,6 +13531,17 @@ body.is-reordering-file-tabs {
   border: 0;
   border-radius: 0;
   background: transparent;
+  box-shadow: none;
+}
+
+.rich-session-entry.is-user {
+  gap: 6px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  justify-self: end;
+  max-width: min(640px, 80%);
   box-shadow: none;
 }
 

@@ -223,7 +223,16 @@ export class ClaudeStreamSession extends EventEmitter {
     this._updatePartialState(event);
 
     const narrative = this.getNarrative();
-    const rawEntries = Array.isArray(narrative?.entries) ? narrative.entries : [];
+    const rawEntriesAll = Array.isArray(narrative?.entries) ? narrative.entries : [];
+    // Drop claude's own "Thinking" entries (extractClaudeThinkingText output).
+    // SessionManager already pushes a real native Thinking placeholder right
+    // after the user message and clears it as soon as the response starts,
+    // so the live spinner is the single source of truth. Letting claude's
+    // post-hoc thinking content through means a permanent Thinking row sits
+    // above each completed reply.
+    const rawEntries = rawEntriesAll.filter(
+      (entry) => !(entry?.kind === "status" && /^thinking$/iu.test(String(entry?.label || ""))),
+    );
     // ALWAYS use our own first-observation cache for raw-entry timestamps.
     // Claude's transcript parser propagates `payload.timestamp` from the
     // sparse user/tool_result events to every subsequent entry's
