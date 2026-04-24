@@ -1,0 +1,273 @@
+#!/usr/bin/env node
+
+import { spawn } from "node:child_process";
+import path from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
+
+const HELP = `vr-claude-stream-experiment
+
+Spawn the wrapped \`bin/claude\` in stream-json mode, send a single user
+turn, and pretty-print every event Claude emits. Validates the
+streaming protocol on the local Claude install before we wire stream
+mode into the session manager. See docs/claude-stream-mode.md.
+
+Usage:
+  vr-claude-stream-experiment --prompt TEXT [--cwd DIR] [--session-id ID]
+  vr-claude-stream-experiment --prompt TEXT --raw          # print raw lines
+  vr-claude-stream-experiment --help
+
+Options:
+  --prompt TEXT       Required. The user message to send.
+  --cwd DIR           Working dir Claude runs in (default: process cwd).
+  --session-id ID     Reuse a specific session id; default lets Claude assign.
+  --resume ID         Resume an existing session id instead of starting one.
+  --claude-bin PATH   Path to the claude wrapper (default: <repo>/bin/claude).
+  --raw               Print raw stdout lines instead of decoded events.
+  --no-system-guidance Set NO_VIBE_GUIDANCE=1 so the wrapper skips the
+                      vr-* skill guidance prepended to every prompt.
+  --timeout MS        Hard cap on the run (default: 120000).
+`;
+
+const args = process.argv.slice(2);
+if (!args.length || args.includes("--help") || args.includes("-h")) {
+  process.stdout.write(HELP);
+  process.exit(0);
+}
+
+const options = parseArgs(args);
+if (!options.prompt) {
+  process.stderr.write("vr-claude-stream-experiment: --prompt is required\n");
+  process.exit(2);
+}
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const defaultClaudeBin = path.join(here, "claude");
+const claudeBin = options.claudeBin || defaultClaudeBin;
+
+const claudeArgs = [
+  "--input-format", "stream-json",
+  "--output-format", "stream-json",
+  "--verbose",
+];
+
+if (options.sessionId && !options.resume) {
+  claudeArgs.push("--session-id", options.sessionId);
+}
+if (options.resume) {
+  claudeArgs.push("--resume", options.resume);
+}
+
+const env = { ...process.env };
+if (options.noSystemGuidance) {
+  env.VIBE_RESEARCH_AGENT_PROMPT_PATH = "";
+  env.REMOTE_VIBES_AGENT_PROMPT_PATH = "";
+}
+
+process.stderr.write(`[experiment] spawning: ${claudeBin} ${claudeArgs.join(" ")}\n`);
+process.stderr.write(`[experiment] cwd: ${options.cwd || process.cwd()}\n`);
+
+const child = spawn(claudeBin, claudeArgs, {
+  cwd: options.cwd || process.cwd(),
+  env,
+  stdio: ["pipe", "pipe", "inherit"],
+});
+
+const timeoutHandle = setTimeout(() => {
+  process.stderr.write(`[experiment] timeout after ${options.timeout}ms — killing child\n`);
+  child.kill("SIGTERM");
+}, options.timeout);
+
+let stdoutBuffer = "";
+let sawAnyOutput = false;
+
+child.stdout.setEncoding("utf8");
+child.stdout.on("data", (chunk) => {
+  sawAnyOutput = true;
+  stdoutBuffer += chunk;
+  let nlIdx = stdoutBuffer.indexOf("\n");
+  while (nlIdx !== -1) {
+    const line = stdoutBuffer.slice(0, nlIdx);
+    stdoutBuffer = stdoutBuffer.slice(nlIdx + 1);
+    handleLine(line);
+    nlIdx = stdoutBuffer.indexOf("\n");
+  }
+});
+
+child.on("error", (error) => {
+  process.stderr.write(`[experiment] spawn error: ${error.message}\n`);
+  clearTimeout(timeoutHandle);
+  process.exit(1);
+});
+
+child.on("close", (code, signal) => {
+  clearTimeout(timeoutHandle);
+  if (stdoutBuffer.trim()) {
+    handleLine(stdoutBuffer);
+  }
+  if (!sawAnyOutput) {
+    process.stderr.write(
+      "[experiment] child exited without writing anything to stdout. The most\n"
+      + "common cause is that this Claude install does not recognize\n"
+      + "--input-format/--output-format stream-json. Re-run with --raw to see\n"
+      + "what came back, and try `claude --help | grep stream` to confirm.\n",
+    );
+  }
+  process.stderr.write(`[experiment] child exited code=${code} signal=${signal || ""}\n`);
+  process.exit(code ?? 0);
+});
+
+const userMessage = {
+  type: "user",
+  message: {
+    role: "user",
+    content: [{ type: "text", text: options.prompt }],
+  },
+};
+
+child.stdin.write(`${JSON.stringify(userMessage)}\n`);
+child.stdin.end();
+
+function handleLine(line) {
+  const trimmed = line.replace(/\r$/, "");
+  if (!trimmed) {
+    return;
+  }
+  if (options.raw) {
+    process.stdout.write(`${trimmed}\n`);
+    return;
+  }
+
+  try {
+    const event = JSON.parse(trimmed);
+    printEvent(event);
+  } catch {
+    process.stdout.write(`[non-json] ${trimmed}\n`);
+  }
+}
+
+function printEvent(event) {
+  const type = String(event?.type || "?");
+  const sessionId = event?.session_id ? ` session=${event.session_id}` : "";
+  if (type === "system") {
+    const subtype = event?.subtype || "";
+    process.stdout.write(`[system${subtype ? `:${subtype}` : ""}]${sessionId}\n`);
+    return;
+  }
+  if (type === "assistant") {
+    const content = event?.message?.content;
+    process.stdout.write(`[assistant]${sessionId}\n`);
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        if (part?.type === "text" && typeof part.text === "string") {
+          process.stdout.write(`${indent(part.text)}\n`);
+        } else if (part?.type === "tool_use") {
+          const toolInput = JSON.stringify(part.input ?? {});
+          process.stdout.write(`  → tool ${part.name}(${truncate(toolInput, 200)})\n`);
+        } else if (part?.type === "thinking") {
+          const text = String(part.thinking || part.text || "");
+          if (text.trim()) {
+            process.stdout.write(`  ⋯ thinking: ${truncate(text, 200)}\n`);
+          }
+        }
+      }
+    }
+    return;
+  }
+  if (type === "user") {
+    const content = event?.message?.content;
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        if (part?.type === "tool_result") {
+          const text = extractToolResultText(part);
+          process.stdout.write(`[tool_result] id=${part.tool_use_id || "?"}\n`);
+          if (text) {
+            process.stdout.write(`${indent(truncate(text, 400))}\n`);
+          }
+        }
+      }
+    }
+    return;
+  }
+  if (type === "result") {
+    process.stdout.write(`[result] subtype=${event?.subtype || ""} cost_usd=${event?.cost_usd ?? "?"}\n`);
+    return;
+  }
+  process.stdout.write(`[${type}] ${truncate(JSON.stringify(event), 240)}\n`);
+}
+
+function extractToolResultText(part) {
+  if (typeof part?.content === "string") {
+    return part.content;
+  }
+  if (Array.isArray(part?.content)) {
+    return part.content
+      .filter((entry) => entry?.type === "text" && typeof entry.text === "string")
+      .map((entry) => entry.text)
+      .join("\n");
+  }
+  return "";
+}
+
+function indent(text) {
+  return String(text || "")
+    .split("\n")
+    .map((line) => `  ${line}`)
+    .join("\n");
+}
+
+function truncate(text, max) {
+  const value = String(text || "");
+  if (value.length <= max) {
+    return value;
+  }
+  return `${value.slice(0, max)}…`;
+}
+
+function parseArgs(argv) {
+  const out = {
+    prompt: "",
+    cwd: "",
+    sessionId: "",
+    resume: "",
+    claudeBin: "",
+    raw: false,
+    noSystemGuidance: false,
+    timeout: 120000,
+  };
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--prompt":
+        out.prompt = argv[++i] || "";
+        break;
+      case "--cwd":
+        out.cwd = argv[++i] || "";
+        break;
+      case "--session-id":
+        out.sessionId = argv[++i] || "";
+        break;
+      case "--resume":
+        out.resume = argv[++i] || "";
+        break;
+      case "--claude-bin":
+        out.claudeBin = argv[++i] || "";
+        break;
+      case "--raw":
+        out.raw = true;
+        break;
+      case "--no-system-guidance":
+        out.noSystemGuidance = true;
+        break;
+      case "--timeout":
+        out.timeout = Number(argv[++i]) || out.timeout;
+        break;
+      default:
+        process.stderr.write(`vr-claude-stream-experiment: unknown arg ${arg}\n`);
+        process.exit(2);
+    }
+  }
+
+  return out;
+}
