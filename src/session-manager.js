@@ -803,6 +803,124 @@ function hasClaudeWorkspaceTrustPrompt(buffer) {
   return /Quick\s*safety\s*check|Yes,\s*I\s*trust\s*this\s*folder|Claude\s*Code'll\s*be\s*able\s*to\s*read/i.test(text);
 }
 
+// Detects the Claude Code "Select login method:" chooser. Claude Code
+// re-renders the menu on every keystroke, so we normalize ANSI + whitespace
+// before matching. The chooser is always three numbered options in the same
+// order; we don't try to extract the label from the buffer (too brittle) —
+// we hard-code the documented labels and treat the buffer match as the signal.
+function detectClaudeLoginChooser(buffer) {
+  const text = normalizeTerminalText(buffer);
+  if (!text) return null;
+  if (!/Select\s+login\s+method/i.test(text)) return null;
+  // Require at least two of the three known option keywords to be present so
+  // we don't false-positive on a session that happens to print the phrase.
+  const hits = [
+    /Claude\s+account\s+with\s+subscription|Pro,\s*Max,\s*Team/i,
+    /Anthropic\s+Console\s+account|API\s+usage\s+billing/i,
+    /3rd-?party\s+platform|Amazon\s+Bedrock|Vertex\s+AI|Microsoft\s+Foundry/i,
+  ].filter((pattern) => pattern.test(text)).length;
+  if (hits < 2) return null;
+
+  return {
+    kind: "login-chooser",
+    title: "Pick a Claude login",
+    hint: "Choose how to sign Claude Code in. The choice is sent back to the CLI automatically.",
+    options: [
+      {
+        id: "1",
+        label: "Claude subscription",
+        detail: "Pro, Max, Team, or Enterprise",
+      },
+      {
+        id: "2",
+        label: "Anthropic Console",
+        detail: "API key · pay-per-use billing",
+      },
+      {
+        id: "3",
+        label: "3rd-party platform",
+        detail: "Bedrock · Foundry · Vertex AI",
+      },
+    ],
+  };
+}
+
+// Detects the OAuth URL prompt Claude Code shows after picking option 1.
+// Returns the URL so the UI can turn it into a single-click button.
+function detectClaudeOAuthUrl(buffer) {
+  const text = normalizeTerminalText(buffer);
+  if (!text) return null;
+  // Claude Code prints "Open the following URL ... https://claude.ai/..."
+  // or a similar invitation alongside the link.
+  if (!/Open\s+(?:the\s+)?(?:following\s+)?URL|Paste\s+this\s+URL|Visit(?:ing)?\s+this\s+URL|Log\s+in\s+(?:with|via)\s+your\s+browser/i.test(text)) {
+    return null;
+  }
+  const match = text.match(/https:\/\/(?:www\.)?(?:claude\.ai|anthropic\.com|console\.anthropic\.com)[^\s"'<>]+/i);
+  if (!match) return null;
+  return {
+    kind: "oauth-url",
+    title: "Finish Claude login in your browser",
+    hint: "Claude Code is waiting for you to complete sign-in. Click to open the verification URL, sign in, and come back.",
+    url: match[0],
+  };
+}
+
+// Detects the prompt Claude Code (or the Console login) shows asking for an
+// API key. We don't try to autocomplete here — the user pastes it and we
+// write it into the PTY followed by a newline.
+function detectClaudeApiKeyPrompt(buffer) {
+  const text = normalizeTerminalText(buffer);
+  if (!text) return null;
+  // The chooser is gone but the login prompt is still asking for an API key.
+  if (/Select\s+login\s+method/i.test(text)) return null;
+  if (
+    /Enter\s+(?:your\s+)?(?:Anthropic\s+)?API\s+key|Paste\s+(?:your\s+)?API\s+key|anthropic\s+api\s+key:\s*$/i.test(text)
+    || /\bsk-ant-\.\.\.|\bsk-ant-xxxx/i.test(text)
+  ) {
+    return {
+      kind: "api-key",
+      title: "Enter your Anthropic API key",
+      hint: "Paste the key you copied from console.anthropic.com. It gets sent directly to Claude Code — Vibe Research doesn't store it.",
+      consoleUrl: "https://console.anthropic.com/settings/keys",
+    };
+  }
+  return null;
+}
+
+// Detects the credit-refill / usage-limit notice. We don't route this back
+// into the PTY — we surface a billing button and let the user decide.
+function detectClaudeCreditRefill(buffer) {
+  const text = normalizeTerminalText(buffer);
+  if (!text) return null;
+  if (
+    /reached\s+your\s+usage\s+limit|credit\s+balance\s+is\s+too\s+low|out\s+of\s+credits|please\s+add\s+credits|purchase\s+more\s+credits|insufficient\s+credits|low\s+on\s+credits/i.test(text)
+  ) {
+    return {
+      kind: "credit-refill",
+      title: "Anthropic credits exhausted",
+      hint: "Claude Code says the account is out of credits. Top up and come back — no PTY input is needed from this card.",
+      billingUrl: "https://console.anthropic.com/settings/billing",
+    };
+  }
+  return null;
+}
+
+// Returns the most-relevant Claude setup/runtime prompt detected in the
+// session's visible buffer, or null. Ordered so the most actionable prompt
+// wins when multiple match (e.g. if the buffer still has an old login chooser
+// above a newer API key prompt, surface the API key).
+function detectClaudePrompt(session) {
+  if (!isClaudeProviderId(session?.providerId)) return null;
+  if (!session?.buffer) return null;
+  return (
+    detectClaudeApiKeyPrompt(session.buffer)
+    || detectClaudeLoginChooser(session.buffer)
+    || detectClaudeOAuthUrl(session.buffer)
+    || detectClaudeCreditRefill(session.buffer)
+    || null
+  );
+}
+
 function providerHasReadyHint(providerId, buffer) {
   const text = normalizeTerminalText(buffer);
   if (!text) {
@@ -3881,6 +3999,7 @@ export class SessionManager {
       subagents,
       streamMode: Boolean(session.streamMode),
       streamWorking: Boolean(session.streamWorking),
+      claudePrompt: detectClaudePrompt(session),
     };
   }
 
@@ -5457,3 +5576,11 @@ export class SessionManager {
     await this.persistNow();
   }
 }
+
+export const claudePromptDetectionInternals = Object.freeze({
+  detectClaudeLoginChooser,
+  detectClaudeOAuthUrl,
+  detectClaudeApiKeyPrompt,
+  detectClaudeCreditRefill,
+  detectClaudePrompt,
+});

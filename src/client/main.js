@@ -5345,11 +5345,149 @@ function renderRichSessionFeedHtml(activeSession) {
 
   const narrative = getRichSessionNarrative(activeSession.id);
   const entries = Array.isArray(narrative?.entries) ? narrative.entries : [];
+  const prompt = activeSession.claudePrompt || null;
+  const filteredEntries = prompt ? filterEntriesForClaudePrompt(entries, prompt) : entries;
 
   return `
     ${renderRichSessionOverviewCard(activeSession)}
-    ${entries.length ? entries.map((entry, index) => renderRichSessionEntry(entry, index)).join("") : renderRichSessionEmptyState(activeSession)}
+    ${prompt ? renderClaudePromptCard(prompt) : ""}
+    ${filteredEntries.length ? filteredEntries.map((entry, index) => renderRichSessionEntry(entry, index)).join("") : renderRichSessionEmptyState(activeSession)}
   `;
+}
+
+// Drop narrative entries that duplicate the structured prompt card — Claude
+// re-renders these menus on every keystroke, so without this the feed gets
+// swamped by half-rendered copies of the same thing.
+function filterEntriesForClaudePrompt(entries, prompt) {
+  if (!prompt || !Array.isArray(entries)) return entries;
+  const needles = [];
+  if (prompt.kind === "login-chooser") {
+    needles.push(/select\s+login\s+method/i);
+    needles.push(/claude\s+account\s+with\s+subscription/i);
+    needles.push(/anthropic\s+console\s+account/i);
+    needles.push(/3rd-?party\s+platform/i);
+  } else if (prompt.kind === "oauth-url") {
+    needles.push(/open\s+(?:the\s+)?(?:following\s+)?url/i);
+    needles.push(/paste\s+this\s+url/i);
+    if (prompt.url) needles.push(new RegExp(String(prompt.url).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+  } else if (prompt.kind === "api-key") {
+    needles.push(/enter\s+(?:your\s+)?(?:anthropic\s+)?api\s+key/i);
+    needles.push(/paste\s+(?:your\s+)?api\s+key/i);
+    needles.push(/sk-ant-\.\.\.|sk-ant-xxxx/i);
+  } else if (prompt.kind === "credit-refill") {
+    needles.push(/reached\s+your\s+usage\s+limit/i);
+    needles.push(/out\s+of\s+credits|purchase\s+more\s+credits|add\s+credits/i);
+  }
+  if (!needles.length) return entries;
+
+  return entries.filter((entry) => {
+    const text = String(entry?.text || entry?.body || entry?.label || "");
+    if (!text) return true;
+    return !needles.some((pattern) => pattern.test(text));
+  });
+}
+
+function renderClaudePromptCard(prompt) {
+  if (!prompt) return "";
+  const kicker = `<div class="rich-session-entry-kicker">
+    <span class="rich-session-entry-kicker-icon">${renderIcon(ServerCog, { className: "rich-session-entry-icon" })}</span>
+    <span class="rich-session-entry-kicker-label">Claude setup</span>
+  </div>`;
+
+  if (prompt.kind === "login-chooser") {
+    const options = Array.isArray(prompt.options) ? prompt.options : [];
+    return `
+      <article class="rich-session-entry is-claude-prompt is-login-chooser">
+        ${kicker}
+        <strong class="rich-session-claude-prompt-title">${escapeHtml(prompt.title || "Pick a Claude login")}</strong>
+        <p class="rich-session-claude-prompt-hint">${escapeHtml(prompt.hint || "")}</p>
+        <div class="rich-session-claude-prompt-options">
+          ${options
+            .map(
+              (option) => `
+                <button
+                  class="primary-button rich-session-claude-prompt-option"
+                  type="button"
+                  data-claude-prompt-send="${escapeHtml(String(option.id || ""))}"
+                >
+                  <span class="rich-session-claude-prompt-option-label">${escapeHtml(option.label || "")}</span>
+                  ${option.detail ? `<span class="rich-session-claude-prompt-option-detail">${escapeHtml(option.detail)}</span>` : ""}
+                </button>
+              `,
+            )
+            .join("")}
+        </div>
+      </article>
+    `;
+  }
+
+  if (prompt.kind === "oauth-url") {
+    const url = String(prompt.url || "").trim();
+    return `
+      <article class="rich-session-entry is-claude-prompt is-oauth-url">
+        ${kicker}
+        <strong class="rich-session-claude-prompt-title">${escapeHtml(prompt.title || "Finish Claude login in your browser")}</strong>
+        <p class="rich-session-claude-prompt-hint">${escapeHtml(prompt.hint || "")}</p>
+        <div class="rich-session-claude-prompt-options">
+          ${url
+            ? `<a class="primary-button rich-session-claude-prompt-option" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">
+                <span class="rich-session-claude-prompt-option-label">Open Claude login</span>
+                <span class="rich-session-claude-prompt-option-detail">${escapeHtml(url.replace(/^https?:\/\//, "").slice(0, 72))}</span>
+              </a>`
+            : `<span class="rich-session-claude-prompt-option-detail">Waiting for a login URL…</span>`}
+        </div>
+      </article>
+    `;
+  }
+
+  if (prompt.kind === "api-key") {
+    return `
+      <article class="rich-session-entry is-claude-prompt is-api-key">
+        ${kicker}
+        <strong class="rich-session-claude-prompt-title">${escapeHtml(prompt.title || "Enter your Anthropic API key")}</strong>
+        <p class="rich-session-claude-prompt-hint">${escapeHtml(prompt.hint || "")}</p>
+        <form class="rich-session-claude-prompt-form" data-claude-prompt-api-key-form>
+          <input
+            class="file-root-input rich-session-claude-prompt-input"
+            type="password"
+            name="apiKey"
+            placeholder="sk-ant-..."
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="none"
+            spellcheck="false"
+            required
+          />
+          <div class="rich-session-claude-prompt-actions">
+            <button class="primary-button" type="submit">Send key</button>
+            ${prompt.consoleUrl
+              ? `<a class="ghost-button" href="${escapeHtml(prompt.consoleUrl)}" target="_blank" rel="noreferrer">Open Anthropic Console</a>`
+              : ""}
+          </div>
+        </form>
+      </article>
+    `;
+  }
+
+  if (prompt.kind === "credit-refill") {
+    return `
+      <article class="rich-session-entry is-claude-prompt is-credit-refill">
+        ${kicker}
+        <strong class="rich-session-claude-prompt-title">${escapeHtml(prompt.title || "Anthropic credits exhausted")}</strong>
+        <p class="rich-session-claude-prompt-hint">${escapeHtml(prompt.hint || "")}</p>
+        <div class="rich-session-claude-prompt-options">
+          ${prompt.billingUrl
+            ? `<a class="primary-button rich-session-claude-prompt-option" href="${escapeHtml(prompt.billingUrl)}" target="_blank" rel="noreferrer">
+                <span class="rich-session-claude-prompt-option-label">Top up in Anthropic Console</span>
+                <span class="rich-session-claude-prompt-option-detail">${escapeHtml(prompt.billingUrl.replace(/^https?:\/\//, ""))}</span>
+              </a>`
+            : ""}
+        </div>
+      </article>
+    `;
+  }
+
+  return "";
 }
 
 function renderRichSessionSurface(activeSession) {
@@ -37773,6 +37911,56 @@ function bindShellEvents() {
   document.querySelector("#rich-session-feed")?.addEventListener("scroll", () => {
     syncTerminalScrollState();
   }, { passive: true });
+  document.querySelector("#rich-session-feed")?.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-claude-prompt-send]") : null;
+    if (!(button instanceof HTMLElement)) return;
+    event.preventDefault();
+    const payload = button.getAttribute("data-claude-prompt-send") || "";
+    if (!payload) return;
+    const sent = sendTerminalInput(`${payload}\r`, { queueIfDisconnected: true });
+    if (!sent) {
+      window.alert("That session is not connected yet.");
+      return;
+    }
+    // Prevent double-send while the narrative refresh catches up.
+    button.setAttribute("disabled", "disabled");
+    button.classList.add("is-sending");
+    const activeSession = getActiveSession();
+    if (activeSession) {
+      scheduleRichSessionNarrativeRefresh(activeSession.id, { immediate: true });
+    }
+  });
+  document.querySelector("#rich-session-feed")?.addEventListener("submit", (event) => {
+    const form = event.target instanceof HTMLFormElement ? event.target : null;
+    if (!form || !form.hasAttribute("data-claude-prompt-api-key-form")) return;
+    event.preventDefault();
+    const input = form.querySelector('input[name="apiKey"]');
+    if (!(input instanceof HTMLInputElement)) return;
+    const value = input.value.trim();
+    if (!value) {
+      input.focus();
+      return;
+    }
+    const submitButton = form.querySelector('button[type="submit"]');
+    if (submitButton instanceof HTMLButtonElement) {
+      submitButton.disabled = true;
+      submitButton.textContent = "sending…";
+    }
+    const sent = sendTerminalInput(`${value}\r`, { queueIfDisconnected: true });
+    if (!sent) {
+      if (submitButton instanceof HTMLButtonElement) {
+        submitButton.disabled = false;
+        submitButton.textContent = "Send key";
+      }
+      window.alert("That session is not connected yet.");
+      return;
+    }
+    input.value = "";
+    const activeSession = getActiveSession();
+    if (activeSession) {
+      scheduleRichSessionNarrativeRefresh(activeSession.id, { immediate: true });
+    }
+  });
   document.querySelector("#rich-session-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const activeSession = getActiveSession();
