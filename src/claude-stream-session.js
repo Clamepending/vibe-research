@@ -52,6 +52,12 @@ export class ClaudeStreamSession extends EventEmitter {
     this.stderrBuffer = "";
     this._stdoutBuffer = "";
     this._child = null;
+    // Claude's stream-json events frequently arrive without a `timestamp`
+    // field. The narrative parser then leaves entries with empty timestamps,
+    // which sort to position 0 and end up rendered above the user/native
+    // entries that DO have timestamps. Cache a stamp the first time we see
+    // each entry id so chronology matches arrival order.
+    this._entryStamps = new Map();
   }
 
   start() {
@@ -209,7 +215,19 @@ export class ClaudeStreamSession extends EventEmitter {
     this.lastEventAt = stamp;
 
     const narrative = this.getNarrative();
-    this.entries = Array.isArray(narrative?.entries) ? narrative.entries : [];
+    const rawEntries = Array.isArray(narrative?.entries) ? narrative.entries : [];
+    this.entries = rawEntries.map((entry, index) => {
+      if (entry?.timestamp) {
+        return entry;
+      }
+      const cacheKey = entry?.id || `entry-${index}`;
+      let cachedStamp = this._entryStamps.get(cacheKey);
+      if (!cachedStamp) {
+        cachedStamp = stamp;
+        this._entryStamps.set(cacheKey, cachedStamp);
+      }
+      return { ...entry, timestamp: cachedStamp };
+    });
     this.emit("event", event);
     this.emit("entries", this.entries);
 
