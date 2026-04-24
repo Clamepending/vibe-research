@@ -2319,6 +2319,10 @@ test("Telegram building detail saves through fetch and opens placement without e
     assert.equal(await page.locator(".plugin-next-step").count(), 1);
     assert.equal(await page.locator(".plugin-onboarding-steps").count(), 0);
     assert.equal(await page.locator(".plugin-onboarding-vars").count(), 0);
+    const tokenShortcutButton = page.getByRole("button", { name: "I have a token" });
+    if (await tokenShortcutButton.count()) {
+      await tokenShortcutButton.click();
+    }
     await page.getByLabel("Telegram bot token").waitFor({ timeout: 10_000 });
 
     await page.getByRole("button", { name: "Back to BuildingHub", exact: true }).click();
@@ -2328,7 +2332,18 @@ test("Telegram building detail saves through fetch and opens placement without e
 
     await page.getByRole("button", { name: "Install Telegram" }).click();
     await page.waitForFunction(() => new URL(window.location.href).searchParams.get("building") === "telegram");
+    if (await tokenShortcutButton.count()) {
+      await tokenShortcutButton.click();
+    }
     await page.getByLabel("Telegram bot token").fill("123456:fake-token-for-ui-test");
+    const continueButton = page.getByRole("button", { name: "Continue" });
+    if (await continueButton.count()) {
+      await continueButton.click();
+    }
+    const chatLimitSummary = page.getByText("Limit to specific chats (optional)");
+    if (await chatLimitSummary.count()) {
+      await chatLimitSummary.click();
+    }
     await page.getByLabel("allowed chat IDs").fill("12345, -99");
     await page.getByRole("button", { name: "save and install" }).click();
     const settingsPayload = await waitForTelegramSettings();
