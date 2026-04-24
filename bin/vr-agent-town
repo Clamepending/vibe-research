@@ -11,11 +11,14 @@ Export and import an Agent Town bundle for reproducibility.
 
 Usage:
   vr-agent-town export [--out PATH] [--pretty]
-  vr-agent-town import <path|url|id:BUNDLE_ID> [--dry-run] [--json]
-  vr-agent-town diff <path|url|id:BUNDLE_ID>
+  vr-agent-town import <path|url|id:BUNDLE_ID|hub:BUNDLE_ID> [--dry-run] [--json]
+  vr-agent-town diff <path|url|id:BUNDLE_ID|hub:BUNDLE_ID>
   vr-agent-town publish [--id NAME] [--from PATH]
   vr-agent-town list
   vr-agent-town unpublish <id>
+  vr-agent-town hub-publish <id>
+  vr-agent-town hub-list
+  vr-agent-town hub-pull <id> [--dry-run]
 
 Options:
   --out PATH         Write the exported bundle to PATH (default: stdout).
@@ -28,7 +31,10 @@ Options:
   -h, --help         Show this help.
 
 The import/diff positional accepts a local file path, an http(s) URL,
-or "id:NAME" to reference a bundle previously published on this server.
+"id:NAME" to reference a bundle in this server's local registry, or
+"hub:NAME" to import directly from BuildingHub. Hub bundles are
+discovered via the configured BuildingHub catalog (local folder or
+remote URL).
 
 Environment:
   VIBE_RESEARCH_AGENT_TOWN_API   Overrides server discovery.
@@ -195,7 +201,21 @@ function formatReport(result) {
 
 async function runImport(api, options, { dryRun }) {
   if (!options.positional) {
-    throw new Error("provide a bundle path, URL, or id:NAME.");
+    throw new Error("provide a bundle path, URL, id:NAME, or hub:NAME.");
+  }
+  if (options.positional.startsWith("hub:")) {
+    const hubId = options.positional.slice(4);
+    const result = await fetchJsonOrThrow(`${api}/bundle-hub/${encodeURIComponent(hubId)}/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dryRun }),
+    });
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+    process.stdout.write(formatReport(result));
+    return;
   }
   const payload = { dryRun };
   if (/^https?:\/\//i.test(options.positional)) {
@@ -211,6 +231,63 @@ async function runImport(api, options, { dryRun }) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(formatReport(result));
+}
+
+async function runHubPublish(api, options) {
+  if (!options.positional) {
+    throw new Error("provide a local bundle id to publish.");
+  }
+  const result = await fetchJsonOrThrow(`${api}/bundles/${encodeURIComponent(options.positional)}/publish-to-hub`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(`published to BuildingHub: ${result.bundleId}\n`);
+  if (result.bundleUrl) process.stdout.write(`  bundle:     ${result.bundleUrl}\n`);
+  if (result.repositoryUrl) process.stdout.write(`  repository: ${result.repositoryUrl}\n`);
+  if (result.commit) process.stdout.write(`  commit:     ${result.commit}\n`);
+  if (result.commitUrl) process.stdout.write(`  commit-url: ${result.commitUrl}\n`);
+  process.stdout.write(`  status:     ${result.status} (${result.publishedVia})\n`);
+  process.stdout.write(`  import:     vr-agent-town import hub:${result.bundleId}\n`);
+}
+
+async function runHubList(api, options) {
+  const result = await fetchJsonOrThrow(`${api}/bundle-hub`);
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  const bundles = Array.isArray(result?.bundles) ? result.bundles : [];
+  if (bundles.length === 0) {
+    process.stdout.write("no bundles in BuildingHub.\n");
+    return;
+  }
+  for (const entry of bundles) {
+    const version = entry.bundleVersion ? `v${entry.bundleVersion}` : "";
+    const integrity = entry.integrity ? ` ${entry.integrity.slice(0, 24)}…` : "";
+    process.stdout.write(`${entry.id}  ${version}  ${entry.exportedAt || ""}${integrity}\n`);
+    if (entry.description) process.stdout.write(`  ${entry.description}\n`);
+  }
+}
+
+async function runHubPull(api, options) {
+  if (!options.positional) {
+    throw new Error("provide a hub bundle id.");
+  }
+  const result = await fetchJsonOrThrow(`${api}/bundle-hub/${encodeURIComponent(options.positional)}/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dryRun: options.dryRun }),
   });
   if (options.json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -308,6 +385,21 @@ async function main() {
 
   if (options.command === "unpublish") {
     await runUnpublish(api, options);
+    return;
+  }
+
+  if (options.command === "hub-publish") {
+    await runHubPublish(api, options);
+    return;
+  }
+
+  if (options.command === "hub-list") {
+    await runHubList(api, options);
+    return;
+  }
+
+  if (options.command === "hub-pull") {
+    await runHubPull(api, options);
     return;
   }
 

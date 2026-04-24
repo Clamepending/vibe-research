@@ -25,6 +25,7 @@ import { AgentTownStore } from "./agent-town-store.js";
 import { BuildingHubAccountService } from "./buildinghub-account-service.js";
 import { BuildingHubAccountTokenStore } from "./buildinghub-account-token-store.js";
 import { publishTownShareToBuildingHub } from "./buildinghub-layout-publisher.js";
+import { publishBundleToBuildingHub } from "./buildinghub-bundle-publisher.js";
 import { publishScaffoldRecipeToBuildingHub } from "./buildinghub-scaffold-publisher.js";
 import { writeBuildingAgentGuides } from "./building-agent-guides.js";
 import { BuildingHubService } from "./buildinghub-service.js";
@@ -3176,8 +3177,23 @@ export async function createVibeResearchApp({
       const dryRun = body.dryRun === true;
       let bundle = body.bundle;
       if (!bundle && typeof body.bundleId === "string" && body.bundleId.trim()) {
-        const entry = await readPublishedBundle(body.bundleId.trim());
-        bundle = entry.bundle;
+        const id = body.bundleId.trim();
+        try {
+          const entry = await readPublishedBundle(id);
+          bundle = entry.bundle;
+        } catch (error) {
+          if (error?.statusCode === 404) {
+            await buildingHubService.refresh();
+            const hubEntry = buildingHubService.getBundle(id);
+            if (hubEntry?.bundle) {
+              bundle = hubEntry.bundle;
+            } else {
+              throw error;
+            }
+          } else {
+            throw error;
+          }
+        }
       }
       if (!bundle && typeof body.url === "string" && body.url.trim()) {
         bundle = await fetchBundleFromUrl(body.url.trim());
@@ -3238,6 +3254,82 @@ export async function createVibeResearchApp({
       response.json({ id: result.id, deleted: true });
     } catch (error) {
       response.status(error.statusCode || 500).json({ error: error.message || "Could not delete bundle." });
+    }
+  });
+
+  app.post("/api/agent-town/bundles/:bundleId/publish-to-hub", async (request, response) => {
+    try {
+      const entry = await readPublishedBundle(request.params.bundleId);
+      const result = await publishBundleToBuildingHub({
+        bundle: entry.bundle,
+        bundleId: entry.id,
+        settings: settingsStore.settings,
+        cwd,
+        env: serverEnv,
+        accessToken: getBuildingHubAccountAccessToken(),
+      });
+      if (!result.recordedByBuildingHub) {
+        await syncBuildingHubPublication({
+          kind: "bundle",
+          id: result.bundleId,
+          name: entry.bundle?.producer?.app
+            ? `${entry.bundle.producer.app} ${entry.id}`
+            : entry.id,
+          url: result.bundleUrl,
+          sourceUrl: result.repositoryUrl,
+          commitUrl: result.commitUrl,
+        });
+      }
+      await buildingHubService.refresh({ force: true });
+      response.status(201).json({ ...result, id: result.bundleId });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not publish bundle to BuildingHub." });
+    }
+  });
+
+  app.get("/api/agent-town/bundle-hub", async (_request, response) => {
+    try {
+      await buildingHubService.refresh();
+      response.json({
+        bundles: buildingHubService.listBundles(),
+        status: buildingHubService.getStatus(),
+      });
+    } catch (error) {
+      response.status(error.statusCode || 500).json({ error: error.message || "Could not list BuildingHub bundles." });
+    }
+  });
+
+  app.get("/api/agent-town/bundle-hub/:bundleId", async (request, response) => {
+    try {
+      await buildingHubService.refresh();
+      const entry = buildingHubService.getBundle(request.params.bundleId);
+      if (!entry) {
+        response.status(404).json({ error: "Bundle not found in BuildingHub." });
+        return;
+      }
+      response.json({ id: entry.id, bundle: entry.bundle, metadata: entry });
+    } catch (error) {
+      response.status(error.statusCode || 500).json({ error: error.message || "Could not read BuildingHub bundle." });
+    }
+  });
+
+  app.post("/api/agent-town/bundle-hub/:bundleId/import", async (request, response) => {
+    try {
+      const body = request.body || {};
+      const dryRun = body.dryRun === true;
+      await buildingHubService.refresh();
+      const entry = buildingHubService.getBundle(request.params.bundleId);
+      if (!entry || !entry.bundle) {
+        response.status(404).json({ error: "Bundle not found in BuildingHub." });
+        return;
+      }
+      const result = await applyAgentTownBundle(entry.bundle, { dryRun });
+      response.status(result.applied || dryRun ? 200 : 400).json({ source: "buildinghub", id: entry.id, ...result });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({
+        error: error.message || "Could not import BuildingHub bundle.",
+        validation: error.validation,
+      });
     }
   });
 
