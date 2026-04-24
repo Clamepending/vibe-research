@@ -29,6 +29,7 @@ import {
   MessageSquarePlus,
   PanelLeftClose,
   Palette,
+  ArrowUp,
   Pencil,
   Plug,
   Plus,
@@ -37,7 +38,6 @@ import {
   Search,
   ServerCog,
   Settings,
-  Share2,
   ShoppingCart,
   Trash2,
   Waypoints,
@@ -799,7 +799,7 @@ const AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE = Object.freeze({
 });
 const AGENT_TOWN_BUILDER_DEFAULT_TAB = "cosmetic";
 const AGENT_TOWN_BUILDER_TABS = new Set(["cosmetic", "themes", "functional", "layouts"]);
-const AGENT_INBOX_DEFAULT_TAB = "notifications";
+const AGENT_INBOX_FALLBACK_TAB = "notifications";
 const AGENT_INBOX_TABS = new Set(["tutorials", "notifications"]);
 const AGENT_TOWN_BUILDER_COSMETIC_ITEMS = Object.freeze([
   {
@@ -1710,7 +1710,7 @@ const state = {
   brainSetupClonePath: "",
   brainSetupCloning: false,
   brainSetupError: "",
-  agentInboxTab: AGENT_INBOX_DEFAULT_TAB,
+  agentInboxTab: "",
   agentPrompt: "",
   agentPromptPath: "",
   agentPromptCustomPrompt: "",
@@ -4950,12 +4950,17 @@ function renderRichSessionSurface(activeSession) {
           spellcheck="true"
         >${escapeHtml(draft)}</textarea>
         <div class="rich-session-composer-foot">
-          <span class="rich-session-composer-hint">Enter to send. Shift+Enter for a newline. Paste or drop images to attach them.</span>
           <div class="rich-session-composer-actions">
             <button class="ghost-button toolbar-control" type="button" id="rich-session-stop" data-terminal-control ${canSend ? "" : "disabled"}>Interrupt</button>
-            <button class="primary-button toolbar-control rich-session-send" type="submit" id="rich-session-send" data-terminal-control ${canSend ? "" : "disabled"}>
-              ${renderIcon(Share2)}
-              <span>Send</span>
+            <button
+              class="primary-button toolbar-control rich-session-send"
+              type="submit"
+              id="rich-session-send"
+              data-terminal-control
+              aria-label="Send message"
+              ${canSend ? "" : "disabled"}
+            >
+              ${renderIcon(ArrowUp)}
             </button>
           </div>
         </div>
@@ -16104,7 +16109,7 @@ function getAgentTownActionItemMetaLabel(item) {
 
 function normalizeAgentInboxTab(tab) {
   const value = String(tab || "").trim();
-  return AGENT_INBOX_TABS.has(value) ? value : AGENT_INBOX_DEFAULT_TAB;
+  return AGENT_INBOX_TABS.has(value) ? value : getAgentInboxDefaultTab();
 }
 
 function setAgentInboxTab(tab) {
@@ -16118,6 +16123,10 @@ function setAgentInboxTab(tab) {
 
 function getAgentInboxTutorialItems() {
   return getAgentTownOpenActionItems().filter((item) => Boolean(String(item?.tutorialId || "").trim()));
+}
+
+function getAgentInboxDefaultTab() {
+  return getAgentInboxTutorialItems().length ? "tutorials" : AGENT_INBOX_FALLBACK_TAB;
 }
 
 function getAgentInboxNotificationActionItems() {
@@ -35041,7 +35050,7 @@ function bindAgentTownBuilderEvents() {
   document.querySelectorAll("[data-agent-inbox-tab]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();
-      setAgentInboxTab(button.getAttribute("data-agent-inbox-tab") || AGENT_INBOX_DEFAULT_TAB);
+      setAgentInboxTab(button.getAttribute("data-agent-inbox-tab") || getAgentInboxDefaultTab());
     });
   });
 
