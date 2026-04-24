@@ -16916,6 +16916,18 @@ function renderVideoMemoryPluginPanel() {
         <select class="file-root-input" id="videomemory-provider" name="videoMemoryProviderId">
           ${renderProviderOptions(state.settings.videoMemoryProviderId || state.defaultProviderId)}
         </select>
+        <label class="field-label" for="videomemory-anthropic-api-key">Anthropic API key (optional)</label>
+        <input
+          class="file-root-input"
+          id="videomemory-anthropic-api-key"
+          name="videoMemoryAnthropicApiKey"
+          type="password"
+          placeholder="${escapeHtml(state.settings.videoMemoryAnthropicApiKeyConfigured ? "saved; leave blank to keep" : "sk-ant-... (only needed if VideoMemory should make VLM calls for you)")}"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
         <div class="knowledge-settings-remote-grid">
           <label>
             <span class="field-label">webhook URL</span>

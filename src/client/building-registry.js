@@ -1171,15 +1171,20 @@ const CORE_BUILDING_MANIFESTS = [
     onboarding: {
       setupSelector: ".videomemory-plugin-card",
       variables: [
+        // Anthropic key is optional: the local VideoMemory service will use it
+        // for VLM calls if present, but many deployments rely on the external
+        // service's own credentials. Keeping it non-required means a plain
+        // two-step install (Install → Enable cameras) finishes as "configured"
+        // and users can still add a key later from the building panel.
         {
-          label: "Anthropic API key",
+          label: "Anthropic API key (optional)",
           setting: "videoMemoryAnthropicApiKey",
           configuredSetting: "videoMemoryAnthropicApiKeyConfigured",
           secret: true,
-          required: true,
+          required: false,
           setupUrl: "https://console.anthropic.com/settings/keys",
           setupLabel: "Open Anthropic Console",
-          setupHint: "VideoMemory uses this key to summarize frames with Claude's vision model.",
+          setupHint: "Paste a Claude API key if VideoMemory should make VLM calls on your behalf.",
         },
         { label: "VideoMemory URL", setting: "videoMemoryBaseUrl", required: true },
         { label: "Wake provider", setting: "videoMemoryProviderId", required: true },
@@ -1195,10 +1200,9 @@ const CORE_BUILDING_MANIFESTS = [
         { title: "Enable the building", detail: "Turn on camera monitors.", completeWhen: { type: "installed" } },
         {
           title: "Save monitor variables",
-          detail: "Set the API key, service URL, and provider agents should wake.",
+          detail: "Set the service URL and provider agents should wake.",
           completeWhen: {
             allConfigured: [
-              "videoMemoryAnthropicApiKeyConfigured",
               "videoMemoryBaseUrl",
               "videoMemoryProviderId",
             ],
