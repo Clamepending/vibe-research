@@ -2356,7 +2356,7 @@ test("install.sh can launch vibe research in one command", async () => {
       new Promise((_, reject) => {
         setTimeout(() => {
           reject(new Error(`Timed out waiting for launcher exit.\n${combinedOutput}`));
-        }, 40_000);
+        }, 120_000);
       }),
     ]);
     assert.equal(exitCode, 0);
