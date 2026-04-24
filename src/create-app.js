@@ -4103,6 +4103,21 @@ export async function createVibeResearchApp({
     });
   });
 
+  app.get("/api/videomemory/devices", async (_request, response) => {
+    try {
+      await videoMemoryService.refreshRemoteDevices({ force: true });
+      response.json({
+        devices: videoMemoryService.listDevices(),
+        updatedAt: videoMemoryService.lastRemoteDeviceRefreshSucceededAt
+          ? new Date(videoMemoryService.lastRemoteDeviceRefreshSucceededAt).toISOString()
+          : null,
+        error: videoMemoryService.lastRemoteDeviceRefreshError || "",
+      });
+    } catch (error) {
+      response.status(400).json({ error: error.message || "Could not list VideoMemory devices." });
+    }
+  });
+
   app.post("/api/videomemory/setup", async (request, response) => {
     try {
       const rawApiKey =

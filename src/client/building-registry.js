@@ -1152,14 +1152,17 @@ const CORE_BUILDING_MANIFESTS = [
       specialTownPlace: true,
     },
     agentGuide: {
-      summary: "Use VideoMemory when an agent needs a camera or video monitor that can wake a Vibe Research session later.",
+      summary: "Use VideoMemory when the human asks you to watch a camera or video stream for some condition and wake you (or a fresh session) when it happens. Examples: 'watch the FaceTime camera for a black dog', 'ping me when someone walks up to the front door', 'let me know when the 3D print finishes'.",
       useCases: [
-        "Create a monitor that watches a browser/camera condition and wakes an agent.",
-        "Check whether camera permission or service URL setup is blocking monitors.",
+        "Create a monitor with `vr-videomemory create` — by default it wakes the caller session, so just run it from your own session.",
+        "List cameras/inputs with `vr-videomemory devices` and match the human's description (e.g. 'FaceTime') to an ioId before creating the monitor.",
+        "Check whether camera permission or service URL setup is blocking monitors before troubleshooting further.",
         "Record monitor IDs, task URLs, and artifact paths in the Library when they matter.",
       ],
       commands: [
-        { label: "Start a monitor", command: "vr-videomemory --help", detail: "Read helper options before creating a monitor." },
+        { label: "List cameras", command: "vr-videomemory devices", detail: "List ioIds reported by the VideoMemory server so you can pick the right --io-id." },
+        { label: "Start a monitor", command: "vr-videomemory create --io-id <ioId> --trigger \"<natural-language condition>\" --action \"<what to do on wake>\"", detail: "Defaults to waking the current session; add --new-session to spawn a fresh one instead." },
+        { label: "List active monitors", command: "vr-videomemory list", detail: "See armed monitors and their wake targets." },
         { label: "Read VideoMemory guide", command: "sed -n '1,220p' \"$VIBE_RESEARCH_BUILDING_GUIDES_DIR/videomemory.md\"", detail: "Review setup and camera permission expectations first." },
       ],
       env: [

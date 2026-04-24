@@ -10,6 +10,7 @@ function printHelp() {
 Create and manage VideoMemory monitors that wake Vibe Research agent sessions.
 
 Usage:
+  vr-videomemory devices
   vr-videomemory create --io-id net0 --trigger "when a person enters" --action "summarize what changed"
   vr-videomemory create --io-id 0 --trigger "when the print finishes" --provider codex --new-session
   vr-videomemory list
@@ -218,6 +219,33 @@ async function main() {
   if (!baseUrl || !token) {
     process.stderr.write("vr-videomemory: VideoMemory helper is not available from this session.\n");
     process.exit(1);
+  }
+
+  if (command === "devices") {
+    const payload = await fetchJsonOrThrow(`${baseUrl}/api/videomemory/devices`, {
+      cache: "no-store",
+    });
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+      return;
+    }
+    const devices = Array.isArray(payload.devices) ? payload.devices : [];
+    if (!devices.length) {
+      if (payload.error) {
+        process.stderr.write(`vr-videomemory: could not list devices (${payload.error}).\n`);
+        process.exit(1);
+      }
+      process.stdout.write("No VideoMemory devices reported. Is the VideoMemory server running?\n");
+      return;
+    }
+    process.stdout.write("IO_ID\tNAME\tKIND\n");
+    for (const device of devices) {
+      const ioId = String(device.ioId || device.id || "");
+      const name = String(device.name || device.label || "");
+      const kind = String(device.kind || device.type || "camera");
+      process.stdout.write(`${ioId}\t${name}\t${kind}\n`);
+    }
+    return;
   }
 
   if (command === "webhook-info") {
