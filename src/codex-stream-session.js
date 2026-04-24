@@ -284,7 +284,20 @@ export class CodexStreamSession extends EventEmitter {
     }
     if (type === "command_execution") {
       const command = String(item.command || "").trim();
-      const output = String(item.aggregated_output || "").trim();
+      const rawOutput = String(item.aggregated_output || "");
+      // Tool output can easily be tens of KB (file dumps, JSON arrays,
+      // grep across a tree). The chat shows it in a <pre> so an unbounded
+      // preview blows the whole turn out. Cap to ~1.2KB head + 400B tail
+      // and tell the user it was elided.
+      const previewLimit = 1200;
+      const tailLimit = 400;
+      let outputPreview = rawOutput.trim();
+      if (rawOutput.length > previewLimit + tailLimit + 80) {
+        const head = rawOutput.slice(0, previewLimit).trimEnd();
+        const tail = rawOutput.slice(-tailLimit).trimStart();
+        const elided = rawOutput.length - previewLimit - tailLimit;
+        outputPreview = `${head}\n\n… (${elided.toLocaleString()} more chars elided) …\n\n${tail}`;
+      }
       const exitCode = item.exit_code;
       const status = completed ? (exitCode === 0 ? "completed" : "error") : "running";
       return {
@@ -292,7 +305,7 @@ export class CodexStreamSession extends EventEmitter {
         kind: "tool",
         label: "Bash",
         text: command,
-        outputPreview: output,
+        outputPreview,
         timestamp: stamp,
         meta: baseMeta,
         status,

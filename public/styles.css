@@ -13461,8 +13461,49 @@ body.is-reordering-file-tabs {
 
 .rich-session-surface.is-active {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  grid-template-rows: minmax(0, 1fr) auto auto auto;
   gap: 12px;
+}
+
+/* Active monitors / shells / subagents — blue pill row right above the
+   composer, mirroring how Claude Code's CLI surfaces background work. */
+.rich-session-monitors {
+  display: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 max(18px, calc((100% - 1080px) / 2));
+}
+
+.rich-session-monitors.is-active {
+  display: flex;
+}
+
+.rich-session-monitor-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid rgba(123, 195, 255, 0.45);
+  border-radius: 999px;
+  background: rgba(75, 142, 197, 0.16);
+  color: #b8dfff;
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.rich-session-monitor-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #7bc3ff;
+  box-shadow: 0 0 6px rgba(123, 195, 255, 0.7);
+  animation: rich-session-monitor-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes rich-session-monitor-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 /* Persistent "<provider> is working…" status, parked between the feed and

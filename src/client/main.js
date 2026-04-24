@@ -4588,6 +4588,37 @@ function isStreamSessionUiSession(session = getActiveSession()) {
   return Boolean(session && session.streamMode);
 }
 
+function getRichSessionActiveMonitors(session) {
+  if (!session) {
+    return [];
+  }
+  const out = [];
+  const subagents = Array.isArray(session.subagents) ? session.subagents : [];
+  for (const subagent of subagents) {
+    if (!subagent || subagent.status !== "working") {
+      continue;
+    }
+    const name = String(subagent.name || subagent.label || subagent.agentType || "subagent").trim();
+    let kind = "subagent";
+    if (subagent.browserUseSessionId) kind = "browser";
+    else if (subagent.ottoAuthSessionId) kind = "ottoauth";
+    else if (subagent.videoMemoryMonitorId) kind = "videomemory";
+    out.push({
+      label: name,
+      tooltip: `${kind} · ${name}`,
+    });
+  }
+  const bg = session.backgroundActivity || null;
+  if (bg?.active && Number(bg.activeCount || 0) > 0) {
+    const count = Number(bg.activeCount);
+    out.push({
+      label: `${count} background ${count === 1 ? "task" : "tasks"}`,
+      tooltip: "Background tasks running for this session",
+    });
+  }
+  return out;
+}
+
 function getShellSurfaceMode(session = getActiveSession()) {
   if (isStreamSessionUiSession(session)) {
     // Stream-mode sessions don't have a real PTY surface, so the rich-session
@@ -5018,12 +5049,16 @@ function renderRichSessionSurface(activeSession) {
   const richActive = isRichSessionSurfaceActive(activeSession);
   const isWorking = Boolean(activeSession?.streamWorking);
   const providerLabel = activeSession?.providerLabel || "Agent";
+  const activeMonitors = getRichSessionActiveMonitors(activeSession);
   return `
     <div class="rich-session-surface ${richActive ? "is-active" : ""}" id="rich-session-surface" aria-hidden="${richActive ? "false" : "true"}">
       <div class="rich-session-feed" id="rich-session-feed">${renderRichSessionFeedHtml(activeSession)}</div>
       <div class="rich-session-working ${isWorking ? "is-active" : ""}" id="rich-session-working" aria-live="polite" aria-hidden="${isWorking ? "false" : "true"}">
         <span class="rich-session-thinking-spinner" aria-hidden="true"></span>
         <span>${escapeHtml(`${providerLabel} is working…`)}</span>
+      </div>
+      <div class="rich-session-monitors ${activeMonitors.length ? "is-active" : ""}" id="rich-session-monitors" aria-hidden="${activeMonitors.length ? "false" : "true"}">
+        ${activeMonitors.map((m) => `<span class="rich-session-monitor-pill" title="${escapeHtml(m.tooltip)}"><span class="rich-session-monitor-dot" aria-hidden="true"></span>${escapeHtml(m.label)}</span>`).join("")}
       </div>
       <form class="rich-session-composer" id="rich-session-form">
         <label class="sr-only" for="rich-session-input">Send input</label>
@@ -5146,6 +5181,17 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
     if (label instanceof HTMLElement) {
       label.textContent = `${activeSession?.providerLabel || "Agent"} is working…`;
     }
+  }
+
+  // Update the active monitors row (subagents / background tasks).
+  const monitorsRow = document.querySelector("#rich-session-monitors");
+  if (monitorsRow instanceof HTMLElement) {
+    const monitors = getRichSessionActiveMonitors(activeSession);
+    monitorsRow.classList.toggle("is-active", monitors.length > 0);
+    monitorsRow.setAttribute("aria-hidden", monitors.length ? "false" : "true");
+    monitorsRow.innerHTML = monitors
+      .map((m) => `<span class="rich-session-monitor-pill" title="${escapeHtml(m.tooltip)}"><span class="rich-session-monitor-dot" aria-hidden="true"></span>${escapeHtml(m.label)}</span>`)
+      .join("");
   }
 
   if (sendButton instanceof HTMLButtonElement) {
