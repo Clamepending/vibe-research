@@ -297,33 +297,21 @@ export class ClaudeStreamSession extends EventEmitter {
   }
 
   _synthesizePartialEntries(stamp) {
+    // Thinking is now managed by SessionManager as a real native entry —
+    // pushed right after the user message, removed when the stream emits the
+    // first assistant or tool response. The stream session only synthesizes
+    // partial assistant text deltas.
     const synthesized = [];
-    let anyPartialText = false;
     for (const [messageId, partialText] of this._partialByMessage) {
       const text = String(partialText || "").trim();
       if (!text) {
         continue;
       }
-      anyPartialText = true;
       synthesized.push({
         id: `claude-partial-${messageId}`,
         kind: "assistant",
         label: "Claude Code",
         text: partialText,
-        timestamp: stamp,
-        meta: "streaming",
-      });
-    }
-    // Only surface "Thinking" while we are genuinely waiting on first tokens.
-    // Hide the moment any partial text has arrived so the indicator never sits
-    // alongside the reply. The pending flag itself is also cleared on
-    // message_start / assistant / result events in _updatePartialState.
-    if (this._pendingThinking && !anyPartialText) {
-      synthesized.push({
-        id: "claude-thinking-pending",
-        kind: "status",
-        label: "Thinking",
-        text: "Claude is thinking...",
         timestamp: stamp,
         meta: "streaming",
       });

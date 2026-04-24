@@ -3504,8 +3504,8 @@ export class SessionManager {
         continue;
       }
       // Stamp + push the user entry BEFORE handing the prompt to Claude so the
-      // user message timestamp is unambiguously earlier than any "Thinking" /
-      // partial / final assistant entry we synthesize from the stream.
+      // user message timestamp is unambiguously earlier than any partial /
+      // final assistant entry the stream emits afterwards.
       const userTimestamp = new Date().toISOString();
       this.pushNativeNarrativeEntry(session, {
         kind: "user",
@@ -3514,10 +3514,31 @@ export class SessionManager {
         timestamp: userTimestamp,
       });
       session.lastPromptAt = userTimestamp;
+
+      // Push a real Thinking entry right after the user message so it sorts
+      // immediately below the prompt. We track its id and the stream session
+      // is responsible for clearing it once Claude starts replying. This is
+      // far more reliable than synthesizing the Thinking from the stream
+      // events alone, where timestamp races and stream_event ordering across
+      // turns let the indicator drift up the feed.
+      this._clearStreamThinkingEntry(session);
+      const thinkingId = `claude-thinking-${randomUUID()}`;
+      const thinkingTimestamp = new Date(Date.parse(userTimestamp) + 1).toISOString();
+      this.pushNativeNarrativeEntry(session, {
+        id: thinkingId,
+        kind: "status",
+        label: "Thinking",
+        text: "Claude is thinking...",
+        timestamp: thinkingTimestamp,
+        meta: "stream-thinking",
+      });
+      session.streamThinkingEntryId = thinkingId;
+
       try {
         session.streamSession.send(line);
         sentAny = true;
       } catch (error) {
+        this._clearStreamThinkingEntry(session);
         this.pushNativeNarrativeEntry(session, {
           kind: "status",
           label: "Error",
@@ -3533,6 +3554,14 @@ export class SessionManager {
       this.schedulePersist();
     }
     return sentAny;
+  }
+
+  _clearStreamThinkingEntry(session) {
+    if (!session?.streamThinkingEntryId) {
+      return;
+    }
+    this.removeNativeNarrativeEntry(session, session.streamThinkingEntryId);
+    session.streamThinkingEntryId = null;
   }
 
   resize(sessionId, cols, rows) {
@@ -3899,7 +3928,21 @@ export class SessionManager {
       streamSession: null,
       streamInputBuffer: "",
       streamEntries: [],
+      streamThinkingEntryId: null,
     };
+  }
+
+  removeNativeNarrativeEntry(session, entryId) {
+    if (!session || !entryId || !Array.isArray(session.nativeNarrativeEntries)) {
+      return false;
+    }
+    const idx = session.nativeNarrativeEntries.findIndex((entry) => entry?.id === entryId);
+    if (idx < 0) {
+      return false;
+    }
+    session.nativeNarrativeEntries.splice(idx, 1);
+    this.schedulePersist();
+    return true;
   }
 
   pushNativeNarrativeEntry(session, entry) {
@@ -4972,6 +5015,15 @@ export class SessionManager {
 
     streamSession.on("entries", (entries) => {
       session.streamEntries = Array.isArray(entries) ? entries : [];
+      // Any stream entry beyond initial system events means Claude is
+      // actively replying — the Thinking placeholder we pushed when the
+      // user hit send is no longer accurate. Clear it.
+      const hasResponseEntry = session.streamEntries.some(
+        (entry) => entry?.kind === "assistant" || entry?.kind === "tool",
+      );
+      if (hasResponseEntry) {
+        this._clearStreamThinkingEntry(session);
+      }
       // Immediate broadcast: rich-session entries are the user's primary view
       // for stream sessions, so we always want the client refresh to fire as
       // soon as a Thinking signal or token delta lands. The throttled path
@@ -4980,6 +5032,7 @@ export class SessionManager {
     });
 
     streamSession.on("turn-complete", () => {
+      this._clearStreamThinkingEntry(session);
       this.scheduleSessionMetaBroadcast(session, { immediate: true });
       this.schedulePersist();
     });
@@ -5007,6 +5060,7 @@ export class SessionManager {
       session.exitCode = code;
       session.exitSignal = signal;
       session.streamSession = null;
+      this._clearStreamThinkingEntry(session);
       this.pushNativeNarrativeEntry(session, {
         kind: "status",
         label: "Exited",
