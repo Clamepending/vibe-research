@@ -224,13 +224,14 @@ export class ClaudeStreamSession extends EventEmitter {
 
     const narrative = this.getNarrative();
     const rawEntries = Array.isArray(narrative?.entries) ? narrative.entries : [];
-    const synthesizedEntries = this._synthesizePartialEntries(stamp);
-    const combined = [...rawEntries, ...synthesizedEntries];
-    this.entries = combined.map((entry, index) => {
-      if (entry?.timestamp) {
-        return entry;
-      }
-      const cacheKey = entry?.id || `entry-${index}`;
+    // ALWAYS use our own first-observation cache for raw-entry timestamps.
+    // Claude's transcript parser propagates `payload.timestamp` from the
+    // sparse user/tool_result events to every subsequent entry's
+    // `updatedAt`, which means the poem reply on turn 4 inherits the
+    // tool_result timestamp from turn 2 and ends up stamped earlier than
+    // its own user prompt. Stamping at first observation closes that hole.
+    const stampedRaw = rawEntries.map((entry, index) => {
+      const cacheKey = entry?.id || `raw-${index}`;
       let cachedStamp = this._entryStamps.get(cacheKey);
       if (!cachedStamp) {
         cachedStamp = stamp;
@@ -238,6 +239,8 @@ export class ClaudeStreamSession extends EventEmitter {
       }
       return { ...entry, timestamp: cachedStamp };
     });
+    const synthesizedEntries = this._synthesizePartialEntries(stamp);
+    this.entries = [...stampedRaw, ...synthesizedEntries];
     this.emit("event", event);
     this.emit("entries", this.entries);
 

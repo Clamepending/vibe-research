@@ -3517,10 +3517,10 @@ export class SessionManager {
 
       // Push a real Thinking entry right after the user message so it sorts
       // immediately below the prompt. We track its id and the stream session
-      // is responsible for clearing it once Claude starts replying. This is
-      // far more reliable than synthesizing the Thinking from the stream
-      // events alone, where timestamp races and stream_event ordering across
-      // turns let the indicator drift up the feed.
+      // is responsible for clearing it once Claude starts replying THIS turn.
+      // We snapshot the current stream-entry count so the entries handler can
+      // tell when a NEW assistant/tool entry has arrived for this turn rather
+      // than seeing leftover entries from prior turns and clearing too soon.
       this._clearStreamThinkingEntry(session);
       const thinkingId = `claude-thinking-${randomUUID()}`;
       const thinkingTimestamp = new Date(Date.parse(userTimestamp) + 1).toISOString();
@@ -3533,6 +3533,9 @@ export class SessionManager {
         meta: "stream-thinking",
       });
       session.streamThinkingEntryId = thinkingId;
+      session.streamThinkingBaselineCount = Array.isArray(session.streamEntries)
+        ? session.streamEntries.length
+        : 0;
 
       try {
         session.streamSession.send(line);
@@ -3562,6 +3565,7 @@ export class SessionManager {
     }
     this.removeNativeNarrativeEntry(session, session.streamThinkingEntryId);
     session.streamThinkingEntryId = null;
+    session.streamThinkingBaselineCount = 0;
   }
 
   resize(sessionId, cols, rows) {
@@ -3929,6 +3933,7 @@ export class SessionManager {
       streamInputBuffer: "",
       streamEntries: [],
       streamThinkingEntryId: null,
+      streamThinkingBaselineCount: 0,
     };
   }
 
@@ -5015,13 +5020,15 @@ export class SessionManager {
 
     streamSession.on("entries", (entries) => {
       session.streamEntries = Array.isArray(entries) ? entries : [];
-      // Any stream entry beyond initial system events means Claude is
-      // actively replying — the Thinking placeholder we pushed when the
-      // user hit send is no longer accurate. Clear it.
-      const hasResponseEntry = session.streamEntries.some(
-        (entry) => entry?.kind === "assistant" || entry?.kind === "tool",
-      );
-      if (hasResponseEntry) {
+      // Clear Thinking only when stream entries have grown PAST the count
+      // we snapshotted at thinking-push time. Stream entries persist across
+      // turns (the underlying transcriptLines accumulate), so a simple
+      // "any assistant entry?" check sees the previous turn's reply and
+      // wipes Thinking before the new turn even begins.
+      if (
+        session.streamThinkingEntryId
+        && session.streamEntries.length > (session.streamThinkingBaselineCount || 0)
+      ) {
         this._clearStreamThinkingEntry(session);
       }
       // Immediate broadcast: rich-session entries are the user's primary view
