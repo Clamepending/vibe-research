@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -520,6 +521,16 @@ export class VideoMemoryService {
     this.webhookToken = "";
     this.requestToken = randomUUID();
     this.serverBaseUrl = "";
+    this.launch = {
+      child: null,
+      pid: 0,
+      startedAt: null,
+      lastError: "",
+      lastExitCode: null,
+      lastExitSignal: null,
+      command: "",
+      cwd: "",
+    };
   }
 
   async initialize() {
@@ -604,6 +615,117 @@ export class VideoMemoryService {
 
   restart(settings = {}) {
     this.settings = settings || {};
+    this.reconcileLaunchedProcess();
+  }
+
+  getLaunchCommand() {
+    return String(this.settings?.videoMemoryLaunchCommand || "").trim();
+  }
+
+  getLaunchCwd() {
+    const configured = String(this.settings?.videoMemoryLaunchCwd || "").trim();
+    if (configured) return configured;
+    return process.cwd();
+  }
+
+  isLaunchedProcessRunning() {
+    const child = this.launch?.child;
+    return Boolean(child && child.exitCode === null && child.signalCode === null);
+  }
+
+  reconcileLaunchedProcess() {
+    const shouldRun = this.isEnabled() && Boolean(this.getLaunchCommand());
+    if (shouldRun) {
+      this.startLaunchedProcess();
+    } else {
+      this.stopLaunchedProcess();
+    }
+  }
+
+  startLaunchedProcess() {
+    const command = this.getLaunchCommand();
+    if (!command) return;
+    if (this.isLaunchedProcessRunning()) {
+      // Already running under the same settings; only restart if the command
+      // or cwd has changed.
+      const cwdChanged = this.getLaunchCwd() !== this.launch.cwd;
+      const commandChanged = command !== this.launch.command;
+      if (!cwdChanged && !commandChanged) return;
+      this.stopLaunchedProcess();
+    }
+
+    const cwd = this.getLaunchCwd();
+    let child;
+    try {
+      child = spawn(process.env.SHELL || "/bin/sh", ["-c", command], {
+        cwd,
+        detached: true,
+        stdio: "ignore",
+        env: { ...process.env },
+      });
+    } catch (error) {
+      this.launch.lastError = error?.message || "Could not spawn VideoMemory launch command.";
+      this.launch.child = null;
+      this.launch.pid = 0;
+      return;
+    }
+
+    this.launch.child = child;
+    this.launch.pid = child.pid || 0;
+    this.launch.startedAt = new Date().toISOString();
+    this.launch.lastError = "";
+    this.launch.lastExitCode = null;
+    this.launch.lastExitSignal = null;
+    this.launch.command = command;
+    this.launch.cwd = cwd;
+
+    child.once("error", (error) => {
+      this.launch.lastError = error?.message || String(error);
+      this.launch.child = null;
+    });
+    child.once("exit", (code, signal) => {
+      this.launch.lastExitCode = code;
+      this.launch.lastExitSignal = signal;
+      if (code && code !== 0) {
+        this.launch.lastError = `VideoMemory launch exited with code ${code}${signal ? ` (${signal})` : ""}`;
+      }
+      this.launch.child = null;
+    });
+
+    // Detach so the child lives independently; Vibe Research explicitly kills
+    // it via reconcileLaunchedProcess when videomemory is disabled.
+    try { child.unref(); } catch { /* best effort */ }
+  }
+
+  stopLaunchedProcess() {
+    const child = this.launch?.child;
+    if (!child) return;
+    this.launch.child = null;
+    try {
+      // detached + negative pid kills the whole process group (the shell plus
+      // whatever flask/uv process it forked).
+      if (child.pid && typeof process.kill === "function") {
+        try {
+          process.kill(-child.pid, "SIGTERM");
+        } catch {
+          try { child.kill("SIGTERM"); } catch { /* best effort */ }
+        }
+      }
+    } catch { /* best effort */ }
+  }
+
+  getLaunchStatus() {
+    const running = this.isLaunchedProcessRunning();
+    return {
+      command: this.launch.command || this.getLaunchCommand() || "",
+      cwd: this.launch.cwd || this.getLaunchCwd() || "",
+      running,
+      pid: running ? this.launch.pid : 0,
+      startedAt: running ? this.launch.startedAt : null,
+      lastError: this.launch.lastError || "",
+      lastExitCode: this.launch.lastExitCode,
+      lastExitSignal: this.launch.lastExitSignal,
+    };
   }
 
   setSessionManager(sessionManager) {
@@ -666,6 +788,7 @@ export class VideoMemoryService {
       lastDeviceRefreshError: this.lastRemoteDeviceRefreshError,
       lastRefreshError: this.lastRemoteRefreshError,
       latestEventAt,
+      launch: this.getLaunchStatus(),
       monitorsCount: monitors.length,
       reason: this.isEnabled() ? "" : "VideoMemory plugin is disabled.",
       webhookToken: this.webhookToken,

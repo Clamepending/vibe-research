@@ -391,6 +391,14 @@ export class SettingsStore {
           "http://127.0.0.1:5050",
       ).trim(),
       videoMemoryEnabled: false,
+      videoMemoryLaunchCommand: String(
+        this.env.VIDEOMEMORY_LAUNCH_COMMAND ||
+          "",
+      ).trim(),
+      videoMemoryLaunchCwd: String(
+        this.env.VIDEOMEMORY_LAUNCH_CWD ||
+          "",
+      ).trim(),
       videoMemoryProviderId: "claude",
       agentAutomations: [],
       buildingAccessConfirmedIds: [],
@@ -608,6 +616,14 @@ export class SettingsStore {
           : String(payload.videoMemoryAnthropicApiKey || "").trim(),
       videoMemoryBaseUrl: String(payload.videoMemoryBaseUrl || defaults.videoMemoryBaseUrl || "").trim(),
       videoMemoryEnabled: normalizeBoolean(payload.videoMemoryEnabled, defaults.videoMemoryEnabled),
+      videoMemoryLaunchCommand:
+        payload.videoMemoryLaunchCommand === undefined
+          ? defaults.videoMemoryLaunchCommand
+          : String(payload.videoMemoryLaunchCommand || "").trim(),
+      videoMemoryLaunchCwd:
+        payload.videoMemoryLaunchCwd === undefined
+          ? defaults.videoMemoryLaunchCwd
+          : String(payload.videoMemoryLaunchCwd || "").trim(),
       videoMemoryProviderId: normalizeAgentProviderId(payload.videoMemoryProviderId || defaults.videoMemoryProviderId),
       agentAutomations: normalizeAgentAutomations(payload.agentAutomations || defaults.agentAutomations),
       buildingAccessConfirmedIds: normalizePluginIds(

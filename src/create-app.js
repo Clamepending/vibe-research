@@ -4724,6 +4724,10 @@ export async function createVibeResearchApp({
         videoMemoryAnthropicApiKey: trimmedApiKey === undefined || trimmedApiKey === "" ? undefined : trimmedApiKey,
         videoMemoryBaseUrl: request.body?.baseUrl ?? request.body?.videoMemoryBaseUrl,
         videoMemoryEnabled: request.body?.enabled ?? request.body?.videoMemoryEnabled,
+        videoMemoryLaunchCommand:
+          request.body?.launchCommand ?? request.body?.videoMemoryLaunchCommand,
+        videoMemoryLaunchCwd:
+          request.body?.launchCwd ?? request.body?.videoMemoryLaunchCwd,
         videoMemoryProviderId: request.body?.providerId ?? request.body?.videoMemoryProviderId,
       });
       await applyRuntimeSettings(settingsStore.settings, { backupReason: false });
@@ -5668,6 +5672,9 @@ export async function createVibeResearchApp({
       agentMailService.stop();
       telegramService.stop();
       twilioService.stop();
+      try {
+        videoMemoryService?.stopLaunchedProcess?.();
+      } catch { /* best effort */ }
       wikiBackupService.stop();
       sleepPreventionService.stop();
       if (systemMetricsTimer) {

@@ -2195,6 +2195,8 @@ const state = {
     videoMemoryAnthropicApiKeyConfigured: false,
     videoMemoryBaseUrl: "http://127.0.0.1:5050",
     videoMemoryEnabled: false,
+    videoMemoryLaunchCommand: "",
+    videoMemoryLaunchCwd: "",
     videoMemoryProviderId: "claude",
     videoMemoryStatus: null,
     buildingAccessConfirmedIds: [],
@@ -17218,6 +17220,68 @@ function renderVideoMemoryMonitorRows() {
   `;
 }
 
+function renderVideoMemoryLaunchControls() {
+  const status = state.settings.videoMemoryStatus || {};
+  const launch = status.launch || {};
+  const command = String(state.settings.videoMemoryLaunchCommand || "").trim();
+  const cwd = String(state.settings.videoMemoryLaunchCwd || "").trim();
+  const running = Boolean(launch.running);
+  const pid = Number(launch.pid) || 0;
+  const lastError = String(launch.lastError || "").trim();
+
+  let statusText;
+  let statusTone;
+  if (!command) {
+    statusText = "launch command not set — Vibe Research won't start the VideoMemory server for you";
+    statusTone = "read";
+  } else if (running) {
+    statusText = pid ? `running (pid ${pid})` : "running";
+    statusTone = "working";
+  } else if (lastError) {
+    statusText = `not running · ${lastError}`;
+    statusTone = "exited";
+  } else {
+    statusText = "not running — will start on save when VideoMemory is enabled";
+    statusTone = "read";
+  }
+
+  return `
+    <fieldset class="videomemory-launch-controls">
+      <legend class="field-label">VideoMemory server auto-launch</legend>
+      <label class="field-label" for="videomemory-launch-command">launch command</label>
+      <input
+        class="file-root-input"
+        id="videomemory-launch-command"
+        name="videoMemoryLaunchCommand"
+        type="text"
+        value="${escapeHtml(command)}"
+        placeholder="e.g. ./start.sh  (leave blank to keep the server off)"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="none"
+        spellcheck="false"
+      />
+      <label class="field-label" for="videomemory-launch-cwd">working directory (optional)</label>
+      <input
+        class="file-root-input"
+        id="videomemory-launch-cwd"
+        name="videoMemoryLaunchCwd"
+        type="text"
+        value="${escapeHtml(cwd)}"
+        placeholder="e.g. /Users/you/videomemory (defaults to Vibe Research's cwd)"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="none"
+        spellcheck="false"
+      />
+      <div class="videomemory-launch-status">
+        <span class="session-activity-dot ${escapeHtml(statusTone)}" aria-hidden="true"></span>
+        <span>${escapeHtml(statusText)}</span>
+      </div>
+    </fieldset>
+  `;
+}
+
 function resolveVideoMemoryOpenUrl() {
   const status = state.settings.videoMemoryStatus || {};
   const configured = String(state.settings.videoMemoryBaseUrl || status.baseUrl || "").trim();
@@ -17308,6 +17372,7 @@ function renderVideoMemoryPluginPanel() {
           autocapitalize="none"
           spellcheck="false"
         />
+        ${renderVideoMemoryLaunchControls()}
         <div class="knowledge-settings-remote-grid">
           <label>
             <span class="field-label">webhook URL</span>
@@ -36485,6 +36550,14 @@ function applySettingsState(payload) {
       settings.videoMemoryEnabled === undefined
         ? state.settings.videoMemoryEnabled
         : Boolean(settings.videoMemoryEnabled),
+    videoMemoryLaunchCommand:
+      settings.videoMemoryLaunchCommand === undefined
+        ? state.settings.videoMemoryLaunchCommand || ""
+        : String(settings.videoMemoryLaunchCommand || ""),
+    videoMemoryLaunchCwd:
+      settings.videoMemoryLaunchCwd === undefined
+        ? state.settings.videoMemoryLaunchCwd || ""
+        : String(settings.videoMemoryLaunchCwd || ""),
     videoMemoryProviderId:
       settings.videoMemoryProviderId || state.settings.videoMemoryProviderId || "claude",
     videoMemoryStatus: videoMemoryStatus || null,
@@ -39647,6 +39720,12 @@ async function setupVideoMemoryFromForm(form) {
   const formData = new FormData(form);
   const enabled = formData.get("videoMemoryEnabled") === "on";
   const apiKey = String(formData.get("videoMemoryAnthropicApiKey") || "").trim();
+  const launchCommand = formData.has("videoMemoryLaunchCommand")
+    ? String(formData.get("videoMemoryLaunchCommand") || "")
+    : undefined;
+  const launchCwd = formData.has("videoMemoryLaunchCwd")
+    ? String(formData.get("videoMemoryLaunchCwd") || "")
+    : undefined;
   const payload = await fetchJson("/api/videomemory/setup", {
     method: "POST",
     body: JSON.stringify({
@@ -39654,6 +39733,8 @@ async function setupVideoMemoryFromForm(form) {
       baseUrl: String(formData.get("videoMemoryBaseUrl") || ""),
       enabled,
       installedPluginIds: getUpdatedInstalledPluginIds("videomemory", enabled),
+      launchCommand,
+      launchCwd,
       providerId: String(formData.get("videoMemoryProviderId") || state.defaultProviderId || "claude"),
     }),
   });
