@@ -24,6 +24,8 @@ jobs:
   release:
     name: Cut Release
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.read_tag.outputs.tag }}
 
     steps:
       - name: Check out repository
@@ -65,3 +67,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Read published tag
+        id: read_tag
+        run: |
+          tag=$(node -p "require('./release-channel.json').tag")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Published tag: $tag"
+
+  desktop:
+    name: Build Desktop App
+    needs: release
+    uses: ./.github/workflows/desktop.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+    secrets: inherit
