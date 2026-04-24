@@ -25,6 +25,7 @@ import {
   Inbox,
   Map as MapIcon,
   MemoryStick,
+  Package,
   Menu,
   MessageSquarePlus,
   PanelLeftClose,
@@ -1939,7 +1940,8 @@ const agentSetupCompletePreference = loadAgentSetupCompletePreference();
 const agentSetupPendingPreference = loadAgentSetupPendingPreference();
 const guidedOnboardingCompletedPreference = loadGuidedOnboardingCompletedPreference();
 const BUILDINGHUB_DEFAULT_TAB = "buildings";
-const BUILDINGHUB_TAB_IDS = new Set(["buildings", "scaffolds", "themes"]);
+const BUILDINGHUB_TAB_IDS = new Set(["buildings", "scaffolds", "themes", "layouts", "bundles"]);
+const BUNDLE_HUB_REFRESH_INTERVAL_MS = 60 * 1000;
 const BUILDINGHUB_CATALOG_HIDDEN_PLUGIN_IDS = new Set(["buildinghub", "scaffold-recipes"]);
 
 const state = {
@@ -2023,6 +2025,23 @@ const state = {
       onboardingCompletedCount: 0,
     },
     townShares: [],
+    bundleHub: {
+      loading: false,
+      bundles: [],
+      lastFetchedAt: 0,
+      status: null,
+      error: "",
+    },
+    bundleHubPreview: {
+      bundleId: "",
+      loading: false,
+      report: null,
+      error: "",
+    },
+    bundleHubImport: {
+      bundleId: "",
+      inProgress: false,
+    },
   },
   guidedOnboarding: {
     active: false,
@@ -13878,6 +13897,118 @@ async function importSavedAgentTownShare(shareId) {
   }
 }
 
+async function fetchBundleHubCatalog({ force = false } = {}) {
+  const bundleHub = state.agentTown?.bundleHub;
+  if (!bundleHub) return;
+  const now = Date.now();
+  if (!force && bundleHub.loading) return;
+  if (!force && bundleHub.lastFetchedAt && now - bundleHub.lastFetchedAt < BUNDLE_HUB_REFRESH_INTERVAL_MS) {
+    return;
+  }
+  bundleHub.loading = true;
+  bundleHub.error = "";
+  if (state.buildingHubTab === "bundles") {
+    renderShell();
+  }
+  try {
+    const payload = await fetchJson("/api/agent-town/bundle-hub");
+    bundleHub.bundles = Array.isArray(payload?.bundles) ? payload.bundles : [];
+    bundleHub.status = payload?.status || null;
+    bundleHub.error = "";
+    bundleHub.lastFetchedAt = Date.now();
+  } catch (error) {
+    bundleHub.error = String(error?.message || error || "Could not load BuildingHub bundles.");
+  } finally {
+    bundleHub.loading = false;
+    if (state.buildingHubTab === "bundles") {
+      renderShell();
+    }
+  }
+}
+
+async function previewBundleHubEntry(bundleId) {
+  const id = String(bundleId || "").trim();
+  if (!id) return;
+  if (!state.agentTown.bundleHubPreview) {
+    state.agentTown.bundleHubPreview = { bundleId: "", loading: false, report: null, error: "" };
+  }
+  state.agentTown.bundleHubPreview = {
+    bundleId: id,
+    loading: true,
+    report: null,
+    error: "",
+  };
+  renderShell();
+  try {
+    const payload = await fetchJson(`/api/agent-town/bundle-hub/${encodeURIComponent(id)}/import`, {
+      method: "POST",
+      body: JSON.stringify({ dryRun: true }),
+    });
+    state.agentTown.bundleHubPreview = {
+      bundleId: id,
+      loading: false,
+      report: payload?.report || null,
+      error: "",
+    };
+  } catch (error) {
+    state.agentTown.bundleHubPreview = {
+      bundleId: id,
+      loading: false,
+      report: null,
+      error: String(error?.message || error || "Could not preview this bundle."),
+    };
+  } finally {
+    renderShell();
+  }
+}
+
+function closeBundleHubPreview() {
+  state.agentTown.bundleHubPreview = { bundleId: "", loading: false, report: null, error: "" };
+  renderShell();
+}
+
+async function importBundleHubEntry(bundleId) {
+  const id = String(bundleId || "").trim();
+  if (!id) return;
+  if (!state.agentTown.bundleHubImport) {
+    state.agentTown.bundleHubImport = { bundleId: "", inProgress: false };
+  }
+  if (state.agentTown.bundleHubImport.inProgress) return;
+  state.agentTown.bundleHubImport = { bundleId: id, inProgress: true };
+  renderShell();
+  try {
+    const payload = await fetchJson(`/api/agent-town/bundle-hub/${encodeURIComponent(id)}/import`, {
+      method: "POST",
+      body: JSON.stringify({ dryRun: false }),
+    });
+    if (payload?.agentTown) {
+      applyAgentTownState(payload.agentTown);
+      applyAgentTownLayoutToVisualGame(payload.agentTown?.layout, { mirror: false, render: false });
+    }
+    state.agentTown.bundleHubPreview = { bundleId: "", loading: false, report: null, error: "" };
+    setAgentTownShareToast({
+      type: payload?.applied ? "success" : "error",
+      title: payload?.applied ? "Bundle imported" : "Import not applied",
+      message: payload?.applied
+        ? `${id} is now your active Agent Town setup.`
+        : (payload?.report?.warnings || []).join(" ") || "The bundle could not be applied.",
+    });
+    if (payload?.applied) {
+      await openMainView("swarm");
+    }
+  } catch (error) {
+    console.error(error);
+    setAgentTownShareToast({
+      type: "error",
+      title: "Import failed",
+      message: error?.message || "The bundle could not be imported.",
+    });
+  } finally {
+    state.agentTown.bundleHubImport = { bundleId: "", inProgress: false };
+    renderShell();
+  }
+}
+
 function renderPortCards() {
   if (!isLocalhostAppsEnabled()) {
     return `<div class="blank-state">install Localhost Apps to see ports</div>`;
@@ -16134,8 +16265,9 @@ function renderBuildingHubCatalogControls() {
 function renderBuildingHubCatalogTabs() {
   const tabs = [
     { id: "buildings", label: "Buildings", icon: Plug },
-    { id: "scaffolds", label: "Scaffolds", icon: FileText },
     { id: "themes", label: "Themes", icon: Palette },
+    { id: "layouts", label: "Layouts", icon: MapIcon },
+    { id: "bundles", label: "Bundles", icon: Package },
   ];
 
   return `
@@ -16191,10 +16323,31 @@ function renderBuildingHubCatalogLead() {
     `;
   }
 
+  if (state.buildingHubTab === "layouts") {
+    return `
+      <div class="buildinghub-catalog-tab-summary">
+        <strong>Shared town layouts</strong>
+        <span>pre-placed Agent Town bases published by you and the community</span>
+      </div>
+    `;
+  }
+
+  if (state.buildingHubTab === "bundles") {
+    const bundleHub = state.agentTown?.bundleHub || {};
+    const count = Array.isArray(bundleHub.bundles) ? bundleHub.bundles.length : 0;
+    const freshness = bundleHub.lastFetchedAt ? relativeTime(new Date(bundleHub.lastFetchedAt).toISOString()) : "not loaded";
+    return `
+      <div class="buildinghub-catalog-tab-summary">
+        <strong>Reproducible town bundles</strong>
+        <span>${escapeHtml(`${count} bundle${count === 1 ? "" : "s"} · ${freshness}`)}</span>
+      </div>
+    `;
+  }
+
   return `
     <div class="buildinghub-catalog-tab-summary">
       <strong>Town themes</strong>
-      <span>switch skins and browse saved Agent Town bases</span>
+      <span>switch skins and pick a visual style</span>
     </div>
   `;
 }
@@ -16208,9 +16361,16 @@ function renderBuildingHubCatalogTabPanel() {
     return `
       <div class="buildinghub-catalog-themes-panel">
         ${renderBuildingHubThemeCatalogPanel()}
-        ${renderBuildingHubTownGallery()}
       </div>
     `;
+  }
+
+  if (state.buildingHubTab === "layouts") {
+    return renderBuildingHubTownGallery();
+  }
+
+  if (state.buildingHubTab === "bundles") {
+    return renderBundleHubPanel();
   }
 
   return `<section class="plugin-grid plugin-store-grid" id="plugin-results" data-plugin-results>${renderPluginCards(getBuildingHubCatalogPlugins())}</section>`;
@@ -16280,6 +16440,190 @@ function renderBuildingHubTownGallery() {
         townShares.length
           ? `<div class="buildinghub-town-grid">${townShares.map(renderBuildingHubTownShareCard).join("")}</div>`
           : `<div class="buildinghub-town-empty">no bases saved</div>`
+      }
+    </section>
+  `;
+}
+
+function getBundleHubDisplayName(bundle) {
+  if (!bundle || typeof bundle !== "object") {
+    return "bundle";
+  }
+  return String(bundle.name || bundle.id || "bundle");
+}
+
+function getBundleHubShortIntegrity(value) {
+  const text = String(value || "");
+  if (!text.startsWith("sha256:")) return text;
+  const hex = text.slice(7);
+  return hex.length > 12 ? `sha256:${hex.slice(0, 12)}…` : text;
+}
+
+function getBundleHubProducerText(bundle) {
+  const producer = bundle?.producer;
+  if (!producer || typeof producer !== "object") return "";
+  const app = String(producer.app || "").trim();
+  const version = String(producer.version || "").trim();
+  if (app && version) return `${app}@${version}`;
+  return app || version || "";
+}
+
+function getBundleHubCountsText(bundle) {
+  const plugins = Array.isArray(bundle?.plugins?.installed) ? bundle.plugins.installed.length : 0;
+  const env = Array.isArray(bundle?.env?.required) ? bundle.env.required.length : 0;
+  const parts = [];
+  parts.push(`${plugins} plugin${plugins === 1 ? "" : "s"}`);
+  if (env > 0) parts.push(`${env} env`);
+  return parts.join(" · ");
+}
+
+function renderBundleHubCard(bundle) {
+  const id = String(bundle?.id || "").trim();
+  if (!id) return "";
+  const name = getBundleHubDisplayName(bundle);
+  const description = String(bundle?.description || "").trim();
+  const producer = getBundleHubProducerText(bundle);
+  const counts = getBundleHubCountsText(bundle);
+  const integrity = getBundleHubShortIntegrity(bundle?.integrity || "");
+  const exported = bundle?.exportedAt ? relativeTime(bundle.exportedAt) : "";
+  const importing = state.agentTown?.bundleHubImport?.bundleId === id && state.agentTown?.bundleHubImport?.inProgress;
+  const previewing = state.agentTown?.bundleHubPreview?.bundleId === id && state.agentTown?.bundleHubPreview?.loading;
+  const disableActions = Boolean(state.agentTown?.bundleHubImport?.inProgress) ? "disabled" : "";
+  return `
+    <article class="buildinghub-bundle-card">
+      <div class="buildinghub-bundle-card-body">
+        <div class="buildinghub-bundle-card-title">
+          <strong>${escapeHtml(name)}</strong>
+          ${exported ? `<span>${escapeHtml(exported)}</span>` : ""}
+        </div>
+        ${producer ? `<p class="terminal-meta">${escapeHtml(producer)}</p>` : ""}
+        ${description ? `<p>${escapeHtml(description)}</p>` : ""}
+        <p class="terminal-meta">${escapeHtml([counts, integrity].filter(Boolean).join(" · "))}</p>
+        <div class="buildinghub-bundle-card-actions">
+          <button class="ghost-button toolbar-control" type="button" data-bundle-hub-preview="${escapeHtml(id)}" ${disableActions}>
+            ${previewing ? escapeHtml("previewing...") : "preview diff"}
+          </button>
+          <button class="primary-button toolbar-control" type="button" data-bundle-hub-import="${escapeHtml(id)}" ${disableActions}>
+            ${importing ? escapeHtml("importing...") : "import"}
+          </button>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderBundleHubPreviewPanel() {
+  const preview = state.agentTown?.bundleHubPreview || {};
+  if (!preview.bundleId) return "";
+  if (preview.loading) {
+    return `
+      <div class="buildinghub-bundle-preview is-loading">
+        <div class="dashboard-copy"><strong>Preview</strong><span>computing diff for ${escapeHtml(preview.bundleId)}…</span></div>
+        <button class="ghost-button" type="button" data-bundle-hub-close-preview>close</button>
+      </div>
+    `;
+  }
+  if (preview.error) {
+    return `
+      <div class="buildinghub-bundle-preview is-error">
+        <div class="dashboard-copy"><strong>Preview failed</strong><span>${escapeHtml(preview.error)}</span></div>
+        <button class="ghost-button" type="button" data-bundle-hub-close-preview>dismiss</button>
+      </div>
+    `;
+  }
+  const report = preview.report || {};
+  const counts = report.counts || {};
+  const validation = report.validation || {};
+  const plugins = Array.isArray(report.plugins) ? report.plugins : [];
+  const availablePlugins = plugins.filter((p) => p && p.available);
+  const missingPlugins = Array.isArray(report.missingPlugins) ? report.missingPlugins : plugins.filter((p) => p && !p.available);
+  const missingEnv = Array.isArray(report.missingEnv) ? report.missingEnv : [];
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  const integrity = report.integrity ? `integrity: ${escapeHtml(report.integrity)}` : "";
+  const issues = Array.isArray(validation.issues) ? validation.issues : [];
+
+  const countParts = Object.entries(counts)
+    .map(([key, value]) => `<span class="buildinghub-bundle-chip">${escapeHtml(`${key}: ${value}`)}</span>`)
+    .join("");
+
+  const availableList = availablePlugins.length
+    ? `<ul class="buildinghub-bundle-diff-list is-ok">${availablePlugins
+        .map((p) => `<li>${escapeHtml(p.id)}${p.version ? `@${escapeHtml(p.version)}` : ""}</li>`)
+        .join("")}</ul>`
+    : "";
+
+  const missingPluginList = missingPlugins.length
+    ? `<ul class="buildinghub-bundle-diff-list is-warn">${missingPlugins
+        .map((p) => `<li>${escapeHtml(typeof p === "string" ? p : p?.id || "")}</li>`)
+        .join("")}</ul>`
+    : "";
+
+  const missingEnvList = missingEnv.length
+    ? `<ul class="buildinghub-bundle-diff-list is-warn">${missingEnv
+        .map((name) => `<li>${escapeHtml(String(name))}</li>`)
+        .join("")}</ul>`
+    : "";
+
+  const warningList = warnings.length
+    ? `<ul class="buildinghub-bundle-diff-list">${warnings.map((w) => `<li>${escapeHtml(String(w))}</li>`).join("")}</ul>`
+    : "";
+
+  const issueList = issues.length
+    ? `<ul class="buildinghub-bundle-diff-list is-warn">${issues.map((w) => `<li>${escapeHtml(String(w))}</li>`).join("")}</ul>`
+    : "";
+
+  const confirmDisabled = validation.ok === false || state.agentTown?.bundleHubImport?.inProgress ? "disabled" : "";
+
+  return `
+    <div class="buildinghub-bundle-preview">
+      <div class="buildinghub-bundle-preview-head">
+        <div class="dashboard-copy">
+          <strong>Preview: ${escapeHtml(preview.bundleId)}</strong>
+          <span class="terminal-meta">${integrity}</span>
+        </div>
+        <button class="ghost-button" type="button" data-bundle-hub-close-preview>close</button>
+      </div>
+      <div class="buildinghub-bundle-preview-body">
+        <div class="buildinghub-bundle-chips">${countParts}</div>
+        ${availableList ? `<section><strong>Plugins already available</strong>${availableList}</section>` : ""}
+        ${missingPluginList ? `<section><strong>Missing plugins (not in BuildingHub)</strong>${missingPluginList}</section>` : ""}
+        ${missingEnvList ? `<section><strong>Missing env vars</strong>${missingEnvList}</section>` : ""}
+        ${issueList ? `<section><strong>Validation issues</strong>${issueList}</section>` : ""}
+        ${warningList ? `<section><strong>Notes</strong>${warningList}</section>` : ""}
+      </div>
+      <div class="buildinghub-bundle-preview-actions">
+        <button class="primary-button" type="button" data-bundle-hub-confirm-import="${escapeHtml(preview.bundleId)}" ${confirmDisabled}>
+          ${state.agentTown?.bundleHubImport?.inProgress ? escapeHtml("importing...") : "apply this bundle"}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderBundleHubPanel() {
+  const bundleHub = state.agentTown?.bundleHub || {};
+  const bundles = Array.isArray(bundleHub.bundles) ? bundleHub.bundles : [];
+  const loading = Boolean(bundleHub.loading);
+  const error = String(bundleHub.error || "");
+  const refreshLabel = loading ? "refreshing..." : "refresh";
+  return `
+    <section class="buildinghub-bundle-panel" aria-label="BuildingHub bundles">
+      <div class="buildinghub-bundle-panel-head">
+        <div class="dashboard-copy">
+          <strong>Town bundles</strong>
+          <span class="terminal-meta">${escapeHtml(bundles.length ? `${bundles.length} bundle${bundles.length === 1 ? "" : "s"}` : "no bundles yet")}</span>
+        </div>
+        <button class="ghost-button toolbar-control" type="button" data-bundle-hub-refresh ${loading ? "disabled" : ""}>
+          ${renderIcon(RefreshCw)}
+          <span>${escapeHtml(refreshLabel)}</span>
+        </button>
+      </div>
+      ${error ? `<div class="buildinghub-bundle-error">${escapeHtml(error)}</div>` : ""}
+      ${renderBundleHubPreviewPanel()}
+      ${
+        bundles.length
+          ? `<div class="buildinghub-bundle-grid">${bundles.map(renderBundleHubCard).join("")}</div>`
+          : `<div class="buildinghub-town-empty">${escapeHtml(loading ? "loading bundles..." : "no bundles published to this BuildingHub catalog yet. Use vr-agent-town publish + hub-publish to share one.")}</div>`
       }
     </section>
   `;
@@ -21039,6 +21383,9 @@ async function openBuildingHubCatalogView({ tab = BUILDINGHUB_DEFAULT_TAB } = {}
   state.pluginDetailId = "";
   state.buildingHubTab = normalizeBuildingHubTab(tab);
   await openMainView("plugins", { buildingHubTab: state.buildingHubTab });
+  if (state.buildingHubTab === "bundles") {
+    void fetchBundleHubCatalog({ force: false });
+  }
 }
 
 function normalizeAgentTownBuilderTab(tab) {
@@ -31880,6 +32227,42 @@ function bindBuildingHubCatalogControls() {
       state.buildingHubTab = nextTab;
       updateRoute({ view: "plugins", buildingId: "", buildingHubTab: nextTab });
       renderShell();
+      if (nextTab === "bundles") {
+        fetchBundleHubCatalog({ force: false }).catch(() => {});
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-bundle-hub-refresh]").forEach((button) => {
+    button.addEventListener("click", () => {
+      fetchBundleHubCatalog({ force: true }).catch(() => {});
+    });
+  });
+
+  document.querySelectorAll("[data-bundle-hub-preview]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.getAttribute("data-bundle-hub-preview") || "";
+      previewBundleHubEntry(id).catch(() => {});
+    });
+  });
+
+  document.querySelectorAll("[data-bundle-hub-close-preview]").forEach((button) => {
+    button.addEventListener("click", () => {
+      closeBundleHubPreview();
+    });
+  });
+
+  document.querySelectorAll("[data-bundle-hub-import]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.getAttribute("data-bundle-hub-import") || "";
+      importBundleHubEntry(id).catch(() => {});
+    });
+  });
+
+  document.querySelectorAll("[data-bundle-hub-confirm-import]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.getAttribute("data-bundle-hub-confirm-import") || "";
+      importBundleHubEntry(id).catch(() => {});
     });
   });
 
@@ -35746,6 +36129,9 @@ function applyAgentTownState(payload) {
       onboardingCompletedCount: Number(agentTown.signals?.onboardingCompletedCount) || 0,
     },
     townShares: normalizeAgentTownTownShares(agentTown.townShares || agentTown.shares),
+    bundleHub: state.agentTown?.bundleHub || { loading: false, bundles: [], lastFetchedAt: 0, status: null, error: "" },
+    bundleHubPreview: state.agentTown?.bundleHubPreview || { bundleId: "", loading: false, report: null, error: "" },
+    bundleHubImport: state.agentTown?.bundleHubImport || { bundleId: "", inProgress: false },
   };
   scheduleGuidedOnboardingSyncSafe();
 
@@ -39263,6 +39649,17 @@ async function bootstrapApp() {
   state.settingsPollTimer = window.setInterval(() => {
     void loadSettingsStatus();
   }, 30 * 1000);
+
+  if (state.bundleHubPollTimer) {
+    window.clearInterval(state.bundleHubPollTimer);
+  }
+
+  state.bundleHubPollTimer = window.setInterval(() => {
+    if (state.currentView !== "plugins" || state.buildingHubTab !== "bundles") {
+      return;
+    }
+    void fetchBundleHubCatalog({ force: false });
+  }, BUNDLE_HUB_REFRESH_INTERVAL_MS);
 
   if (state.activeSessionId && state.currentView === "shell") {
     connectToSession(state.activeSessionId);
