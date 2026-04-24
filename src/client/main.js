@@ -1711,6 +1711,7 @@ const state = {
   brainSetupCloning: false,
   brainSetupError: "",
   agentInboxTab: "",
+  questHint: null,
   agentPrompt: "",
   agentPromptPath: "",
   agentPromptCustomPrompt: "",
@@ -1819,7 +1820,6 @@ const state = {
     builderPlacement: null,
     builderFeedback: null,
     builderPulse: null,
-    builderButtonHint: null,
     builderConstruction: null,
     selectedSessionId: "",
     selectedBrowserUseSessionId: "",
@@ -10948,7 +10948,10 @@ function renderKnowledgeBaseView() {
                 selectedNotePath || selectedNoteMeta?.relativePath || "No note selected",
               )}</div>
             </div>
-            ${renderKnowledgeBaseNoteActions(rawHref)}
+            <div class="knowledge-base-note-actions-wrap">
+              ${renderQuestHintBubble("knowledge-base", { className: "is-trailing" })}
+              ${renderKnowledgeBaseNoteActions(rawHref)}
+            </div>
           </div>
           <div class="knowledge-base-note-card">
             ${renderKnowledgeBaseNoteBody(selectedNotePath)}
@@ -15837,7 +15840,10 @@ function renderCreateAutomationCard() {
           required
           placeholder="Ask the agent to..."
         ></textarea>
-        <button class="primary-button automation-create-button" type="submit">create automation</button>
+        <div class="automation-create-submit">
+          ${renderQuestHintBubble("automation-create", { className: "is-leading" })}
+          <button class="primary-button automation-create-button" type="submit">create automation</button>
+        </div>
       </form>
     </article>
   `;
@@ -15988,9 +15994,12 @@ function renderAgentTownActionItemCard(item) {
   `;
 }
 
-const QUEST_ALERT_BUILDER_HINTS = new Map([
-  ["quest-place-first-building", "Open the builder to place your first building"],
-  ["quest-place-functional-building", "Open the builder to place a functional building"],
+const QUEST_ALERT_HINTS = new Map([
+  ["quest-place-first-building", { anchor: "builder-fab", label: "Open the builder to place your first building" }],
+  ["quest-place-functional-building", { anchor: "builder-fab", label: "Open the builder to place a functional building" }],
+  ["quest-save-library-note", { anchor: "knowledge-base", label: "Open or create a note, then save it to finish this quest" }],
+  ["quest-create-automation", { anchor: "automation-create", label: "Fill in the form, then create your first automation" }],
+  ["quest-publish-agent-canvas", { anchor: "agent-inbox", label: "Have an agent run vr-agent-canvas to publish a visual" }],
 ]);
 
 function renderAgentTownAlertCard(alert) {
@@ -16022,15 +16031,15 @@ async function openAgentTownAlertHref(alertId) {
   const id = String(alertId || "").trim();
   const alert = getAgentTownRankedAlerts().find((candidate) => candidate.id === id);
   const href = String(alert?.href || "").trim();
-  const builderHintLabel = QUEST_ALERT_BUILDER_HINTS.get(id) || "";
+  const questHint = QUEST_ALERT_HINTS.get(id) || null;
 
   if (href) {
     if (href.startsWith("?")) {
       const params = new URLSearchParams(href);
       const view = params.get("view");
       if (view) {
-        if (builderHintLabel) {
-          setAgentTownBuilderButtonHint(builderHintLabel);
+        if (questHint) {
+          setQuestHint(questHint.anchor, questHint.label);
         }
         await openMainView(view);
         return;
@@ -16048,8 +16057,8 @@ async function openAgentTownAlertHref(alertId) {
     return;
   }
 
-  if (builderHintLabel) {
-    setAgentTownBuilderButtonHint(builderHintLabel);
+  if (questHint) {
+    setQuestHint(questHint.anchor, questHint.label);
   }
   openAgentTownBuilder({ tab: "functional" });
 }
@@ -16226,6 +16235,7 @@ function renderAgentInboxView() {
         <span>${escapeHtml(attentionLabel)}</span>
         <span class="dashboard-updated">${escapeHtml(`${summary.total} sessions`)}</span>
       </div>
+      ${renderQuestHintBubble("agent-inbox", { className: "is-block" })}
       <div class="agent-inbox-summary" id="agent-inbox-summary">${renderAgentInboxSummaryCards()}</div>
       ${renderAgentInboxTabs(activeTab)}
       <div class="main-results-grid agent-inbox-grid" id="agent-inbox-list" data-agent-inbox-active-tab="${escapeHtml(activeTab)}">${renderAgentInboxCards()}</div>
@@ -18441,7 +18451,7 @@ function renderVisualPixelGame(graph, { controls = true } = {}) {
           aria-live="polite"
         >${escapeHtml(builderFeedback?.message || "")}</div>
         <button
-          class="agent-town-builder-button ${builderOpen ? "is-active" : ""} ${unplacedCount ? "has-alert" : ""} ${state.visualGame.builderButtonHint && !builderOpen ? "is-quest-hint" : ""}"
+          class="agent-town-builder-button ${builderOpen ? "is-active" : ""} ${unplacedCount ? "has-alert" : ""} ${getQuestHintForAnchor("builder-fab") && !builderOpen ? "is-quest-hint" : ""}"
           type="button"
           data-agent-town-builder-toggle
           aria-label="${escapeHtml(unplacedCount ? `Open BuildingHub builder, ${unplacedCount} building${unplacedCount === 1 ? "" : "s"} to place` : "Open BuildingHub builder")}"
@@ -18450,16 +18460,7 @@ function renderVisualPixelGame(graph, { controls = true } = {}) {
           ${renderIcon(Wrench)}
           ${unplacedCount ? `<span class="agent-town-builder-badge" aria-hidden="true">!</span>` : ""}
         </button>
-        ${
-          state.visualGame.builderButtonHint && !builderOpen
-            ? `
-              <div class="agent-town-builder-hint" role="tooltip" aria-live="polite">
-                <span class="agent-town-builder-hint-bubble">${escapeHtml(state.visualGame.builderButtonHint)}</span>
-                <span class="agent-town-builder-hint-arrow" aria-hidden="true"></span>
-              </div>
-            `
-            : ""
-        }
+        ${!builderOpen ? renderQuestHintBubble("builder-fab", { className: "is-fab" }) : ""}
         ${
           state.visualGame.builderPlacement
             ? `
@@ -19967,7 +19968,9 @@ function openAgentTownBuilder({ tab = state.visualGame.builderTab, render = true
   clearVisualGameSelection({ render: false });
   state.visualGame.builderOpen = true;
   state.visualGame.builderTab = normalizeAgentTownBuilderTab(tab);
-  state.visualGame.builderButtonHint = null;
+  if (state.questHint?.anchor === "builder-fab") {
+    state.questHint = null;
+  }
   if (!isVisualInterfaceView()) {
     setCurrentView("visual-interface");
   } else {
@@ -19979,19 +19982,44 @@ function openAgentTownBuilder({ tab = state.visualGame.builderTab, render = true
   }
 }
 
-function setAgentTownBuilderButtonHint(label) {
-  const value = String(label || "").trim();
-  state.visualGame.builderButtonHint = value || null;
-}
-
-function clearAgentTownBuilderButtonHint({ render = true } = {}) {
-  if (!state.visualGame.builderButtonHint) {
+function setQuestHint(anchor, label) {
+  const anchorValue = String(anchor || "").trim();
+  const labelValue = String(label || "").trim();
+  if (!anchorValue || !labelValue) {
+    state.questHint = null;
     return;
   }
-  state.visualGame.builderButtonHint = null;
+  state.questHint = { anchor: anchorValue, label: labelValue };
+}
+
+function clearQuestHintFor(anchor, { render = true } = {}) {
+  if (state.questHint?.anchor !== anchor) {
+    return;
+  }
+  state.questHint = null;
   if (render) {
     renderShell();
   }
+}
+
+function getQuestHintForAnchor(anchor) {
+  if (state.questHint?.anchor !== anchor) {
+    return null;
+  }
+  return state.questHint;
+}
+
+function renderQuestHintBubble(anchor, { className = "" } = {}) {
+  const hint = getQuestHintForAnchor(anchor);
+  if (!hint) {
+    return "";
+  }
+  return `
+    <div class="quest-hint ${escapeHtml(className)}" role="tooltip" aria-live="polite">
+      <span class="quest-hint-bubble">${escapeHtml(hint.label)}</span>
+      <span class="quest-hint-arrow" aria-hidden="true"></span>
+    </div>
+  `;
 }
 
 function closeAgentTownBuilder({ render = true, clearPlacement = true } = {}) {
@@ -20603,21 +20631,13 @@ async function updateAgentTownActionItemStatus(actionItemId, status) {
   }
 }
 
-const QUEST_BUILDER_PREDICATES = new Set([
-  "first_building_placed",
-  "cosmetic_building_placed",
-  "functional_building_placed",
+const ACTION_PREDICATE_HINTS = new Map([
+  ["first_building_placed", { anchor: "builder-fab", label: "Open the builder to place your first building" }],
+  ["cosmetic_building_placed", { anchor: "builder-fab", label: "Open the builder to place a cosmetic piece" }],
+  ["functional_building_placed", { anchor: "builder-fab", label: "Open the builder to place a functional building" }],
+  ["library_note_saved", { anchor: "knowledge-base", label: "Open or create a note, then save it" }],
+  ["automation_created", { anchor: "automation-create", label: "Fill in the form, then create your first automation" }],
 ]);
-
-function getQuestBuilderHintLabel(predicate) {
-  if (predicate === "functional_building_placed") {
-    return "Open the builder to place a functional building";
-  }
-  if (predicate === "cosmetic_building_placed") {
-    return "Open the builder to place a cosmetic piece";
-  }
-  return "Open the builder to place your first building";
-}
 
 async function openAgentTownActionHref(actionItemId) {
   const item = state.agentTown.actionItems.find((candidate) => candidate.id === actionItemId);
@@ -20627,14 +20647,14 @@ async function openAgentTownActionHref(actionItemId) {
   }
 
   const predicate = String(item?.predicate || "").trim();
-  const wantsBuilderHint = QUEST_BUILDER_PREDICATES.has(predicate);
+  const questHint = ACTION_PREDICATE_HINTS.get(predicate) || null;
 
   if (href.startsWith("?")) {
     const params = new URLSearchParams(href);
     const view = params.get("view");
     if (view) {
-      if (wantsBuilderHint) {
-        setAgentTownBuilderButtonHint(getQuestBuilderHintLabel(predicate));
+      if (questHint) {
+        setQuestHint(questHint.anchor, questHint.label);
       }
       await openMainView(view);
       return;
@@ -31115,6 +31135,7 @@ function bindAutomationEvents() {
         button.disabled = true;
         button.textContent = "creating...";
       }
+      clearQuestHintFor("automation-create", { render: false });
 
       try {
         await createAgentAutomationFromForm(form);
@@ -32173,6 +32194,7 @@ function bindKnowledgeBaseEvents() {
   });
 
   document.querySelector("#save-knowledge-base-note")?.addEventListener("click", async () => {
+    clearQuestHintFor("knowledge-base", { render: false });
     await saveKnowledgeBaseNote();
   });
 
