@@ -35,11 +35,7 @@ jobs:
     # Skip auto-release (push trigger) when the head commit is the release
     # bot's own "Release vX.Y.Z" commit, or when the author added the
     # [skip release] trailer. Manual workflow_dispatch always runs.
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' &&
-       !startsWith(github.event.head_commit.message, 'Release v') &&
-       !contains(github.event.head_commit.message, '[skip release]'))
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'Release v') && !contains(github.event.head_commit.message, '[skip release]')) }}
     outputs:
       tag: ${{ steps.read_tag.outputs.tag }}
 
