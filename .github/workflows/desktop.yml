@@ -140,6 +140,20 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      - name: Upload stable-named DMG for website download link
+        if: env.RELEASE_MODE == 'true'
+        run: |
+          dmg="$(ls desktop/dist/Vibe-Research-*-mac-*.dmg 2>/dev/null | head -n1)"
+          if [ -z "$dmg" ]; then
+            echo "No DMG found in desktop/dist; skipping stable-name upload" >&2
+            exit 0
+          fi
+          tag="${GITHUB_REF##refs/tags/}"
+          cp "$dmg" "$RUNNER_TEMP/Vibe-Research-macOS.dmg"
+          gh release upload "$tag" "$RUNNER_TEMP/Vibe-Research-macOS.dmg" --repo "$GITHUB_REPOSITORY" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Build Mac App Store package
         if: env.RELEASE_MODE == 'true' && env.MAS_ENABLED == 'true'
         run: |
