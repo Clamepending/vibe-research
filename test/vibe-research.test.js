@@ -3550,7 +3550,7 @@ test("BuildingHub is the catalog entry point instead of an installable detail", 
     assert.equal(await page.locator('.sidebar-primary-nav [data-open-main-view="system"]').count(), 0);
     assert.equal(await page.getByRole("button", { name: "Install BuildingHub" }).count(), 0);
     assert.equal(await page.locator("#plugin-results").getByText("Scaffold Recipes", { exact: true }).count(), 0);
-    await page.getByRole("tab", { name: "Scaffolds" }).click();
+    await page.goto(`${baseUrl}/?view=plugins&buildinghubTab=scaffolds`, { waitUntil: "domcontentloaded" });
     await page.locator(".scaffold-recipes-plugin-card").waitFor({ timeout: 10_000 });
     await page.waitForFunction(() => new URL(window.location.href).searchParams.get("buildinghubTab") === "scaffolds");
     await page.getByRole("tab", { name: "Buildings" }).click();
@@ -3703,8 +3703,8 @@ test("Agent Town share opens and copies a BuildingHub town link", async (t) => {
     });
 
     await page.goto(`${baseUrl}/?view=plugins`, { waitUntil: "domcontentloaded" });
-    await page.getByRole("tab", { name: "Themes" }).click();
-    await page.waitForFunction(() => new URL(window.location.href).searchParams.get("buildinghubTab") === "themes");
+    await page.getByRole("tab", { name: "Layouts" }).click();
+    await page.waitForFunction(() => new URL(window.location.href).searchParams.get("buildinghubTab") === "layouts");
     await page.locator(".buildinghub-town-card").waitFor({ timeout: 10_000 });
     assert.equal(await page.locator(".buildinghub-town-card").count(), 1);
     await page.locator("[data-town-share-import]").first().waitFor({ timeout: 10_000 });
