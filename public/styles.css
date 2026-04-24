@@ -2888,7 +2888,76 @@ input[readonly][data-folder-picker-target] {
 }
 
 .agent-inbox-view {
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+}
+
+.agent-inbox-tabs {
+  display: flex;
+  gap: 0;
+  margin: 4px 0 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.agent-inbox-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.agent-inbox-tab:hover {
+  color: rgba(244, 247, 251, 0.92);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.agent-inbox-tab .vr-icon {
+  width: 16px;
+  height: 16px;
+  opacity: 0.85;
+}
+
+.agent-inbox-tab span {
+  min-width: 0;
+}
+
+.agent-inbox-tab.is-active {
+  color: #e7f7ff;
+  border-bottom-color: rgba(123, 195, 255, 0.85);
+  font-weight: 600;
+}
+
+.agent-inbox-tab.is-active .vr-icon {
+  opacity: 1;
+}
+
+.agent-inbox-tab b {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(244, 247, 251, 0.85);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.agent-inbox-tab.is-active b {
+  background: rgba(123, 195, 255, 0.22);
+  color: #e7f7ff;
 }
 
 .agent-inbox-summary {

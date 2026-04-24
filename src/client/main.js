@@ -685,6 +685,8 @@ const AGENT_TOWN_FUNCTIONAL_BUILDING_SIZE = Object.freeze({
 });
 const AGENT_TOWN_BUILDER_DEFAULT_TAB = "cosmetic";
 const AGENT_TOWN_BUILDER_TABS = new Set(["cosmetic", "themes", "functional", "layouts"]);
+const AGENT_INBOX_DEFAULT_TAB = "notifications";
+const AGENT_INBOX_TABS = new Set(["tutorials", "notifications"]);
 const AGENT_TOWN_BUILDER_COSMETIC_ITEMS = Object.freeze([
   {
     id: "road-square",
@@ -1594,6 +1596,7 @@ const state = {
   brainSetupClonePath: "",
   brainSetupCloning: false,
   brainSetupError: "",
+  agentInboxTab: AGENT_INBOX_DEFAULT_TAB,
   agentPrompt: "",
   agentPromptPath: "",
   agentPromptCustomPrompt: "",
@@ -15745,23 +15748,94 @@ function getAgentTownActionItemMetaLabel(item) {
   return parts.join(" · ");
 }
 
+function normalizeAgentInboxTab(tab) {
+  const value = String(tab || "").trim();
+  return AGENT_INBOX_TABS.has(value) ? value : AGENT_INBOX_DEFAULT_TAB;
+}
+
+function setAgentInboxTab(tab) {
+  const next = normalizeAgentInboxTab(tab);
+  if (state.agentInboxTab === next) {
+    return;
+  }
+  state.agentInboxTab = next;
+  renderShell();
+}
+
+function getAgentInboxTutorialItems() {
+  return getAgentTownOpenActionItems().filter((item) => Boolean(String(item?.tutorialId || "").trim()));
+}
+
+function getAgentInboxNotificationActionItems() {
+  return getAgentTownOpenActionItems().filter((item) => !String(item?.tutorialId || "").trim());
+}
+
+function getAgentInboxTabCounts() {
+  const summary = getAgentInboxSummary();
+  const tutorialCount = getAgentInboxTutorialItems().length;
+  return {
+    tutorials: tutorialCount,
+    notifications:
+      summary.alerts +
+      Math.max(summary.actions - tutorialCount, 0) +
+      summary.unread +
+      summary.working,
+  };
+}
+
+function renderAgentInboxTabs(activeTab) {
+  const counts = getAgentInboxTabCounts();
+  const tabs = [
+    { id: "tutorials", label: "Tutorials", icon: BookOpen, count: counts.tutorials },
+    { id: "notifications", label: "Notifications", icon: Inbox, count: counts.notifications },
+  ];
+
+  return `
+    <div class="agent-inbox-tabs" role="tablist" aria-label="Inbox categories">
+      ${tabs
+        .map((tab) => {
+          const isActive = activeTab === tab.id;
+          const badge = tab.count > 0
+            ? `<b aria-hidden="true">${escapeHtml(String(tab.count))}</b>`
+            : "";
+          return `
+            <button class="agent-inbox-tab ${isActive ? "is-active" : ""}" type="button" role="tab" aria-selected="${isActive ? "true" : "false"}" data-agent-inbox-tab="${escapeHtml(tab.id)}">
+              ${renderIcon(tab.icon)}<span>${escapeHtml(tab.label)}</span>${badge}
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
 function renderAgentInboxCards() {
-  const items = getAgentInboxItems();
-  const actionItems = getAgentTownOpenActionItems();
+  const activeTab = normalizeAgentInboxTab(state.agentInboxTab);
+  if (activeTab === "tutorials") {
+    const tutorials = getAgentInboxTutorialItems();
+    if (!tutorials.length) {
+      return `<div class="blank-state">no tutorials waiting right now</div>`;
+    }
+    return tutorials.map(renderAgentTownActionItemCard).join("");
+  }
+
+  const sessions = getAgentInboxItems();
+  const notificationActions = getAgentInboxNotificationActionItems();
   const alerts = getAgentTownInboxAlerts();
-  if (!items.length && !actionItems.length && !alerts.length) {
-    return `<div class="blank-state">no agent sessions yet</div>`;
+  if (!sessions.length && !notificationActions.length && !alerts.length) {
+    return `<div class="blank-state">no notifications yet</div>`;
   }
 
   return [
     ...alerts.map(renderAgentTownAlertCard),
-    ...actionItems.map(renderAgentTownActionItemCard),
-    ...items.map(renderAgentInboxCard),
+    ...notificationActions.map(renderAgentTownActionItemCard),
+    ...sessions.map(renderAgentInboxCard),
   ].join("");
 }
 
 function renderAgentInboxView() {
   const summary = getAgentInboxSummary();
+  const activeTab = normalizeAgentInboxTab(state.agentInboxTab);
   const attentionLabel = summary.alerts > 0
     ? `${summary.alerts} town alert${summary.alerts === 1 ? "" : "s"}`
     : summary.actions > 0
@@ -15773,7 +15847,7 @@ function renderAgentInboxView() {
           : "all caught up";
 
   return `
-    <section class="dashboard-panel main-view agent-inbox-view" ${renderMainViewAttributes("agent-inbox", `agent-inbox:${summary.total}:${summary.unread}:${summary.working}:${summary.actions}:${summary.alerts}`)}>
+    <section class="dashboard-panel main-view agent-inbox-view" ${renderMainViewAttributes("agent-inbox", `agent-inbox:${summary.total}:${summary.unread}:${summary.working}:${summary.actions}:${summary.alerts}:${activeTab}`)}>
       <div class="dashboard-toolbar">
         <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
         <div class="dashboard-copy">
@@ -15790,7 +15864,8 @@ function renderAgentInboxView() {
         <span class="dashboard-updated">${escapeHtml(`${summary.total} sessions`)}</span>
       </div>
       <div class="agent-inbox-summary" id="agent-inbox-summary">${renderAgentInboxSummaryCards()}</div>
-      <div class="main-results-grid agent-inbox-grid" id="agent-inbox-list">${renderAgentInboxCards()}</div>
+      ${renderAgentInboxTabs(activeTab)}
+      <div class="main-results-grid agent-inbox-grid" id="agent-inbox-list" data-agent-inbox-active-tab="${escapeHtml(activeTab)}">${renderAgentInboxCards()}</div>
     </section>
   `;
 }
@@ -33855,6 +33930,13 @@ function bindAgentTownBuilderEvents() {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       setAgentTownBuilderTab(button.getAttribute("data-agent-town-builder-tab") || AGENT_TOWN_BUILDER_DEFAULT_TAB);
+    });
+  });
+
+  document.querySelectorAll("[data-agent-inbox-tab]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      setAgentInboxTab(button.getAttribute("data-agent-inbox-tab") || AGENT_INBOX_DEFAULT_TAB);
     });
   });
 
