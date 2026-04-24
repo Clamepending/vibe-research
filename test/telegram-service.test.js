@@ -1011,6 +1011,117 @@ test("Telegram safety timer force-releases the chat lock when markPromptSent nev
   );
 });
 
+test("Telegram typing indicator fires on inbound and stops when an explicit reply lands", async () => {
+  const liveSessions = new Map();
+  const chatActionCalls = [];
+  const fetchImpl = async (url, options = {}) => {
+    const isChatAction = String(url || "").includes("/sendChatAction");
+    if (isChatAction) {
+      chatActionCalls.push({ url, body: JSON.parse(options.body) });
+      return {
+        ok: true,
+        status: 200,
+        async json() { return { ok: true, result: true }; },
+      };
+    }
+    // sendMessage (for replyToMessage)
+    return {
+      ok: true,
+      status: 200,
+      async json() { return { ok: true, result: { message_id: 77 } }; },
+    };
+  };
+
+  let nextTimerId = 0;
+  const scheduledTimers = new Map();
+  const service = new TelegramService({
+    autoReplyFallbackMs: 0,
+    chatLockMaxHoldMs: 0,
+    fetchImpl,
+    promptDelayMs: 0,
+    promptReadyIdleMs: 0,
+    promptReadyTimeoutMs: 0,
+    promptRetryMs: 0,
+    promptSubmitDelayMs: 0,
+    sessionManager: {
+      createSession(input) {
+        const session = {
+          id: "s1",
+          ...input,
+          buffer: "Claude Code\n❯ ",
+          status: "running",
+          createdAt: new Date(0).toISOString(),
+          updatedAt: new Date(0).toISOString(),
+          lastOutputAt: new Date(0).toISOString(),
+        };
+        liveSessions.set(session.id, session);
+        return session;
+      },
+      getSession(id) { return liveSessions.get(id) || null; },
+      listSessions() { return [...liveSessions.values()]; },
+      write() { return true; },
+    },
+    setTimeoutImpl(callback, delay) {
+      // Park refresh ticks so we can observe them without a runaway loop.
+      if (delay === 250) {
+        const id = ++nextTimerId;
+        scheduledTimers.set(id, callback);
+        return id;
+      }
+      callback();
+      return 0;
+    },
+    clearTimeoutImpl(id) {
+      scheduledTimers.delete(id);
+    },
+    settings: {
+      telegramBotToken: "bot_secret",
+      telegramEnabled: true,
+      telegramProviderId: "claude",
+    },
+    typingRefreshMs: 250,
+  });
+
+  await service.handleIncomingUpdate(
+    {
+      update_id: 1,
+      message: {
+        message_id: 1,
+        chat: { id: 42, first_name: "Ada", type: "private" },
+        from: { id: 42, first_name: "Ada" },
+        text: "hi",
+      },
+    },
+    { source: "poll" },
+  );
+
+  assert.equal(chatActionCalls.length, 1, "one initial typing indicator sent");
+  assert.equal(chatActionCalls[0].body.chat_id, "42");
+  assert.equal(chatActionCalls[0].body.action, "typing");
+  assert.equal(service.typingByChat.has("42"), true, "typing entry should be tracked");
+  assert.equal(scheduledTimers.size, 1, "a refresh tick should be parked");
+
+  // Agent replies via the helper → replyToMessage stops typing.
+  await service.replyToMessage({ chatId: 42, messageId: 1, text: "hello back" });
+  assert.equal(service.typingByChat.has("42"), false, "reply should stop the typing loop");
+
+  // Firing the previously-parked refresh tick should not send another typing
+  // action or re-arm the loop (the entry has been torn down).
+  const staleTick = [...scheduledTimers.values()][0];
+  scheduledTimers.clear();
+  staleTick?.();
+  assert.equal(chatActionCalls.length, 1, "no more typing sends after stop");
+});
+
+test("Telegram typing indicator defaults off so tests and non-interactive use stay quiet", () => {
+  const service = new TelegramService({
+    settings: { telegramBotToken: "bot_secret", telegramEnabled: true, telegramProviderId: "claude" },
+  });
+  assert.equal(service.typingRefreshMs, 0);
+  service.startTypingIndicator(123);
+  assert.equal(service.typingByChat.size, 0, "no-op when typingRefreshMs is 0");
+});
+
 test("Telegram auto-reply fallback is canceled when the agent sends an explicit reply", async () => {
   const liveSessions = new Map();
   const scheduled = [];

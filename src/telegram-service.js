@@ -13,6 +13,10 @@ const DEFAULT_PROMPT_RETRY_MS = 500;
 const DEFAULT_PROMPT_SUBMIT_DELAY_MS = 350;
 const DEFAULT_AUTO_REPLY_FALLBACK_MS = 120_000;
 const DEFAULT_CHAT_LOCK_MAX_HOLD_MS = 180_000;
+// Typing indicator: default disabled so tests that don't stub fetch don't see
+// unexpected sendChatAction calls. Production (create-app.js) opts in.
+const DEFAULT_TYPING_REFRESH_MS = 0;
+const PRODUCTION_TYPING_REFRESH_MS = 4_000;
 const AUTO_REPLY_MIN_OUTPUT_CHARS = 20;
 const AUTO_REPLY_MAX_OUTPUT_CHARS = 3_500;
 const TELEGRAM_TEXT_LIMIT = 12_000;
@@ -209,11 +213,14 @@ export class TelegramService {
     clearTimeoutImpl = clearTimeout,
     stateDir = "",
     systemRootPath = stateDir ? getVibeResearchSystemDir({ cwd, stateDir }) : "",
+    typingRefreshMs = DEFAULT_TYPING_REFRESH_MS,
   } = {}) {
     this.autoReplyFallbackMs = Math.max(0, Number(autoReplyFallbackMs) || 0);
     this.chatLockMaxHoldMs = Math.max(0, Number(chatLockMaxHoldMs) || 0);
     this.chatLocks = new Map();
     this.chatLockReleases = new Map();
+    this.typingByChat = new Map();
+    this.typingRefreshMs = Math.max(0, Number(typingRefreshMs) || 0);
     this.clearTimeout = clearTimeoutImpl;
     this.cwd = cwd;
     this.fetch = fetchImpl;
@@ -314,6 +321,9 @@ export class TelegramService {
     }
     for (const key of [...this.chatLockReleases.keys()]) {
       this.releaseChatLock(key);
+    }
+    for (const key of [...this.typingByChat.keys()]) {
+      this.stopTypingIndicator(key);
     }
     this.status.connected = false;
     if (this.status.lastStatus !== "disabled") {
@@ -544,6 +554,11 @@ export class TelegramService {
     const messageId = String(message?.message_id || "").trim();
     const sessionCwd = this.systemRootPath || this.settings.wikiPath || this.cwd;
 
+    // Kick off the Telegram "typing" indicator so the human sees immediate
+    // feedback that the bot received the message. The loop re-sends every
+    // typingRefreshMs until replyToMessage or the auto-reply fallback stops it.
+    this.startTypingIndicator(chatId);
+
     try {
       if (this.systemRootPath) {
         await mkdir(this.systemRootPath, { recursive: true });
@@ -576,7 +591,10 @@ export class TelegramService {
     } catch (error) {
       this.status.lastError = error.message || "Could not launch Telegram agent session.";
       this.status.lastStatus = "error";
-      if (chatKey) this.releaseChatLock(chatKey);
+      if (chatKey) {
+        this.releaseChatLock(chatKey);
+        this.stopTypingIndicator(chatKey);
+      }
       return null;
     }
   }
@@ -657,7 +675,10 @@ export class TelegramService {
       this.status.lastError = message;
       this.status.lastStatus = "error";
       const chatKey = this.telegramChatKey(chatId);
-      if (chatKey) this.releaseChatLock(chatKey);
+      if (chatKey) {
+        this.releaseChatLock(chatKey);
+        this.stopTypingIndicator(chatKey);
+      }
       return false;
     };
     const markPromptSent = () => {
@@ -787,6 +808,7 @@ export class TelegramService {
     this.status.lastStatus = "replied";
     this.status.lastError = "";
     this.markReplied(resolvedChatId);
+    this.stopTypingIndicator(this.telegramChatKey(resolvedChatId));
     return reply;
   }
 
@@ -872,6 +894,7 @@ export class TelegramService {
       const extracted = this.extractAutoReplyText(entry);
       if (!extracted) {
         this.status.lastStatus = "auto-reply-skipped-empty";
+        this.stopTypingIndicator(chatKey);
         return;
       }
 
@@ -882,9 +905,63 @@ export class TelegramService {
         text: prefixed,
       });
       this.status.lastStatus = "auto-replied";
+      // replyToMessage already stopped typing on success; nothing more to do.
     } catch (error) {
       this.status.lastError = error?.message || "Auto-reply fallback failed.";
       this.status.lastStatus = "auto-reply-error";
+      this.stopTypingIndicator(chatKey);
+    }
+  }
+
+  async sendChatAction(chatId, action = "typing") {
+    const config = this.getConfig();
+    if (!config.botToken) return null;
+    const resolvedChatId = normalizeChatId(chatId);
+    if (!resolvedChatId) return null;
+    try {
+      return await this.requestTelegram({
+        botToken: config.botToken,
+        body: { chat_id: resolvedChatId, action },
+        method: "sendChatAction",
+      });
+    } catch {
+      // Best effort — the typing indicator is cosmetic. Don't surface errors
+      // and don't flip service status on transient failures.
+      return null;
+    }
+  }
+
+  startTypingIndicator(chatId) {
+    // Opt-in via typingRefreshMs > 0. Tests pass 0 to keep the cosmetic
+    // "typing…" API calls out of fetch-call assertions and to avoid recursing
+    // into sync-fire setTimeout shims.
+    if (!this.typingRefreshMs || this.typingRefreshMs <= 0) return;
+    const key = this.telegramChatKey(chatId);
+    if (!key) return;
+    this.stopTypingIndicator(key);
+
+    const entry = { chatId, timer: null };
+    const tick = () => {
+      if (this.typingByChat.get(key) !== entry) return;
+      void this.sendChatAction(chatId, "typing");
+      if (this.typingByChat.get(key) === entry && this.typingRefreshMs > 0) {
+        entry.timer = this.setTimeout(tick, this.typingRefreshMs);
+      }
+    };
+    this.typingByChat.set(key, entry);
+    tick();
+  }
+
+  stopTypingIndicator(chatKey) {
+    const entry = this.typingByChat.get(chatKey);
+    if (!entry) return;
+    this.typingByChat.delete(chatKey);
+    if (entry.timer) {
+      try {
+        this.clearTimeout(entry.timer);
+      } catch {
+        /* best effort */
+      }
     }
   }
 
@@ -913,6 +990,8 @@ export class TelegramService {
     return payload?.result;
   }
 }
+
+export { PRODUCTION_TYPING_REFRESH_MS };
 
 export const testInternals = {
   buildTelegramPrompt,

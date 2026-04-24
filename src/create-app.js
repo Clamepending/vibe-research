@@ -54,7 +54,7 @@ import { getVibeResearchStateDir, getVibeResearchSystemDir } from "./state-paths
 import { collectSystemMetrics } from "./system-metrics.js";
 import { SystemMetricsHistoryStore } from "./system-metrics-history.js";
 import { TailscaleServeManager } from "./tailscale-serve.js";
-import { TelegramService } from "./telegram-service.js";
+import { PRODUCTION_TYPING_REFRESH_MS, TelegramService } from "./telegram-service.js";
 import { TwilioService } from "./twilio-service.js";
 import { UpdateManager } from "./update-manager.js";
 import { loadVideoMemoryRuntime } from "./videomemory-service-loader.js";
@@ -1512,6 +1512,7 @@ export async function createVibeResearchApp({
           settings: settingsStore.settings,
           stateDir,
           systemRootPath,
+          typingRefreshMs: PRODUCTION_TYPING_REFRESH_MS,
         });
   const twilioService =
     typeof twilioServiceFactory === "function"
