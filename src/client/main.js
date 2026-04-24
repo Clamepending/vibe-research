@@ -1716,6 +1716,7 @@ const state = {
   brainSetupError: "",
   agentInboxTab: "",
   questHint: null,
+  canvasPanelOpen: false,
   agentPrompt: "",
   agentPromptPath: "",
   agentPromptCustomPrompt: "",
@@ -11875,7 +11876,26 @@ function getAgentCanvasImageSrc(canvas) {
 function renderAgentCanvasPanel(session, selection = state.agentProfile) {
   const canvas = getAgentCanvasForSession(session, selection);
   if (!canvas) {
-    return "";
+    if (!state.canvasPanelOpen || !session) {
+      return "";
+    }
+
+    return `
+      <section class="agent-canvas-panel agent-canvas-panel-placeholder" data-agent-canvas-panel aria-label="Empty agent canvas">
+        <div class="agent-canvas-head" data-agent-canvas-drag-handle>
+          <span class="agent-canvas-kicker">${renderIcon(ImageIcon)}<span>Canvas</span></span>
+          <strong>Empty canvas</strong>
+          <button class="icon-button agent-canvas-close" type="button" data-agent-canvas-close aria-label="Close canvas" ${tooltipAttributes("Close canvas")}>${renderIcon(X)}</button>
+        </div>
+        <div class="agent-canvas-stage agent-canvas-stage-placeholder">
+          <div class="agent-canvas-placeholder-copy">
+            <p class="agent-canvas-placeholder-lead">Your agent's canvas will appear here once they publish one.</p>
+            <p class="agent-canvas-placeholder-hint">Try asking your agent:</p>
+            <code class="agent-canvas-placeholder-prompt">show me a picture of pikachu</code>
+          </div>
+        </div>
+      </section>
+    `;
   }
 
   const imageSrc = getAgentCanvasImageSrc(canvas);
@@ -11895,6 +11915,7 @@ function renderAgentCanvasPanel(session, selection = state.agentProfile) {
             ? `<a class="icon-button agent-canvas-open" href="${escapeHtml(openHref)}" target="_blank" rel="noreferrer" aria-label="Open canvas image" ${tooltipAttributes("Open canvas image")}>${renderIcon(AppWindow)}</a>`
             : ""
         }
+        <button class="icon-button agent-canvas-close" type="button" data-agent-canvas-close aria-label="Close canvas" ${tooltipAttributes("Close canvas")}>${renderIcon(X)}</button>
       </div>
       <div class="agent-canvas-stage" data-agent-canvas-stage data-agent-canvas-stage-id="${escapeHtml(canvas.id)}" style="${getAgentCanvasTransformStyle(canvas.id)}">
         ${
@@ -11910,20 +11931,35 @@ function renderAgentCanvasPanel(session, selection = state.agentProfile) {
 
 function handleViewAgentCanvasClick() {
   clearQuestHintFor("chat-canvas-button", { render: false });
-  const session = state.sessions.find((entry) => entry.id === state.activeSessionId) || null;
-  const canvas = getAgentCanvasForSession(session);
-  if (canvas) {
-    const host = document.querySelector("[data-agent-canvas-host]");
-    host?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    host?.classList.add("is-attention");
-    window.setTimeout(() => host?.classList.remove("is-attention"), 1600);
-    renderShell();
+  state.canvasPanelOpen = true;
+  renderShell();
+
+  const host = document.querySelector("[data-agent-canvas-host]");
+  host?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  host?.classList.add("is-attention");
+  window.setTimeout(() => host?.classList.remove("is-attention"), 1600);
+}
+
+function closeAgentCanvasPanel() {
+  if (!state.canvasPanelOpen) {
     return;
   }
-  window.alert(
-    "No canvas yet for this agent. Ask the agent to publish one with: vr-agent-canvas --image <path> --title \"<short title>\" --caption \"<what changed>\"",
-  );
+  state.canvasPanelOpen = false;
   renderShell();
+}
+
+function bindAgentCanvasCloseEvents(root = document) {
+  root.querySelectorAll?.("[data-agent-canvas-close]").forEach((button) => {
+    if (button.dataset.agentCanvasCloseBound === "true") {
+      return;
+    }
+    button.dataset.agentCanvasCloseBound = "true";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeAgentCanvasPanel();
+    });
+  });
 }
 
 function renderAgentCanvasHost(session) {
@@ -11965,23 +12001,27 @@ function refreshAgentCanvasUi() {
     const sessionId = host.getAttribute("data-agent-canvas-session") || "";
     const session = state.sessions.find((entry) => entry.id === sessionId) || null;
     const signature = getAgentCanvasSignature(session);
-    if (host.getAttribute("data-agent-canvas-signature") !== signature) {
-      host.setAttribute("data-agent-canvas-signature", signature);
+    const placeholderActive = state.canvasPanelOpen && Boolean(session) && !signature;
+    const effectiveSignature = signature || (placeholderActive ? "placeholder" : "");
+    if (host.getAttribute("data-agent-canvas-signature") !== effectiveSignature) {
+      host.setAttribute("data-agent-canvas-signature", effectiveSignature);
       host.innerHTML = renderAgentCanvasPanel(session);
       bindAgentCanvasWindowDrag(host);
       bindAgentCanvasStageEvents(host);
+      bindAgentCanvasCloseEvents(host);
       if (!signature) {
         clearAgentCanvasFloatingPosition(host);
       }
     }
 
+    const showCanvas = Boolean(signature) || placeholderActive;
     const shellSplit = host.closest(".workspace-split");
     if (shellSplit instanceof HTMLElement) {
-      shellSplit.classList.toggle("has-agent-canvas", Boolean(signature));
+      shellSplit.classList.toggle("has-agent-canvas", showCanvas);
     }
     const visualBody = host.closest(".visual-game-terminal-body");
     if (visualBody instanceof HTMLElement) {
-      visualBody.classList.toggle("has-agent-canvas", Boolean(signature));
+      visualBody.classList.toggle("has-agent-canvas", showCanvas);
     }
   });
 }
@@ -27731,7 +27771,7 @@ function renderTerminalPanel(activeSession) {
           <div class="toolbar-actions">
             ${renderShellSurfaceToggle(activeSession)}
             <div class="toolbar-canvas-action">
-              ${activeSession ? renderQuestHintBubble("chat-canvas-button", { className: "is-leading" }) : ""}
+              ${activeSession ? renderQuestHintBubble("chat-canvas-button", { className: "is-trailing" }) : ""}
               <button class="icon-button ${getQuestHintForAnchor("chat-canvas-button") ? "is-quest-hint" : ""}" type="button" id="view-agent-canvas" aria-label="${escapeHtml(getAgentCanvasForSession(activeSession) ? "View agent canvas" : "How to publish a canvas")}" ${tooltipAttributes(getAgentCanvasForSession(activeSession) ? "View canvas" : "Publish a canvas")} ${activeSession ? "" : "disabled"}>${renderIcon(ImageIcon)}</button>
             </div>
             <button class="icon-button" type="button" id="refresh-sessions" aria-label="Refresh sessions" ${tooltipAttributes("Refresh sessions")}>${renderIcon(RefreshCw)}</button>
@@ -35398,6 +35438,7 @@ function bindShellEvents() {
   bindSessionProviderPicker();
   bindAgentCanvasWindowDrag();
   bindAgentCanvasStageEvents();
+  bindAgentCanvasCloseEvents();
   bindFolderPickerDragEvents();
   bindLayoutResizeEvents();
   bindWorkspaceTabEvents();

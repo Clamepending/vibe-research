@@ -12317,14 +12317,17 @@ button.visual-town-building:focus-visible {
 }
 
 .agent-canvas-head {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
   cursor: grab;
   user-select: none;
   touch-action: none;
+}
+
+.agent-canvas-head strong {
+  flex: 1 1 auto;
 }
 
 .agent-canvas-window.is-dragging .agent-canvas-head {
@@ -12419,6 +12422,62 @@ button.visual-town-building:focus-visible {
 
 .agent-canvas-stage.is-panning img {
   transition: none;
+}
+
+.agent-canvas-stage-placeholder {
+  display: grid;
+  place-items: center;
+  background: #000;
+  cursor: default;
+  padding: 18px;
+}
+
+.agent-canvas-placeholder-copy {
+  display: grid;
+  gap: 10px;
+  max-width: 280px;
+  text-align: center;
+  color: rgba(232, 236, 240, 0.78);
+}
+
+.agent-canvas-placeholder-lead {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.agent-canvas-placeholder-hint {
+  margin: 0;
+  color: rgba(255, 207, 87, 0.85);
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+}
+
+.agent-canvas-placeholder-prompt {
+  display: inline-block;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(255, 214, 111, 0.18), rgba(240, 183, 61, 0.12));
+  border: 1px solid rgba(255, 207, 87, 0.45);
+  color: #ffe09a;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.85rem;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.agent-canvas-close {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 8px;
+}
+
+.agent-canvas-close .vr-icon {
+  width: 14px;
+  height: 14px;
 }
 
 .agent-canvas-caption {
