@@ -1914,7 +1914,7 @@ test("Codex session capture retries after the first submitted prompt when startu
       timestamp: delayedUpdatedAt,
     });
 
-    session.buffer = "gpt-5.4 xhigh · ~/repo\n› ";
+    session.buffer = "OpenAI Codex\nmodel: gpt-5.4 xhigh\ndirectory: ~/repo\ntab to queue message\n100% context left\n› ";
     manager.write(session.id, "hello\r");
 
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -2217,7 +2217,7 @@ printf '%s\n' '[]'
 });
 
 test("Codex native narrative falls back to owned session events before transcript files exist", async () => {
-  const harness = await createManager();
+  const harness = await createManager({ initialPromptSubmitDelayMs: 5 });
   const { manager, workspaceDir } = harness;
 
   try {
@@ -2227,7 +2227,7 @@ test("Codex native narrative falls back to owned session events before transcrip
       name: "Codex Native",
       cwd: workspaceDir,
       status: "running",
-      buffer: "gpt-5.4 xhigh · ~/repo\n› ",
+      buffer: "OpenAI Codex\nmodel: gpt-5.4 xhigh\ndirectory: ~/repo\ntab to queue message\n100% context left\n› ",
     });
     session.pty = {
       write() {},
@@ -2261,7 +2261,7 @@ test("Codex native narrative falls back to owned session events before transcrip
 });
 
 test("Codex queues the first prompt until the provider is ready", async () => {
-  const harness = await createManager();
+  const harness = await createManager({ initialPromptSubmitDelayMs: 5 });
   const { manager, workspaceDir } = harness;
 
   try {
@@ -2289,9 +2289,10 @@ test("Codex queues the first prompt until the provider is ready", async () => {
     assert.equal(session.pendingProviderInputs.length, 1);
     assert.equal(session.lastPromptAt, null);
 
-    session.buffer = `${session.buffer}\n\ngpt-5.4 xhigh · ~/repo\n› `;
+    session.buffer = `${session.buffer}\n\nOpenAI Codex\nmodel: gpt-5.4 xhigh\ndirectory: ~/repo\ntab to queue message\n100% context left\n› `;
     assert.equal(manager.flushDeferredProviderInputsIfReady(session), true);
-    assert.deepEqual(writes, ["say hello in one sentence\r"]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(writes, ["say hello in one sentence", "\r"]);
     assert.equal(session.pendingProviderInputs.length, 0);
     assert.ok(session.lastPromptAt);
 
@@ -2303,6 +2304,37 @@ test("Codex queues the first prompt until the provider is ready", async () => {
         { kind: "status", label: "Waiting", text: "Holding your message until Codex finishes booting." },
       ],
     );
+  } finally {
+    await cleanupManager(manager, workspaceDir, harness.userHomeDir);
+  }
+});
+
+test("Codex runtime writes the prompt body before sending Enter", async () => {
+  const harness = await createManager({ initialPromptSubmitDelayMs: 5 });
+  const { manager, workspaceDir } = harness;
+
+  try {
+    const writes = [];
+    const session = manager.buildSessionRecord({
+      providerId: "codex",
+      providerLabel: "Codex",
+      name: "Codex Submit",
+      cwd: workspaceDir,
+      status: "running",
+      buffer: "OpenAI Codex\nmodel: gpt-5.4 xhigh\ndirectory: ~/repo\ntab to queue message\n100% context left\n› ",
+    });
+    session.pty = {
+      write(chunk) {
+        writes.push(chunk);
+      },
+      kill() {},
+    };
+    manager.sessions.set(session.id, session);
+
+    assert.equal(manager.write(session.id, "hello from codex\r"), true);
+    assert.deepEqual(writes, ["hello from codex"]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(writes, ["hello from codex", "\r"]);
   } finally {
     await cleanupManager(manager, workspaceDir, harness.userHomeDir);
   }
@@ -2461,6 +2493,56 @@ test("Claude live overlay drops collapsed assistant fragments with no spaces", a
     assert.deepEqual(
       narrative.entries.map((entry) => entry.text),
       ["Let me peek at the town real quick to see where we are."],
+    );
+  } finally {
+    await cleanupManager(manager, workspaceDir, harness.userHomeDir);
+  }
+});
+
+test("Claude live overlay drops raw key-value tool stdout fragments", async () => {
+  const harness = await createManager();
+  const { manager, workspaceDir, userHomeDir } = harness;
+
+  try {
+    const sessionId = "claude-key-value-overlay";
+    await writeClaudeTranscript(userHomeDir, workspaceDir, sessionId, [
+      {
+        type: "assistant",
+        timestamp: "2026-04-24T04:15:06.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Let me check the town state." }],
+        },
+      },
+    ]);
+
+    const session = manager.buildSessionRecord({
+      id: sessionId,
+      providerId: "claude",
+      providerLabel: "Claude Code",
+      name: "Claude Overlay KVs",
+      cwd: workspaceDir,
+      status: "running",
+      createdAt: "2026-04-24T04:15:00.000Z",
+      updatedAt: "2026-04-24T04:15:12.000Z",
+      lastPromptAt: "2026-04-24T04:15:10.000Z",
+      lastOutputAt: "2026-04-24T04:15:12.000Z",
+      buffer: "phase:None",
+      providerState: {
+        sessionId,
+      },
+    });
+    session.pty = {
+      write() {},
+      kill() {},
+    };
+    manager.sessions.set(session.id, session);
+
+    const narrative = await manager.getSessionNarrative(session.id);
+    assert.equal(narrative.providerBacked, true);
+    assert.deepEqual(
+      narrative.entries.map((entry) => entry.text),
+      ["Let me check the town state."],
     );
   } finally {
     await cleanupManager(manager, workspaceDir, harness.userHomeDir);

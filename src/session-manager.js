@@ -631,6 +631,13 @@ function filterProjectedOverlayEntries(entries = []) {
     }
 
     if (entry.kind === "assistant") {
+      if (
+        /tab\s+to\s+queue\s+message|context\s+left|\/model\s+to\s+change/iu.test(normalizedText)
+        || (/OpenAI\s+Codex/iu.test(normalizedText) && /(?:model|directory)\s*:/iu.test(normalizedText))
+      ) {
+        return false;
+      }
+
       if (normalizedText.length > 700) {
         return false;
       }
@@ -638,6 +645,10 @@ function filterProjectedOverlayEntries(entries = []) {
       const whitespaceCount = (normalizedText.match(/\s/g) || []).length;
       if ((/^[\u23fa\u23bf\u23f5]/u.test(normalizedText) || /exitcode\d+/iu.test(normalizedText))
         || (normalizedText.length > 120 && whitespaceCount < 8)) {
+        return false;
+      }
+
+      if (!/\n/u.test(entry.text) && /^[a-z][a-z0-9_-]{1,24}\s*:\s*\S/iu.test(normalizedText) && normalizedText.length < 120) {
         return false;
       }
 
@@ -709,7 +720,7 @@ function providerHasReadyHint(providerId, buffer) {
   }
 
   if (providerId === "codex") {
-    return /Ask for follow-up changes|Full access|GPT-|❯|›/i.test(text);
+    return /tab\s+to\s+queue\s+message|context\s+left|OpenAI\s+Codex|\/model\s+to\s+change|(?:model|directory)\s*:/iu.test(text);
   }
 
   if (providerId === "gemini") {
@@ -743,6 +754,28 @@ function shouldDeferProviderInput(input) {
   }
 
   return !/[\u0000-\u0008\u000b-\u001a\u001c-\u001f\u007f]/u.test(text.replace(/[\r\n\t]+/g, ""));
+}
+
+function splitProviderSubmitInput(session, input) {
+  if (session?.providerId !== "codex") {
+    return null;
+  }
+
+  const text = String(input || "");
+  const trailingSubmit = /(?:\r\n|\r|\n)+$/u.exec(text)?.[0] || "";
+  if (!trailingSubmit) {
+    return null;
+  }
+
+  const body = text.slice(0, text.length - trailingSubmit.length);
+  if (!body.trim()) {
+    return null;
+  }
+
+  return {
+    body,
+    submit: "\r",
+  };
 }
 
 function getRecentNarrativeInputTexts(entries = [], maxEntries = 8) {
@@ -3889,11 +3922,25 @@ export class SessionManager {
       return false;
     }
 
-    this.queueAgentRunTracking(this.agentRunTracker?.handleInput(session, input));
-    session.pty.write(input);
-
     if (recordNarrativeInput) {
       this.recordNativeNarrativeInput(session, input);
+    }
+
+    this.queueAgentRunTracking(this.agentRunTracker?.handleInput(session, input));
+
+    const stagedSubmit = splitProviderSubmitInput(session, input);
+    if (stagedSubmit) {
+      session.pty.write(stagedSubmit.body);
+      this.setTimeoutFn(() => {
+        const currentSession = this.sessions.get(session.id);
+        if (currentSession !== session || session.status === "exited" || !session.pty) {
+          return;
+        }
+
+        session.pty.write(stagedSubmit.submit);
+      }, this.initialPromptSubmitDelayMs);
+    } else {
+      session.pty.write(input);
     }
 
     this.trackSessionInputActivity(session, input);
@@ -3962,6 +4009,7 @@ export class SessionManager {
     });
     this.recordNativeNarrativeInput(session, input);
     this.maybeAutoRenameSessionFromInput(session, input);
+    this.maybeRetryPendingProviderCaptureFromInput(session, input);
     this.pushNativeNarrativeEntry(session, {
       kind: "status",
       label: "Waiting",

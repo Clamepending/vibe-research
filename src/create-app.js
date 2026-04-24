@@ -966,6 +966,41 @@ function getHelperBaseUrl(host, port) {
   return `http://${host}:${port}`;
 }
 
+function normalizePublicBaseUrl(value) {
+  const rawValue = String(value || "").trim();
+  if (!rawValue) {
+    return "";
+  }
+
+  try {
+    const url = new URL(rawValue);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return "";
+    }
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return "";
+  }
+}
+
+function getConfiguredPublicBaseUrl(env = process.env) {
+  return normalizePublicBaseUrl(
+    env.VIBE_RESEARCH_PUBLIC_BASE_URL ||
+      env.REMOTE_VIBES_PUBLIC_BASE_URL ||
+      env.RENDER_EXTERNAL_URL ||
+      "",
+  );
+}
+
+function getPublicBaseUrl(host, port, urls = [], env = process.env) {
+  const configuredUrl = getConfiguredPublicBaseUrl(env);
+  if (configuredUrl) {
+    return configuredUrl;
+  }
+
+  return normalizePublicBaseUrl(pickPreferredUrl(urls)?.url || urls[0]?.url || "") || getHelperBaseUrl(host, port);
+}
+
 async function writeServerInfo(stateDir, payload) {
   const filePath = getServerInfoPath(stateDir);
   const tempPath = `${filePath}.tmp`;
@@ -1020,12 +1055,30 @@ function proxyWebsocketRequest(request, socket, head, proxyServer, proxyPort, st
 }
 
 async function getAccessUrls(host, port) {
-  if (host !== "0.0.0.0") {
-    return [{ label: "Direct", url: `http://${host}:${port}` }];
+  const seen = new Set();
+  const urls = [];
+  const configuredPublicUrl = getConfiguredPublicBaseUrl(process.env);
+  if (configuredPublicUrl) {
+    urls.push({
+      label: process.env.RENDER_EXTERNAL_URL ? "Render" : "Public",
+      url: configuredPublicUrl,
+    });
+    seen.add(configuredPublicUrl);
   }
 
-  const seen = new Set();
-  const urls = [{ label: "Local", url: `http://localhost:${port}` }];
+  if (host !== "0.0.0.0" && host !== "::") {
+    const directUrl = `http://${host}:${port}`;
+    if (!seen.has(directUrl)) {
+      urls.push({ label: "Direct", url: directUrl });
+    }
+    return urls;
+  }
+
+  const localUrl = `http://localhost:${port}`;
+  if (!seen.has(localUrl)) {
+    urls.push({ label: "Local", url: localUrl });
+    seen.add(localUrl);
+  }
 
   for (const [name, addresses] of Object.entries(networkInterfaces())) {
     for (const address of addresses ?? []) {
@@ -1040,7 +1093,11 @@ async function getAccessUrls(host, port) {
 
       seen.add(key);
       const label = name.toLowerCase().includes("tailscale") ? "Tailscale" : name;
-      urls.push({ label, url: `http://${address.address}:${port}` });
+      const directUrl = `http://${address.address}:${port}`;
+      if (!seen.has(directUrl)) {
+        urls.push({ label, url: directUrl });
+        seen.add(directUrl);
+      }
     }
   }
 
@@ -1257,7 +1314,7 @@ async function seedTutorialActionItems({ tutorialRegistry, agentTownStore, setti
 
 export async function createVibeResearchApp({
   host = process.env.VIBE_RESEARCH_HOST || process.env.REMOTE_VIBES_HOST || "0.0.0.0",
-  port = Number(process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4826),
+  port = Number(process.env.PORT || process.env.VIBE_RESEARCH_PORT || process.env.REMOTE_VIBES_PORT || 4826),
   cwd = process.cwd(),
   stateDir = getVibeResearchStateDir({ cwd }),
   persistSessions = true,
@@ -1525,6 +1582,7 @@ export async function createVibeResearchApp({
   let urls = [];
   let preferredUrl = null;
   let helperBaseUrl = "";
+  let publicBaseUrl = "";
   const proxyServer = httpProxy.createProxyServer({
     changeOrigin: true,
     ws: true,
@@ -1688,21 +1746,22 @@ export async function createVibeResearchApp({
 
   function buildSessionManagerEnvironment() {
     const resolvedPort = exposedPort || port;
+    const serverBaseUrl = publicBaseUrl || helperBaseUrl || `http://127.0.0.1:${resolvedPort}`;
     return {
       ...buildAgentCredentialEnv(settingsStore.settings, serverEnv),
       REMOTE_VIBES_PORT: String(resolvedPort),
-      REMOTE_VIBES_SERVER_URL: helperBaseUrl || "",
-      REMOTE_VIBES_URL: preferredUrl || helperBaseUrl || "",
+      REMOTE_VIBES_SERVER_URL: serverBaseUrl,
+      REMOTE_VIBES_URL: publicBaseUrl || serverBaseUrl,
       REMOTE_VIBES_AGENT_CALLBACK_BASE_URL: agentCallbackService.getCallbackBaseUrl(),
-      REMOTE_VIBES_SCAFFOLD_RECIPES_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/scaffold-recipes`,
-      REMOTE_VIBES_WALLET_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/wallet`,
+      REMOTE_VIBES_SCAFFOLD_RECIPES_API: `${serverBaseUrl}/api/scaffold-recipes`,
+      REMOTE_VIBES_WALLET_API: `${serverBaseUrl}/api/wallet`,
       VIBE_RESEARCH_PORT: String(resolvedPort),
-      VIBE_RESEARCH_SERVER_URL: helperBaseUrl || "",
-      VIBE_RESEARCH_URL: preferredUrl || helperBaseUrl || "",
+      VIBE_RESEARCH_SERVER_URL: serverBaseUrl,
+      VIBE_RESEARCH_URL: publicBaseUrl || serverBaseUrl,
       VIBE_RESEARCH_AGENT_CALLBACK_BASE_URL: agentCallbackService.getCallbackBaseUrl(),
-      VIBE_RESEARCH_AGENT_TOWN_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/agent-town`,
-      VIBE_RESEARCH_SCAFFOLD_RECIPES_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/scaffold-recipes`,
-      VIBE_RESEARCH_WALLET_API: `${helperBaseUrl || `http://127.0.0.1:${resolvedPort}`}/api/wallet`,
+      VIBE_RESEARCH_AGENT_TOWN_API: `${serverBaseUrl}/api/agent-town`,
+      VIBE_RESEARCH_SCAFFOLD_RECIPES_API: `${serverBaseUrl}/api/scaffold-recipes`,
+      VIBE_RESEARCH_WALLET_API: `${serverBaseUrl}/api/wallet`,
     };
   }
 
@@ -1849,7 +1908,8 @@ export async function createVibeResearchApp({
       return "";
     }
 
-    return `http://127.0.0.1:${normalizedPort}${BUILDINGHUB_GITHUB_OAUTH_CALLBACK_PATH}`;
+    const callbackBaseUrl = publicBaseUrl || getPublicBaseUrl(host, normalizedPort, urls, serverEnv);
+    return callbackBaseUrl ? `${callbackBaseUrl}${BUILDINGHUB_GITHUB_OAUTH_CALLBACK_PATH}` : "";
   }
 
   function getBuildingHubAccountCompletionUrl(callbackPort) {
@@ -1858,7 +1918,8 @@ export async function createVibeResearchApp({
       return "";
     }
 
-    return `http://127.0.0.1:${normalizedPort}${BUILDINGHUB_ACCOUNT_AUTH_COMPLETE_PATH}`;
+    const callbackBaseUrl = publicBaseUrl || getPublicBaseUrl(host, normalizedPort, urls, serverEnv);
+    return callbackBaseUrl ? `${callbackBaseUrl}${BUILDINGHUB_ACCOUNT_AUTH_COMPLETE_PATH}` : "";
   }
 
   async function syncBuildingHubPublication(publication) {
@@ -2224,6 +2285,15 @@ export async function createVibeResearchApp({
       urls,
       preferredUrl,
       ports: await listNamedPorts(),
+    });
+  });
+
+  app.get("/healthz", (_request, response) => {
+    response.json({
+      ok: true,
+      service: "vibe-research",
+      publicBaseUrl,
+      stateDir,
     });
   });
 
@@ -4866,12 +4936,13 @@ export async function createVibeResearchApp({
   urls = await accessUrlsProvider(host, resolvedPort);
   preferredUrl = pickPreferredUrl(urls)?.url ?? urls[0]?.url ?? null;
   helperBaseUrl = getHelperBaseUrl(host, resolvedPort);
-  agentCallbackService.setServerBaseUrl(helperBaseUrl);
+  publicBaseUrl = getPublicBaseUrl(host, resolvedPort, urls, serverEnv);
+  agentCallbackService.setServerBaseUrl(publicBaseUrl || helperBaseUrl);
   sessionManager.setEnvironment(buildSessionManagerEnvironment());
   await syncBuildingAgentGuides({ refreshBuildingHub: true });
-  browserUseService.setServerBaseUrl(helperBaseUrl);
-  twilioService.setServerBaseUrl?.(preferredUrl || helperBaseUrl);
-  videoMemoryService.setServerBaseUrl(helperBaseUrl);
+  browserUseService.setServerBaseUrl(publicBaseUrl || helperBaseUrl);
+  twilioService.setServerBaseUrl?.(publicBaseUrl || preferredUrl || helperBaseUrl);
+  videoMemoryService.setServerBaseUrl(publicBaseUrl || helperBaseUrl);
   await writeServerInfo(stateDir, {
     agentMailReplyToken: agentMailService.replyToken,
     agentCallbackBaseUrl: agentCallbackService.getCallbackBaseUrl(),
@@ -4887,7 +4958,7 @@ export async function createVibeResearchApp({
     host,
     port: resolvedPort,
     helperBaseUrl,
-    preferredUrl,
+    preferredUrl: publicBaseUrl || preferredUrl,
   });
   if (systemMetricsSampleIntervalMs > 0) {
     systemMetricsTimer = setInterval(() => {
@@ -5035,7 +5106,7 @@ export async function createVibeResearchApp({
       host,
       port: resolvedPort,
       providers,
-      preferredUrl,
+      preferredUrl: publicBaseUrl || preferredUrl,
       settings: getSettingsState(),
       stateDir,
       urls,

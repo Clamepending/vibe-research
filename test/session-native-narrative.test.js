@@ -189,6 +189,86 @@ test("Claude native narrative turns onboarding seed prompts into kickoff status 
   assert.equal(narrative.entries.at(-1).outputPreview, "ready");
 });
 
+test("Codex native narrative uses event messages for thinking and commentary before the final answer lands", () => {
+  const timestamp = "2026-04-24T04:51:37.075Z";
+  const text = [
+    JSON.stringify({ timestamp, type: "session_meta", payload: { id: "codex-thread", cwd: "/tmp/demo" } }),
+    JSON.stringify({
+      timestamp,
+      type: "event_msg",
+      payload: {
+        type: "task_started",
+        turn_id: "turn-1",
+      },
+    }),
+    JSON.stringify({
+      timestamp,
+      type: "event_msg",
+      payload: {
+        type: "agent_message",
+        message: "I am checking the repo before I touch anything.",
+        phase: "commentary",
+      },
+    }),
+    JSON.stringify({
+      timestamp,
+      type: "event_msg",
+      payload: {
+        type: "agent_message",
+        message: "The changes are in place.",
+        phase: "final_answer",
+      },
+    }),
+  ].join("\n");
+
+  const narrative = buildCodexNarrativeFromText(text, { providerId: "codex", providerLabel: "Codex" });
+
+  assert.deepEqual(
+    narrative.entries.map((entry) => ({ kind: entry.kind, label: entry.label, text: entry.text })),
+    [
+      { kind: "status", label: "Thinking", text: "Codex is thinking..." },
+      { kind: "status", label: "Activity", text: "I am checking the repo before I touch anything." },
+      { kind: "assistant", label: "Codex", text: "The changes are in place." },
+    ],
+  );
+});
+
+test("Claude native narrative surfaces thinking blocks before tool calls complete", () => {
+  const text = [
+    JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-04-24T01:00:03.000Z",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "" },
+          { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "echo ready" } },
+        ],
+      },
+    }),
+    JSON.stringify({
+      type: "user",
+      timestamp: "2026-04-24T01:00:04.000Z",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "Exit code 1\nphase: None", is_error: true }],
+      },
+    }),
+  ].join("\n");
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude Code" });
+
+  assert.deepEqual(
+    narrative.entries.map((entry) => ({ kind: entry.kind, label: entry.label, text: entry.text })),
+    [
+      { kind: "status", label: "Thinking", text: "Claude is thinking..." },
+      { kind: "tool", label: "Bash", text: "echo ready" },
+    ],
+  );
+  assert.equal(narrative.entries.at(-1).status, "error");
+  assert.equal(narrative.entries.at(-1).outputPreview, "Exit code 1");
+});
+
 test("Session manager native narrative reads Gemini jsonl chat logs", async () => {
   const harness = await createManager();
   const { manager, workspaceDir, userHomeDir } = harness;

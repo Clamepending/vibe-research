@@ -261,6 +261,88 @@ function extractClaudeMessageText(content) {
   return normalizeText(textChunks.join("\n\n"));
 }
 
+function extractClaudeThinkingText(content) {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  const thinkingChunks = [];
+  let sawThinking = false;
+  for (const part of content) {
+    if (part?.type !== "thinking") {
+      continue;
+    }
+
+    sawThinking = true;
+    if (typeof part.thinking === "string" && part.thinking.trim()) {
+      thinkingChunks.push(part.thinking);
+      continue;
+    }
+
+    if (typeof part.text === "string" && part.text.trim()) {
+      thinkingChunks.push(part.text);
+    }
+  }
+
+  if (!sawThinking) {
+    return "";
+  }
+
+  return normalizeText(thinkingChunks.join("\n\n")) || "Claude is thinking...";
+}
+
+function extractClaudeToolResultText(toolResult) {
+  if (!toolResult || typeof toolResult !== "object") {
+    return "";
+  }
+
+  const content = toolResult.content ?? toolResult.toolUseResult ?? "";
+  if (typeof content === "string") {
+    return normalizeText(content);
+  }
+
+  if (Array.isArray(content)) {
+    return normalizeText(
+      content
+        .map((part) => {
+          if (typeof part === "string") {
+            return part;
+          }
+
+          if (part?.type === "text" && typeof part.text === "string") {
+            return part.text;
+          }
+
+          if (typeof part?.content === "string") {
+            return part.content;
+          }
+
+          if (typeof part?.stdout === "string" || typeof part?.stderr === "string") {
+            return [part.stdout || "", part.stderr || ""].filter(Boolean).join("\n");
+          }
+
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n\n"),
+    );
+  }
+
+  if (content && typeof content === "object") {
+    return normalizeText(
+      [
+        typeof content.stdout === "string" ? content.stdout : "",
+        typeof content.stderr === "string" ? content.stderr : "",
+        typeof content.content === "string" ? content.content : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+    );
+  }
+
+  return "";
+}
+
 function summarizeClaudeToolInput(toolUse) {
   if (!toolUse || typeof toolUse !== "object") {
     return "";
@@ -329,11 +411,64 @@ function buildCodexNarrativeFromText(text, session = {}, { maxEntries = DEFAULT_
 
     updatedAt = parseTimestamp(payload.timestamp) || updatedAt;
 
+    if (payload.type === "event_msg" && payload.payload && typeof payload.payload === "object") {
+      const eventPayload = payload.payload;
+
+      if (eventPayload.type === "task_started") {
+        dedupePush(entries, {
+          id: makeEntryId("codex-thinking", entries.length + 1),
+          kind: "status",
+          label: "Thinking",
+          text: `${session.providerLabel || "Codex"} is thinking...`,
+          timestamp: updatedAt,
+        }, maxEntries);
+        continue;
+      }
+
+      if (eventPayload.type === "user_message" && typeof eventPayload.message === "string") {
+        const classified = classifyPromptEntry(eventPayload.message);
+        if (classified.kind === "hide") {
+          continue;
+        }
+
+        dedupePush(entries, {
+          id: makeEntryId("codex-user", entries.length + 1),
+          kind: classified.kind,
+          label: classified.kind === "status" ? "Kickoff" : "You",
+          text: classified.text,
+          timestamp: updatedAt,
+        }, maxEntries);
+        continue;
+      }
+
+      if (eventPayload.type === "agent_message" && typeof eventPayload.message === "string") {
+        dedupePush(entries, {
+          id: makeEntryId("codex-agent-message", entries.length + 1),
+          kind: eventPayload.phase === "commentary" ? "status" : "assistant",
+          label: eventPayload.phase === "commentary" ? "Activity" : session.providerLabel || "Assistant",
+          text: eventPayload.message,
+          timestamp: updatedAt,
+        }, maxEntries);
+        continue;
+      }
+    }
+
     if (payload.type !== "response_item" || !payload.payload || typeof payload.payload !== "object") {
       continue;
     }
 
     const item = payload.payload;
+    if (item.type === "reasoning") {
+      dedupePush(entries, {
+        id: makeEntryId("codex-thinking", entries.length + 1),
+        kind: "status",
+        label: "Thinking",
+        text: `${session.providerLabel || "Codex"} is thinking...`,
+        timestamp: updatedAt,
+      }, maxEntries);
+      continue;
+    }
+
     if (item.type === "message") {
       if (item.role === "developer") {
         continue;
@@ -462,6 +597,17 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
       }
 
       const content = Array.isArray(payload.message?.content) ? payload.message.content : [];
+      const thinkingText = extractClaudeThinkingText(content);
+      if (thinkingText) {
+        dedupePush(entries, {
+          id: makeEntryId("claude-thinking", entries.length + 1),
+          kind: "status",
+          label: "Thinking",
+          text: thinkingText,
+          timestamp: updatedAt,
+        }, maxEntries);
+      }
+
       const assistantText = extractClaudeMessageText(content);
       if (assistantText) {
         dedupePush(entries, {
@@ -528,13 +674,14 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
           continue;
         }
 
+        const outputText = extractClaudeToolResultText(item);
         const index = entries.findIndex((entry) => entry.id === toolEntry.id);
         if (index >= 0) {
+          const nextEntry = markToolResult(entries[index], outputText);
           entries[index] = {
-            ...entries[index],
-            status: item.is_error ? "error" : "done",
-            meta: item.is_error ? "error" : "completed",
-            outputPreview: truncateText(item.content || "", 2_200),
+            ...nextEntry,
+            status: item.is_error ? "error" : nextEntry.status,
+            meta: item.is_error ? "error" : nextEntry.meta,
           };
         }
       }

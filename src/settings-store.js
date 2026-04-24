@@ -169,6 +169,20 @@ function normalizeBuildingHubAuthProvider(value) {
   return provider === "google" || provider === "github" ? provider : "";
 }
 
+function normalizeBooleanEnv(value, fallback = false) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
+}
+
 const AGENT_AUTOMATION_CADENCES = new Set(["hourly", "six-hours", "daily", "weekday", "weekly"]);
 const AGENT_AUTOMATION_WEEKDAYS = new Set(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
 
@@ -265,6 +279,12 @@ export class SettingsStore {
         this.env.REMOTE_VIBES_DEFAULT_CWD ||
         "",
     ).trim();
+    const configuredBuildingHubAppUrl = normalizeBuildingHubUrl(
+      this.env.VIBE_RESEARCH_BUILDINGHUB_APP_URL || this.env.REMOTE_VIBES_BUILDINGHUB_APP_URL || "",
+    );
+    const configuredBuildingHubCatalogUrl = normalizeBuildingHubUrl(
+      this.env.VIBE_RESEARCH_BUILDINGHUB_URL || this.env.REMOTE_VIBES_BUILDINGHUB_URL || "",
+    );
     const workspaceRootPath = this.normalizeWorkspaceRootPath(configuredWorkspaceRootPath || this.cwd);
     const workspacePaths = this.deriveWorkspacePaths(workspaceRootPath);
 
@@ -299,13 +319,14 @@ export class SettingsStore {
       browserUseModel: "",
       browserUseProfileDir: getDefaultBrowserUseProfileDir(this.homeDir),
       browserUseWorkerPath: getDefaultBrowserUseWorkerPath(this.homeDir),
-      buildingHubAppUrl: normalizeBuildingHubUrl(
-        this.env.VIBE_RESEARCH_BUILDINGHUB_APP_URL || this.env.REMOTE_VIBES_BUILDINGHUB_APP_URL || "",
-      ),
+      buildingHubAppUrl: configuredBuildingHubAppUrl,
       buildingHubAuthProvider: normalizeBuildingHubAuthProvider(this.env.VIBE_RESEARCH_BUILDINGHUB_AUTH_PROVIDER || ""),
       buildingHubCatalogPath: String(this.env.VIBE_RESEARCH_BUILDINGHUB_PATH || "").trim(),
-      buildingHubCatalogUrl: normalizeBuildingHubUrl(this.env.VIBE_RESEARCH_BUILDINGHUB_URL),
-      buildingHubEnabled: false,
+      buildingHubCatalogUrl: configuredBuildingHubCatalogUrl,
+      buildingHubEnabled: normalizeBooleanEnv(
+        this.env.VIBE_RESEARCH_BUILDINGHUB_ENABLED || this.env.REMOTE_VIBES_BUILDINGHUB_ENABLED || "",
+        Boolean(configuredBuildingHubAppUrl || configuredBuildingHubCatalogUrl || this.env.VIBE_RESEARCH_BUILDINGHUB_PATH),
+      ),
       buildingHubProfileUrl: normalizeBuildingHubUrl(this.env.VIBE_RESEARCH_BUILDINGHUB_PROFILE_URL || ""),
       githubOAuthClientId: String(
         this.env.VIBE_RESEARCH_GITHUB_OAUTH_CLIENT_ID ||
