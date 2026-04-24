@@ -1,0 +1,176 @@
+#!/usr/bin/env node
+
+import path from "node:path";
+import process from "node:process";
+import readline from "node:readline";
+import { fileURLToPath } from "node:url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const moduleUrl = new URL("../src/claude-stream-session.js", import.meta.url);
+const { ClaudeStreamSession } = await import(moduleUrl.href);
+
+const HELP = `vr-claude-stream-chat
+
+Multi-turn REPL against Claude Code via the stream-json protocol. Phase
+1 of the migration described in docs/claude-stream-mode.md — proves
+that the streaming session class can drive an interactive conversation
+without a PTY.
+
+Usage:
+  vr-claude-stream-chat [--cwd DIR] [--session-id ID] [--no-system-guidance]
+  vr-claude-stream-chat --help
+
+Type a message and press Enter to send. /exit or Ctrl-D to quit.
+`;
+
+const argv = process.argv.slice(2);
+if (argv.includes("--help") || argv.includes("-h")) {
+  process.stdout.write(HELP);
+  process.exit(0);
+}
+
+const options = {
+  cwd: process.cwd(),
+  sessionId: "",
+  noSystemGuidance: false,
+};
+
+for (let i = 0; i < argv.length; i += 1) {
+  const arg = argv[i];
+  switch (arg) {
+    case "--cwd":
+      options.cwd = argv[++i] || options.cwd;
+      break;
+    case "--session-id":
+      options.sessionId = argv[++i] || "";
+      break;
+    case "--no-system-guidance":
+      options.noSystemGuidance = true;
+      break;
+    default:
+      process.stderr.write(`vr-claude-stream-chat: unknown arg ${arg}\n`);
+      process.exit(2);
+  }
+}
+
+const env = { ...process.env };
+if (options.noSystemGuidance) {
+  env.VIBE_RESEARCH_AGENT_PROMPT_PATH = "";
+  env.REMOTE_VIBES_AGENT_PROMPT_PATH = "";
+}
+
+const sessionOpts = {
+  cwd: options.cwd,
+  env,
+  claudeBin: path.join(here, "claude"),
+};
+if (options.sessionId) {
+  sessionOpts.sessionId = options.sessionId;
+}
+
+const session = new ClaudeStreamSession(sessionOpts);
+
+session.on("error", (error) => {
+  process.stderr.write(`\n[stream] error: ${error.message}\n`);
+});
+session.on("stderr", (chunk) => {
+  process.stderr.write(`[claude:stderr] ${chunk}`);
+});
+session.on("exit", ({ code, signal }) => {
+  process.stderr.write(`\n[stream] child exited code=${code} signal=${signal || ""}\n`);
+  process.exit(code ?? 0);
+});
+
+let lastRenderedEntryId = "";
+session.on("entries", (entries) => {
+  const lastEntry = entries[entries.length - 1];
+  if (!lastEntry || lastEntry.id === lastRenderedEntryId) {
+    return;
+  }
+  lastRenderedEntryId = lastEntry.id;
+  renderEntry(lastEntry);
+});
+
+session.on("turn-complete", () => {
+  process.stdout.write("\n");
+  prompt();
+});
+
+session.start();
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+  terminal: process.stdout.isTTY,
+});
+
+rl.on("close", () => {
+  session.close();
+});
+
+let awaitingTurn = false;
+function prompt() {
+  awaitingTurn = false;
+  rl.setPrompt("you> ");
+  rl.prompt();
+}
+prompt();
+
+rl.on("line", (rawLine) => {
+  const line = rawLine.trim();
+  if (!line) {
+    rl.prompt();
+    return;
+  }
+  if (line === "/exit" || line === "/quit") {
+    rl.close();
+    return;
+  }
+  if (awaitingTurn) {
+    process.stderr.write("[stream] previous turn still in flight; ignoring.\n");
+    rl.prompt();
+    return;
+  }
+  try {
+    session.send(line);
+    awaitingTurn = true;
+  } catch (error) {
+    process.stderr.write(`[stream] send failed: ${error.message}\n`);
+    rl.prompt();
+  }
+});
+
+function renderEntry(entry) {
+  const kind = entry?.kind || "?";
+  const text = String(entry?.text || "").trim();
+  if (!text && kind !== "tool") {
+    return;
+  }
+  if (kind === "assistant") {
+    process.stdout.write(`\nclaude> ${text}\n`);
+    return;
+  }
+  if (kind === "tool") {
+    const status = entry?.status ? ` [${entry.status}]` : "";
+    process.stdout.write(`\n[tool ${entry.label || ""}]${status} ${text}\n`);
+    if (entry.outputPreview) {
+      process.stdout.write(`${indent(entry.outputPreview)}\n`);
+    }
+    return;
+  }
+  if (kind === "status") {
+    process.stdout.write(`\n[${entry.label || "status"}] ${text}\n`);
+    return;
+  }
+  if (kind === "user") {
+    return;
+  }
+  process.stdout.write(`\n[${kind}] ${text}\n`);
+}
+
+function indent(text) {
+  return String(text || "")
+    .split("\n")
+    .map((line) => `  ${line}`)
+    .join("\n");
+}

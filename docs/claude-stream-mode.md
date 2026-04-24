@@ -1,6 +1,7 @@
 # Claude Code stream-json mode (migration sketch)
 
-Status: design + experiment script. No runtime behavior changes yet.
+Status: design + Phase 1 building block. No client-facing runtime changes
+yet — the existing PTY path is still what every Claude session uses.
 
 ## Why
 
@@ -84,39 +85,55 @@ A "stream-mode" Claude session would:
 
 ## Migration plan
 
-**Phase 0 — protocol experiment (this PR).**
-- Ship a standalone script `bin/vr-claude-stream-experiment` that spawns the
-  wrapped `bin/claude` in stream-json mode, sends one prompt, and pretty-
-  prints every event line. Lets us validate the protocol on a real machine
-  with the user's existing Claude install before wiring anything into the
-  session manager.
+**Phase 0 — protocol experiment (done).**
+- `bin/vr-claude-stream-experiment` spawns the wrapped `bin/claude` in
+  stream-json mode, sends one prompt, and pretty-prints every event line.
+  Confirmed locally: Claude emits `system:init`, `rate_limit_event`,
+  `assistant` (with `text`, `thinking`, `tool_use` content blocks), `user`
+  (with `tool_result` content), and a final `result` event — the same shape
+  the transcript file uses.
 
-**Phase 1 — opt-in stream-mode session, no UI changes.**
+**Phase 1 — building block, no session-manager wiring (done).**
+- `src/claude-stream-session.js` exports `ClaudeStreamSession`, a plain
+  EventEmitter wrapping the spawn + JSONL streams. It owns the child
+  process, parses each event line, builds narrative entries via the
+  existing `buildClaudeNarrativeFromText`, and emits `event` / `entries` /
+  `turn-complete` / `exit`.
+- `bin/vr-claude-stream-chat` is an interactive multi-turn REPL on top of
+  the class. Confirmed multi-turn works against a real Claude install
+  without any PTY involvement.
+
+**Phase 2 — opt-in stream-mode session in the server.**
 - Add `VIBE_RESEARCH_CLAUDE_STREAM_MODE=1` env flag.
-- Introduce `ClaudeStreamSession` alongside the existing PTY-backed session
-  in `src/session-manager.js`. When the flag is on AND the provider is
-  Claude Code AND the user is already authenticated, new sessions use the
-  stream class. Reuse `buildClaudeNarrativeFromText` as a line streamer.
+- Wire `ClaudeStreamSession` into `src/session-manager.js` so that when the
+  flag is on AND the provider is Claude Code AND the user is already
+  authenticated, new sessions use the stream class. Reuse the existing
+  rich-session UI — entries are already in the right shape.
 - Existing sessions and unauthenticated starts keep using PTY.
 
-**Phase 2 — hide the xterm tab for stream-mode sessions.**
+**Phase 3 — hide the xterm tab for stream-mode sessions.**
 - Default the workspace view to rich-session for stream-mode sessions.
 - Optional debug pane to view raw stdout.
 
-**Phase 3 — own the auth + trust handoff.**
+**Phase 4 — own the auth + trust handoff.**
 - Detect `not authenticated` exit and show our own login overlay.
 - Pre-write workspace trust to `~/.claude/settings.json` so no prompt fires.
 
-**Phase 4 — flip the default + remove the projection fallback for Claude.**
-- Once Phase 1–3 cover the path the user normally hits, default the flag on.
+**Phase 5 — flip the default + remove the projection fallback for Claude.**
+- Once Phase 2–4 cover the path the user normally hits, default the flag on.
 - Keep PTY mode reachable per-session for debugging.
 
-**Phase 5 — Codex.**
+**Phase 6 — Codex.**
 - Codex doesn't ship a stream JSON I/O mode today. Keep PTY for Codex until
   upstream adds one (or we contribute it). The Codex projection path stays,
   but with Claude removed it's a much smaller surface to keep working.
 
-## Out of scope for this PR
+## Try it
 
-Everything past Phase 0. No new runtime code path, no flag honored at
-runtime — just docs and an experiment script.
+```
+bin/vr-claude-stream-experiment --prompt "hello, who are you?"
+bin/vr-claude-stream-chat
+```
+
+Both go through the same wrapper Claude binary the rest of the app uses,
+so they pick up your existing auth + workspace trust automatically.
