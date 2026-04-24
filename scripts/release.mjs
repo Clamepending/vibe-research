@@ -221,7 +221,36 @@ if (noPush) {
 }
 
 const pushRemote = runningInGitHubActions || noGitHubRelease || !githubPushUrl ? "origin" : githubPushUrl;
-run("git", ["push", pushRemote, currentBranch]);
+
+// Push the release commit, rebasing on top of any work that landed while we
+// were running tests + building assets. A fresh commit lands on main every
+// few minutes during rapid iteration, so a retry loop is essential when
+// release is wired to push triggers.
+function pushBranchWithRebase(maxAttempts = 5) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      run("git", ["push", pushRemote, currentBranch]);
+      return;
+    } catch (pushError) {
+      if (attempt === maxAttempts) {
+        throw pushError;
+      }
+      log(`Push attempt ${attempt} failed; fetching and rebasing.`);
+      run("git", ["fetch", pushRemote, currentBranch]);
+      try {
+        run("git", ["rebase", `${pushRemote}/${currentBranch}`]);
+      } catch (rebaseError) {
+        // Rebase failed — most likely a conflict on release-channel.json or
+        // package.json. Abort cleanly so we don't leave the worktree in a
+        // half-merged state, then surface the error.
+        run("git", ["rebase", "--abort"], { allowFailure: true });
+        throw rebaseError;
+      }
+    }
+  }
+}
+
+pushBranchWithRebase();
 run("git", ["push", pushRemote, tag]);
 
 if (noGitHubRelease) {
