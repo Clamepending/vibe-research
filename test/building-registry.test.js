@@ -187,7 +187,7 @@ test("building registry exposes core building manifests", () => {
   assert.equal(occupations.ui.workspaceView, "agent-prompt");
   assert.equal(occupations.visual.shape, "school");
   assert.ok(AGENT_TOWN_SPECIAL_BUILDING_IDS.has("occupations"));
-  assert.match(occupations.access.detail, /AGENTS\.md, CLAUDE\.md, and GEMINI\.md/i);
+  assert.match(occupations.access.detail, /AGENTS\.md and CLAUDE\.md/i);
   assert.ok(occupations.agentGuide.commands.some((command) => command.command.includes("/api/agent-prompt")));
 
   const externalConnectorIds = ["discord", "moltbook", "twitter", "phone-imessage", "home-automation"];
