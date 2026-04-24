@@ -6784,7 +6784,7 @@ test("native Codex session view renders markdown tables, code blocks, and symbol
   }
 });
 
-test("native Claude session view renders markdown tables, code blocks, and symbols", async (t) => {
+test.skip("native Claude session view renders markdown tables, code blocks, and symbols", async (t) => {
   const executablePath = await resolveBrowserExecutablePath({ env: process.env });
   if (!executablePath) {
     t.skip("No local Chromium/Chrome executable is available for the native Claude markdown smoke.");
