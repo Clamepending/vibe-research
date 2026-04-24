@@ -1706,6 +1706,8 @@ const state = {
   pluginDetailId: "",
   pluginInstallActions: {},
   pluginInstallPlacementPendingIds: new Set(),
+  pluginInstallStep: {},
+  pluginInstallDraft: {},
   pluginOnboardingOpenId: "",
   pendingPluginSetupFocus: null,
   buildingHubAdvancedOpen: false,
@@ -14444,176 +14446,499 @@ function renderPluginNextSetupAction(plugin, issue = getPluginBuildingIssue(plug
   `;
 }
 
+function getPluginInstallStepRaw(pluginId) {
+  if (!pluginId) return null;
+  const stored = state.pluginInstallStep?.[pluginId];
+  return typeof stored === "number" && Number.isFinite(stored) ? Math.max(0, Math.floor(stored)) : null;
+}
+
+function setPluginInstallStep(pluginId, step) {
+  if (!pluginId) return;
+  const next = Math.max(0, Math.floor(Number(step) || 0));
+  state.pluginInstallStep = { ...(state.pluginInstallStep || {}), [pluginId]: next };
+}
+
+function clearPluginInstallStep(pluginId) {
+  if (!pluginId || !state.pluginInstallStep) return;
+  const next = { ...state.pluginInstallStep };
+  delete next[pluginId];
+  state.pluginInstallStep = next;
+}
+
+function getPluginInstallDraft(pluginId) {
+  if (!pluginId) return {};
+  return state.pluginInstallDraft?.[pluginId] || {};
+}
+
+function setPluginInstallDraft(pluginId, values) {
+  if (!pluginId) return;
+  state.pluginInstallDraft = {
+    ...(state.pluginInstallDraft || {}),
+    [pluginId]: { ...(state.pluginInstallDraft?.[pluginId] || {}), ...(values || {}) },
+  };
+}
+
+function clearPluginInstallDraft(pluginId) {
+  if (!pluginId || !state.pluginInstallDraft) return;
+  const next = { ...state.pluginInstallDraft };
+  delete next[pluginId];
+  state.pluginInstallDraft = next;
+}
+
+function resetPluginInstallProgression(pluginId) {
+  clearPluginInstallStep(pluginId);
+  clearPluginInstallDraft(pluginId);
+}
+
+function renderPluginStepProgress(current, total) {
+  const clampedTotal = Math.max(1, Math.floor(total));
+  const clampedCurrent = Math.min(clampedTotal - 1, Math.max(0, Math.floor(current)));
+  const dots = Array.from({ length: clampedTotal })
+    .map((_, index) => {
+      const classes = ["plugin-install-progress-dot"];
+      if (index < clampedCurrent) classes.push("is-done");
+      if (index === clampedCurrent) classes.push("is-active");
+      return `<span class="${classes.join(" ")}" aria-hidden="true"></span>`;
+    })
+    .join("");
+  return `
+    <div class="plugin-install-progress" aria-label="setup progress">
+      <span class="plugin-install-progress-dots">${dots}</span>
+      <span class="plugin-install-progress-label">step ${clampedCurrent + 1} of ${clampedTotal}</span>
+    </div>
+  `;
+}
+
+function getBrowserUseInstallStep() {
+  const stored = getPluginInstallStepRaw("browser-use");
+  if (stored !== null) return Math.min(1, stored);
+  if (state.settings.browserUseAnthropicApiKeyConfigured) return 1;
+  return 0;
+}
+
 function renderBrowserUseInstallForm() {
+  const pluginId = "browser-use";
+  const step = getBrowserUseInstallStep();
+  const draft = getPluginInstallDraft(pluginId);
   const status = state.settings.browserUseStatus || {};
   const actionLabel = isPluginIdInstalled("browser-use") ? "save Browser Use" : "save and install";
-  return `
-    <form class="settings-form plugin-install-form browser-use-form">
-      <input type="hidden" name="browserUseEnabled" value="on" />
-      <label class="field-label" for="install-browser-use-api-key">Anthropic API key</label>
-      <input
-        class="file-root-input"
-        id="install-browser-use-api-key"
-        name="browserUseAnthropicApiKey"
-        type="password"
-        placeholder="${escapeHtml(state.settings.browserUseAnthropicApiKeyConfigured ? "saved; leave blank to keep" : "sk-ant-...")}"
-        autocomplete="off"
-        autocorrect="off"
-        autocapitalize="none"
-        spellcheck="false"
-      />
-      <label class="field-label" for="install-browser-use-worker-path">OttoAuth worker folder</label>
-      <input
-        class="file-root-input"
-        id="install-browser-use-worker-path"
-        name="browserUseWorkerPath"
-        type="text"
-        value="${escapeHtml(state.settings.browserUseWorkerPath || status.workerPath || "")}"
-        autocomplete="off"
-        autocorrect="off"
-        autocapitalize="none"
-        spellcheck="false"
-      />
-      <label class="field-label" for="install-browser-use-profile-dir">browser profile folder</label>
-      <input
-        class="file-root-input"
-        id="install-browser-use-profile-dir"
-        name="browserUseProfileDir"
-        type="text"
-        value="${escapeHtml(state.settings.browserUseProfileDir || status.profileDir || "")}"
-        autocomplete="off"
-        autocorrect="off"
-        autocapitalize="none"
-        spellcheck="false"
-      />
-      <div class="knowledge-settings-remote-grid">
-        <label>
-          <span class="field-label">model</span>
-          <input class="file-root-input" name="browserUseModel" type="text" value="${escapeHtml(state.settings.browserUseModel || "")}" placeholder="worker default" autocomplete="off" />
-        </label>
-        <label>
-          <span class="field-label">max steps</span>
-          <input class="file-root-input" name="browserUseMaxTurns" type="number" min="1" max="200" step="1" value="${escapeHtml(String(state.settings.browserUseMaxTurns || status.maxTurns || 50))}" autocomplete="off" />
-        </label>
+  const totalSteps = 2;
+
+  if (step === 0) {
+    return `
+      <div class="plugin-install-progressive" data-plugin-install-step-root="browser-use">
+        ${renderPluginStepProgress(0, totalSteps)}
+        <div class="plugin-install-step-body">
+          <h3 class="plugin-install-step-title">Get an Anthropic API key</h3>
+          <p class="plugin-install-step-hint">Browser Use drives a real Chromium session with Claude. Grab an API key from the Anthropic Console — we'll paste it next.</p>
+          <div class="plugin-onboarding-actions">
+            <a class="primary-button plugin-install-step-link" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer" data-plugin-install-advance="browser-use" data-plugin-install-next-step="1">
+              <span>Open Anthropic Console</span>
+            </a>
+            <button class="ghost-button plugin-install-step-skip" type="button" data-plugin-install-advance="browser-use" data-plugin-install-next-step="1">I have a key</button>
+          </div>
+          <div class="plugin-install-step-foot">
+            <button class="plugin-install-step-cancel plugin-install-cancel-button" type="button" data-plugin-cancel-install="browser-use">cancel</button>
+          </div>
+        </div>
       </div>
+    `;
+  }
+
+  const apiKeyValue = typeof draft.browserUseAnthropicApiKey === "string" ? draft.browserUseAnthropicApiKey : "";
+  const workerPathValue = typeof draft.browserUseWorkerPath === "string"
+    ? draft.browserUseWorkerPath
+    : (state.settings.browserUseWorkerPath || status.workerPath || "");
+  const profileDirValue = typeof draft.browserUseProfileDir === "string"
+    ? draft.browserUseProfileDir
+    : (state.settings.browserUseProfileDir || status.profileDir || "");
+  const modelValue = typeof draft.browserUseModel === "string"
+    ? draft.browserUseModel
+    : (state.settings.browserUseModel || "");
+  const maxTurnsValue = typeof draft.browserUseMaxTurns === "string"
+    ? draft.browserUseMaxTurns
+    : String(state.settings.browserUseMaxTurns || status.maxTurns || 50);
+  const advancedOpen = Boolean(workerPathValue || profileDirValue || modelValue);
+
+  return `
+    <form class="settings-form plugin-install-form browser-use-form plugin-install-progressive" data-plugin-install-step-root="browser-use">
+      <input type="hidden" name="browserUseEnabled" value="on" />
       <input type="hidden" name="browserUseHeadless" value="on" />
       ${state.settings.browserUseKeepTabs ? `<input type="hidden" name="browserUseKeepTabs" value="on" />` : ""}
-      <div class="plugin-onboarding-actions">
-        <button class="primary-button plugin-install-finish-button" type="submit" data-browser-use-action="setup">${escapeHtml(actionLabel)}</button>
-        <button class="ghost-button plugin-install-cancel-button" type="button" data-plugin-cancel-install="browser-use">back</button>
+      ${renderPluginStepProgress(1, totalSteps)}
+      <div class="plugin-install-step-body">
+        <h3 class="plugin-install-step-title">Paste the Anthropic API key</h3>
+        <p class="plugin-install-step-hint">Paste the key from the Anthropic Console. It starts with <code>sk-ant-</code> and we encrypt it on save.</p>
+        <label class="field-label" for="install-browser-use-api-key">Anthropic API key</label>
+        <input class="file-root-input" id="install-browser-use-api-key" name="browserUseAnthropicApiKey" type="password" value="${escapeHtml(apiKeyValue)}" placeholder="${escapeHtml(state.settings.browserUseAnthropicApiKeyConfigured ? "saved; leave blank to keep" : "sk-ant-...")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" ${state.settings.browserUseAnthropicApiKeyConfigured ? "" : "required"} />
+        <details class="plugin-install-step-advanced" ${advancedOpen ? "open" : ""}>
+          <summary>Worker settings (optional)</summary>
+          <label class="field-label" for="install-browser-use-worker-path">OttoAuth worker folder</label>
+          <input class="file-root-input" id="install-browser-use-worker-path" name="browserUseWorkerPath" type="text" value="${escapeHtml(workerPathValue)}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+          <label class="field-label" for="install-browser-use-profile-dir">browser profile folder</label>
+          <input class="file-root-input" id="install-browser-use-profile-dir" name="browserUseProfileDir" type="text" value="${escapeHtml(profileDirValue)}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+          <div class="knowledge-settings-remote-grid">
+            <label>
+              <span class="field-label">model</span>
+              <input class="file-root-input" name="browserUseModel" type="text" value="${escapeHtml(modelValue)}" placeholder="worker default" autocomplete="off" />
+            </label>
+            <label>
+              <span class="field-label">max steps</span>
+              <input class="file-root-input" name="browserUseMaxTurns" type="number" min="1" max="200" step="1" value="${escapeHtml(maxTurnsValue)}" autocomplete="off" />
+            </label>
+          </div>
+        </details>
+        <div class="plugin-onboarding-actions">
+          <button class="primary-button plugin-install-finish-button" type="submit" data-browser-use-action="setup">${escapeHtml(actionLabel)}</button>
+          <button class="ghost-button plugin-install-step-back" type="button" data-plugin-install-advance="browser-use" data-plugin-install-next-step="0">back</button>
+        </div>
+        <div class="settings-status">${escapeHtml(getBrowserUseStatusText())}</div>
       </div>
-      <div class="settings-status">${escapeHtml(getBrowserUseStatusText())}</div>
     </form>
   `;
+}
+
+function getOttoAuthInstallStep() {
+  const stored = getPluginInstallStepRaw("ottoauth");
+  if (stored !== null) return Math.min(1, stored);
+  if (state.settings.ottoAuthPrivateKeyConfigured) return 1;
+  return 0;
 }
 
 function renderOttoAuthInstallForm() {
+  const pluginId = "ottoauth";
+  const step = getOttoAuthInstallStep();
+  const draft = getPluginInstallDraft(pluginId);
   const status = state.settings.ottoAuthStatus || {};
   const actionLabel = isPluginIdInstalled("ottoauth") ? "save OttoAuth" : "save and install";
+  const totalSteps = 2;
+
+  if (step === 0) {
+    return `
+      <div class="plugin-install-progressive" data-plugin-install-step-root="ottoauth">
+        ${renderPluginStepProgress(0, totalSteps)}
+        <div class="plugin-install-step-body">
+          <h3 class="plugin-install-step-title">Sign up at OttoAuth</h3>
+          <p class="plugin-install-step-hint">OttoAuth lets agents pay for metered services with a spending cap. Create a username and copy a private key — we'll paste it next.</p>
+          <div class="plugin-onboarding-actions">
+            <a class="primary-button plugin-install-step-link" href="https://ottoauth.vercel.app" target="_blank" rel="noreferrer" data-plugin-install-advance="ottoauth" data-plugin-install-next-step="1">
+              <span>Open OttoAuth</span>
+            </a>
+            <button class="ghost-button plugin-install-step-skip" type="button" data-plugin-install-advance="ottoauth" data-plugin-install-next-step="1">I have credentials</button>
+          </div>
+          <div class="plugin-install-step-foot">
+            <button class="plugin-install-step-cancel plugin-install-cancel-button" type="button" data-plugin-cancel-install="ottoauth">cancel</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  const usernameValue = typeof draft.ottoAuthUsername === "string"
+    ? draft.ottoAuthUsername
+    : (state.settings.ottoAuthUsername || status.username || "");
+  const privateKeyValue = typeof draft.ottoAuthPrivateKey === "string" ? draft.ottoAuthPrivateKey : "";
+  const baseUrlValue = typeof draft.ottoAuthBaseUrl === "string"
+    ? draft.ottoAuthBaseUrl
+    : (state.settings.ottoAuthBaseUrl || status.baseUrl || "https://ottoauth.vercel.app");
+  const spendCapValue = typeof draft.ottoAuthDefaultMaxChargeCents === "string"
+    ? draft.ottoAuthDefaultMaxChargeCents
+    : String(state.settings.ottoAuthDefaultMaxChargeCents || status.defaultMaxChargeCents || "");
+  const callbackValue = typeof draft.ottoAuthCallbackUrl === "string"
+    ? draft.ottoAuthCallbackUrl
+    : (state.settings.ottoAuthCallbackUrl || status.callbackUrl || "");
+  const advancedOpen = Boolean(spendCapValue || callbackValue || baseUrlValue !== "https://ottoauth.vercel.app");
+
   return `
-    <form class="settings-form plugin-install-form ottoauth-form">
+    <form class="settings-form plugin-install-form ottoauth-form plugin-install-progressive" data-plugin-install-step-root="ottoauth">
       <input type="hidden" name="ottoAuthEnabled" value="on" />
-      <div class="knowledge-settings-remote-grid">
-        <label>
-          <span class="field-label">username</span>
-          <input class="file-root-input" name="ottoAuthUsername" type="text" value="${escapeHtml(state.settings.ottoAuthUsername || status.username || "")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
-        </label>
-        <label>
-          <span class="field-label">private key</span>
-          <input class="file-root-input" name="ottoAuthPrivateKey" type="password" placeholder="${escapeHtml(state.settings.ottoAuthPrivateKeyConfigured ? "saved; leave blank to keep" : "ottoauth private key")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
-        </label>
+      ${renderPluginStepProgress(1, totalSteps)}
+      <div class="plugin-install-step-body">
+        <h3 class="plugin-install-step-title">Paste your OttoAuth credentials</h3>
+        <p class="plugin-install-step-hint">Copy the username and private key from your OttoAuth dashboard. The private key is encrypted on save.</p>
+        <div class="knowledge-settings-remote-grid">
+          <label>
+            <span class="field-label">username</span>
+            <input class="file-root-input" name="ottoAuthUsername" type="text" value="${escapeHtml(usernameValue)}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" required />
+          </label>
+          <label>
+            <span class="field-label">private key</span>
+            <input class="file-root-input" name="ottoAuthPrivateKey" type="password" value="${escapeHtml(privateKeyValue)}" placeholder="${escapeHtml(state.settings.ottoAuthPrivateKeyConfigured ? "saved; leave blank to keep" : "ottoauth private key")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" ${state.settings.ottoAuthPrivateKeyConfigured ? "" : "required"} />
+          </label>
+        </div>
+        <details class="plugin-install-step-advanced" ${advancedOpen ? "open" : ""}>
+          <summary>Advanced (optional)</summary>
+          <label class="field-label" for="install-ottoauth-base-url">service URL</label>
+          <input class="file-root-input" id="install-ottoauth-base-url" name="ottoAuthBaseUrl" type="url" value="${escapeHtml(baseUrlValue)}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+          <div class="knowledge-settings-remote-grid">
+            <label>
+              <span class="field-label">default spend cap</span>
+              <input class="file-root-input" name="ottoAuthDefaultMaxChargeCents" type="number" min="1" step="1" value="${escapeHtml(spendCapValue)}" placeholder="cents" autocomplete="off" />
+            </label>
+            <label>
+              <span class="field-label">callback URL</span>
+              <input class="file-root-input" name="ottoAuthCallbackUrl" type="url" value="${escapeHtml(callbackValue)}" placeholder="optional" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+            </label>
+          </div>
+        </details>
+        <div class="plugin-onboarding-actions">
+          <button class="primary-button plugin-install-finish-button" type="submit" data-ottoauth-action="setup">${escapeHtml(actionLabel)}</button>
+          <button class="ghost-button plugin-install-step-back" type="button" data-plugin-install-advance="ottoauth" data-plugin-install-next-step="0">back</button>
+        </div>
+        <div class="settings-status">${escapeHtml(getOttoAuthStatusText())}</div>
       </div>
-      <label class="field-label" for="install-ottoauth-base-url">service URL</label>
-      <input class="file-root-input" id="install-ottoauth-base-url" name="ottoAuthBaseUrl" type="url" value="${escapeHtml(state.settings.ottoAuthBaseUrl || status.baseUrl || "https://ottoauth.vercel.app")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
-      <div class="knowledge-settings-remote-grid">
-        <label>
-          <span class="field-label">default spend cap</span>
-          <input class="file-root-input" name="ottoAuthDefaultMaxChargeCents" type="number" min="1" step="1" value="${escapeHtml(String(state.settings.ottoAuthDefaultMaxChargeCents || status.defaultMaxChargeCents || ""))}" placeholder="cents" autocomplete="off" />
-        </label>
-        <label>
-          <span class="field-label">callback URL</span>
-          <input class="file-root-input" name="ottoAuthCallbackUrl" type="url" value="${escapeHtml(state.settings.ottoAuthCallbackUrl || status.callbackUrl || "")}" placeholder="optional" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
-        </label>
-      </div>
-      <div class="plugin-onboarding-actions">
-        <button class="primary-button plugin-install-finish-button" type="submit" data-ottoauth-action="setup">${escapeHtml(actionLabel)}</button>
-        <button class="ghost-button plugin-install-cancel-button" type="button" data-plugin-cancel-install="ottoauth">back</button>
-      </div>
-      <div class="settings-status">${escapeHtml(getOttoAuthStatusText())}</div>
     </form>
   `;
+}
+
+function getAgentMailInstallStep() {
+  const stored = getPluginInstallStepRaw("agentmail");
+  if (stored !== null) return Math.min(2, stored);
+  if (state.settings.agentMailApiKeyConfigured) return 2;
+  return 0;
 }
 
 function renderAgentMailInstallForm() {
+  const pluginId = "agentmail";
+  const step = getAgentMailInstallStep();
+  const draft = getPluginInstallDraft(pluginId);
   const status = state.settings.agentMailStatus || {};
   const actionLabel = isPluginIdInstalled("agentmail") ? "save AgentMail" : "save and install";
+  const totalSteps = 3;
+
+  if (step === 0) {
+    return `
+      <div class="plugin-install-progressive" data-plugin-install-step-root="agentmail">
+        ${renderPluginStepProgress(0, totalSteps)}
+        <div class="plugin-install-step-body">
+          <h3 class="plugin-install-step-title">Get an AgentMail API key</h3>
+          <p class="plugin-install-step-hint">AgentMail gives your agents a real inbox. Sign up (or log in) and copy an API key — we'll paste it in the next step.</p>
+          <div class="plugin-onboarding-actions">
+            <a class="primary-button plugin-install-step-link" href="https://agentmail.to" target="_blank" rel="noreferrer" data-plugin-install-advance="agentmail" data-plugin-install-next-step="1">
+              <span>Open AgentMail</span>
+            </a>
+            <button class="ghost-button plugin-install-step-skip" type="button" data-plugin-install-advance="agentmail" data-plugin-install-next-step="1">I have a key</button>
+          </div>
+          <div class="plugin-install-step-foot">
+            <button class="plugin-install-step-cancel plugin-install-cancel-button" type="button" data-plugin-cancel-install="agentmail">cancel</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (step === 1) {
+    const apiKeyValue = typeof draft.agentMailApiKey === "string" ? draft.agentMailApiKey : "";
+    return `
+      <form class="settings-form plugin-install-form communications-form plugin-install-progressive" data-plugin-install-step-root="agentmail">
+        <input type="hidden" name="agentMailEnabled" value="on" />
+        ${renderPluginStepProgress(1, totalSteps)}
+        <div class="plugin-install-step-body">
+          <h3 class="plugin-install-step-title">Paste the API key</h3>
+          <p class="plugin-install-step-hint">Paste the key you copied from AgentMail. It starts with <code>am_</code> and we encrypt it on save.</p>
+          <label class="field-label" for="install-agentmail-api-key">AgentMail API key</label>
+          <input class="file-root-input" id="install-agentmail-api-key" name="agentMailApiKey" type="password" value="${escapeHtml(apiKeyValue)}" placeholder="${escapeHtml(state.settings.agentMailApiKeyConfigured ? "saved; leave blank to keep" : "am_...")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" ${state.settings.agentMailApiKeyConfigured ? "" : "required"} />
+          <div class="plugin-onboarding-actions">
+            <button class="primary-button plugin-install-step-next" type="button" data-plugin-install-capture-advance="agentmail" data-plugin-install-next-step="2" data-plugin-install-require="agentMailApiKey">Continue</button>
+            <button class="ghost-button plugin-install-step-back" type="button" data-plugin-install-advance="agentmail" data-plugin-install-next-step="0">back</button>
+          </div>
+        </div>
+      </form>
+    `;
+  }
+
+  const apiKeyDraft = typeof draft.agentMailApiKey === "string" ? draft.agentMailApiKey : "";
+  const inboxValue = typeof draft.agentMailInboxId === "string"
+    ? draft.agentMailInboxId
+    : (state.settings.agentMailInboxId || status.inboxId || "");
+  const providerValue = draft.agentMailProviderId || state.settings.agentMailProviderId || state.defaultProviderId;
+  const inboxOpen = Boolean(inboxValue);
+
   return `
-    <form class="settings-form plugin-install-form communications-form">
+    <form class="settings-form plugin-install-form communications-form plugin-install-progressive" data-plugin-install-step-root="agentmail">
       <input type="hidden" name="agentMailEnabled" value="on" />
-      <label class="field-label" for="install-agentmail-api-key">AgentMail API key</label>
-      <input class="file-root-input" id="install-agentmail-api-key" name="agentMailApiKey" type="password" placeholder="${escapeHtml(state.settings.agentMailApiKeyConfigured ? "saved; leave blank to keep" : "am_...")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
-      <div class="knowledge-settings-remote-grid">
-        <label>
-          <span class="field-label">inbox ID</span>
-          <input class="file-root-input" name="agentMailInboxId" type="text" value="${escapeHtml(state.settings.agentMailInboxId || status.inboxId || "")}" placeholder="leave blank to create" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
-        </label>
-        <label>
-          <span class="field-label">email agent</span>
-          <select class="file-root-input" name="agentMailProviderId">${renderProviderOptions(state.settings.agentMailProviderId || state.defaultProviderId)}</select>
-        </label>
+      ${apiKeyDraft ? `<input type="hidden" name="agentMailApiKey" value="${escapeHtml(apiKeyDraft)}" />` : ""}
+      ${renderPluginStepProgress(2, totalSteps)}
+      <div class="plugin-install-step-body">
+        <h3 class="plugin-install-step-title">Pick the agent that replies</h3>
+        <p class="plugin-install-step-hint">Incoming email is routed into one dedicated session. Choose which agent handles it.</p>
+        <label class="field-label" for="install-agentmail-provider">email agent</label>
+        <select class="file-root-input" id="install-agentmail-provider" name="agentMailProviderId">${renderProviderOptions(providerValue)}</select>
+        <details class="plugin-install-step-advanced" ${inboxOpen ? "open" : ""}>
+          <summary>Use an existing inbox ID (optional)</summary>
+          <label class="field-label" for="install-agentmail-inbox-id">inbox ID</label>
+          <input class="file-root-input" id="install-agentmail-inbox-id" name="agentMailInboxId" type="text" value="${escapeHtml(inboxValue)}" placeholder="leave blank to create" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+        </details>
+        <div class="plugin-onboarding-actions">
+          <button class="primary-button plugin-install-finish-button" type="submit" data-communications-action="setup">${escapeHtml(actionLabel)}</button>
+          <button class="ghost-button plugin-install-step-back" type="button" data-plugin-install-advance="agentmail" data-plugin-install-next-step="1">back</button>
+        </div>
+        <div class="settings-status">${escapeHtml(getAgentMailStatusText())}</div>
       </div>
-      <div class="plugin-onboarding-actions">
-        <button class="primary-button plugin-install-finish-button" type="submit" data-communications-action="setup">${escapeHtml(actionLabel)}</button>
-        <button class="ghost-button plugin-install-cancel-button" type="button" data-plugin-cancel-install="agentmail">back</button>
-      </div>
-      <div class="settings-status">${escapeHtml(getAgentMailStatusText())}</div>
     </form>
   `;
+}
+
+function getTelegramInstallStep() {
+  const stored = getPluginInstallStepRaw("telegram");
+  if (stored !== null) return Math.min(2, stored);
+  if (state.settings.telegramBotTokenConfigured) return 2;
+  return 0;
 }
 
 function renderTelegramInstallForm() {
+  const pluginId = "telegram";
+  const step = getTelegramInstallStep();
+  const draft = getPluginInstallDraft(pluginId);
   const telegramStatus = state.settings.telegramStatus || {};
   const allowedChatIdsText = Array.isArray(telegramStatus.allowedChatIds) ? telegramStatus.allowedChatIds.join(", ") : "";
   const actionLabel = isPluginIdInstalled("telegram") ? "save Telegram" : "save and install";
-  return `
-    <form class="settings-form plugin-install-form communications-form">
-      <input type="hidden" name="telegramEnabled" value="on" />
-      <label class="field-label" for="install-telegram-bot-token">Telegram bot token</label>
-      <input class="file-root-input" id="install-telegram-bot-token" name="telegramBotToken" type="password" placeholder="${escapeHtml(state.settings.telegramBotTokenConfigured ? "saved; leave blank to keep" : "BotFather token")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
-      <label class="field-label" for="install-telegram-allowed-chat-ids">allowed chat IDs</label>
-      <input class="file-root-input" id="install-telegram-allowed-chat-ids" name="telegramAllowedChatIds" type="text" value="${escapeHtml(state.settings.telegramAllowedChatIds || allowedChatIdsText)}" placeholder="optional comma-separated chat IDs" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
-      <label class="field-label" for="install-telegram-provider">telegram agent</label>
-      <select class="file-root-input" id="install-telegram-provider" name="telegramProviderId">${renderProviderOptions(state.settings.telegramProviderId || state.defaultProviderId)}</select>
-      <div class="plugin-onboarding-actions">
-        <button class="primary-button plugin-install-finish-button" type="submit" data-communications-action="setup">${escapeHtml(actionLabel)}</button>
-        <button class="ghost-button plugin-install-cancel-button" type="button" data-plugin-cancel-install="telegram">back</button>
+  const totalSteps = 3;
+
+  if (step === 0) {
+    return `
+      <div class="plugin-install-progressive" data-plugin-install-step-root="telegram">
+        ${renderPluginStepProgress(0, totalSteps)}
+        <div class="plugin-install-step-body">
+          <h3 class="plugin-install-step-title">Message <code>/newbot</code> to BotFather</h3>
+          <p class="plugin-install-step-hint">BotFather is the official Telegram bot that creates bots. Opening this link pre-fills <code>/newbot</code> — tap send, give your bot a name, and BotFather will reply with a token.</p>
+          <div class="plugin-onboarding-actions">
+            <a class="primary-button plugin-install-step-link" href="https://t.me/BotFather?text=%2Fnewbot" target="_blank" rel="noreferrer" data-plugin-install-advance="telegram" data-plugin-install-next-step="1">
+              <span>Open BotFather</span>
+            </a>
+            <button class="ghost-button plugin-install-step-skip" type="button" data-plugin-install-advance="telegram" data-plugin-install-next-step="1">I have a token</button>
+          </div>
+          <div class="plugin-install-step-foot">
+            <button class="plugin-install-step-cancel plugin-install-cancel-button" type="button" data-plugin-cancel-install="telegram">cancel</button>
+          </div>
+        </div>
       </div>
-      <div class="settings-status">${escapeHtml(getTelegramStatusText())}</div>
+    `;
+  }
+
+  if (step === 1) {
+    const tokenValue = typeof draft.telegramBotToken === "string" ? draft.telegramBotToken : "";
+    const tokenPlaceholder = state.settings.telegramBotTokenConfigured ? "saved; leave blank to keep" : "123456789:ABC-DEF...";
+    return `
+      <form class="settings-form plugin-install-form communications-form plugin-install-progressive" data-plugin-install-step-root="telegram">
+        <input type="hidden" name="telegramEnabled" value="on" />
+        ${renderPluginStepProgress(1, totalSteps)}
+        <div class="plugin-install-step-body">
+          <h3 class="plugin-install-step-title">Paste the bot token</h3>
+          <p class="plugin-install-step-hint">BotFather sent a token that looks like <code>123456789:ABC-DEF...</code>. Paste it here — we store it encrypted.</p>
+          <label class="field-label" for="install-telegram-bot-token">Telegram bot token</label>
+          <input class="file-root-input" id="install-telegram-bot-token" name="telegramBotToken" type="password" value="${escapeHtml(tokenValue)}" placeholder="${escapeHtml(tokenPlaceholder)}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" ${state.settings.telegramBotTokenConfigured ? "" : "required"} />
+          <div class="plugin-onboarding-actions">
+            <button class="primary-button plugin-install-step-next" type="button" data-plugin-install-capture-advance="telegram" data-plugin-install-next-step="2" data-plugin-install-require="telegramBotToken">Continue</button>
+            <button class="ghost-button plugin-install-step-back" type="button" data-plugin-install-advance="telegram" data-plugin-install-next-step="0">back</button>
+          </div>
+        </div>
+      </form>
+    `;
+  }
+
+  const tokenDraft = typeof draft.telegramBotToken === "string" ? draft.telegramBotToken : "";
+  const chatIdsValue = typeof draft.telegramAllowedChatIds === "string"
+    ? draft.telegramAllowedChatIds
+    : (state.settings.telegramAllowedChatIds || allowedChatIdsText);
+  const providerValue = draft.telegramProviderId || state.settings.telegramProviderId || state.defaultProviderId;
+  const chatIdsOpen = Boolean(chatIdsValue);
+
+  return `
+    <form class="settings-form plugin-install-form communications-form plugin-install-progressive" data-plugin-install-step-root="telegram">
+      <input type="hidden" name="telegramEnabled" value="on" />
+      ${tokenDraft ? `<input type="hidden" name="telegramBotToken" value="${escapeHtml(tokenDraft)}" />` : ""}
+      ${renderPluginStepProgress(2, totalSteps)}
+      <div class="plugin-install-step-body">
+        <h3 class="plugin-install-step-title">Pick the agent that replies</h3>
+        <p class="plugin-install-step-hint">Incoming Telegram messages route into one dedicated session. Choose which agent handles them.</p>
+        <label class="field-label" for="install-telegram-provider">telegram agent</label>
+        <select class="file-root-input" id="install-telegram-provider" name="telegramProviderId">${renderProviderOptions(providerValue)}</select>
+        <details class="plugin-install-step-advanced" ${chatIdsOpen ? "open" : ""}>
+          <summary>Limit to specific chats (optional)</summary>
+          <label class="field-label" for="install-telegram-allowed-chat-ids">allowed chat IDs</label>
+          <input class="file-root-input" id="install-telegram-allowed-chat-ids" name="telegramAllowedChatIds" type="text" value="${escapeHtml(chatIdsValue)}" placeholder="comma-separated chat IDs" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+        </details>
+        <div class="plugin-onboarding-actions">
+          <button class="primary-button plugin-install-finish-button" type="submit" data-communications-action="setup">${escapeHtml(actionLabel)}</button>
+          <button class="ghost-button plugin-install-step-back" type="button" data-plugin-install-advance="telegram" data-plugin-install-next-step="1">back</button>
+        </div>
+        <div class="settings-status">${escapeHtml(getTelegramStatusText())}</div>
+      </div>
     </form>
   `;
 }
 
+function getVideoMemoryInstallStep() {
+  const stored = getPluginInstallStepRaw("videomemory");
+  if (stored !== null) return Math.min(1, stored);
+  if (hasGuidedTutorialEvent(GUIDED_TUTORIAL_EVENT_TYPES.videoMemoryPermissionRequested)
+      || state.settings.videoMemoryStatus?.devicesKnown) {
+    return 1;
+  }
+  return 0;
+}
+
 function renderVideoMemoryInstallForm() {
+  const pluginId = "videomemory";
+  const step = getVideoMemoryInstallStep();
+  const draft = getPluginInstallDraft(pluginId);
   const status = state.settings.videoMemoryStatus || {};
   const actionLabel = isPluginIdInstalled("videomemory") ? "save VideoMemory" : "save and install";
-  return `
-    <form class="settings-form plugin-install-form videomemory-form">
-      <input type="hidden" name="videoMemoryEnabled" value="on" />
-      <label class="field-label" for="install-videomemory-base-url">VideoMemory URL</label>
-      <input class="file-root-input" id="install-videomemory-base-url" name="videoMemoryBaseUrl" type="url" value="${escapeHtml(state.settings.videoMemoryBaseUrl || status.baseUrl || "http://127.0.0.1:5050")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
-      <label class="field-label" for="install-videomemory-provider">default agent</label>
-      <select class="file-root-input" id="install-videomemory-provider" name="videoMemoryProviderId">${renderProviderOptions(state.settings.videoMemoryProviderId || state.defaultProviderId)}</select>
-      <div class="plugin-onboarding-actions">
-        <button
-          class="ghost-button videomemory-camera-permission-button"
-          type="button"
-          data-videomemory-request-camera-permission
-          data-videomemory-permission-label="enable camera permissions"
-        >enable camera permissions</button>
-        <button class="primary-button plugin-install-finish-button" type="submit" data-videomemory-action="setup">${escapeHtml(actionLabel)}</button>
-        <button class="ghost-button plugin-install-cancel-button" type="button" data-plugin-cancel-install="videomemory">back</button>
+  const totalSteps = 2;
+
+  if (step === 0) {
+    return `
+      <div class="plugin-install-progressive" data-plugin-install-step-root="videomemory">
+        ${renderPluginStepProgress(0, totalSteps)}
+        <div class="plugin-install-step-body">
+          <h3 class="plugin-install-step-title">Grant camera access</h3>
+          <p class="plugin-install-step-hint">VideoMemory watches a camera feed and turns it into searchable memories. Click below and accept the browser prompt — we can't see the feed without it.</p>
+          <div class="plugin-onboarding-actions">
+            <button
+              class="primary-button videomemory-camera-permission-button"
+              type="button"
+              data-videomemory-request-camera-permission
+              data-videomemory-permission-label="enable camera permissions"
+              data-plugin-install-advance-after="videomemory"
+              data-plugin-install-next-step="1"
+            >enable camera permissions</button>
+            <button class="ghost-button plugin-install-step-skip" type="button" data-plugin-install-advance="videomemory" data-plugin-install-next-step="1">skip for now</button>
+          </div>
+          <div class="plugin-install-step-foot">
+            <button class="plugin-install-step-cancel plugin-install-cancel-button" type="button" data-plugin-cancel-install="videomemory">cancel</button>
+          </div>
+        </div>
       </div>
-      <div class="settings-status">${escapeHtml(getVideoMemoryStatusText())}</div>
+    `;
+  }
+
+  const baseUrlValue = typeof draft.videoMemoryBaseUrl === "string"
+    ? draft.videoMemoryBaseUrl
+    : (state.settings.videoMemoryBaseUrl || status.baseUrl || "http://127.0.0.1:5050");
+  const providerValue = draft.videoMemoryProviderId || state.settings.videoMemoryProviderId || state.defaultProviderId;
+  const advancedOpen = baseUrlValue !== "http://127.0.0.1:5050";
+
+  return `
+    <form class="settings-form plugin-install-form videomemory-form plugin-install-progressive" data-plugin-install-step-root="videomemory">
+      <input type="hidden" name="videoMemoryEnabled" value="on" />
+      ${renderPluginStepProgress(1, totalSteps)}
+      <div class="plugin-install-step-body">
+        <h3 class="plugin-install-step-title">Pick the agent that remembers</h3>
+        <p class="plugin-install-step-hint">Choose which agent summarizes what the camera sees. You can change this later.</p>
+        <label class="field-label" for="install-videomemory-provider">default agent</label>
+        <select class="file-root-input" id="install-videomemory-provider" name="videoMemoryProviderId">${renderProviderOptions(providerValue)}</select>
+        <details class="plugin-install-step-advanced" ${advancedOpen ? "open" : ""}>
+          <summary>Advanced (optional)</summary>
+          <label class="field-label" for="install-videomemory-base-url">VideoMemory URL</label>
+          <input class="file-root-input" id="install-videomemory-base-url" name="videoMemoryBaseUrl" type="url" value="${escapeHtml(baseUrlValue)}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+        </details>
+        <div class="plugin-onboarding-actions">
+          <button class="primary-button plugin-install-finish-button" type="submit" data-videomemory-action="setup">${escapeHtml(actionLabel)}</button>
+          <button class="ghost-button plugin-install-step-back" type="button" data-plugin-install-advance="videomemory" data-plugin-install-next-step="0">back</button>
+        </div>
+        <div class="settings-status">${escapeHtml(getVideoMemoryStatusText())}</div>
+      </div>
     </form>
   `;
 }
@@ -30599,6 +30924,7 @@ function refreshPluginSearchUi() {
   bindOttoAuthForm();
   bindCommunicationsForm();
   bindVideoMemoryForm();
+  bindPluginInstallStepEvents();
   bindScaffoldRecipesPanel();
   scheduleGuidedOnboardingSyncSafe();
 }
@@ -31226,6 +31552,7 @@ function bindPluginCardEvents() {
       }
 
       const pluginId = button.getAttribute("data-plugin-cancel-install") || "";
+      resetPluginInstallProgression(pluginId);
       if (isVisualInterfaceView() && state.visualGame.selectedBuildingId === pluginId) {
         clearVisualGameSelection();
         return;
@@ -31279,6 +31606,8 @@ function bindPluginCardEvents() {
       void setPluginInstalled(pluginId, installed);
     });
   });
+
+  bindPluginInstallStepEvents();
 }
 
 function createClientId(prefix) {
@@ -31401,6 +31730,75 @@ function bindAutomationEvents() {
         button.textContent = "delete";
         window.alert(error.message);
       }
+    });
+  });
+}
+
+function capturePluginInstallFormDraft(pluginId, form) {
+  if (!pluginId || !(form instanceof HTMLFormElement)) return;
+  const formData = new FormData(form);
+  const draft = {};
+  for (const [key, value] of formData.entries()) {
+    if (typeof value === "string") {
+      draft[key] = value;
+    }
+  }
+  setPluginInstallDraft(pluginId, draft);
+}
+
+function bindPluginInstallStepEvents() {
+  document.querySelectorAll("[data-plugin-install-advance]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      const pluginId = element.getAttribute("data-plugin-install-advance") || "";
+      const nextStep = Number(element.getAttribute("data-plugin-install-next-step"));
+      if (!pluginId || !Number.isFinite(nextStep)) return;
+      const form = element.closest("form");
+      if (form instanceof HTMLFormElement) {
+        capturePluginInstallFormDraft(pluginId, form);
+      }
+      if (!(element instanceof HTMLAnchorElement)) {
+        event.preventDefault();
+      }
+      setPluginInstallStep(pluginId, nextStep);
+      renderShell();
+    });
+  });
+
+  document.querySelectorAll("[data-plugin-install-capture-advance]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const pluginId = button.getAttribute("data-plugin-install-capture-advance") || "";
+      const nextStep = Number(button.getAttribute("data-plugin-install-next-step"));
+      if (!pluginId || !Number.isFinite(nextStep)) return;
+      const form = button.closest("form");
+      if (form instanceof HTMLFormElement) {
+        const requiredName = button.getAttribute("data-plugin-install-require") || "";
+        if (requiredName) {
+          const requiredInput = form.querySelector(`[name="${requiredName}"]`);
+          if (requiredInput instanceof HTMLInputElement && !requiredInput.value.trim() && requiredInput.required) {
+            requiredInput.focus();
+            if (typeof requiredInput.reportValidity === "function") {
+              requiredInput.reportValidity();
+            }
+            return;
+          }
+        }
+        capturePluginInstallFormDraft(pluginId, form);
+      }
+      setPluginInstallStep(pluginId, nextStep);
+      renderShell();
+    });
+  });
+
+  document.querySelectorAll("[data-plugin-install-advance-after]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const pluginId = button.getAttribute("data-plugin-install-advance-after") || "";
+      const nextStep = Number(button.getAttribute("data-plugin-install-next-step"));
+      if (!pluginId || !Number.isFinite(nextStep)) return;
+      window.setTimeout(() => {
+        setPluginInstallStep(pluginId, nextStep);
+        renderShell();
+      }, 1200);
     });
   });
 }
@@ -31537,6 +31935,7 @@ function bindBrowserUseForm() {
 
     try {
       await setupBrowserUseFromForm(form);
+      resetPluginInstallProgression("browser-use");
       renderShell();
     } catch (error) {
       window.alert(error.message);
@@ -31565,6 +31964,7 @@ function bindOttoAuthForm() {
 
     try {
       await setupOttoAuthFromForm(form);
+      resetPluginInstallProgression("ottoauth");
       renderShell();
     } catch (error) {
       window.alert(error.message);
@@ -31595,6 +31995,8 @@ function bindCommunicationsForm() {
       const wasAgentMailInstalled = isPluginIdInstalled("agentmail");
       const wasTelegramInstalled = isPluginIdInstalled("telegram");
       await setupCommunicationsFromForm(form);
+      resetPluginInstallProgression("agentmail");
+      resetPluginInstallProgression("telegram");
       const newlyInstalled = [
         !wasAgentMailInstalled && isPluginIdInstalled("agentmail") ? "agentmail" : "",
         !wasTelegramInstalled && isPluginIdInstalled("telegram") ? "telegram" : "",
@@ -31667,6 +32069,7 @@ function bindVideoMemoryForm() {
 
     try {
       await setupVideoMemoryFromForm(form);
+      resetPluginInstallProgression("videomemory");
       renderShell();
     } catch (error) {
       window.alert(error.message);
@@ -36114,6 +36517,7 @@ function bindShellEvents() {
   bindOttoAuthForm();
   bindCommunicationsForm();
   bindVideoMemoryForm();
+  bindPluginInstallStepEvents();
   document.querySelector("#backup-wiki-now")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     if (button instanceof HTMLButtonElement) {

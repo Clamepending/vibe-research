@@ -3301,6 +3301,148 @@ input[readonly][data-folder-picker-target] {
   min-width: 0;
 }
 
+.plugin-install-progressive {
+  display: grid;
+  gap: 12px;
+}
+
+.plugin-install-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 2px;
+}
+
+.plugin-install-progress-dots {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.plugin-install-progress-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.plugin-install-progress-dot.is-done {
+  background: rgba(255, 178, 122, 0.9);
+}
+
+.plugin-install-progress-dot.is-active {
+  background: #ffb27a;
+  transform: scale(1.25);
+  box-shadow: 0 0 0 3px rgba(255, 178, 122, 0.18);
+}
+
+.plugin-install-progress-label {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+.plugin-install-step-body {
+  display: grid;
+  gap: 10px;
+}
+
+.plugin-install-step-title {
+  margin: 0;
+  font-size: 1.02rem;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+.plugin-install-step-title code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 0.9em;
+}
+
+.plugin-install-step-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.plugin-install-step-hint code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.82em;
+}
+
+.plugin-install-step-link,
+.plugin-install-step-skip {
+  text-decoration: none;
+}
+
+.plugin-install-step-skip {
+  padding-inline: 12px;
+}
+
+.plugin-install-step-advanced {
+  display: grid;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.plugin-install-step-advanced > summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+}
+
+.plugin-install-step-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.plugin-install-step-advanced > summary::before {
+  content: "▸ ";
+  display: inline-block;
+  margin-right: 2px;
+  transition: transform 0.15s ease;
+}
+
+.plugin-install-step-advanced[open] > summary::before {
+  content: "▾ ";
+}
+
+.plugin-install-step-foot {
+  display: flex;
+  justify-content: flex-start;
+  padding-top: 4px;
+}
+
+.plugin-install-step-cancel {
+  border: none;
+  background: transparent;
+  padding: 4px 2px;
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.12);
+  text-underline-offset: 3px;
+}
+
+.plugin-install-step-cancel:hover {
+  color: rgba(244, 247, 251, 0.95);
+  text-decoration-color: currentColor;
+}
+
 .buildinghub-auth-inline {
   display: grid;
   gap: 10px;
