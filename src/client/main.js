@@ -1694,6 +1694,7 @@ const state = {
     builderPlacement: null,
     builderFeedback: null,
     builderPulse: null,
+    builderButtonHint: null,
     builderConstruction: null,
     selectedSessionId: "",
     selectedBrowserUseSessionId: "",
@@ -18078,7 +18079,7 @@ function renderVisualPixelGame(graph, { controls = true } = {}) {
           aria-live="polite"
         >${escapeHtml(builderFeedback?.message || "")}</div>
         <button
-          class="agent-town-builder-button ${builderOpen ? "is-active" : ""} ${unplacedCount ? "has-alert" : ""}"
+          class="agent-town-builder-button ${builderOpen ? "is-active" : ""} ${unplacedCount ? "has-alert" : ""} ${state.visualGame.builderButtonHint && !builderOpen ? "is-quest-hint" : ""}"
           type="button"
           data-agent-town-builder-toggle
           aria-label="${escapeHtml(unplacedCount ? `Open BuildingHub builder, ${unplacedCount} building${unplacedCount === 1 ? "" : "s"} to place` : "Open BuildingHub builder")}"
@@ -18087,6 +18088,16 @@ function renderVisualPixelGame(graph, { controls = true } = {}) {
           ${renderIcon(Wrench)}
           ${unplacedCount ? `<span class="agent-town-builder-badge" aria-hidden="true">!</span>` : ""}
         </button>
+        ${
+          state.visualGame.builderButtonHint && !builderOpen
+            ? `
+              <div class="agent-town-builder-hint" role="tooltip" aria-live="polite">
+                <span class="agent-town-builder-hint-bubble">${escapeHtml(state.visualGame.builderButtonHint)}</span>
+                <span class="agent-town-builder-hint-arrow" aria-hidden="true"></span>
+              </div>
+            `
+            : ""
+        }
         ${
           state.visualGame.builderPlacement
             ? `
@@ -19594,12 +19605,28 @@ function openAgentTownBuilder({ tab = state.visualGame.builderTab, render = true
   clearVisualGameSelection({ render: false });
   state.visualGame.builderOpen = true;
   state.visualGame.builderTab = normalizeAgentTownBuilderTab(tab);
+  state.visualGame.builderButtonHint = null;
   if (!isVisualInterfaceView()) {
     setCurrentView("visual-interface");
   } else {
     updateRoute({ view: "visual-interface" });
   }
   closeMobileSidebar();
+  if (render) {
+    renderShell();
+  }
+}
+
+function setAgentTownBuilderButtonHint(label) {
+  const value = String(label || "").trim();
+  state.visualGame.builderButtonHint = value || null;
+}
+
+function clearAgentTownBuilderButtonHint({ render = true } = {}) {
+  if (!state.visualGame.builderButtonHint) {
+    return;
+  }
+  state.visualGame.builderButtonHint = null;
   if (render) {
     renderShell();
   }
@@ -20214,14 +20241,42 @@ async function updateAgentTownActionItemStatus(actionItemId, status) {
   }
 }
 
-function openAgentTownActionHref(actionItemId) {
+const QUEST_BUILDER_PREDICATES = new Set([
+  "first_building_placed",
+  "cosmetic_building_placed",
+  "functional_building_placed",
+]);
+
+function getQuestBuilderHintLabel(predicate) {
+  if (predicate === "functional_building_placed") {
+    return "Open the builder to place a functional building";
+  }
+  if (predicate === "cosmetic_building_placed") {
+    return "Open the builder to place a cosmetic piece";
+  }
+  return "Open the builder to place your first building";
+}
+
+async function openAgentTownActionHref(actionItemId) {
   const item = state.agentTown.actionItems.find((candidate) => candidate.id === actionItemId);
   const href = String(item?.href || item?.target?.href || "").trim();
   if (!href) {
     return;
   }
 
+  const predicate = String(item?.predicate || "").trim();
+  const wantsBuilderHint = QUEST_BUILDER_PREDICATES.has(predicate);
+
   if (href.startsWith("?")) {
+    const params = new URLSearchParams(href);
+    const view = params.get("view");
+    if (view) {
+      if (wantsBuilderHint) {
+        setAgentTownBuilderButtonHint(getQuestBuilderHintLabel(predicate));
+      }
+      await openMainView(view);
+      return;
+    }
     window.location.href = `${window.location.pathname}${href}`;
     return;
   }
