@@ -1746,6 +1746,186 @@ export async function createVibeResearchApp({
     });
   }
 
+  const AGENT_TOWN_BUNDLE_VERSION = 1;
+
+  async function composeAgentTownBundle() {
+    const town = agentTownStore.exportTownSection();
+    const promptState = await agentPromptStore.getState();
+    const settings = settingsStore.settings || {};
+    const app = await getAppMetadata();
+
+    const installedPlugins = Array.isArray(settings.installedPluginIds)
+      ? settings.installedPluginIds.map((id) => ({ id }))
+      : [];
+
+    const functionalIds = Object.keys(town.layout?.functional || {});
+    const envSet = new Set();
+    for (const pluginId of functionalIds) {
+      if (!pluginId) continue;
+      for (const varName of collectPluginEnvNames(pluginId)) {
+        if (varName) envSet.add(varName);
+      }
+    }
+
+    return {
+      bundleVersion: AGENT_TOWN_BUNDLE_VERSION,
+      exportedAt: new Date().toISOString(),
+      producer: {
+        app: "vibe-research",
+        version: app.version || "",
+        commit: app.commit || "",
+      },
+      town: {
+        stateVersion: town.stateVersion,
+        layout: town.layout,
+        layoutSnapshots: town.layoutSnapshots,
+      },
+      prompts: {
+        selectedPromptId: promptState.selectedPromptId || "",
+        customPrompt: promptState.customPrompt || "",
+      },
+      automations: Array.isArray(settings.agentAutomations) ? settings.agentAutomations : [],
+      plugins: {
+        installed: installedPlugins,
+      },
+      env: {
+        required: Array.from(envSet).sort(),
+      },
+    };
+  }
+
+  function collectPluginEnvNames(pluginId) {
+    const building = BUILDING_CATALOG.find((entry) => entry?.id === pluginId);
+    if (!building) return [];
+    const names = new Set();
+    const sources = [
+      building.requiredEnv,
+      building.env,
+      building.setup?.env,
+      building.setup?.requiredEnv,
+    ];
+    for (const source of sources) {
+      if (!source) continue;
+      if (Array.isArray(source)) {
+        for (const entry of source) {
+          const name = typeof entry === "string" ? entry : entry?.name || entry?.key || "";
+          if (name) names.add(String(name).trim());
+        }
+      } else if (typeof source === "object") {
+        for (const key of Object.keys(source)) {
+          names.add(String(key).trim());
+        }
+      }
+    }
+    return [...names].filter(Boolean);
+  }
+
+  async function applyAgentTownBundle(bundle, { dryRun = false } = {}) {
+    if (!bundle || typeof bundle !== "object" || Array.isArray(bundle)) {
+      const error = new Error("Bundle payload is missing or malformed.");
+      error.statusCode = 400;
+      throw error;
+    }
+    if (Number(bundle.bundleVersion) !== AGENT_TOWN_BUNDLE_VERSION) {
+      const error = new Error(`Unsupported bundle version ${bundle.bundleVersion}. Expected ${AGENT_TOWN_BUNDLE_VERSION}.`);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const townSection = bundle.town || {};
+    const validation = await agentTownStore.validateLayout({ layout: townSection.layout || {} });
+
+    const currentSettings = settingsStore.settings || {};
+    const currentPluginIds = new Set(
+      Array.isArray(currentSettings.installedPluginIds) ? currentSettings.installedPluginIds : [],
+    );
+    const bundlePlugins = Array.isArray(bundle.plugins?.installed) ? bundle.plugins.installed : [];
+    const missingPlugins = bundlePlugins
+      .map((entry) => (typeof entry === "string" ? { id: entry } : entry || {}))
+      .filter((entry) => entry.id && !currentPluginIds.has(entry.id));
+
+    const requiredEnv = Array.isArray(bundle.env?.required) ? bundle.env.required : [];
+    const missingEnv = requiredEnv.filter((name) => {
+      const trimmed = String(name || "").trim();
+      return trimmed && !serverEnv[trimmed] && !process.env[trimmed];
+    });
+
+    const bundleSnapshots = Array.isArray(townSection.layoutSnapshots) ? townSection.layoutSnapshots : [];
+    const automations = Array.isArray(bundle.automations) ? bundle.automations : [];
+
+    const report = {
+      validation,
+      counts: {
+        functional: Object.keys((townSection.layout || {}).functional || {}).length,
+        decorations: Array.isArray((townSection.layout || {}).decorations)
+          ? (townSection.layout || {}).decorations.length
+          : 0,
+        layoutSnapshots: bundleSnapshots.length,
+        automations: automations.length,
+        installedPlugins: bundlePlugins.length,
+      },
+      missingPlugins,
+      missingEnv,
+      warnings: [],
+    };
+
+    if (!validation.ok) {
+      report.warnings.push("Layout validation failed; no changes were applied.");
+      return { applied: false, dryRun, report };
+    }
+
+    if (dryRun) {
+      return { applied: false, dryRun: true, report };
+    }
+
+    await agentTownStore.importTownSection(
+      { layout: townSection.layout, layoutSnapshots: bundleSnapshots },
+      { reason: "import bundle", replaceSnapshots: true },
+    );
+
+    if (bundle.prompts && typeof bundle.prompts === "object") {
+      const { selectedPromptId, customPrompt } = bundle.prompts;
+      const saveInput = {};
+      if (typeof customPrompt === "string" && customPrompt.trim()) {
+        saveInput.customPrompt = customPrompt;
+      }
+      if (typeof selectedPromptId === "string" && selectedPromptId.trim()) {
+        saveInput.selectedPromptId = selectedPromptId;
+      }
+      if (Object.keys(saveInput).length > 0) {
+        try {
+          await agentPromptStore.save(saveInput);
+        } catch (error) {
+          report.warnings.push(`Prompt import skipped: ${error.message || error}`);
+        }
+      }
+    }
+
+    const settingsPatch = {};
+    if (Array.isArray(bundle.automations)) {
+      settingsPatch.agentAutomations = bundle.automations;
+    }
+    if (Array.isArray(bundle.plugins?.installed)) {
+      settingsPatch.installedPluginIds = bundle.plugins.installed
+        .map((entry) => (typeof entry === "string" ? entry : entry?.id))
+        .filter(Boolean);
+    }
+    if (Object.keys(settingsPatch).length > 0) {
+      try {
+        await settingsStore.update(settingsPatch);
+      } catch (error) {
+        report.warnings.push(`Settings import partial: ${error.message || error}`);
+      }
+    }
+
+    return {
+      applied: true,
+      dryRun: false,
+      report,
+      agentTown: agentTownStore.getState(),
+    };
+  }
+
   function getAvailableBuildingIds() {
     return [
       ...BUILDING_CATALOG.map((building) => building.id),
@@ -2735,6 +2915,31 @@ export async function createVibeResearchApp({
       });
     } catch (error) {
       response.status(error.statusCode || 400).json({ error: error.message || "Could not restore Agent Town snapshot." });
+    }
+  });
+
+  app.get("/api/agent-town/bundle", async (_request, response) => {
+    try {
+      const bundle = await composeAgentTownBundle();
+      response.setHeader("Cache-Control", "no-store");
+      response.json({ bundle });
+    } catch (error) {
+      response.status(error.statusCode || 500).json({ error: error.message || "Could not export Agent Town bundle." });
+    }
+  });
+
+  app.post("/api/agent-town/bundle/import", async (request, response) => {
+    try {
+      const body = request.body || {};
+      const bundle = body.bundle || body;
+      const dryRun = body.dryRun === true;
+      const result = await applyAgentTownBundle(bundle, { dryRun });
+      response.status(result.applied || dryRun ? 200 : 400).json(result);
+    } catch (error) {
+      response.status(error.statusCode || 400).json({
+        error: error.message || "Could not import Agent Town bundle.",
+        validation: error.validation,
+      });
     }
   });
 

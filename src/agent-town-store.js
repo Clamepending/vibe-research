@@ -13,6 +13,7 @@ const MAX_TOWN_SHARES = 60;
 const MAX_LAYOUT_DECORATIONS = 180;
 const MAX_LAYOUT_ENTRIES = 120;
 const MAX_ALERTS = 12;
+const MAX_PLUGIN_CONFIG_BYTES = 16 * 1024;
 const MAX_WAIT_TIMEOUT_MS = 30_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const MIN_HIGHLIGHT_DURATION_MS = 500;
@@ -195,6 +196,32 @@ function normalizeDecorations(value = []) {
     : [];
 }
 
+function normalizePluginConfig(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  let cloned;
+  try {
+    cloned = JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
+  if (!cloned || typeof cloned !== "object" || Array.isArray(cloned)) {
+    return null;
+  }
+  const serialized = JSON.stringify(cloned);
+  if (serialized === "{}") {
+    return null;
+  }
+  if (Buffer.byteLength(serialized, "utf8") > MAX_PLUGIN_CONFIG_BYTES) {
+    return null;
+  }
+  return cloned;
+}
+
 function normalizeFunctionalPlacement(value = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -213,6 +240,10 @@ function normalizeFunctionalPlacement(value = {}) {
   };
   if (rotation) {
     placement.rotation = rotation;
+  }
+  const config = normalizePluginConfig(value.config);
+  if (config) {
+    placement.config = config;
   }
   return placement;
 }
@@ -1294,6 +1325,46 @@ export class AgentTownStore {
       throw error;
     }
     this.setLayout(validation.layout, { reason: input.reason || "import layout" });
+    await this.afterStateChange();
+    return { validation, state: this.getState() };
+  }
+
+  exportTownSection() {
+    return {
+      stateVersion: AGENT_TOWN_STATE_VERSION,
+      layout: clone(this.state.layout),
+      layoutSnapshots: clone(this.state.layoutSnapshots),
+    };
+  }
+
+  async importTownSection(input = {}, { reason = "import bundle", replaceSnapshots = true } = {}) {
+    const validation = validateLayout(input.layout || {});
+    if (!validation.ok) {
+      const error = new Error(`Invalid Agent Town layout: ${validation.issues.join("; ")}`);
+      error.statusCode = 400;
+      error.validation = validation;
+      throw error;
+    }
+
+    this.setLayout(validation.layout, { reason });
+
+    if (replaceSnapshots) {
+      this.state.layoutSnapshots = normalizeLayoutSnapshots(input.layoutSnapshots || []);
+    } else if (Array.isArray(input.layoutSnapshots) && input.layoutSnapshots.length > 0) {
+      const merged = [
+        ...normalizeLayoutSnapshots(input.layoutSnapshots),
+        ...this.state.layoutSnapshots,
+      ];
+      const seen = new Set();
+      this.state.layoutSnapshots = merged
+        .filter((entry) => {
+          if (seen.has(entry.id)) return false;
+          seen.add(entry.id);
+          return true;
+        })
+        .slice(0, MAX_LAYOUT_SNAPSHOTS);
+    }
+
     await this.afterStateChange();
     return { validation, state: this.getState() };
   }
