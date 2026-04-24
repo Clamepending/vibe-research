@@ -50,6 +50,7 @@ import { collectSystemMetrics } from "./system-metrics.js";
 import { SystemMetricsHistoryStore } from "./system-metrics-history.js";
 import { TailscaleServeManager } from "./tailscale-serve.js";
 import { TelegramService } from "./telegram-service.js";
+import { TutorialRegistry } from "./tutorial-registry.js";
 import { TwilioService } from "./twilio-service.js";
 import { UpdateManager } from "./update-manager.js";
 import { loadVideoMemoryRuntime } from "./videomemory-service-loader.js";
@@ -1087,6 +1088,10 @@ export async function createVibeResearchApp({
   const systemMetricsHistoryStore = new SystemMetricsHistoryStore({ stateDir });
   const portAliasStore = new PortAliasStore({ stateDir });
   await settingsStore.initialize();
+  const tutorialRegistry = new TutorialRegistry({
+    tutorialsDir: path.join(appRootDir, "tutorials"),
+  });
+  await tutorialRegistry.load();
   const googleOAuthStates = new Map();
   const googleOAuthTokenStore =
     typeof googleOAuthTokenStoreFactory === "function"
@@ -2203,6 +2208,19 @@ export async function createVibeResearchApp({
         update: error.update,
       });
     }
+  });
+
+  app.get("/api/tutorials", (_request, response) => {
+    response.json({ tutorials: tutorialRegistry.list() });
+  });
+
+  app.get("/api/tutorials/:id", (request, response) => {
+    const tutorial = tutorialRegistry.get(String(request.params?.id || ""));
+    if (!tutorial) {
+      response.status(404).json({ error: "Tutorial not found." });
+      return;
+    }
+    response.json({ tutorial });
   });
 
   app.get("/api/agent-town/state", (_request, response) => {

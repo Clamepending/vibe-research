@@ -56,6 +56,7 @@
           "skills/**",
           "src/**",
           "templates/**",
+          "tutorials/**",
           "install.sh",
           "LICENSE",
           "package-lock.json",
