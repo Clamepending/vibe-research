@@ -4951,7 +4951,6 @@ function renderRichSessionSurface(activeSession) {
         >${escapeHtml(draft)}</textarea>
         <div class="rich-session-composer-foot">
           <div class="rich-session-composer-actions">
-            <button class="ghost-button toolbar-control" type="button" id="rich-session-stop" data-terminal-control ${canSend ? "" : "disabled"}>Interrupt</button>
             <button
               class="primary-button toolbar-control rich-session-send"
               type="submit"
@@ -4998,7 +4997,6 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
   const surface = document.querySelector("#rich-session-surface");
   const feed = getRichSessionFeedViewport();
   const input = document.querySelector("#rich-session-input");
-  const stopButton = document.querySelector("#rich-session-stop");
   const sendButton = document.querySelector("#rich-session-send");
   const canSend = Boolean(activeSession && activeSession.status !== "exited");
 
@@ -5050,10 +5048,6 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
     input.disabled = !canSend;
     input.placeholder = `Message ${activeSession?.providerLabel || "agent"}...`;
     syncRichSessionComposerHeight(input);
-  }
-
-  if (stopButton instanceof HTMLButtonElement) {
-    stopButton.disabled = !canSend;
   }
 
   if (sendButton instanceof HTMLButtonElement) {
@@ -35562,9 +35556,6 @@ function bindShellEvents() {
   document.querySelector("#rich-session-feed")?.addEventListener("scroll", () => {
     syncTerminalScrollState();
   }, { passive: true });
-  document.querySelector("#rich-session-stop")?.addEventListener("click", () => {
-    sendTerminalInput("\u0003");
-  });
   document.querySelector("#rich-session-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const activeSession = getActiveSession();
