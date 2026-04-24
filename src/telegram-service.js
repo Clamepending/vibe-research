@@ -12,6 +12,7 @@ const DEFAULT_PROMPT_READY_TIMEOUT_MS = 45_000;
 const DEFAULT_PROMPT_RETRY_MS = 500;
 const DEFAULT_PROMPT_SUBMIT_DELAY_MS = 350;
 const DEFAULT_AUTO_REPLY_FALLBACK_MS = 120_000;
+const DEFAULT_CHAT_LOCK_MAX_HOLD_MS = 180_000;
 const AUTO_REPLY_MIN_OUTPUT_CHARS = 20;
 const AUTO_REPLY_MAX_OUTPUT_CHARS = 3_500;
 const TELEGRAM_TEXT_LIMIT = 12_000;
@@ -191,6 +192,7 @@ function buildTelegramPrompt({ message, replyCommand = "vr-telegram-reply" }) {
 export class TelegramService {
   constructor({
     autoReplyFallbackMs = DEFAULT_AUTO_REPLY_FALLBACK_MS,
+    chatLockMaxHoldMs = DEFAULT_CHAT_LOCK_MAX_HOLD_MS,
     cwd = process.cwd(),
     fetchImpl = globalThis.fetch,
     nowImpl = Date.now,
@@ -209,6 +211,9 @@ export class TelegramService {
     systemRootPath = stateDir ? getVibeResearchSystemDir({ cwd, stateDir }) : "",
   } = {}) {
     this.autoReplyFallbackMs = Math.max(0, Number(autoReplyFallbackMs) || 0);
+    this.chatLockMaxHoldMs = Math.max(0, Number(chatLockMaxHoldMs) || 0);
+    this.chatLocks = new Map();
+    this.chatLockReleases = new Map();
     this.clearTimeout = clearTimeoutImpl;
     this.cwd = cwd;
     this.fetch = fetchImpl;
@@ -306,6 +311,9 @@ export class TelegramService {
     }
     for (const key of [...this.pendingReplyByChat.keys()]) {
       this.clearPendingReply(key);
+    }
+    for (const key of [...this.chatLockReleases.keys()]) {
+      this.releaseChatLock(key);
     }
     this.status.connected = false;
     if (this.status.lastStatus !== "disabled") {
@@ -434,7 +442,79 @@ export class TelegramService {
     }
   }
 
-  async handleIncomingUpdate(update, { source = "poll" } = {}) {
+  async handleIncomingUpdate(update, options = {}) {
+    const message = getMessageFromUpdate(update);
+    if (!message) {
+      // Nothing to serialize — handle inline.
+      return this._handleIncomingUpdateInner(update, options);
+    }
+    const chatKey = this.telegramChatKey(getTelegramChatId(message));
+    if (!chatKey) {
+      return this._handleIncomingUpdateInner(update, options);
+    }
+
+    // Per-chat serial lane: wait for the previous message in this chat to
+    // finish (prompt submitted to the TUI, early-exit, or safety timeout)
+    // before this one starts. Prevents two fast-arriving messages from
+    // interleaving their writePrompt calls and gluing together inside the
+    // TUI's input buffer. Different chats still run in parallel.
+    const prior = this.chatLocks.get(chatKey) || Promise.resolve();
+    let releaseLock = () => {};
+    const lockHeld = new Promise((resolve) => {
+      releaseLock = resolve;
+    });
+
+    // Our slot in the chain: subsequent handleIncomingUpdate calls for this
+    // chat will await lockHeld (transitively) before proceeding.
+    const ourSlot = prior.catch(() => {}).then(() => lockHeld);
+    this.chatLocks.set(chatKey, ourSlot);
+    void ourSlot.finally(() => {
+      if (this.chatLocks.get(chatKey) === ourSlot) {
+        this.chatLocks.delete(chatKey);
+      }
+    });
+
+    try {
+      await prior;
+    } catch { /* prior errored — don't block */ }
+
+    // Acquire: register the release function before running inner so any
+    // synchronous release path (early-exit, sync fallback in tests) finds it.
+    const bundle = { release: releaseLock, safetyTimer: null };
+    this.chatLockReleases.set(chatKey, bundle);
+
+    try {
+      const result = await this._handleIncomingUpdateInner(update, options);
+      // Arm the safety timer *after* inner has scheduled its own timers, so
+      // tests that manually track/shift the setTimeout queue see the inner
+      // handler's timers first and the safety net last.
+      if (
+        this.chatLockMaxHoldMs > 0 &&
+        this.chatLockReleases.get(chatKey) === bundle
+      ) {
+        bundle.safetyTimer = this.setTimeout(
+          () => this.releaseChatLock(chatKey),
+          this.chatLockMaxHoldMs,
+        );
+      }
+      return result;
+    } catch (error) {
+      this.releaseChatLock(chatKey);
+      throw error;
+    }
+  }
+
+  releaseChatLock(chatKey) {
+    const bundle = this.chatLockReleases.get(chatKey);
+    if (!bundle) return;
+    this.chatLockReleases.delete(chatKey);
+    if (bundle.safetyTimer) {
+      try { this.clearTimeout(bundle.safetyTimer); } catch { /* best effort */ }
+    }
+    try { bundle.release(); } catch { /* best effort */ }
+  }
+
+  async _handleIncomingUpdateInner(update, { source = "poll" } = {}) {
     const message = getMessageFromUpdate(update);
     if (!message) {
       this.status.ignoredCount += 1;
@@ -442,9 +522,12 @@ export class TelegramService {
       return null;
     }
 
+    const chatKey = this.telegramChatKey(getTelegramChatId(message));
+
     if (message?.from?.is_bot) {
       this.status.ignoredCount += 1;
       this.status.lastIgnoredEventType = "message.from-bot";
+      if (chatKey) this.releaseChatLock(chatKey);
       return null;
     }
 
@@ -452,6 +535,7 @@ export class TelegramService {
     if (!isAllowedTelegramChat(message, config.allowedChatIds)) {
       this.status.ignoredCount += 1;
       this.status.lastIgnoredEventType = "message.chat-not-allowed";
+      if (chatKey) this.releaseChatLock(chatKey);
       return null;
     }
 
@@ -492,6 +576,7 @@ export class TelegramService {
     } catch (error) {
       this.status.lastError = error.message || "Could not launch Telegram agent session.";
       this.status.lastStatus = "error";
+      if (chatKey) this.releaseChatLock(chatKey);
       return null;
     }
   }
@@ -571,6 +656,8 @@ export class TelegramService {
     const failPromptDelivery = (message) => {
       this.status.lastError = message;
       this.status.lastStatus = "error";
+      const chatKey = this.telegramChatKey(chatId);
+      if (chatKey) this.releaseChatLock(chatKey);
       return false;
     };
     const markPromptSent = () => {
@@ -578,6 +665,12 @@ export class TelegramService {
       this.status.lastPromptSentAt = new Date().toISOString();
       this.status.lastStatus = source === "poll" ? "prompt-sent" : `prompt-sent-${source}`;
       this.registerPendingReply({ chatId, messageId, sessionId, promptText: prompt, providerId });
+      // Per-chat mutex holds only until the prompt is actually written to the
+      // TUI. Once submitted, the TUI's readiness hint ("❯" idle) serializes
+      // follow-up messages naturally, so we release here and let the next
+      // message in the queue proceed.
+      const chatKey = this.telegramChatKey(chatId);
+      if (chatKey) this.releaseChatLock(chatKey);
       void Promise.resolve(onPromptSent?.()).catch((error) => {
         this.status.lastError = error.message || "Could not record Telegram message processing.";
         this.status.lastStatus = "error";

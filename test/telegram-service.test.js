@@ -301,6 +301,9 @@ test("Telegram confirms Claude workspace trust and waits for a ready prompt befo
   const sessions = new Map();
   let now = 0;
   const service = new TelegramService({
+    // Manually-tracked timers: disable the chat-lock safety net so it doesn't
+    // get interleaved with the prompt-chain timers this test walks step by step.
+    chatLockMaxHoldMs: 0,
     nowImpl() {
       return now;
     },
@@ -842,6 +845,170 @@ test("Telegram auto-reply fallback skips when the session produced no new text",
 
   assert.equal(service.fetch.calls.length, 0, "no Bot API call when there is no agent output");
   assert.equal(service.status.lastStatus, "auto-reply-skipped-empty");
+});
+
+test("Telegram serializes back-to-back messages from the same chat (per-chat mutex)", async () => {
+  const liveSessions = new Map();
+  const writes = [];
+  const promptSubmitQueue = [];
+  const service = new TelegramService({
+    autoReplyFallbackMs: 0,
+    chatLockMaxHoldMs: 0,
+    promptDelayMs: 0,
+    promptReadyIdleMs: 0,
+    promptReadyTimeoutMs: 0,
+    promptRetryMs: 0,
+    // Fire every timer immediately EXCEPT the post-write "\r" submit, which we
+    // park so a second message arriving during its delay hits the mutex.
+    promptSubmitDelayMs: 5,
+    sessionManager: {
+      createSession(input) {
+        const session = {
+          id: `session-${liveSessions.size + 1}`,
+          ...input,
+          buffer: "Claude Code\n❯ ",
+          status: "running",
+          createdAt: new Date(0).toISOString(),
+          updatedAt: new Date(0).toISOString(),
+          lastOutputAt: new Date(0).toISOString(),
+        };
+        liveSessions.set(session.id, session);
+        return session;
+      },
+      getSession(id) { return liveSessions.get(id) || null; },
+      listSessions() { return [...liveSessions.values()]; },
+      write(sessionId, input) {
+        writes.push({ sessionId, input });
+        return true;
+      },
+    },
+    setTimeoutImpl(callback, delay) {
+      // Park the submit delay; fire everything else immediately.
+      if (delay === 5) {
+        promptSubmitQueue.push(callback);
+        return promptSubmitQueue.length;
+      }
+      callback();
+      return 0;
+    },
+    settings: {
+      telegramBotToken: "bot_secret",
+      telegramEnabled: true,
+      telegramProviderId: "claude",
+    },
+  });
+
+  const buildUpdate = (messageId, text) => ({
+    update_id: messageId,
+    message: {
+      message_id: messageId,
+      chat: { id: 12345, first_name: "Mark", type: "private" },
+      from: { id: 12345, first_name: "Mark" },
+      text,
+    },
+  });
+
+  // First message: acquires lock, writes prompt, parks at the \r submit.
+  const first = service.handleIncomingUpdate(buildUpdate(1, "first"), { source: "poll" });
+  // Wait one microtask so the sync prompt-write happens.
+  await new Promise((r) => setImmediate(r));
+  assert.equal(writes.length, 1, "first prompt should be written immediately");
+  assert.match(writes[0].input, /first/);
+
+  // Second message: should be serialized — no new write until first's mutex
+  // releases at markPromptSent (which fires after the submit \r).
+  const second = service.handleIncomingUpdate(buildUpdate(2, "second"), { source: "poll" });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(writes.length, 1, "second message must wait for first's lock to release");
+
+  // Fire the parked submit callback → markPromptSent → releaseChatLock → second proceeds.
+  const firstSubmit = promptSubmitQueue.shift();
+  assert.ok(firstSubmit, "parked submit callback should exist");
+  firstSubmit();
+  await first;
+  await new Promise((r) => setImmediate(r));
+
+  // Now the second message's prompt should be in flight.
+  assert.equal(writes.length, 3, "after first released, second writes its prompt");
+  assert.match(writes[1].input, /\r$/);
+  assert.match(writes[2].input, /second/);
+
+  const secondSubmit = promptSubmitQueue.shift();
+  if (secondSubmit) secondSubmit();
+  await second;
+});
+
+test("Telegram safety timer force-releases the chat lock when markPromptSent never fires", async () => {
+  const liveSessions = new Map();
+  const parkedSubmit = [];
+  let safetyCallback = null;
+  const service = new TelegramService({
+    autoReplyFallbackMs: 0,
+    chatLockMaxHoldMs: 42,
+    promptDelayMs: 0,
+    promptReadyIdleMs: 0,
+    promptReadyTimeoutMs: 0,
+    promptRetryMs: 0,
+    promptSubmitDelayMs: 7, // parked — simulates the submit never firing
+    sessionManager: {
+      createSession(input) {
+        const session = {
+          id: "s1",
+          ...input,
+          buffer: "Claude Code\n❯ ",
+          status: "running",
+        };
+        liveSessions.set(session.id, session);
+        return session;
+      },
+      getSession(id) { return liveSessions.get(id) || null; },
+      listSessions() { return [...liveSessions.values()]; },
+      write() { return true; },
+    },
+    setTimeoutImpl(callback, delay) {
+      if (delay === 42) {
+        safetyCallback = callback;
+        return { id: "safety" };
+      }
+      if (delay === 7) {
+        parkedSubmit.push(callback);
+        return { id: "submit" };
+      }
+      callback();
+      return { id: "other" };
+    },
+    clearTimeoutImpl() {},
+    settings: {
+      telegramBotToken: "bot_secret",
+      telegramEnabled: true,
+      telegramProviderId: "claude",
+    },
+  });
+
+  await service.handleIncomingUpdate(
+    {
+      update_id: 1,
+      message: {
+        message_id: 1,
+        chat: { id: 999, first_name: "Taylor", type: "private" },
+        from: { id: 999, first_name: "Taylor" },
+        text: "hi",
+      },
+    },
+    { source: "poll" },
+  );
+
+  assert.ok(service.chatLockReleases.has("999"), "chat lock should still be armed");
+  assert.ok(safetyCallback, "safety timer should have been registered");
+  assert.ok(parkedSubmit.length >= 1, "submit \\r should be parked (markPromptSent never fires)");
+
+  // Fire the safety timer → releases the wedged lock.
+  safetyCallback();
+  assert.equal(
+    service.chatLockReleases.has("999"),
+    false,
+    "safety fallback should have cleaned up the lock",
+  );
 });
 
 test("Telegram auto-reply fallback is canceled when the agent sends an explicit reply", async () => {
