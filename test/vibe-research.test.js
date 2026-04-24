@@ -1583,9 +1583,14 @@ test("Agent Town share API publishes thumbnails, BuildingHub pages, and imports 
 
     const staticPageText = await readFile(path.join(buildingHub.repoDir, "site", "layouts", "launch-base", "index.html"), "utf8");
     assert.match(staticPageText, /<meta property="og:title" content="Launch base - BuildingHub"/);
+    assert.match(staticPageText, /<link rel="canonical" href="https:\/\/buildinghub\.example\.test\/catalog\/layouts\/launch-base\/"/);
     assert.match(staticPageText, /https:\/\/buildinghub\.example\.test\/catalog\/assets\/layouts\/launch-base\.png/);
+    assert.match(staticPageText, /twitter:image:alt" content="Launch base Agent Town preview"/);
     assert.match(staticPageText, /Published by/);
     assert.match(staticPageText, /launch-owner/);
+    assert.match(staticPageText, /Share on X/);
+    assert.match(staticPageText, /https:\/\/twitter\.com\/intent\/tweet\?/);
+    assert.match(staticPageText, /https:\/\/vibe-research\.net\//);
 
     const commitSubject = await execFileAsync("git", ["-C", buildingHub.repoDir, "log", "-1", "--format=%s"]);
     assert.equal(commitSubject.stdout.trim(), "Publish Agent Town layout launch-base");

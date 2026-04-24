@@ -9,6 +9,7 @@ const BUILDINGHUB_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const DEFAULT_LAYOUT_VERSION = "0.1.0";
 const DEFAULT_CATEGORY = "Shared Base";
 const DEFAULT_DESCRIPTION = "A shared Agent Town base layout.";
+const VIBE_RESEARCH_URL = "https://vibe-research.net/";
 const DEFAULT_LAYOUT_DECORATION = Object.freeze({
   id: "default-road-anchor",
   itemId: "road-square",
@@ -442,21 +443,46 @@ ${imageLine}
 ${links ? `## Links\n\n${links}\n` : ""}`;
 }
 
+function buildLayoutShareIntentUrl({ manifest, publicUrls }) {
+  const layoutUrl = normalizeUrl(publicUrls.layoutUrl);
+  if (!layoutUrl) {
+    return "";
+  }
+
+  const params = new URLSearchParams({
+    text: `Check out ${manifest.name || "this Agent Town layout"} on BuildingHub. Made with Vibe Research: ${VIBE_RESEARCH_URL}`,
+    url: layoutUrl,
+  });
+  return `https://twitter.com/intent/tweet?${params.toString()}`;
+}
+
 function renderLayoutPage({ manifest, publicUrls, previewAssetName }) {
   const title = `${manifest.name} - BuildingHub`;
   const description = manifest.description || DEFAULT_DESCRIPTION;
   const previewPath = previewAssetName ? `../../assets/layouts/${previewAssetName}` : "";
+  const previewAlt = `${manifest.name} Agent Town preview`;
   const publisherHtml = renderPublisherHtml(manifest.publisher);
+  const canonicalMeta = publicUrls.layoutUrl
+    ? `
+  <link rel="canonical" href="${escapeHtml(publicUrls.layoutUrl)}" />
+  <meta property="og:url" content="${escapeHtml(publicUrls.layoutUrl)}" />`
+    : "";
   const imageMeta = publicUrls.previewUrl
     ? `
   <meta property="og:image" content="${escapeHtml(publicUrls.previewUrl)}" />
-  <meta name="twitter:image" content="${escapeHtml(publicUrls.previewUrl)}" />`
+  <meta property="og:image:alt" content="${escapeHtml(previewAlt)}" />
+  <meta name="twitter:image" content="${escapeHtml(publicUrls.previewUrl)}" />
+  <meta name="twitter:image:alt" content="${escapeHtml(previewAlt)}" />`
+    : "";
+  const shareOnXUrl = buildLayoutShareIntentUrl({ manifest, publicUrls });
+  const shareLink = shareOnXUrl
+    ? `<a class="button secondary" href="${escapeHtml(shareOnXUrl)}" target="_blank" rel="noopener noreferrer">Share on X</a>`
     : "";
   const sourceLink = publicUrls.repositoryUrl
     ? `<a class="button secondary" href="${escapeHtml(publicUrls.repositoryUrl)}">View source</a>`
     : "";
   const image = previewPath
-    ? `<img class="preview" src="${escapeHtml(previewPath)}" alt="${escapeHtml(`${manifest.name} Agent Town preview`)}" />`
+    ? `<img class="preview" src="${escapeHtml(previewPath)}" alt="${escapeHtml(previewAlt)}" />`
     : `<div class="preview empty">No preview image</div>`;
 
   return `<!doctype html>
@@ -466,6 +492,7 @@ function renderLayoutPage({ manifest, publicUrls, previewAssetName }) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(title)}</title>
   <meta name="description" content="${escapeHtml(description)}" />
+  <meta property="og:site_name" content="BuildingHub" />${canonicalMeta}
   <meta property="og:type" content="website" />
   <meta property="og:title" content="${escapeHtml(title)}" />
   <meta property="og:description" content="${escapeHtml(description)}" />${imageMeta}
@@ -487,6 +514,8 @@ function renderLayoutPage({ manifest, publicUrls, previewAssetName }) {
     .actions { display: flex; flex-wrap: wrap; gap: 10px; }
     .button { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 0 14px; border: 1px solid rgba(246,241,232,.18); border-radius: 8px; background: #d7f36b; color: #101312; font-weight: 800; text-decoration: none; }
     .button.secondary { background: transparent; color: #f6f1e8; }
+    .support { font-size: .94rem; }
+    .support a { color: #d7f36b; }
   </style>
 </head>
 <body>
@@ -502,8 +531,10 @@ function renderLayoutPage({ manifest, publicUrls, previewAssetName }) {
     <p>${escapeHtml(description)}</p>
     <div class="actions">
       <a class="button" href="../../">Browse BuildingHub</a>
+      ${shareLink}
       ${sourceLink}
     </div>
+    <p class="support">New here? <a href="${escapeHtml(VIBE_RESEARCH_URL)}" target="_blank" rel="noopener noreferrer">Vibe Research</a> is the app behind Agent Town.</p>
   </main>
 </body>
 </html>
