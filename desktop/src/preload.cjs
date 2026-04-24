@@ -1,6 +1,14 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { clipboard, contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("vibeDesktop", {
+  clipboard: {
+    writeText(text) {
+      clipboard.writeText(String(text || ""));
+    },
+    readText() {
+      return clipboard.readText();
+    },
+  },
   onStatus(callback) {
     ipcRenderer.on("vibe-status", (_event, payload) => callback(payload));
   },

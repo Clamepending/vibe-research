@@ -7690,6 +7690,164 @@ function getClipboardText(clipboardData) {
   }
 }
 
+function isEditableClipboardTarget(target) {
+  return Boolean(
+    target instanceof HTMLElement
+      && (target.isContentEditable || Boolean(target.closest("input, textarea, select"))),
+  );
+}
+
+function isNodeInsideTerminalSurface(node) {
+  if (!(node instanceof Node)) {
+    return false;
+  }
+
+  const terminalMount = document.querySelector("#terminal-mount");
+  const transcriptViewport = getTerminalTranscriptViewport();
+  return Boolean(
+    (terminalMount instanceof HTMLElement && terminalMount.contains(node))
+      || (transcriptViewport instanceof HTMLElement && transcriptViewport.contains(node)),
+  );
+}
+
+function isDocumentSelectionInsideTerminalSurface() {
+  const selection = document.getSelection?.();
+  if (!selection || selection.rangeCount === 0 || !String(selection).trim()) {
+    return false;
+  }
+
+  return isNodeInsideTerminalSurface(selection.anchorNode) || isNodeInsideTerminalSurface(selection.focusNode);
+}
+
+function hasMountedTerminalSurface() {
+  return Boolean(document.querySelector("#terminal-mount .xterm"));
+}
+
+function shouldHandleTerminalClipboardEvent(eventTarget = null) {
+  if (state.currentView !== "shell" || !state.activeSessionId || !state.terminal || !hasMountedTerminalSurface()) {
+    return false;
+  }
+
+  const target = eventTarget instanceof Node ? eventTarget : null;
+  if (isEditableClipboardTarget(target) && !isNodeInsideTerminalSurface(target)) {
+    return false;
+  }
+
+  const activeElement = document.activeElement;
+  if (isEditableClipboardTarget(activeElement) && !isNodeInsideTerminalSurface(activeElement)) {
+    return false;
+  }
+
+  return true;
+}
+
+function focusTerminalClipboardInput() {
+  const textarea = state.terminal?.textarea;
+  configureTerminalTextarea(textarea);
+  if (textarea instanceof HTMLTextAreaElement) {
+    try {
+      textarea.focus({ preventScroll: true });
+    } catch {
+      textarea.focus();
+    }
+    return;
+  }
+
+  state.terminal?.focus?.();
+}
+
+function copyTextWithExecCommand(text) {
+  if (typeof document?.execCommand !== "function" || !(document.body instanceof HTMLElement)) {
+    return false;
+  }
+
+  const normalized = String(text || "");
+  if (!normalized) {
+    return false;
+  }
+
+  const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const selection = document.getSelection?.() || null;
+  const previousRanges = [];
+  if (selection) {
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      previousRanges.push(selection.getRangeAt(index).cloneRange());
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = normalized;
+  textarea.setAttribute("readonly", "readonly");
+  textarea.setAttribute("aria-hidden", "true");
+  textarea.style.position = "fixed";
+  textarea.style.top = "0";
+  textarea.style.left = "-9999px";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.append(textarea);
+
+  try {
+    textarea.focus({ preventScroll: true });
+  } catch {
+    textarea.focus();
+  }
+  textarea.select();
+  textarea.setSelectionRange(0, normalized.length);
+
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+
+  textarea.remove();
+
+  if (selection) {
+    selection.removeAllRanges();
+    for (const range of previousRanges) {
+      selection.addRange(range);
+    }
+  }
+
+  if (activeElement) {
+    try {
+      activeElement.focus({ preventScroll: true });
+    } catch {
+      activeElement.focus();
+    }
+  }
+
+  return copied;
+}
+
+async function writeTextToClipboard(text, { allowExecCommand = true } = {}) {
+  const normalized = String(text || "");
+  if (!normalized) {
+    return false;
+  }
+
+  if (typeof window.vibeDesktop?.clipboard?.writeText === "function") {
+    try {
+      await window.vibeDesktop.clipboard.writeText(normalized);
+      return true;
+    } catch (error) {
+      console.warn("[vibe-research] desktop clipboard write failed", error);
+    }
+  }
+
+  if (typeof navigator.clipboard?.writeText === "function") {
+    try {
+      await navigator.clipboard.writeText(normalized);
+      return true;
+    } catch (error) {
+      console.warn("[vibe-research] navigator clipboard write failed", error);
+    }
+  }
+
+  return allowExecCommand ? copyTextWithExecCommand(normalized) : false;
+}
+
 function isImagePlaceholderPasteText(value) {
   return /^\s*\[image(?:\s+\d+)?\]\s*$/i.test(String(value || ""));
 }
@@ -7829,7 +7987,7 @@ function pasteTextIntoTerminal(text) {
     return;
   }
 
-  state.terminal?.focus?.();
+  focusTerminalClipboardInput();
   if (typeof state.terminal?.paste === "function") {
     state.terminal.paste(text);
     return;
@@ -13075,17 +13233,68 @@ function openAgentTownShareUrl(url, targetWindow = null) {
 }
 
 async function copyAgentTownShareUrlToClipboard(shareUrl) {
-  if (typeof navigator.clipboard?.writeText !== "function") {
-    return false;
-  }
-
   try {
-    await navigator.clipboard.writeText(shareUrl);
-    return true;
+    return await writeTextToClipboard(shareUrl);
   } catch (error) {
     console.warn("[vibe-research] Agent Town share link copy failed", error);
     return false;
   }
+}
+
+function handleTerminalDocumentPaste(event) {
+  if (event.defaultPrevented || isNodeInsideTerminalSurface(event.target) || !shouldHandleTerminalClipboardEvent(event.target)) {
+    return;
+  }
+
+  const files = getImageFilesFromClipboardData(event.clipboardData);
+  const clipboardText = getClipboardText(event.clipboardData);
+  if (!files.length && !clipboardText) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  focusTerminalClipboardInput();
+
+  if (files.length) {
+    void attachTerminalImageFiles(files, "paste");
+    return;
+  }
+
+  if (isImagePlaceholderPasteText(clipboardText)) {
+    void attachTerminalImagePlaceholderPaste(clipboardText);
+    return;
+  }
+
+  pasteTextIntoTerminal(clipboardText);
+}
+
+function handleTerminalDocumentCopy(event) {
+  if (event.defaultPrevented || !shouldHandleTerminalClipboardEvent(event.target) || !state.terminal?.hasSelection?.()) {
+    return;
+  }
+
+  if (hasSelectedDocumentText() && !isDocumentSelectionInsideTerminalSurface()) {
+    return;
+  }
+
+  const selectionText = String(state.terminal.getSelection?.() || "");
+  if (!selectionText) {
+    return;
+  }
+
+  event.preventDefault();
+
+  if (typeof event.clipboardData?.setData === "function") {
+    try {
+      event.clipboardData.setData("text/plain", selectionText);
+      return;
+    } catch (error) {
+      console.warn("[vibe-research] event clipboard write failed", error);
+    }
+  }
+
+  void writeTextToClipboard(selectionText, { allowExecCommand: false });
 }
 
 async function publishAgentTownShare({ name = "Agent Town", description = "" } = {}) {
@@ -21096,13 +21305,13 @@ async function applyAgentTownLayoutBlueprint(blueprintId) {
 
 async function exportAgentTownBlueprint() {
   const blueprint = JSON.stringify(getAgentTownCurrentLayout(), null, 2);
-  try {
-    await navigator.clipboard?.writeText(blueprint);
+  if (await writeTextToClipboard(blueprint)) {
     setAgentTownBuilderFeedback("Blueprint copied", "success", { render: true });
-  } catch {
-    window.prompt("Copy Agent Town blueprint", blueprint);
-    setAgentTownBuilderFeedback("Blueprint ready", "info", { render: true });
+    return;
   }
+
+  window.prompt("Copy Agent Town blueprint", blueprint);
+  setAgentTownBuilderFeedback("Blueprint ready", "info", { render: true });
 }
 
 async function importAgentTownBlueprint() {
@@ -30384,6 +30593,9 @@ function bindSelectableRefreshEvents() {
     }
   });
 
+  document.addEventListener("paste", handleTerminalDocumentPaste);
+  document.addEventListener("copy", handleTerminalDocumentCopy);
+
   window.addEventListener("copy", () => {
     scheduleSelectableRefreshFlush(400);
   });
@@ -36864,16 +37076,10 @@ function setupTerminalInteractions(mount) {
     startY: 0,
   };
   const focusTerminalInput = () => {
-    configureTerminalTextarea(helperTextarea);
-    if (helperTextarea instanceof HTMLTextAreaElement) {
-      try {
-        helperTextarea.focus({ preventScroll: true });
-      } catch {
-        helperTextarea.focus();
-      }
-    } else {
-      state.terminal?.focus();
+    if (state.terminal?.textarea !== helperTextarea) {
+      configureTerminalTextarea(helperTextarea);
     }
+    focusTerminalClipboardInput();
   };
 
   const handlePointerDown = (event) => {

@@ -2015,6 +2015,70 @@ test("terminal paste and drop insert safe saved image markdown references", asyn
   }
 });
 
+test("document-level paste routes plain text into the active terminal", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for terminal clipboard smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("vibe-research-terminal-clipboard-workspace-");
+  const stateDir = await createTempWorkspace("vibe-research-terminal-clipboard-state-");
+  const wikiDir = path.join(workspaceDir, "brain");
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
+  let browser = null;
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wikiPath: wikiDir }),
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        providerId: "shell",
+        name: "Clipboard Terminal",
+        cwd: workspaceDir,
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    await page.goto(baseUrl);
+    await page.waitForSelector("#terminal-mount .xterm-helper-textarea", { timeout: 10_000 });
+
+    const pasteResult = await page.evaluate(() => {
+      const transfer = new DataTransfer();
+      transfer.setData("text/plain", "echo document-paste-route\r");
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: transfer });
+      const defaultAllowed = document.dispatchEvent(event);
+
+      return {
+        defaultAllowed,
+        defaultPrevented: event.defaultPrevented,
+      };
+    });
+
+    assert.equal(pasteResult.defaultAllowed, false);
+    assert.equal(pasteResult.defaultPrevented, true);
+    await page.waitForFunction(
+      () => document.querySelector("#terminal-mount .xterm")?.textContent?.includes("document-paste-route"),
+      { timeout: 10_000 },
+    );
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
+  }
+});
+
 test("settings api persists simple agent automations", async () => {
   const workspaceDir = await createTempWorkspace("vibe-research-agent-automations-");
   const { app, baseUrl } = await startApp({ cwd: workspaceDir });
@@ -3619,6 +3683,134 @@ test("Agent Town share opens and copies a BuildingHub town link", async (t) => {
     await page.locator(".buildinghub-town-card").waitFor({ timeout: 10_000 });
     assert.equal(await page.locator(".buildinghub-town-card").count(), 1);
     await page.locator("[data-town-share-import]").first().waitFor({ timeout: 10_000 });
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+    await removeTempWorkspace(stateDir);
+    await removeTempWorkspace(buildingHub.repoDir);
+    await removeTempWorkspace(buildingHub.remoteDir);
+  }
+});
+
+test("Agent Town share falls back when navigator.clipboard is unavailable", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable is available for Agent Town share smoke.");
+    return;
+  }
+
+  const workspaceDir = await createTempWorkspace("vibe-research-agent-town-share-fallback-workspace-");
+  const stateDir = await createTempWorkspace("vibe-research-agent-town-share-fallback-state-");
+  const buildingHub = await createBuildingHubRepoFixture();
+  const wikiDir = getWorkspaceLibraryDir(workspaceDir);
+  await mkdir(wikiDir, { recursive: true });
+  await writeFile(path.join(wikiDir, "index.md"), "# Agent Town Share Fallback Library\n", "utf8");
+  const githubFetchImpl = createGitHubFetchImpl({
+    id: 61,
+    login: "share-fallback",
+    name: "Share Fallback",
+    html_url: "https://github.com/share-fallback",
+  });
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir, githubFetchImpl });
+  let browser = null;
+
+  try {
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        buildingHubCatalogPath: buildingHub.repoDir,
+        buildingHubCatalogUrl: buildingHub.registryUrl,
+        buildingHubEnabled: true,
+        preventSleepEnabled: false,
+        wikiGitRemoteEnabled: false,
+        wikiPath: wikiDir,
+      }),
+    });
+    assert.equal(settingsResponse.status, 200);
+    await unlockBuildingHub(baseUrl);
+    await connectBuildingHubGitHub(baseUrl, {
+      clientId: "test-github-client-id",
+      profile: {
+        login: "share-fallback",
+        html_url: "https://github.com/share-fallback",
+      },
+    });
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "shell", cwd: workspaceDir, name: "Share Fallback Agent" }),
+    });
+    assert.equal(createResponse.status, 201);
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    await page.addInitScript(() => {
+      window.__agentTownShareOpenCalls = [];
+      window.__agentTownShareCopyFallbacks = [];
+      window.open = (url) => {
+        if (url && url !== "about:blank") {
+          window.__agentTownShareOpenCalls.push(String(url || ""));
+        }
+        return {
+          closed: false,
+          document: {
+            title: "",
+            body: {
+              innerHTML: "",
+            },
+          },
+          location: {
+            set href(nextUrl) {
+              window.__agentTownShareOpenCalls.push(String(nextUrl || ""));
+            },
+            replace(nextUrl) {
+              window.__agentTownShareOpenCalls.push(String(nextUrl || ""));
+            },
+          },
+          focus() {},
+          opener: window,
+        };
+      };
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {},
+      });
+      document.execCommand = (command) => {
+        window.__agentTownShareCopyFallbacks.push({
+          command: String(command || ""),
+          value: document.activeElement instanceof HTMLTextAreaElement ? document.activeElement.value : "",
+        });
+        return command === "copy";
+      };
+    });
+
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto(`${baseUrl}/?view=swarm`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
+    await page.locator("#visual-game-share-town").click();
+    await page.waitForFunction(
+      () => window.__agentTownShareOpenCalls.some((url) => url.includes("buildinghub.example.test/catalog/layouts/")),
+      null,
+      { timeout: 10_000 },
+    );
+
+    const shareState = await page.evaluate(() => ({
+      openedUrl: window.__agentTownShareOpenCalls.find((url) => url.includes("buildinghub.example.test/catalog/layouts/")) || "",
+      fallbackCalls: window.__agentTownShareCopyFallbacks || [],
+      toastText: document.querySelector("#system-toasts")?.textContent || "",
+    }));
+
+    assert.match(
+      shareState.openedUrl,
+      /^https:\/\/buildinghub\.example\.test\/catalog\/layouts\/town-[a-f0-9]+\/$/,
+    );
+    assert.equal(shareState.fallbackCalls.length, 1);
+    assert.equal(shareState.fallbackCalls[0].command, "copy");
+    assert.equal(shareState.fallbackCalls[0].value, shareState.openedUrl);
+    assert.match(shareState.toastText, /BuildingHub link copied/);
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
