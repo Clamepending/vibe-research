@@ -148,11 +148,18 @@ jobs:
             echo "No DMG found in desktop/dist; skipping stable-name upload" >&2
             exit 0
           fi
-          tag="${GITHUB_REF##refs/tags/}"
+          # Prefer the explicit workflow_call input, fall back to the tag ref
+          # when this workflow was triggered by a push to refs/tags/v*.
+          tag="${INPUT_TAG:-${GITHUB_REF##refs/tags/}}"
+          if [ -z "$tag" ] || [[ "$tag" == refs/* ]]; then
+            echo "::error::Could not determine release tag for stable-name upload (GITHUB_REF=$GITHUB_REF INPUT_TAG=$INPUT_TAG)"
+            exit 1
+          fi
           cp "$dmg" "$RUNNER_TEMP/Vibe-Research-macOS.dmg"
           gh release upload "$tag" "$RUNNER_TEMP/Vibe-Research-macOS.dmg" --repo "$GITHUB_REPOSITORY" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
 
       - name: Build Mac App Store package
         if: env.RELEASE_MODE == 'true' && env.MAS_ENABLED == 'true'

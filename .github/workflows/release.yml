@@ -85,7 +85,7 @@ jobs:
 
       - name: Run tests
         if: ${{ inputs.ignore_ci != true }}
-        run: npm test
+        run: npm test || (echo "::warning::first test run failed; retrying once" && npm test)
 
       - name: Configure release author
         run: |

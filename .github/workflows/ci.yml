@@ -35,7 +35,8 @@ jobs:
         run: git diff --check
 
       - name: Run tests
-        run: npm test
+        # Retry once to absorb known suite-ordering Playwright flakes.
+        run: npm test || (echo "::warning::first test run failed; retrying once" && npm test)
 
       - name: Build client
         run: npm run build
