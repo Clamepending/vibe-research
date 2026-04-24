@@ -630,6 +630,19 @@ function filterProjectedOverlayEntries(entries = []) {
       return false;
     }
 
+    // Filter the verbose provider launch command echoed by the shell when we
+    // boot a Codex or Claude session. The buffer parser otherwise splits the
+    // wrapped command into multiple short "assistant" entries that escape the
+    // length-based heuristics below and end up rendered as giant cards in the
+    // chat after every message.
+    if (
+      /bin\/(?:codex|claude)\b/iu.test(normalizedText)
+      && /\s-c\b/u.test(normalizedText)
+      && /trust_level\s*=/iu.test(normalizedText)
+    ) {
+      return false;
+    }
+
     if (entry.kind === "assistant") {
       if (
         /tab\s+to\s+queue\s+message|context\s+left|\/model\s+to\s+change/iu.test(normalizedText)
@@ -638,7 +651,11 @@ function filterProjectedOverlayEntries(entries = []) {
         return false;
       }
 
-      if (normalizedText.length > 700) {
+      // Previously capped at 700 characters, which silently dropped any longer
+      // assistant reply (Claude in particular often emits multi-paragraph
+      // answers). Cap is now generous enough to fit a normal answer while still
+      // rejecting full-screen TUI dumps.
+      if (normalizedText.length > 4000) {
         return false;
       }
 
