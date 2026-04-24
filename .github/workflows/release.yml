@@ -17,6 +17,9 @@ on:
         required: false
         default: false
         type: boolean
+  push:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -29,6 +32,14 @@ jobs:
   release:
     name: Cut Release
     runs-on: ubuntu-latest
+    # Skip auto-release (push trigger) when the head commit is the release
+    # bot's own "Release vX.Y.Z" commit, or when the author added the
+    # [skip release] trailer. Manual workflow_dispatch always runs.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       !startsWith(github.event.head_commit.message, 'Release v') &&
+       !contains(github.event.head_commit.message, '[skip release]'))
     outputs:
       tag: ${{ steps.read_tag.outputs.tag }}
 
@@ -39,7 +50,11 @@ jobs:
           fetch-depth: 0
 
       - name: Verify CI is green on HEAD
-        if: ${{ inputs.ignore_ci != true }}
+        # For workflow_dispatch we expect CI to have already run and want to
+        # fail fast if it is red. For push triggers we are racing CI on the
+        # same commit, so skip the external check and rely on the in-workflow
+        # "Run tests" step a few steps down.
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.ignore_ci != true }}
         run: |
           commit_sha=$(git rev-parse HEAD)
           echo "Checking CI status on $commit_sha"
