@@ -3640,7 +3640,11 @@ export class SessionManager {
     }
 
     const launchedAt = Date.now();
-    ptyProcess.write(`${commandString}\r`);
+    // Ctrl-U (kill-line) clears any escape-sequence garbage the shell may
+    // have buffered — e.g. DA responses echoed back from xterm.js before the
+    // launch command is injected. Without this, the user sees junk like
+    // "^[[?1;2c^[[>0;276;0c" prepended to the launch command.
+    ptyProcess.write(`\x15${commandString}\r`);
 
     if (typeof launchContext?.afterLaunch === "function") {
       void launchContext.afterLaunch(ptyProcess, launchedAt);
