@@ -3503,15 +3503,19 @@ export class SessionManager {
       if (!line) {
         continue;
       }
+      // Stamp + push the user entry BEFORE handing the prompt to Claude so the
+      // user message timestamp is unambiguously earlier than any "Thinking" /
+      // partial / final assistant entry we synthesize from the stream.
+      const userTimestamp = new Date().toISOString();
+      this.pushNativeNarrativeEntry(session, {
+        kind: "user",
+        label: "You",
+        text: line,
+        timestamp: userTimestamp,
+      });
+      session.lastPromptAt = userTimestamp;
       try {
         session.streamSession.send(line);
-        this.pushNativeNarrativeEntry(session, {
-          kind: "user",
-          label: "You",
-          text: line,
-          timestamp: new Date().toISOString(),
-        });
-        session.lastPromptAt = new Date().toISOString();
         sentAny = true;
       } catch (error) {
         this.pushNativeNarrativeEntry(session, {
@@ -4968,7 +4972,11 @@ export class SessionManager {
 
     streamSession.on("entries", (entries) => {
       session.streamEntries = Array.isArray(entries) ? entries : [];
-      this.scheduleSessionMetaBroadcast(session);
+      // Immediate broadcast: rich-session entries are the user's primary view
+      // for stream sessions, so we always want the client refresh to fire as
+      // soon as a Thinking signal or token delta lands. The throttled path
+      // adds noticeable lag on the very first reply of every turn.
+      this.scheduleSessionMetaBroadcast(session, { immediate: true });
     });
 
     streamSession.on("turn-complete", () => {

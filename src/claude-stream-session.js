@@ -298,11 +298,13 @@ export class ClaudeStreamSession extends EventEmitter {
 
   _synthesizePartialEntries(stamp) {
     const synthesized = [];
+    let anyPartialText = false;
     for (const [messageId, partialText] of this._partialByMessage) {
       const text = String(partialText || "").trim();
       if (!text) {
         continue;
       }
+      anyPartialText = true;
       synthesized.push({
         id: `claude-partial-${messageId}`,
         kind: "assistant",
@@ -312,7 +314,11 @@ export class ClaudeStreamSession extends EventEmitter {
         meta: "streaming",
       });
     }
-    if (this._pendingThinking) {
+    // Only surface "Thinking" while we are genuinely waiting on first tokens.
+    // Hide the moment any partial text has arrived so the indicator never sits
+    // alongside the reply. The pending flag itself is also cleared on
+    // message_start / assistant / result events in _updatePartialState.
+    if (this._pendingThinking && !anyPartialText) {
       synthesized.push({
         id: "claude-thinking-pending",
         kind: "status",
