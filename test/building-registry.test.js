@@ -221,7 +221,10 @@ test("building registry exposes core building manifests", () => {
   assert.equal(videoMemory.ui.entryView, "videomemory");
   assert.equal(videoMemory.ui.mode, "panel");
   assert.equal(videoMemory.visual.shape, "camera");
-  assert.ok(AGENT_TOWN_SPECIAL_BUILDING_IDS.has("videomemory"));
+  // VideoMemory is intentionally a regular placeable building (not a special
+  // auto-placed slot) so users can drop it into Agent Town from the town
+  // builder like Telegram/AgentMail.
+  assert.equal(AGENT_TOWN_SPECIAL_BUILDING_IDS.has("videomemory"), false);
 
   const rentAHuman = BUILDING_CATALOG.find((building) => building.id === "rentahuman");
   assert.equal(rentAHuman.category, "Commerce");
