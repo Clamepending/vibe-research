@@ -2,6 +2,17 @@ name: Desktop
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v1.0.2). Leave empty to build HEAD."
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to build. When set, the job checks out this tag and enables release-mode signing/publishing."
+        required: false
+        type: string
   push:
     tags:
       - "v*"
@@ -10,17 +21,21 @@ permissions:
   contents: write
 
 concurrency:
-  group: desktop-${{ github.ref }}
+  group: desktop-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
   mac:
     name: Build macOS Desktop App
     runs-on: macos-latest
+    env:
+      RELEASE_MODE: ${{ (startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.tag, 'v')) && 'true' || 'false' }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -48,7 +63,7 @@ jobs:
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
 
       - name: Require signing and notarization secrets for release tags
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_MODE == 'true'
         run: |
           missing=()
           for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
@@ -69,7 +84,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Require Mac App Store secrets for release tags
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_MODE == 'true'
         run: |
           missing=()
           for name in MAS_CSC_LINK MAS_CSC_KEY_PASSWORD MAS_PROVISIONING_PROFILE_BASE64 APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
@@ -92,7 +107,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Prepare Mac App Store provisioning profile
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_MODE == 'true'
         run: |
           profile_path="$RUNNER_TEMP/vibe-research-mas.provisionprofile"
           python3 - <<'PY'
@@ -111,7 +126,7 @@ jobs:
 
       - name: Build desktop app
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          if [[ "$RELEASE_MODE" == "true" ]]; then
             npm --prefix desktop run dist -- --mac dmg zip --universal --publish always
           else
             npm --prefix desktop run dist -- --mac dmg zip --universal --publish never
@@ -125,7 +140,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Build Mac App Store package
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_MODE == 'true'
         run: |
           npm --prefix desktop run dist:mas -- --config.mas.provisioningProfile="$MAS_PROVISIONING_PROFILE"
         env:
@@ -135,7 +150,7 @@ jobs:
           MAS_PROVISIONING_PROFILE: ${{ env.MAS_PROVISIONING_PROFILE }}
 
       - name: Upload Mac App Store package to App Store Connect
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_MODE == 'true'
         run: |
           pkg_file="$(ls -1 desktop/dist/*.pkg | head -n 1)"
           if [ -z "$pkg_file" ]; then
