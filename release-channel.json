@@ -4,8 +4,8 @@
   "repository": "https://github.com/Clamepending/vibe-research",
   "website": "https://vibe-research.net",
   "channel": "stable",
-  "version": "1.0.4",
-  "tag": "v1.0.4",
-  "releaseUrl": "https://github.com/Clamepending/vibe-research/releases/tag/v1.0.4",
-  "installer": "https://raw.githubusercontent.com/Clamepending/vibe-research/v1.0.4/install.sh"
+  "version": "1.0.5",
+  "tag": "v1.0.5",
+  "releaseUrl": "https://github.com/Clamepending/vibe-research/releases/tag/v1.0.5",
+  "installer": "https://raw.githubusercontent.com/Clamepending/vibe-research/v1.0.5/install.sh"
 }
