@@ -1,0 +1,412 @@
+#!/usr/bin/env node
+
+import path from "node:path";
+import process from "node:process";
+import { readFile, writeFile } from "node:fs/promises";
+
+function printHelp() {
+  process.stdout.write(`vr-agent-town
+
+Export and import an Agent Town bundle for reproducibility.
+
+Usage:
+  vr-agent-town export [--out PATH] [--pretty]
+  vr-agent-town import <path|url|id:BUNDLE_ID|hub:BUNDLE_ID> [--dry-run] [--json]
+  vr-agent-town diff <path|url|id:BUNDLE_ID|hub:BUNDLE_ID>
+  vr-agent-town publish [--id NAME] [--from PATH]
+  vr-agent-town list
+  vr-agent-town unpublish <id>
+  vr-agent-town hub-publish <id>
+  vr-agent-town hub-list
+  vr-agent-town hub-pull <id> [--dry-run]
+
+Options:
+  --out PATH         Write the exported bundle to PATH (default: stdout).
+  --pretty           Pretty-print JSON when writing to stdout.
+  --dry-run          Validate without applying changes; prints the report.
+  --json             Print the API response as JSON.
+  --id NAME          Slug used when publishing (auto-generated if omitted).
+  --from PATH        Publish a bundle from a local file instead of the
+                     current Agent Town state.
+  -h, --help         Show this help.
+
+The import/diff positional accepts a local file path, an http(s) URL,
+"id:NAME" to reference a bundle in this server's local registry, or
+"hub:NAME" to import directly from BuildingHub. Hub bundles are
+discovered via the configured BuildingHub catalog (local folder or
+remote URL).
+
+Environment:
+  VIBE_RESEARCH_AGENT_TOWN_API   Overrides server discovery.
+  VIBE_RESEARCH_ROOT             Used to read server.json when API is not set.
+`);
+}
+
+function requireValue(args, index, flag) {
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value.`);
+  }
+  return value;
+}
+
+function parseArgs(args) {
+  const options = {
+    command: "",
+    positional: "",
+    out: "",
+    pretty: false,
+    dryRun: false,
+    json: false,
+    bundleId: "",
+    from: "",
+  };
+
+  if (args[0] === "--help" || args[0] === "-h") {
+    options.help = true;
+    return options;
+  }
+
+  options.command = String(args[0] || "").trim();
+
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--pretty") {
+      options.pretty = true;
+    } else if (arg === "--dry-run") {
+      options.dryRun = true;
+    } else if (arg === "--out") {
+      options.out = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--id") {
+      options.bundleId = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--from") {
+      options.from = requireValue(args, index, arg);
+      index += 1;
+    } else if (!arg.startsWith("--") && !options.positional) {
+      options.positional = arg;
+    } else {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+async function readServerInfo(rootDir) {
+  const filePath = path.join(rootDir, "server.json");
+  const raw = await readFile(filePath, "utf8");
+  return JSON.parse(raw);
+}
+
+async function resolveAgentTownApi() {
+  const directApi = String(
+    process.env.VIBE_RESEARCH_AGENT_TOWN_API ||
+      process.env.REMOTE_VIBES_AGENT_TOWN_API ||
+      "",
+  ).trim();
+  if (directApi) {
+    return directApi.replace(/\/+$/, "");
+  }
+
+  const rootDir = String(process.env.VIBE_RESEARCH_ROOT || process.env.REMOTE_VIBES_ROOT || "").trim();
+  if (!rootDir) {
+    throw new Error("VIBE_RESEARCH_AGENT_TOWN_API or VIBE_RESEARCH_ROOT is required.");
+  }
+
+  const serverInfo = await readServerInfo(rootDir);
+  const baseUrl = String(serverInfo?.helperBaseUrl || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("Vibe Research server metadata does not include helperBaseUrl.");
+  }
+
+  return `${baseUrl}/api/agent-town`;
+}
+
+async function fetchJsonOrThrow(url, options) {
+  const response = await fetch(url, options);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload?.error || `${response.status} ${response.statusText}`.trim();
+    const error = new Error(message);
+    error.payload = payload;
+    throw error;
+  }
+  return payload;
+}
+
+async function runExport(api, options) {
+  const payload = await fetchJsonOrThrow(`${api}/bundle`);
+  const bundle = payload?.bundle || payload;
+  const json = JSON.stringify(bundle, null, options.pretty || options.out ? 2 : 0);
+  if (options.out) {
+    await writeFile(path.resolve(process.cwd(), options.out), `${json}\n`, "utf8");
+    process.stdout.write(`wrote ${options.out}\n`);
+  } else {
+    process.stdout.write(`${json}\n`);
+  }
+}
+
+function formatReport(result) {
+  const report = result?.report || {};
+  const lines = [];
+  if (result?.dryRun) {
+    lines.push(result.applied ? "applied (dry-run)" : "dry-run report (no changes applied):");
+  } else {
+    lines.push(result?.applied ? "bundle imported." : "bundle NOT applied.");
+  }
+  const counts = report.counts || {};
+  const countParts = Object.entries(counts)
+    .map(([key, value]) => `${key}=${value}`)
+    .join("  ");
+  if (countParts) lines.push(`  counts: ${countParts}`);
+  if (report.integrity) {
+    lines.push(`  integrity: ${report.integrity}`);
+  }
+  if (Array.isArray(report.plugins) && report.plugins.length > 0) {
+    const available = report.plugins.filter((p) => p.available);
+    const unavailable = report.plugins.filter((p) => !p.available);
+    if (available.length > 0) {
+      const labels = available
+        .map((p) => (p.version ? `${p.id}@${p.version}` : p.id))
+        .join(", ");
+      lines.push(`  plugins (available): ${labels}`);
+    }
+    if (unavailable.length > 0) {
+      const labels = unavailable.map((p) => p.id).join(", ");
+      lines.push(`  plugins (missing from hub): ${labels}`);
+    }
+  }
+  if (Array.isArray(report.missingEnv) && report.missingEnv.length > 0) {
+    lines.push(`  missing env: ${report.missingEnv.join(", ")}`);
+  }
+  if (report.validation && report.validation.ok === false) {
+    lines.push(`  validation issues: ${(report.validation.issues || []).join("; ")}`);
+  }
+  if (report.rollbackSnapshotName) {
+    lines.push(`  rollback snapshot: "${report.rollbackSnapshotName}"`);
+  }
+  if (Array.isArray(report.warnings) && report.warnings.length > 0) {
+    for (const warning of report.warnings) {
+      lines.push(`  warning: ${warning}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+async function runImport(api, options, { dryRun }) {
+  if (!options.positional) {
+    throw new Error("provide a bundle path, URL, id:NAME, or hub:NAME.");
+  }
+  if (options.positional.startsWith("hub:")) {
+    const hubId = options.positional.slice(4);
+    const result = await fetchJsonOrThrow(`${api}/bundle-hub/${encodeURIComponent(hubId)}/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dryRun }),
+    });
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+    process.stdout.write(formatReport(result));
+    return;
+  }
+  const payload = { dryRun };
+  if (/^https?:\/\//i.test(options.positional)) {
+    payload.url = options.positional;
+  } else if (options.positional.startsWith("id:")) {
+    payload.bundleId = options.positional.slice(3);
+  } else {
+    const bundlePath = path.resolve(process.cwd(), options.positional);
+    const raw = await readFile(bundlePath, "utf8");
+    payload.bundle = JSON.parse(raw);
+  }
+  const result = await fetchJsonOrThrow(`${api}/bundle/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(formatReport(result));
+}
+
+async function runHubPublish(api, options) {
+  if (!options.positional) {
+    throw new Error("provide a local bundle id to publish.");
+  }
+  const result = await fetchJsonOrThrow(`${api}/bundles/${encodeURIComponent(options.positional)}/publish-to-hub`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(`published to BuildingHub: ${result.bundleId}\n`);
+  if (result.bundleUrl) process.stdout.write(`  bundle:     ${result.bundleUrl}\n`);
+  if (result.repositoryUrl) process.stdout.write(`  repository: ${result.repositoryUrl}\n`);
+  if (result.commit) process.stdout.write(`  commit:     ${result.commit}\n`);
+  if (result.commitUrl) process.stdout.write(`  commit-url: ${result.commitUrl}\n`);
+  process.stdout.write(`  status:     ${result.status} (${result.publishedVia})\n`);
+  process.stdout.write(`  import:     vr-agent-town import hub:${result.bundleId}\n`);
+}
+
+async function runHubList(api, options) {
+  const result = await fetchJsonOrThrow(`${api}/bundle-hub`);
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  const bundles = Array.isArray(result?.bundles) ? result.bundles : [];
+  if (bundles.length === 0) {
+    process.stdout.write("no bundles in BuildingHub.\n");
+    return;
+  }
+  for (const entry of bundles) {
+    const version = entry.bundleVersion ? `v${entry.bundleVersion}` : "";
+    const integrity = entry.integrity ? ` ${entry.integrity.slice(0, 24)}…` : "";
+    process.stdout.write(`${entry.id}  ${version}  ${entry.exportedAt || ""}${integrity}\n`);
+    if (entry.description) process.stdout.write(`  ${entry.description}\n`);
+  }
+}
+
+async function runHubPull(api, options) {
+  if (!options.positional) {
+    throw new Error("provide a hub bundle id.");
+  }
+  const result = await fetchJsonOrThrow(`${api}/bundle-hub/${encodeURIComponent(options.positional)}/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dryRun: options.dryRun }),
+  });
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(formatReport(result));
+}
+
+async function runPublish(api, options) {
+  const body = {};
+  if (options.bundleId) body.id = options.bundleId;
+  if (options.from) {
+    const raw = await readFile(path.resolve(process.cwd(), options.from), "utf8");
+    body.bundle = JSON.parse(raw);
+  }
+  const result = await fetchJsonOrThrow(`${api}/bundles`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(`published ${result.id}\n`);
+  process.stdout.write(`  integrity: ${result.integrity || "(none)"}\n`);
+  process.stdout.write(`  url:       ${result.url}\n`);
+  process.stdout.write(`  import:    vr-agent-town import id:${result.id}\n`);
+}
+
+async function runList(api, options) {
+  const result = await fetchJsonOrThrow(`${api}/bundles`);
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  const bundles = Array.isArray(result?.bundles) ? result.bundles : [];
+  if (bundles.length === 0) {
+    process.stdout.write("no published bundles.\n");
+    return;
+  }
+  for (const entry of bundles) {
+    const kb = (Number(entry.byteLength) / 1024).toFixed(1);
+    process.stdout.write(`${entry.id}  ${entry.updatedAt}  ${kb} KB  ${entry.integrity || ""}\n`);
+  }
+}
+
+async function runUnpublish(api, options) {
+  if (!options.positional) {
+    throw new Error("provide a bundle id.");
+  }
+  const result = await fetchJsonOrThrow(`${api}/bundles/${encodeURIComponent(options.positional)}`, {
+    method: "DELETE",
+  });
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(`unpublished ${result.id}\n`);
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help || !options.command) {
+    printHelp();
+    return;
+  }
+
+  const api = await resolveAgentTownApi();
+
+  if (options.command === "export") {
+    await runExport(api, options);
+    return;
+  }
+
+  if (options.command === "import") {
+    await runImport(api, options, { dryRun: options.dryRun });
+    return;
+  }
+
+  if (options.command === "diff") {
+    await runImport(api, options, { dryRun: true });
+    return;
+  }
+
+  if (options.command === "publish") {
+    await runPublish(api, options);
+    return;
+  }
+
+  if (options.command === "list") {
+    await runList(api, options);
+    return;
+  }
+
+  if (options.command === "unpublish") {
+    await runUnpublish(api, options);
+    return;
+  }
+
+  if (options.command === "hub-publish") {
+    await runHubPublish(api, options);
+    return;
+  }
+
+  if (options.command === "hub-list") {
+    await runHubList(api, options);
+    return;
+  }
+
+  if (options.command === "hub-pull") {
+    await runHubPull(api, options);
+    return;
+  }
+
+  throw new Error(`Unknown command: ${options.command}`);
+}
+
+void main().catch((error) => {
+  process.stderr.write(`vr-agent-town: ${error.message}\n`);
+  process.exit(1);
+});

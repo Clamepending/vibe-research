@@ -8,6 +8,7 @@ const DEFAULT_FETCH_TIMEOUT_MS = 8_000;
 const MAX_BUILDINGS_PER_SOURCE = 200;
 const MAX_LAYOUTS_PER_SOURCE = 200;
 const MAX_RECIPES_PER_SOURCE = 200;
+const MAX_BUNDLES_PER_SOURCE = 200;
 const MAX_TEXT_LENGTH = 2_000;
 const CATALOG_FILENAMES = ["registry.json", "buildinghub.json", "catalog.json"];
 
@@ -430,6 +431,62 @@ function extractCatalogRecipes(payload) {
   return [];
 }
 
+function extractCatalogBundles(payload) {
+  if (!isPlainObject(payload)) {
+    return [];
+  }
+
+  if (Array.isArray(payload.bundles)) {
+    return payload.bundles;
+  }
+
+  if (Array.isArray(payload.registry?.bundles)) {
+    return payload.registry.bundles;
+  }
+
+  return [];
+}
+
+function isBundlePayload(payload) {
+  return isPlainObject(payload)
+    && Number(payload.bundleVersion) > 0
+    && isPlainObject(payload.town);
+}
+
+function normalizeBuildingHubBundle(bundle, { sourceId = "buildinghub" } = {}) {
+  if (!isPlainObject(bundle)) {
+    return null;
+  }
+
+  if (Number(bundle.bundleVersion) <= 0) {
+    return null;
+  }
+
+  const id = normalizeText(bundle.id || bundle.bundleId || bundle.name, 120);
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    name: normalizeText(bundle.name || bundle.title || id, 160) || id,
+    description: normalizeText(bundle.description, 1_000),
+    bundleVersion: Number(bundle.bundleVersion),
+    exportedAt: normalizeText(bundle.exportedAt, 64),
+    integrity: normalizeText(bundle.integrity, 128),
+    producer: isPlainObject(bundle.producer) ? { ...bundle.producer } : null,
+    tags: Array.isArray(bundle.tags) ? bundle.tags.map((tag) => normalizeText(tag, 48)).filter(Boolean) : [],
+    plugins: isPlainObject(bundle.plugins) ? { installed: Array.isArray(bundle.plugins.installed) ? [...bundle.plugins.installed] : [] } : { installed: [] },
+    env: isPlainObject(bundle.env) ? { required: Array.isArray(bundle.env.required) ? [...bundle.env.required] : [] } : { required: [] },
+    bundle,
+    buildingHub: {
+      sourceId,
+      repositoryUrl: normalizeOptionalUrl(bundle.repositoryUrl || bundle.repoUrl || bundle.repository),
+      bundleUrl: normalizeOptionalUrl(bundle.bundleUrl || bundle.url),
+    },
+  };
+}
+
 function isScaffoldRecipePayload(payload) {
   return isPlainObject(payload) && (
     payload.schema === SCAFFOLD_RECIPE_SCHEMA ||
@@ -719,6 +776,35 @@ async function listRecipeManifestFiles(rootPath) {
   return files.sort();
 }
 
+async function listBundleManifestFiles(rootPath) {
+  const files = [];
+  const bundlesPath = path.join(rootPath, "bundles");
+  let entries = [];
+  try {
+    entries = await readdir(bundlesPath, { withFileTypes: true });
+  } catch {
+    return files;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const filePath = path.join(bundlesPath, entry.name, "bundle.json");
+    try {
+      const stats = await stat(filePath);
+      if (stats.isFile()) {
+        files.push(filePath);
+      }
+    } catch {
+      // Missing bundle.json files are ignored so drafts do not break the whole catalog.
+    }
+  }
+
+  return files.sort();
+}
+
 async function readLocalCatalogPayloads(sourcePath) {
   const resolvedPath = path.resolve(String(sourcePath || ""));
   const stats = await stat(resolvedPath);
@@ -753,6 +839,10 @@ async function readLocalCatalogPayloads(sourcePath) {
   }
 
   for (const filePath of await listRecipeManifestFiles(resolvedPath)) {
+    payloads.push({ payload: await readJsonFile(filePath), path: filePath });
+  }
+
+  for (const filePath of await listBundleManifestFiles(resolvedPath)) {
     payloads.push({ payload: await readJsonFile(filePath), path: filePath });
   }
 
@@ -796,6 +886,17 @@ function dedupeRecipes(recipes) {
   return [...byId.values()].sort((left, right) => String(left.name).localeCompare(String(right.name)));
 }
 
+function dedupeBundles(bundles) {
+  const byId = new Map();
+  for (const bundle of bundles) {
+    if (!bundle?.id || byId.has(bundle.id)) {
+      continue;
+    }
+    byId.set(bundle.id, bundle);
+  }
+  return [...byId.values()].sort((left, right) => String(left.name).localeCompare(String(right.name)));
+}
+
 export class BuildingHubService {
   constructor({
     fetchImpl = globalThis.fetch,
@@ -806,6 +907,7 @@ export class BuildingHubService {
     this.buildings = [];
     this.layouts = [];
     this.recipes = [];
+    this.bundles = [];
     this.fetchImpl = fetchImpl;
     this.fetchTimeoutMs = fetchTimeoutMs;
     this.lastRefreshAt = 0;
@@ -867,7 +969,19 @@ export class BuildingHubService {
     const buildings = [];
     const layouts = [];
     const recipes = [];
+    const bundles = [];
     for (const { payload } of payloads) {
+      const bundleCandidates = extractCatalogBundles(payload);
+      const bundleList = bundleCandidates.length
+        ? bundleCandidates
+        : isBundlePayload(payload) ? [payload] : [];
+      for (const bundleCandidate of bundleList.slice(0, MAX_BUNDLES_PER_SOURCE)) {
+        const bundle = normalizeBuildingHubBundle(bundleCandidate, { sourceId: source.id });
+        if (bundle) {
+          bundles.push(bundle);
+        }
+      }
+
       const recipeCandidates = extractCatalogRecipes(payload);
       const recipeList = recipeCandidates.length
         ? recipeCandidates
@@ -882,7 +996,7 @@ export class BuildingHubService {
       const candidates = extractCatalogBuildings(payload);
       const manifestList = candidates.length
         ? candidates
-        : payload?.layout && payload?.id || isScaffoldRecipePayload(payload) ? [] : [payload];
+        : payload?.layout && payload?.id || isScaffoldRecipePayload(payload) || isBundlePayload(payload) ? [] : [payload];
       for (const manifest of manifestList.slice(0, MAX_BUILDINGS_PER_SOURCE)) {
         const building = normalizeBuildingHubManifest(manifest, { sourceId: source.id });
         if (building) {
@@ -892,7 +1006,7 @@ export class BuildingHubService {
       const layoutCandidates = extractCatalogLayouts(payload);
       const layoutList = layoutCandidates.length
         ? layoutCandidates
-        : payload?.layout && payload?.id && !isScaffoldRecipePayload(payload) ? [payload] : [];
+        : payload?.layout && payload?.id && !isScaffoldRecipePayload(payload) && !isBundlePayload(payload) ? [payload] : [];
       for (const layoutCandidate of layoutList.slice(0, MAX_LAYOUTS_PER_SOURCE)) {
         const layout = normalizeBuildingHubLayout(layoutCandidate, { sourceId: source.id });
         if (layout) {
@@ -904,6 +1018,7 @@ export class BuildingHubService {
       buildings: dedupeBuildings(buildings),
       layouts: dedupeLayouts(layouts),
       recipes: dedupeRecipes(recipes),
+      bundles: dedupeBundles(bundles),
     };
   }
 
@@ -919,21 +1034,24 @@ export class BuildingHubService {
     const nextBuildings = [];
     const nextLayouts = [];
     const nextRecipes = [];
+    const nextBundles = [];
     const errors = [];
 
     for (const source of configuredSources) {
       try {
-        const { buildings, layouts, recipes } = await this.readSource(source);
+        const { buildings, layouts, recipes, bundles } = await this.readSource(source);
         nextSources.push({
           ...source,
           count: buildings.length,
           layoutCount: layouts.length,
           recipeCount: recipes.length,
+          bundleCount: bundles.length,
           status: "ok",
         });
         nextBuildings.push(...buildings);
         nextLayouts.push(...layouts);
         nextRecipes.push(...recipes);
+        nextBundles.push(...bundles);
       } catch (error) {
         const message = error.message || "Could not load BuildingHub source.";
         errors.push(`${source.label}: ${message}`);
@@ -942,6 +1060,7 @@ export class BuildingHubService {
           count: 0,
           layoutCount: 0,
           recipeCount: 0,
+          bundleCount: 0,
           error: message,
           status: "error",
         });
@@ -952,6 +1071,7 @@ export class BuildingHubService {
     this.buildings = dedupeBuildings(nextBuildings);
     this.layouts = dedupeLayouts(nextLayouts);
     this.recipes = dedupeRecipes(nextRecipes);
+    this.bundles = dedupeBundles(nextBundles);
     this.lastRefreshError = errors.join(" ");
   }
 
@@ -989,6 +1109,17 @@ export class BuildingHubService {
     return this.recipes.map((recipe) => JSON.parse(JSON.stringify(recipe)));
   }
 
+  listBundles() {
+    return this.bundles.map((bundle) => JSON.parse(JSON.stringify(bundle)));
+  }
+
+  getBundle(bundleId) {
+    const id = String(bundleId || "").trim();
+    if (!id) return null;
+    const bundle = this.bundles.find((entry) => entry?.id === id);
+    return bundle ? JSON.parse(JSON.stringify(bundle)) : null;
+  }
+
   getStatus() {
     return {
       buildingCount: this.buildings.length,
@@ -997,6 +1128,7 @@ export class BuildingHubService {
       lastRefreshError: this.lastRefreshError,
       layoutCount: this.layouts.length,
       recipeCount: this.recipes.length,
+      bundleCount: this.bundles.length,
       sources: this.sources.map((source) => ({ ...source })),
     };
   }
@@ -1006,6 +1138,9 @@ export const testInternals = {
   extractCatalogBuildings,
   extractCatalogLayouts,
   extractCatalogRecipes,
+  extractCatalogBundles,
+  normalizeBuildingHubBundle,
+  isBundlePayload,
   normalizeBuildingHubRecipe,
   normalizeBuildingHubLayout,
   normalizeBuildingHubManifest,

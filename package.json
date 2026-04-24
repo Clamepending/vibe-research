@@ -7,6 +7,7 @@
   "bin": {
     "vibe-research": "./bin/vibe-research",
     "vr-agent-canvas": "./bin/vr-agent-canvas",
+    "vr-agent-town": "./bin/vr-agent-town",
     "vr-claude-stream-chat": "./bin/vr-claude-stream-chat",
     "vr-claude-stream-experiment": "./bin/vr-claude-stream-experiment",
     "vr-agentmail-reply": "./bin/vr-agentmail-reply",

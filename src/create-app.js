@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import httpProxy from "http-proxy";
 import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, networkInterfaces } from "node:os";
@@ -25,6 +25,7 @@ import { AgentTownStore } from "./agent-town-store.js";
 import { BuildingHubAccountService } from "./buildinghub-account-service.js";
 import { BuildingHubAccountTokenStore } from "./buildinghub-account-token-store.js";
 import { publishTownShareToBuildingHub } from "./buildinghub-layout-publisher.js";
+import { publishBundleToBuildingHub } from "./buildinghub-bundle-publisher.js";
 import { publishScaffoldRecipeToBuildingHub } from "./buildinghub-scaffold-publisher.js";
 import { writeBuildingAgentGuides } from "./building-agent-guides.js";
 import { BuildingHubService } from "./buildinghub-service.js";
@@ -1747,6 +1748,428 @@ export async function createVibeResearchApp({
     });
   }
 
+  const AGENT_TOWN_BUNDLE_VERSION = 1;
+  const AGENT_TOWN_BUNDLE_MAX_BYTES = 4 * 1024 * 1024;
+  const AGENT_TOWN_BUNDLE_STORE_DIR = path.join(stateDir, "agent-town-bundles");
+  const AGENT_TOWN_BUNDLE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,95}$/;
+
+  function canonicalJson(value) {
+    if (value === null || typeof value !== "object") {
+      return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+      return `[${value.map(canonicalJson).join(",")}]`;
+    }
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+
+  function computeBundleChecksum(bundle) {
+    const { integrity, ...rest } = bundle || {};
+    const canonical = canonicalJson(rest);
+    return `sha256:${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
+  }
+
+  function normalizeBundleId(value) {
+    const text = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 96);
+    return AGENT_TOWN_BUNDLE_ID_PATTERN.test(text) ? text : "";
+  }
+
+  async function fetchBundleFromUrl(urlText) {
+    let url;
+    try {
+      url = new URL(urlText);
+    } catch {
+      const error = new Error("Bundle URL is invalid.");
+      error.statusCode = 400;
+      throw error;
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      const error = new Error("Bundle URL must use http or https.");
+      error.statusCode = 400;
+      throw error;
+    }
+    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!response.ok) {
+      const error = new Error(`Could not fetch bundle: ${response.status} ${response.statusText}`.trim());
+      error.statusCode = response.status >= 400 && response.status < 500 ? response.status : 502;
+      throw error;
+    }
+    const contentLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > AGENT_TOWN_BUNDLE_MAX_BYTES) {
+      const error = new Error("Bundle exceeds maximum allowed size.");
+      error.statusCode = 413;
+      throw error;
+    }
+    const text = await response.text();
+    if (text.length > AGENT_TOWN_BUNDLE_MAX_BYTES) {
+      const error = new Error("Bundle exceeds maximum allowed size.");
+      error.statusCode = 413;
+      throw error;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      const error = new Error("Bundle response was not valid JSON.");
+      error.statusCode = 400;
+      throw error;
+    }
+    return parsed?.bundle || parsed;
+  }
+
+  function describePluginById(pluginId, { hubBuildings = null } = {}) {
+    if (!pluginId) return null;
+    const hub = hubBuildings || (buildingHubService?.listBuildings ? buildingHubService.listBuildings() : []);
+    const hubEntry = hub.find((entry) => entry?.id === pluginId);
+    if (hubEntry) {
+      return {
+        id: pluginId,
+        source: hubEntry.source || "buildinghub",
+        version: hubEntry.version || "",
+        repositoryUrl: hubEntry.buildingHub?.repositoryUrl || hubEntry.repositoryUrl || "",
+        sourceId: hubEntry.buildingHub?.sourceId || "",
+      };
+    }
+    const coreEntry = BUILDING_CATALOG.find((entry) => entry?.id === pluginId);
+    if (coreEntry) {
+      return {
+        id: pluginId,
+        source: coreEntry.source || "vibe-research",
+        version: "",
+        repositoryUrl: "",
+        sourceId: "",
+      };
+    }
+    return { id: pluginId, source: "unknown", version: "", repositoryUrl: "", sourceId: "" };
+  }
+
+  async function composeAgentTownBundle() {
+    const town = agentTownStore.exportTownSection();
+    const promptState = await agentPromptStore.getState();
+    const settings = settingsStore.settings || {};
+    const app = await getAppMetadata();
+
+    if (buildingHubService?.refresh) {
+      try {
+        await buildingHubService.refresh();
+      } catch {}
+    }
+    const hubBuildings = buildingHubService?.listBuildings ? buildingHubService.listBuildings() : [];
+
+    const installedIds = new Set(Array.isArray(settings.installedPluginIds) ? settings.installedPluginIds : []);
+    const functionalIds = Object.keys(town.layout?.functional || {});
+    for (const id of functionalIds) {
+      if (id) installedIds.add(id);
+    }
+    const installedPlugins = [...installedIds]
+      .map((id) => describePluginById(id, { hubBuildings }))
+      .filter(Boolean);
+
+    const envSet = new Set();
+    for (const pluginId of functionalIds) {
+      if (!pluginId) continue;
+      for (const varName of collectPluginEnvNames(pluginId)) {
+        if (varName) envSet.add(varName);
+      }
+    }
+
+    const bundle = {
+      bundleVersion: AGENT_TOWN_BUNDLE_VERSION,
+      exportedAt: new Date().toISOString(),
+      producer: {
+        app: "vibe-research",
+        version: app.version || "",
+        commit: app.commit || "",
+      },
+      town: {
+        stateVersion: town.stateVersion,
+        layout: town.layout,
+        layoutSnapshots: town.layoutSnapshots,
+      },
+      prompts: {
+        selectedPromptId: promptState.selectedPromptId || "",
+        customPrompt: promptState.customPrompt || "",
+      },
+      automations: Array.isArray(settings.agentAutomations) ? settings.agentAutomations : [],
+      plugins: {
+        installed: installedPlugins,
+      },
+      env: {
+        required: Array.from(envSet).sort(),
+      },
+    };
+    bundle.integrity = computeBundleChecksum(bundle);
+    return bundle;
+  }
+
+  async function listPublishedBundles() {
+    try {
+      await mkdir(AGENT_TOWN_BUNDLE_STORE_DIR, { recursive: true });
+      const entries = await readdir(AGENT_TOWN_BUNDLE_STORE_DIR);
+      const results = [];
+      for (const name of entries) {
+        if (!name.endsWith(".json")) continue;
+        const id = name.replace(/\.json$/, "");
+        if (!AGENT_TOWN_BUNDLE_ID_PATTERN.test(id)) continue;
+        try {
+          const filePath = path.join(AGENT_TOWN_BUNDLE_STORE_DIR, name);
+          const raw = await readFile(filePath, "utf8");
+          const parsed = JSON.parse(raw);
+          const fileStat = await stat(filePath);
+          results.push({
+            id,
+            exportedAt: parsed?.exportedAt || null,
+            integrity: parsed?.integrity || null,
+            bundleVersion: parsed?.bundleVersion || null,
+            byteLength: fileStat.size,
+            updatedAt: fileStat.mtime.toISOString(),
+          });
+        } catch {
+          // ignore unreadable entries
+        }
+      }
+      return results.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+    } catch (error) {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  async function readPublishedBundle(idInput) {
+    const id = normalizeBundleId(idInput);
+    if (!id) {
+      const error = new Error("Invalid bundle id.");
+      error.statusCode = 400;
+      throw error;
+    }
+    const filePath = path.join(AGENT_TOWN_BUNDLE_STORE_DIR, `${id}.json`);
+    try {
+      const raw = await readFile(filePath, "utf8");
+      return { id, bundle: JSON.parse(raw) };
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        const notFound = new Error(`Bundle ${id} not found.`);
+        notFound.statusCode = 404;
+        throw notFound;
+      }
+      throw error;
+    }
+  }
+
+  async function storePublishedBundle({ idInput, bundle }) {
+    const requestedId = normalizeBundleId(idInput);
+    const id = requestedId || normalizeBundleId(`bundle-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`) || "bundle";
+    await mkdir(AGENT_TOWN_BUNDLE_STORE_DIR, { recursive: true });
+    const filePath = path.join(AGENT_TOWN_BUNDLE_STORE_DIR, `${id}.json`);
+    const withIntegrity = { ...bundle };
+    withIntegrity.integrity = computeBundleChecksum(withIntegrity);
+    const tempPath = `${filePath}.${randomUUID()}.tmp`;
+    await writeFile(tempPath, `${JSON.stringify(withIntegrity, null, 2)}\n`, "utf8");
+    await rename(tempPath, filePath);
+    return { id, bundle: withIntegrity };
+  }
+
+  async function deletePublishedBundle(idInput) {
+    const id = normalizeBundleId(idInput);
+    if (!id) {
+      const error = new Error("Invalid bundle id.");
+      error.statusCode = 400;
+      throw error;
+    }
+    const filePath = path.join(AGENT_TOWN_BUNDLE_STORE_DIR, `${id}.json`);
+    try {
+      await rm(filePath, { force: false });
+      return { id };
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        const notFound = new Error(`Bundle ${id} not found.`);
+        notFound.statusCode = 404;
+        throw notFound;
+      }
+      throw error;
+    }
+  }
+
+  function collectPluginEnvNames(pluginId) {
+    const building = BUILDING_CATALOG.find((entry) => entry?.id === pluginId);
+    if (!building) return [];
+    const names = new Set();
+    const sources = [
+      building.requiredEnv,
+      building.env,
+      building.setup?.env,
+      building.setup?.requiredEnv,
+    ];
+    for (const source of sources) {
+      if (!source) continue;
+      if (Array.isArray(source)) {
+        for (const entry of source) {
+          const name = typeof entry === "string" ? entry : entry?.name || entry?.key || "";
+          if (name) names.add(String(name).trim());
+        }
+      } else if (typeof source === "object") {
+        for (const key of Object.keys(source)) {
+          names.add(String(key).trim());
+        }
+      }
+    }
+    return [...names].filter(Boolean);
+  }
+
+  async function applyAgentTownBundle(bundle, { dryRun = false } = {}) {
+    if (!bundle || typeof bundle !== "object" || Array.isArray(bundle)) {
+      const error = new Error("Bundle payload is missing or malformed.");
+      error.statusCode = 400;
+      throw error;
+    }
+    if (Number(bundle.bundleVersion) !== AGENT_TOWN_BUNDLE_VERSION) {
+      const error = new Error(`Unsupported bundle version ${bundle.bundleVersion}. Expected ${AGENT_TOWN_BUNDLE_VERSION}.`);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    let integrityStatus = null;
+    if (bundle.integrity) {
+      const expected = String(bundle.integrity);
+      const actual = computeBundleChecksum(bundle);
+      integrityStatus = expected === actual ? "match" : "mismatch";
+      if (integrityStatus === "mismatch") {
+        const error = new Error(`Bundle integrity check failed. Expected ${expected}, got ${actual}.`);
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    const townSection = bundle.town || {};
+    const validation = await agentTownStore.validateLayout({ layout: townSection.layout || {} });
+
+    if (buildingHubService?.refresh) {
+      try {
+        await buildingHubService.refresh();
+      } catch {}
+    }
+    const hubBuildings = buildingHubService?.listBuildings ? buildingHubService.listBuildings() : [];
+    const hubIds = new Set(hubBuildings.map((entry) => entry?.id).filter(Boolean));
+    const coreIds = new Set(BUILDING_CATALOG.map((entry) => entry?.id).filter(Boolean));
+
+    const bundlePlugins = Array.isArray(bundle.plugins?.installed)
+      ? bundle.plugins.installed.map((entry) => (typeof entry === "string" ? { id: entry } : entry || {}))
+      : [];
+    const layoutFunctionalIds = Object.keys((townSection.layout || {}).functional || {});
+    for (const pluginId of layoutFunctionalIds) {
+      if (!pluginId) continue;
+      if (!bundlePlugins.some((entry) => entry.id === pluginId)) {
+        bundlePlugins.push({ id: pluginId });
+      }
+    }
+
+    const enrichedPlugins = bundlePlugins
+      .filter((entry) => entry && entry.id)
+      .map((entry) => ({
+        ...entry,
+        available: hubIds.has(entry.id) || coreIds.has(entry.id),
+      }));
+
+    const unavailablePlugins = enrichedPlugins.filter((entry) => !entry.available);
+
+    const requiredEnv = Array.isArray(bundle.env?.required) ? bundle.env.required : [];
+    const missingEnv = requiredEnv.filter((name) => {
+      const trimmed = String(name || "").trim();
+      return trimmed && !serverEnv[trimmed] && !process.env[trimmed];
+    });
+
+    const bundleSnapshots = Array.isArray(townSection.layoutSnapshots) ? townSection.layoutSnapshots : [];
+    const automations = Array.isArray(bundle.automations) ? bundle.automations : [];
+
+    const report = {
+      validation,
+      integrity: integrityStatus,
+      counts: {
+        functional: layoutFunctionalIds.length,
+        decorations: Array.isArray((townSection.layout || {}).decorations)
+          ? (townSection.layout || {}).decorations.length
+          : 0,
+        layoutSnapshots: bundleSnapshots.length,
+        automations: automations.length,
+        installedPlugins: enrichedPlugins.length,
+      },
+      plugins: enrichedPlugins,
+      unavailablePlugins,
+      missingPlugins: unavailablePlugins,
+      missingEnv,
+      warnings: [],
+    };
+
+    if (!validation.ok) {
+      report.warnings.push("Layout validation failed; no changes were applied.");
+      return { applied: false, dryRun, report };
+    }
+
+    if (dryRun) {
+      return { applied: false, dryRun: true, report };
+    }
+
+    const rollbackName = `Pre-import ${new Date().toISOString()}`;
+    try {
+      await agentTownStore.createLayoutSnapshot({
+        name: rollbackName,
+        layout: agentTownStore.getState().layout,
+      });
+      report.rollbackSnapshotName = rollbackName;
+    } catch (error) {
+      report.warnings.push(`Pre-import snapshot skipped: ${error.message || error}`);
+    }
+
+    await agentTownStore.importTownSection(
+      { layout: townSection.layout, layoutSnapshots: bundleSnapshots },
+      { reason: "import bundle", replaceSnapshots: true },
+    );
+
+    if (bundle.prompts && typeof bundle.prompts === "object") {
+      const { selectedPromptId, customPrompt } = bundle.prompts;
+      const saveInput = {};
+      if (typeof customPrompt === "string" && customPrompt.trim()) {
+        saveInput.customPrompt = customPrompt;
+      }
+      if (typeof selectedPromptId === "string" && selectedPromptId.trim()) {
+        saveInput.selectedPromptId = selectedPromptId;
+      }
+      if (Object.keys(saveInput).length > 0) {
+        try {
+          await agentPromptStore.save(saveInput);
+        } catch (error) {
+          report.warnings.push(`Prompt import skipped: ${error.message || error}`);
+        }
+      }
+    }
+
+    const settingsPatch = {};
+    if (Array.isArray(bundle.automations)) {
+      settingsPatch.agentAutomations = bundle.automations;
+    }
+    const installablePluginIds = enrichedPlugins
+      .filter((entry) => entry.available)
+      .map((entry) => entry.id);
+    if (installablePluginIds.length > 0 || Array.isArray(bundle.plugins?.installed)) {
+      settingsPatch.installedPluginIds = installablePluginIds;
+    }
+    if (Object.keys(settingsPatch).length > 0) {
+      try {
+        await settingsStore.update(settingsPatch);
+      } catch (error) {
+        report.warnings.push(`Settings import partial: ${error.message || error}`);
+      }
+    }
+
+    return {
+      applied: true,
+      dryRun: false,
+      report,
+      agentTown: agentTownStore.getState(),
+    };
+  }
+
   function getAvailableBuildingIds() {
     return [
       ...BUILDING_CATALOG.map((building) => building.id),
@@ -2736,6 +3159,178 @@ export async function createVibeResearchApp({
       });
     } catch (error) {
       response.status(error.statusCode || 400).json({ error: error.message || "Could not restore Agent Town snapshot." });
+    }
+  });
+
+  app.get("/api/agent-town/bundle", async (_request, response) => {
+    try {
+      const bundle = await composeAgentTownBundle();
+      response.setHeader("Cache-Control", "no-store");
+      response.json({ bundle });
+    } catch (error) {
+      response.status(error.statusCode || 500).json({ error: error.message || "Could not export Agent Town bundle." });
+    }
+  });
+
+  app.post("/api/agent-town/bundle/import", async (request, response) => {
+    try {
+      const body = request.body || {};
+      const dryRun = body.dryRun === true;
+      let bundle = body.bundle;
+      if (!bundle && typeof body.bundleId === "string" && body.bundleId.trim()) {
+        const id = body.bundleId.trim();
+        try {
+          const entry = await readPublishedBundle(id);
+          bundle = entry.bundle;
+        } catch (error) {
+          if (error?.statusCode === 404) {
+            await buildingHubService.refresh();
+            const hubEntry = buildingHubService.getBundle(id);
+            if (hubEntry?.bundle) {
+              bundle = hubEntry.bundle;
+            } else {
+              throw error;
+            }
+          } else {
+            throw error;
+          }
+        }
+      }
+      if (!bundle && typeof body.url === "string" && body.url.trim()) {
+        bundle = await fetchBundleFromUrl(body.url.trim());
+      }
+      if (!bundle) {
+        bundle = body;
+      }
+      const result = await applyAgentTownBundle(bundle, { dryRun });
+      response.status(result.applied || dryRun ? 200 : 400).json(result);
+    } catch (error) {
+      response.status(error.statusCode || 400).json({
+        error: error.message || "Could not import Agent Town bundle.",
+        validation: error.validation,
+      });
+    }
+  });
+
+  app.get("/api/agent-town/bundles", async (_request, response) => {
+    try {
+      const bundles = await listPublishedBundles();
+      response.json({ bundles });
+    } catch (error) {
+      response.status(error.statusCode || 500).json({ error: error.message || "Could not list bundles." });
+    }
+  });
+
+  app.post("/api/agent-town/bundles", async (request, response) => {
+    try {
+      const body = request.body || {};
+      const sourceBundle = body.bundle || (await composeAgentTownBundle());
+      const stored = await storePublishedBundle({ idInput: body.id, bundle: sourceBundle });
+      const baseUrl = String(body.baseUrl || "").trim().replace(/\/+$/, "");
+      const relativeUrl = `/api/agent-town/bundles/${encodeURIComponent(stored.id)}`;
+      response.status(201).json({
+        id: stored.id,
+        integrity: stored.bundle.integrity,
+        url: baseUrl ? `${baseUrl}${relativeUrl}` : relativeUrl,
+        bundle: stored.bundle,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not publish bundle." });
+    }
+  });
+
+  app.get("/api/agent-town/bundles/:bundleId", async (request, response) => {
+    try {
+      const entry = await readPublishedBundle(request.params.bundleId);
+      response.setHeader("Cache-Control", "no-store");
+      response.json({ id: entry.id, bundle: entry.bundle });
+    } catch (error) {
+      response.status(error.statusCode || 500).json({ error: error.message || "Could not read bundle." });
+    }
+  });
+
+  app.delete("/api/agent-town/bundles/:bundleId", async (request, response) => {
+    try {
+      const result = await deletePublishedBundle(request.params.bundleId);
+      response.json({ id: result.id, deleted: true });
+    } catch (error) {
+      response.status(error.statusCode || 500).json({ error: error.message || "Could not delete bundle." });
+    }
+  });
+
+  app.post("/api/agent-town/bundles/:bundleId/publish-to-hub", async (request, response) => {
+    try {
+      const entry = await readPublishedBundle(request.params.bundleId);
+      const result = await publishBundleToBuildingHub({
+        bundle: entry.bundle,
+        bundleId: entry.id,
+        settings: settingsStore.settings,
+        cwd,
+        env: serverEnv,
+        accessToken: getBuildingHubAccountAccessToken(),
+      });
+      if (!result.recordedByBuildingHub) {
+        await syncBuildingHubPublication({
+          kind: "bundle",
+          id: result.bundleId,
+          name: entry.bundle?.producer?.app
+            ? `${entry.bundle.producer.app} ${entry.id}`
+            : entry.id,
+          url: result.bundleUrl,
+          sourceUrl: result.repositoryUrl,
+          commitUrl: result.commitUrl,
+        });
+      }
+      await buildingHubService.refresh({ force: true });
+      response.status(201).json({ ...result, id: result.bundleId });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message || "Could not publish bundle to BuildingHub." });
+    }
+  });
+
+  app.get("/api/agent-town/bundle-hub", async (_request, response) => {
+    try {
+      await buildingHubService.refresh();
+      response.json({
+        bundles: buildingHubService.listBundles(),
+        status: buildingHubService.getStatus(),
+      });
+    } catch (error) {
+      response.status(error.statusCode || 500).json({ error: error.message || "Could not list BuildingHub bundles." });
+    }
+  });
+
+  app.get("/api/agent-town/bundle-hub/:bundleId", async (request, response) => {
+    try {
+      await buildingHubService.refresh();
+      const entry = buildingHubService.getBundle(request.params.bundleId);
+      if (!entry) {
+        response.status(404).json({ error: "Bundle not found in BuildingHub." });
+        return;
+      }
+      response.json({ id: entry.id, bundle: entry.bundle, metadata: entry });
+    } catch (error) {
+      response.status(error.statusCode || 500).json({ error: error.message || "Could not read BuildingHub bundle." });
+    }
+  });
+
+  app.post("/api/agent-town/bundle-hub/:bundleId/import", async (request, response) => {
+    try {
+      const body = request.body || {};
+      const dryRun = body.dryRun === true;
+      await buildingHubService.refresh();
+      const entry = buildingHubService.getBundle(request.params.bundleId);
+      if (!entry || !entry.bundle) {
+        response.status(404).json({ error: "Bundle not found in BuildingHub." });
+        return;
+      }
+      const result = await applyAgentTownBundle(entry.bundle, { dryRun });
+      response.status(result.applied || dryRun ? 200 : 400).json({ source: "buildinghub", id: entry.id, ...result });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({
+        error: error.message || "Could not import BuildingHub bundle.",
+        validation: error.validation,
+      });
     }
   });
 
