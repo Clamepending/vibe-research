@@ -15650,6 +15650,11 @@ function renderAgentTownActionItemCard(item) {
   `;
 }
 
+const QUEST_ALERT_BUILDER_HINTS = new Map([
+  ["quest-place-first-building", "Open the builder to place your first building"],
+  ["quest-place-functional-building", "Open the builder to place a functional building"],
+]);
+
 function renderAgentTownAlertCard(alert) {
   const severityLabel = alert.severity === "urgent"
     ? "urgent"
@@ -15658,6 +15663,7 @@ function renderAgentTownAlertCard(alert) {
       : alert.severity === "quest"
         ? "quest"
         : "notice";
+  const buttonLabel = alert.severity === "quest" ? "Start" : "Open";
   return `
     <article class="automation-card agent-inbox-card is-alert is-${escapeHtml(alert.severity || "info")}" data-agent-town-alert="${escapeHtml(alert.id)}">
       <div class="agent-inbox-card-head">
@@ -15668,18 +15674,29 @@ function renderAgentTownAlertCard(alert) {
       <p>${escapeHtml(alert.detail || "Open Agent Town to inspect this bottleneck.")}</p>
       <div class="agent-inbox-card-meta">${escapeHtml([alert.priority, alert.target?.label].filter(Boolean).join(" · ") || "ranked town alert")}</div>
       <div class="plugin-onboarding-actions">
-        <button class="primary-button toolbar-control" type="button" data-agent-town-alert-open="${escapeHtml(alert.id)}">open</button>
+        <button class="primary-button toolbar-control" type="button" data-agent-town-alert-open="${escapeHtml(alert.id)}">${escapeHtml(buttonLabel)}</button>
       </div>
     </article>
   `;
 }
 
-function openAgentTownAlertHref(alertId) {
+async function openAgentTownAlertHref(alertId) {
   const id = String(alertId || "").trim();
   const alert = getAgentTownRankedAlerts().find((candidate) => candidate.id === id);
   const href = String(alert?.href || "").trim();
+  const builderHintLabel = QUEST_ALERT_BUILDER_HINTS.get(id) || "";
+
   if (href) {
     if (href.startsWith("?")) {
+      const params = new URLSearchParams(href);
+      const view = params.get("view");
+      if (view) {
+        if (builderHintLabel) {
+          setAgentTownBuilderButtonHint(builderHintLabel);
+        }
+        await openMainView(view);
+        return;
+      }
       window.location.href = `${window.location.pathname}${href}`;
       return;
     }
@@ -15693,6 +15710,9 @@ function openAgentTownAlertHref(alertId) {
     return;
   }
 
+  if (builderHintLabel) {
+    setAgentTownBuilderButtonHint(builderHintLabel);
+  }
   openAgentTownBuilder({ tab: "functional" });
 }
 
