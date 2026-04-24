@@ -38,6 +38,7 @@ import {
   Search,
   ServerCog,
   Settings,
+  Share2,
   ShoppingCart,
   Trash2,
   Waypoints,

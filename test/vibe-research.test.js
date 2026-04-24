@@ -3614,6 +3614,8 @@ test("Agent Town share opens and copies a BuildingHub town link", async (t) => {
     });
 
     await page.goto(`${baseUrl}/?view=plugins`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("tab", { name: "Themes" }).click();
+    await page.waitForFunction(() => new URL(window.location.href).searchParams.get("buildinghubTab") === "themes");
     await page.locator(".buildinghub-town-card").waitFor({ timeout: 10_000 });
     assert.equal(await page.locator(".buildinghub-town-card").count(), 1);
     await page.locator("[data-town-share-import]").first().waitFor({ timeout: 10_000 });
@@ -3984,6 +3986,12 @@ test("Agent Inbox action items guide first building placement in Agent Town", as
     const page = await browser.newPage();
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto(`${baseUrl}/?view=agent-inbox`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("tab", { name: /Notifications/ }).click();
+    await page.waitForFunction(
+      () => document.querySelector("#agent-inbox-list")?.getAttribute("data-agent-inbox-active-tab") === "notifications",
+      null,
+      { timeout: 10_000 },
+    );
     const actionCard = page.locator('[data-agent-town-action-item="onboarding-first-building"]');
     await actionCard.waitFor({ timeout: 10_000 });
     assert.match(
@@ -3994,7 +4002,7 @@ test("Agent Inbox action items guide first building placement in Agent Town", as
     assert.match(await actionCard.textContent(), /BuildingHub/i);
 
     await actionCard.getByRole("button", { name: "Open Agent Town" }).click();
-    await page.waitForFunction(() => new URL(window.location.href).searchParams.get("view") === "swarm");
+    await page.waitForFunction(() => new URL(window.location.href).searchParams.get("view") === "visual-interface");
     await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
 
     await page.locator("[data-agent-town-builder-toggle]").click();
