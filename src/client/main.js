@@ -15544,43 +15544,28 @@ function renderTelegramInstallForm() {
 
 function getVideoMemoryInstallStep() {
   const stored = getPluginInstallStepRaw("videomemory");
-  if (stored !== null) return Math.min(2, stored);
-  const cameraGranted = hasGuidedTutorialEvent(GUIDED_TUTORIAL_EVENT_TYPES.videoMemoryPermissionRequested)
-    || state.settings.videoMemoryStatus?.devicesKnown;
-  if (state.settings.videoMemoryAnthropicApiKeyConfigured) {
-    return 2;
-  }
-  if (cameraGranted) {
-    return 1;
-  }
+  if (stored !== null) return Math.min(1, stored);
   return 0;
 }
 
 function renderVideoMemoryInstallForm() {
-  const pluginId = "videomemory";
   const step = getVideoMemoryInstallStep();
-  const draft = getPluginInstallDraft(pluginId);
-  const status = state.settings.videoMemoryStatus || {};
-  const actionLabel = isPluginIdInstalled("videomemory") ? "save VideoMemory" : "save and install";
-  const totalSteps = 3;
+  const totalSteps = 2;
 
   if (step === 0) {
     return `
       <div class="plugin-install-progressive" data-plugin-install-step-root="videomemory">
         ${renderPluginStepProgress(0, totalSteps)}
         <div class="plugin-install-step-body">
-          <h3 class="plugin-install-step-title">Grant camera access</h3>
-          <p class="plugin-install-step-hint">VideoMemory watches a camera feed and turns it into searchable memories. Click below and accept the browser prompt — we can't see the feed without it.</p>
+          <h3 class="plugin-install-step-title">Install VideoMemory</h3>
+          <p class="plugin-install-step-hint">VideoMemory watches a camera feed and can wake a Vibe Research session when it sees something worth remembering. Click install to add it, then we'll ask your browser for camera access.</p>
           <div class="plugin-onboarding-actions">
             <button
-              class="primary-button videomemory-camera-permission-button"
+              class="primary-button plugin-install-step-next"
               type="button"
-              data-videomemory-request-camera-permission
-              data-videomemory-permission-label="enable camera permissions"
-              data-plugin-install-advance-after="videomemory"
+              data-plugin-install-advance="videomemory"
               data-plugin-install-next-step="1"
-            >enable camera permissions</button>
-            <button class="ghost-button plugin-install-step-skip" type="button" data-plugin-install-advance="videomemory" data-plugin-install-next-step="1">skip for now</button>
+            >Install VideoMemory</button>
           </div>
           <div class="plugin-install-step-foot">
             <button class="plugin-install-step-cancel plugin-install-cancel-button" type="button" data-plugin-cancel-install="videomemory">cancel</button>
@@ -15590,52 +15575,35 @@ function renderVideoMemoryInstallForm() {
     `;
   }
 
-  if (step === 1) {
-    const apiKeyValue = typeof draft.videoMemoryAnthropicApiKey === "string" ? draft.videoMemoryAnthropicApiKey : "";
-    return `
-      <form class="settings-form plugin-install-form videomemory-form plugin-install-progressive" data-plugin-install-step-root="videomemory">
-        <input type="hidden" name="videoMemoryEnabled" value="on" />
-        ${renderPluginStepProgress(1, totalSteps)}
-        <div class="plugin-install-step-body">
-          <h3 class="plugin-install-step-title">Paste an Anthropic API key</h3>
-          <p class="plugin-install-step-hint">VideoMemory summarizes frames with a vision model. Paste a Claude API key so it can make VLM calls on your behalf — we encrypt it on save.</p>
-          <label class="field-label" for="install-videomemory-api-key">Anthropic API key</label>
-          <input class="file-root-input" id="install-videomemory-api-key" name="videoMemoryAnthropicApiKey" type="password" value="${escapeHtml(apiKeyValue)}" placeholder="${escapeHtml(state.settings.videoMemoryAnthropicApiKeyConfigured ? "saved; leave blank to keep" : "sk-ant-...")}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" ${state.settings.videoMemoryAnthropicApiKeyConfigured ? "" : "required"} />
-          <div class="plugin-onboarding-actions">
-            <a class="ghost-button plugin-install-step-link" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">Open Anthropic Console</a>
-            <button class="primary-button plugin-install-step-next" type="button" data-plugin-install-capture-advance="videomemory" data-plugin-install-next-step="2" data-plugin-install-require="videoMemoryAnthropicApiKey">Continue</button>
-            <button class="ghost-button plugin-install-step-back" type="button" data-plugin-install-advance="videomemory" data-plugin-install-next-step="0">back</button>
-          </div>
-        </div>
-      </form>
-    `;
-  }
-
-  const apiKeyDraft = typeof draft.videoMemoryAnthropicApiKey === "string" ? draft.videoMemoryAnthropicApiKey : "";
-  const baseUrlValue = typeof draft.videoMemoryBaseUrl === "string"
-    ? draft.videoMemoryBaseUrl
-    : (state.settings.videoMemoryBaseUrl || status.baseUrl || "http://127.0.0.1:5050");
-  const providerValue = draft.videoMemoryProviderId || state.settings.videoMemoryProviderId || state.defaultProviderId;
-  const advancedOpen = baseUrlValue !== "http://127.0.0.1:5050";
-
+  // Step 1: enable camera permissions. The camera-permission button also
+  // submits the form on success (data-videomemory-submit-on-success), so a
+  // single click both grants permission AND finalizes the install with
+  // sensible defaults. Anthropic API key and agent choice are left to the
+  // building panel's onboarding variables so they surface as post-install
+  // next steps rather than cluttering the install path.
   return `
     <form class="settings-form plugin-install-form videomemory-form plugin-install-progressive" data-plugin-install-step-root="videomemory">
       <input type="hidden" name="videoMemoryEnabled" value="on" />
-      ${apiKeyDraft ? `<input type="hidden" name="videoMemoryAnthropicApiKey" value="${escapeHtml(apiKeyDraft)}" />` : ""}
-      ${renderPluginStepProgress(2, totalSteps)}
+      ${renderPluginStepProgress(1, totalSteps)}
       <div class="plugin-install-step-body">
-        <h3 class="plugin-install-step-title">Pick the agent that remembers</h3>
-        <p class="plugin-install-step-hint">Choose which agent the camera wakes when it sees something worth remembering. You can change this later.</p>
-        <label class="field-label" for="install-videomemory-provider">default agent</label>
-        <select class="file-root-input" id="install-videomemory-provider" name="videoMemoryProviderId">${renderProviderOptions(providerValue)}</select>
-        <details class="plugin-install-step-advanced" ${advancedOpen ? "open" : ""}>
-          <summary>Advanced (optional)</summary>
-          <label class="field-label" for="install-videomemory-base-url">VideoMemory URL</label>
-          <input class="file-root-input" id="install-videomemory-base-url" name="videoMemoryBaseUrl" type="url" value="${escapeHtml(baseUrlValue)}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
-        </details>
+        <h3 class="plugin-install-step-title">Enable cameras</h3>
+        <p class="plugin-install-step-hint">Click below and allow camera access when your browser asks. VideoMemory can't see a feed without it.</p>
         <div class="plugin-onboarding-actions">
-          <button class="primary-button plugin-install-finish-button" type="submit" data-videomemory-action="setup">${escapeHtml(actionLabel)}</button>
-          <button class="ghost-button plugin-install-step-back" type="button" data-plugin-install-advance="videomemory" data-plugin-install-next-step="1">back</button>
+          <button
+            class="primary-button videomemory-camera-permission-button"
+            type="button"
+            data-videomemory-request-camera-permission
+            data-videomemory-permission-label="enable camera permissions"
+            data-videomemory-submit-on-success
+          >enable camera permissions</button>
+        </div>
+        <div class="plugin-install-step-foot">
+          <button
+            class="plugin-install-step-cancel plugin-install-cancel-button"
+            type="button"
+            data-plugin-install-advance="videomemory"
+            data-plugin-install-next-step="0"
+          >back</button>
         </div>
         <div class="settings-status">${escapeHtml(getVideoMemoryStatusText())}</div>
       </div>
@@ -16756,6 +16724,88 @@ function renderCommunicationsPluginPanel() {
   `;
 }
 
+function getVideoMemorySessionLabel(monitor) {
+  const sessionId = String(monitor?.sessionId || "").trim();
+  if (sessionId) {
+    const sessionRecord = Array.isArray(state.sessions)
+      ? state.sessions.find((candidate) => candidate && candidate.id === sessionId)
+      : null;
+    if (sessionRecord?.name) return sessionRecord.name;
+  }
+  const providerLabel = String(monitor?.providerId || "").trim();
+  return providerLabel || "unknown agent";
+}
+
+function renderVideoMemorySubscribedAgents() {
+  const monitors = Array.isArray(state.videoMemoryMonitors) ? state.videoMemoryMonitors : [];
+  const active = monitors.filter((monitor) => monitor && monitor.status !== "deleted");
+  if (!active.length) {
+    return "";
+  }
+
+  const bySession = new Map();
+  for (const monitor of active) {
+    const sessionId = String(monitor.sessionId || "").trim();
+    const providerId = String(monitor.providerId || "").trim();
+    const key = sessionId || `provider:${providerId || "unknown"}`;
+    let entry = bySession.get(key);
+    if (!entry) {
+      entry = {
+        sessionId,
+        providerId,
+        label: getVideoMemorySessionLabel(monitor),
+        monitors: [],
+        wakes: 0,
+        latestActivityAt: "",
+      };
+      bySession.set(key, entry);
+    }
+    entry.monitors.push(monitor);
+    entry.wakes += Number(monitor.wakeCount) || 0;
+    const candidate = monitor.lastEventAt || monitor.updatedAt || monitor.createdAt || "";
+    if (candidate && (!entry.latestActivityAt || candidate > entry.latestActivityAt)) {
+      entry.latestActivityAt = candidate;
+    }
+  }
+
+  const entries = [...bySession.values()].sort((a, b) => {
+    if (b.monitors.length !== a.monitors.length) return b.monitors.length - a.monitors.length;
+    return String(b.latestActivityAt || "").localeCompare(String(a.latestActivityAt || ""));
+  });
+
+  return `
+    <section class="videomemory-agents-panel" aria-label="Agents subscribed to VideoMemory">
+      <h4 class="videomemory-agents-title">Agents subscribed</h4>
+      <p class="videomemory-agents-hint">Sessions that have armed a VideoMemory task. When a trigger fires, the matching session wakes up.</p>
+      <ul class="videomemory-agents-list">
+        ${entries
+          .map((entry) => {
+            const monitorCount = entry.monitors.length;
+            const monitorSummary = monitorCount === 1 ? "1 monitor" : `${monitorCount} monitors`;
+            const wakeSummary = entry.wakes === 0
+              ? "no wakes yet"
+              : `${entry.wakes} wake${entry.wakes === 1 ? "" : "s"}`;
+            const providerSuffix = entry.providerId && entry.providerId !== entry.label ? ` · ${entry.providerId}` : "";
+            const topMonitor = entry.monitors[0];
+            const sample = topMonitor?.name || topMonitor?.trigger || "";
+            return `
+              <li class="videomemory-agents-row">
+                <span class="session-activity-dot working" aria-hidden="true"></span>
+                <div class="session-main">
+                  <div class="session-name">${escapeHtml(entry.label)}${escapeHtml(providerSuffix)}</div>
+                  <div class="session-subtitle">${escapeHtml(`${monitorSummary} · ${wakeSummary}`)}</div>
+                  ${sample ? `<div class="session-subtitle videomemory-agents-sample">${escapeHtml(`latest: ${sample}`)}</div>` : ""}
+                </div>
+                <span class="session-time">${entry.latestActivityAt ? relativeTime(entry.latestActivityAt) : ""}</span>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    </section>
+  `;
+}
+
 function renderVideoMemoryMonitorRows() {
   const monitors = Array.isArray(state.videoMemoryMonitors) ? state.videoMemoryMonitors : [];
   const activeMonitors = monitors.filter((monitor) => monitor.status !== "deleted").slice(0, 5);
@@ -16856,6 +16906,7 @@ function renderVideoMemoryPluginPanel() {
           <div class="settings-status" id="videomemory-settings-status">${escapeHtml(getVideoMemoryStatusText())}</div>
         </div>
       </form>
+      ${renderVideoMemorySubscribedAgents()}
       <div class="videomemory-monitor-panel">
         ${renderVideoMemoryMonitorRows()}
       </div>
@@ -32983,6 +33034,23 @@ function bindVideoMemoryForm() {
       target.textContent = defaultLabel;
       target.disabled = false;
       return;
+    }
+
+    // When the button is part of the progressive install's "enable cameras"
+    // step, auto-submit the enclosing form so the install completes as one
+    // atomic action. The settings defaults already cover base URL + provider.
+    if (target.hasAttribute("data-videomemory-submit-on-success")) {
+      const form = target.closest("form");
+      if (form instanceof HTMLFormElement) {
+        target.textContent = "saving...";
+        target.disabled = true;
+        if (typeof form.requestSubmit === "function") {
+          form.requestSubmit();
+        } else {
+          form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+        }
+        return;
+      }
     }
 
     window.setTimeout(() => {

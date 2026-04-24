@@ -5877,6 +5877,54 @@ textarea.setup-target-highlight {
   background: rgba(255, 155, 114, 0.08);
 }
 
+.videomemory-agents-panel {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid rgba(124, 231, 240, 0.14);
+  border-radius: 12px;
+  background: rgba(124, 231, 240, 0.04);
+}
+
+.videomemory-agents-title {
+  margin: 0;
+  font-size: 0.88rem;
+  letter-spacing: 0.01em;
+}
+
+.videomemory-agents-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.videomemory-agents-list {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.videomemory-agents-row {
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 1px solid rgba(124, 231, 240, 0.12);
+  border-radius: 8px;
+  background: rgba(124, 231, 240, 0.05);
+}
+
+.videomemory-agents-sample {
+  opacity: 0.8;
+  font-style: italic;
+}
+
 .browser-use-compact-checkbox {
   min-height: 36px;
 }
