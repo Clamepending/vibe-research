@@ -3443,6 +3443,26 @@ input[readonly][data-folder-picker-target] {
   text-decoration-color: currentColor;
 }
 
+.videomemory-open-standalone {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: fit-content;
+  margin-top: 6px;
+  padding: 10px 14px;
+  text-decoration: none;
+  line-height: 1.2;
+}
+
+.videomemory-open-standalone-host {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  font-weight: 500;
+  opacity: 0.78;
+  letter-spacing: 0;
+}
+
 .buildinghub-auth-inline {
   display: grid;
   gap: 10px;

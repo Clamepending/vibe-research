@@ -16349,12 +16349,21 @@ function renderVideoMemoryPluginPanel() {
   const status = state.settings.videoMemoryStatus || {};
   const webhookUrl = status.webhookUrl || "";
   const webhookToken = status.webhookToken || "";
+  const standaloneUrl = String(state.settings.videoMemoryBaseUrl || status.baseUrl || "").trim();
 
   return `
     <aside class="mcp-import-card videomemory-plugin-card">
       <span class="main-search-kind">camera agent</span>
       <h3>VideoMemory</h3>
       <p>Vibe Research can route VideoMemory task events into any coding-agent session and show armed monitors in the camera room.</p>
+      ${
+        standaloneUrl
+          ? `<a class="primary-button videomemory-open-standalone" href="${escapeHtml(standaloneUrl)}" target="_blank" rel="noreferrer">
+              <span>Open VideoMemory</span>
+              <span class="videomemory-open-standalone-host">${escapeHtml(standaloneUrl.replace(/^https?:\/\//, ""))}</span>
+            </a>`
+          : ""
+      }
       ${renderVideoMemoryInstallState()}
       ${renderVideoMemoryPermissionAlert()}
       <form class="settings-form videomemory-form" id="videomemory-form">
