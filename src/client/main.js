@@ -19297,11 +19297,12 @@ function renderVisualGameSessionDrawer(graph) {
         }
       </div>
       <div class="visual-game-terminal-body ${hasAgentCanvas ? "has-agent-canvas" : ""}">
-        <div class="terminal-stack visual-game-terminal-stack">
+        <div class="terminal-stack visual-game-terminal-stack ${isRichSessionSurfaceActive(selectedSession) ? "is-rich-surface" : ""}">
           <div class="terminal-mount" id="terminal-mount"></div>
           <div class="terminal-transcript-scroll" id="terminal-transcript-scroll" tabindex="0" aria-label="Terminal transcript history">
             <pre class="terminal-transcript-pre" id="terminal-transcript-pre"></pre>
           </div>
+          ${renderRichSessionSurface(selectedSession)}
           <button class="jump-bottom-button ${selectedSession && state.terminalShowJumpToBottom ? "is-visible" : ""}" type="button" id="jump-to-bottom" aria-label="Jump to bottom" ${tooltipAttributes("Jump to bottom")} ${selectedSession ? "" : "disabled"}>
             bottom
           </button>

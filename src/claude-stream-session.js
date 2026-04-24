@@ -58,6 +58,11 @@ export class ClaudeStreamSession extends EventEmitter {
     // entries that DO have timestamps. Cache a stamp the first time we see
     // each entry id so chronology matches arrival order.
     this._entryStamps = new Map();
+    // Track partial assistant text per in-flight message id so we can render
+    // the reply token-by-token. Cleared once the canonical `assistant` event
+    // arrives for the same message.
+    this._partialByMessage = new Map();
+    this._pendingThinking = false;
   }
 
   start() {
@@ -69,6 +74,7 @@ export class ClaudeStreamSession extends EventEmitter {
       "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
+      "--include-partial-messages",
       "--session-id", this.sessionId,
       ...this.extraArgs,
     ];
@@ -214,9 +220,13 @@ export class ClaudeStreamSession extends EventEmitter {
     const stamp = new Date().toISOString();
     this.lastEventAt = stamp;
 
+    this._updatePartialState(event);
+
     const narrative = this.getNarrative();
     const rawEntries = Array.isArray(narrative?.entries) ? narrative.entries : [];
-    this.entries = rawEntries.map((entry, index) => {
+    const synthesizedEntries = this._synthesizePartialEntries(stamp);
+    const combined = [...rawEntries, ...synthesizedEntries];
+    this.entries = combined.map((entry, index) => {
       if (entry?.timestamp) {
         return entry;
       }
@@ -234,6 +244,85 @@ export class ClaudeStreamSession extends EventEmitter {
     if (event?.type === "result") {
       this.emit("turn-complete", event);
     }
+  }
+
+  _updatePartialState(event) {
+    if (!event || typeof event !== "object") {
+      return;
+    }
+
+    if (event.type === "system" && event.subtype === "status") {
+      this._pendingThinking = event.status === "requesting";
+      return;
+    }
+
+    if (event.type === "stream_event" && event.event && typeof event.event === "object") {
+      const innerType = event.event.type;
+      if (innerType === "message_start") {
+        const messageId = String(event.event.message?.id || "current");
+        this._partialByMessage.set(messageId, "");
+        this._pendingThinking = false;
+        return;
+      }
+      if (innerType === "content_block_delta") {
+        const delta = event.event.delta;
+        if (delta && delta.type === "text_delta" && typeof delta.text === "string") {
+          // The CLI doesn't repeat message_id on every stream_event, so fall
+          // back to the most recently opened partial slot.
+          const lastKey = Array.from(this._partialByMessage.keys()).pop() || "current";
+          const existing = this._partialByMessage.get(lastKey) || "";
+          this._partialByMessage.set(lastKey, existing + delta.text);
+          this._pendingThinking = false;
+        }
+        return;
+      }
+      return;
+    }
+
+    if (event.type === "assistant") {
+      const messageId = String(event.message?.id || "");
+      if (messageId) {
+        this._partialByMessage.delete(messageId);
+      } else {
+        this._partialByMessage.clear();
+      }
+      this._pendingThinking = false;
+      return;
+    }
+
+    if (event.type === "result") {
+      this._partialByMessage.clear();
+      this._pendingThinking = false;
+    }
+  }
+
+  _synthesizePartialEntries(stamp) {
+    const synthesized = [];
+    for (const [messageId, partialText] of this._partialByMessage) {
+      const text = String(partialText || "").trim();
+      if (!text) {
+        continue;
+      }
+      synthesized.push({
+        id: `claude-partial-${messageId}`,
+        kind: "assistant",
+        label: "Claude Code",
+        text: partialText,
+        timestamp: stamp,
+        meta: "streaming",
+      });
+    }
+    if (this._pendingThinking) {
+      synthesized.push({
+        id: "claude-thinking-pending",
+        kind: "status",
+        label: "Thinking",
+        text: "Claude is thinking...",
+        timestamp: stamp,
+        meta: "streaming",
+      });
+    }
+    return synthesized;
   }
 }
 
