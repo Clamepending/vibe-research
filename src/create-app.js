@@ -4780,6 +4780,61 @@ export async function createVibeResearchApp({
     }
   });
 
+  // One-click install for the standalone VideoMemory server. Without this the
+  // user has to clone github.com/Clamepending/videomemory and configure the
+  // launch command manually before `Open VideoMemory` can reach 127.0.0.1:5050.
+  app.post("/api/videomemory/install-server", async (request, response) => {
+    const installRoot = String(
+      request.body?.installPath || path.join(homedir(), "videomemory"),
+    ).trim();
+    const repoUrl = "https://github.com/Clamepending/videomemory.git";
+
+    try {
+      const startScript = path.join(installRoot, "start.sh");
+      let cloned = false;
+      try {
+        await stat(startScript);
+      } catch {
+        // No start.sh — either the directory is empty/missing or the repo
+        // wasn't cloned. Try to clone (git refuses if the dir exists and is
+        // non-empty, which surfaces as a clear error).
+        await execFileAsync("git", ["clone", repoUrl, installRoot], {
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: 5 * 60 * 1000,
+        });
+        cloned = true;
+        await stat(startScript);
+      }
+
+      const launchCommand = `bash ${JSON.stringify(startScript)}`;
+      await settingsStore.update({
+        videoMemoryEnabled: true,
+        videoMemoryLaunchCommand: launchCommand,
+        videoMemoryLaunchCwd: installRoot,
+      });
+      await applyRuntimeSettings(settingsStore.settings, { backupReason: false });
+      // Give the spawned flask server a moment to bind to 5050 before the
+      // client refresh asks for devices, otherwise the panel still flashes
+      // "not reachable" on the first response.
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      await videoMemoryService.refreshRemoteDevices({ force: true });
+
+      response.json({
+        installPath: installRoot,
+        cloned,
+        repoUrl,
+        settings: getSettingsState(),
+        videoMemory: videoMemoryService.getStatus(),
+      });
+    } catch (error) {
+      response.status(400).json({
+        error: error.message || "Could not install the VideoMemory server.",
+        installPath: installRoot,
+        repoUrl,
+      });
+    }
+  });
+
   app.get("/api/videomemory/monitors", (_request, response) => {
     response.json({ monitors: videoMemoryService.listMonitors() });
   });

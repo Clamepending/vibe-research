@@ -17482,6 +17482,16 @@ function renderVideoMemoryLaunchControls() {
         <span class="session-activity-dot ${escapeHtml(statusTone)}" aria-hidden="true"></span>
         <span>${escapeHtml(statusText)}</span>
       </div>
+      <div class="videomemory-launch-install">
+        <button
+          class="ghost-button toolbar-control videomemory-install-server-button"
+          type="button"
+          data-videomemory-install-server
+        >install &amp; launch VideoMemory server</button>
+        <span class="videomemory-launch-install-hint">
+          clones github.com/Clamepending/videomemory into ~/videomemory if missing, then starts it on the URL above
+        </span>
+      </div>
     </fieldset>
   `;
 }
@@ -33806,6 +33816,41 @@ function bindCommunicationsForm() {
 }
 
 function bindVideoMemoryForm() {
+  document.querySelectorAll("[data-videomemory-install-server]").forEach((button) => button.addEventListener("click", async (event) => {
+    event.preventDefault();
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLButtonElement)) {
+      return;
+    }
+
+    const defaultLabel = target.textContent || "install & launch VideoMemory server";
+    target.disabled = true;
+    target.textContent = "installing...";
+
+    try {
+      const payload = await fetchJson("/api/videomemory/install-server", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      applySettingsState(payload.settings);
+      target.textContent = payload.cloned ? "installed & launched" : "launched";
+      refreshVideoMemoryPluginUi({ force: true });
+    } catch (error) {
+      window.alert(error.message);
+      target.textContent = defaultLabel;
+      target.disabled = false;
+      return;
+    }
+
+    window.setTimeout(() => {
+      if (!target.isConnected) {
+        return;
+      }
+      target.textContent = defaultLabel;
+      target.disabled = false;
+    }, 2000);
+  }));
+
   document.querySelectorAll("[data-videomemory-request-camera-permission]").forEach((button) => button.addEventListener("click", async (event) => {
     event.preventDefault();
     const target = event.currentTarget;
