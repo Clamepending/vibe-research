@@ -10577,6 +10577,95 @@ button.visual-town-building:focus-visible {
   font-size: 0.98rem;
 }
 
+.paper-since-banner {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(110, 168, 254, 0.08);
+  border: 1px solid rgba(110, 168, 254, 0.28);
+  font-size: 0.9rem;
+}
+
+.paper-since-banner-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.paper-since-banner-title {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(110, 168, 254, 0.95);
+}
+
+.paper-since-banner-count {
+  color: rgba(244, 244, 242, 0.78);
+  font-size: 0.85rem;
+  flex: 1;
+}
+
+.paper-since-banner-mark-read {
+  appearance: none;
+  border: 1px solid rgba(110, 168, 254, 0.45);
+  background: transparent;
+  color: rgba(110, 168, 254, 0.95);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.paper-since-banner-mark-read:hover:not(:disabled) {
+  background: rgba(110, 168, 254, 0.14);
+}
+
+.paper-since-banner-mark-read:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.paper-since-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.paper-since-bullet {
+  position: relative;
+  padding: 4px 10px 4px 18px;
+  border-radius: 8px;
+  line-height: 1.5;
+}
+
+.paper-since-bullet::before {
+  content: "•";
+  position: absolute;
+  left: 6px;
+  top: 4px;
+  color: rgba(244, 244, 242, 0.45);
+}
+
+.paper-since-bullet.is-new {
+  background: rgba(110, 168, 254, 0.12);
+  color: rgba(244, 244, 242, 0.96);
+}
+
+.paper-since-bullet.is-new::before {
+  color: rgba(110, 168, 254, 0.95);
+  content: "▸";
+}
+
+.paper-since-bullet.is-seen {
+  color: rgba(244, 244, 242, 0.5);
+}
+
 .knowledge-base-markdown > * {
   margin: 0;
 }

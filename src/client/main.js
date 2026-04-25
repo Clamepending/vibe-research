@@ -11089,8 +11089,119 @@ function renderKnowledgeBaseMarkdownTable(lines, startIndex, currentPath) {
   };
 }
 
+function isPaperMarkdownPath(currentPath) {
+  return typeof currentPath === "string" && /(?:^|\/)paper\.md$/i.test(currentPath.trim());
+}
+
+function getPaperLastSeenStorageKey(currentPath) {
+  return `vr-paper-last-seen:${currentPath || "unknown"}`;
+}
+
+function readPaperLastSeenBullet(currentPath) {
+  try {
+    return localStorage.getItem(getPaperLastSeenStorageKey(currentPath)) || "";
+  } catch (error) {
+    return "";
+  }
+}
+
+function writePaperLastSeenBullet(currentPath, bullet) {
+  try {
+    localStorage.setItem(getPaperLastSeenStorageKey(currentPath), bullet || "");
+  } catch (error) {
+    // localStorage unavailable; the banner just won't persist its read mark
+  }
+}
+
+function extractPaperSinceLastUpdate(markdown) {
+  const text = String(markdown || "").replace(/\r\n/g, "\n");
+  const headingMatch = text.match(/^##\s+since last update\s*$/im);
+  if (!headingMatch) {
+    return { banner: null, body: text };
+  }
+
+  const start = headingMatch.index;
+  const headingEnd = start + headingMatch[0].length;
+  const remainder = text.slice(headingEnd);
+  const nextMatch = remainder.match(/\n##\s+/);
+  const endOffset = nextMatch ? headingEnd + nextMatch.index : text.length;
+  const sectionText = text.slice(start, endOffset);
+  const bodyText = text.slice(0, start) + text.slice(endOffset);
+
+  const bullets = [];
+  for (const rawLine of sectionText.split("\n")) {
+    const line = rawLine.replace(/\s+$/, "");
+    if (/^##\s+/i.test(line)) continue;
+    if (/^\s*<!--/.test(line)) continue;
+    if (/^\s*-->/.test(line)) continue;
+    const bulletMatch = line.match(/^\s*[-*+]\s+(.+)$/);
+    if (bulletMatch) {
+      const value = bulletMatch[1].trim();
+      if (value && !/^_no entries yet_$/i.test(value)) {
+        bullets.push(value);
+      }
+    }
+  }
+
+  return {
+    banner: { bullets, raw: sectionText },
+    body: bodyText.replace(/^\n+/, ""),
+  };
+}
+
+function renderPaperSinceLastUpdateBanner(banner, currentPath) {
+  if (!banner || !Array.isArray(banner.bullets) || !banner.bullets.length) {
+    return "";
+  }
+
+  const lastSeen = readPaperLastSeenBullet(currentPath);
+  const lastSeenIndex = lastSeen ? banner.bullets.indexOf(lastSeen) : -1;
+
+  let newCount = 0;
+  const items = banner.bullets.map((bullet, idx) => {
+    const isSeen = lastSeenIndex >= 0 && idx >= lastSeenIndex;
+    if (!isSeen) newCount += 1;
+    return `<li class="paper-since-bullet ${isSeen ? "is-seen" : "is-new"}" data-paper-bullet="${escapeHtml(bullet)}">${renderKnowledgeBaseInline(bullet, currentPath)}</li>`;
+  });
+
+  let summary;
+  if (lastSeenIndex < 0) {
+    summary = `${banner.bullets.length} update${banner.bullets.length === 1 ? "" : "s"} on this paper`;
+  } else if (newCount === 0) {
+    summary = `caught up — no new updates since your last visit`;
+  } else {
+    summary = `${newCount} new update${newCount === 1 ? "" : "s"} since your last visit`;
+  }
+
+  const markReadDisabled = newCount === 0 ? "disabled" : "";
+
+  return `
+    <aside class="paper-since-banner" aria-label="Recent updates to this paper">
+      <header class="paper-since-banner-header">
+        <span class="paper-since-banner-title">since your last visit</span>
+        <span class="paper-since-banner-count">${escapeHtml(summary)}</span>
+        <button class="paper-since-banner-mark-read" type="button" data-mark-paper-read data-paper-path="${escapeHtml(currentPath || "")}" ${markReadDisabled}>mark as read</button>
+      </header>
+      <ul class="paper-since-list">
+        ${items.join("")}
+      </ul>
+    </aside>
+  `;
+}
+
 function renderKnowledgeBaseMarkdown(markdown, currentPath) {
-  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  let prefixHtml = "";
+  let source = String(markdown || "");
+
+  if (isPaperMarkdownPath(currentPath)) {
+    const extracted = extractPaperSinceLastUpdate(source);
+    if (extracted.banner) {
+      prefixHtml = renderPaperSinceLastUpdateBanner(extracted.banner, currentPath);
+      source = extracted.body;
+    }
+  }
+
+  const lines = source.replace(/\r\n/g, "\n").split("\n");
   const html = [];
   let index = 0;
 
@@ -11199,7 +11310,7 @@ function renderKnowledgeBaseMarkdown(markdown, currentPath) {
     html.push(`<p>${renderKnowledgeBaseInline(paragraphLines.join(" "), currentPath)}</p>`);
   }
 
-  return html.join("");
+  return prefixHtml + html.join("");
 }
 
 function renderKnowledgeBaseNoteList() {
@@ -34707,6 +34818,26 @@ function bindKnowledgeBaseEvents() {
       renderShell();
     };
   }
+
+  bindPaperSinceLastUpdateEvents();
+}
+
+function bindPaperSinceLastUpdateEvents() {
+  document.querySelectorAll("[data-mark-paper-read]").forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return;
+    if (button.dataset.paperReadBound === "true") return;
+    button.dataset.paperReadBound = "true";
+    button.addEventListener("click", () => {
+      const paperPath = button.dataset.paperPath || state.knowledgeBase.selectedNotePath || "";
+      const banner = button.closest(".paper-since-banner");
+      const firstBullet = banner?.querySelector(".paper-since-list .paper-since-bullet");
+      const raw = firstBullet instanceof HTMLElement ? firstBullet.dataset.paperBullet || "" : "";
+      if (paperPath && raw) {
+        writePaperLastSeenBullet(paperPath, raw);
+      }
+      renderShell();
+    });
+  });
 }
 
 function refreshKnowledgeBaseUi() {
@@ -35812,6 +35943,7 @@ function bindFileEditorEvents() {
   bindLineNumberEditors();
   bindImagePreviewEvents();
   bindOpenFileTabReorderEvents();
+  bindPaperSinceLastUpdateEvents();
 
   document.querySelectorAll("[data-file-tab]").forEach((button) => {
     button.addEventListener("click", (event) => {
