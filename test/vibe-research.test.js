@@ -766,8 +766,8 @@ test("state is available without authentication", async () => {
     assert.equal(state.settings.preventSleepEnabled, true);
     assert.equal(state.settings.sleepPrevention.enabled, true);
     assert.equal(state.settings.sleepPrevention.lastStatus, "unsupported");
-    assert.equal(state.settings.wikiGitBackupEnabled, true);
-    assert.equal(state.settings.wikiGitRemoteEnabled, true);
+    assert.equal(state.settings.wikiGitBackupEnabled, false);
+    assert.equal(state.settings.wikiGitRemoteEnabled, false);
     assert.equal(state.settings.wikiGitRemoteBranch, "main");
     assert.equal(state.settings.wikiGitRemoteName, "origin");
     assert.equal(state.settings.wikiGitRemoteUrl, "");
@@ -782,7 +782,7 @@ test("state is available without authentication", async () => {
     assert.equal(state.settings.wikiPathConfigured, false);
     assert.deepEqual(state.settings.agentAutomations, []);
     assert.deepEqual(state.settings.installedPluginIds, []);
-    assert.equal(state.settings.wikiBackup.enabled, true);
+    assert.equal(state.settings.wikiBackup.enabled, false);
 
     const gpuResponse = await fetch(`${baseUrl}/api/gpu`);
     assert.equal(gpuResponse.status, 404);

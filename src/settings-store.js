@@ -404,9 +404,12 @@ export class SettingsStore {
       buildingAccessConfirmedIds: [],
       installedPluginIds: [],
       preventSleepEnabled: true,
-      wikiGitBackupEnabled: true,
+      // The Library is just a folder of markdown notes by default. Beginners
+      // don't need a git history of every change unless they explicitly opt
+      // in via "Link GitHub" in the Library UI.
+      wikiGitBackupEnabled: false,
       wikiGitRemoteBranch: "main",
-      wikiGitRemoteEnabled: true,
+      wikiGitRemoteEnabled: false,
       wikiGitRemoteName: "origin",
       wikiGitRemoteUrl: "",
       wikiBackupIntervalMs: this.defaultBackupIntervalMs,

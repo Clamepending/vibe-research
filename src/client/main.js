@@ -11675,11 +11675,33 @@ function renderKnowledgeBaseBuildingWorkspaceAction() {
   `;
 }
 
+function renderKnowledgeBaseBackupToolbarActions() {
+  const backupEnabled = Boolean(state.settings.wikiGitBackupEnabled);
+  if (!backupEnabled) {
+    return `
+      <button
+        class="primary-button toolbar-control"
+        type="button"
+        data-link-github-backup
+        ${tooltipAttributes("Connect a private GitHub remote so this Library is backed up off-machine")}
+      >${renderIcon(GitFork)}<span>Link GitHub</span></button>
+    `;
+  }
+  const backupRepoUrl = getKnowledgeBaseBackupRepoUrl();
+  return `
+    ${
+      backupRepoUrl
+        ? `<a class="ghost-button toolbar-control" href="${escapeHtml(backupRepoUrl)}" target="_blank" rel="noreferrer">view backup</a>`
+        : ""
+    }
+    <button class="ghost-button toolbar-control" type="button" id="backup-wiki-now">backup now</button>
+  `;
+}
+
 function renderKnowledgeBaseView() {
   const selectedNoteMeta = getKnowledgeBaseSelectedNoteMeta();
   const selectedNotePath = state.knowledgeBase.selectedNotePath;
   const rawHref = selectedNotePath ? getKnowledgeBaseNoteRawUrl(selectedNotePath) : "";
-  const backupRepoUrl = getKnowledgeBaseBackupRepoUrl();
 
   return `
     <section class="dashboard-panel knowledge-base-view" ${renderMainViewAttributes(
@@ -11695,12 +11717,7 @@ function renderKnowledgeBaseView() {
         <div class="dashboard-actions knowledge-base-toolbar-actions">
           ${renderKnowledgeBaseBuildingWorkspaceAction()}
           ${renderKnowledgeSettingsForm({ popover: true })}
-          ${
-            backupRepoUrl
-              ? `<a class="ghost-button toolbar-control" href="${escapeHtml(backupRepoUrl)}" target="_blank" rel="noreferrer">view backup</a>`
-              : ""
-          }
-          <button class="ghost-button toolbar-control" type="button" id="backup-wiki-now">backup now</button>
+          ${renderKnowledgeBaseBackupToolbarActions()}
           <button class="icon-button toolbar-control refresh-icon-button" type="button" id="refresh-knowledge-base" aria-label="Refresh library" ${tooltipAttributes("Refresh library")}>${renderIcon(RefreshCw)}</button>
         </div>
       </div>
@@ -11747,7 +11764,6 @@ function renderKnowledgeBaseView() {
 function renderKnowledgeBaseApp() {
   const selectedNotePath = state.knowledgeBase.selectedNotePath;
   const rawHref = selectedNotePath ? getKnowledgeBaseNoteRawUrl(selectedNotePath) : "";
-  const backupRepoUrl = getKnowledgeBaseBackupRepoUrl();
 
   document.title = selectedNotePath
     ? `${state.knowledgeBase.selectedNoteTitle || selectedNotePath} · Library`
@@ -11764,9 +11780,7 @@ function renderKnowledgeBaseApp() {
           </div>
           <div class="knowledge-base-app-actions">
             ${renderKnowledgeSettingsForm({ popover: true })}
-            ${backupRepoUrl
-              ? `<a class="ghost-button toolbar-control" href="${escapeHtml(backupRepoUrl)}" target="_blank" rel="noreferrer">view backup</a>`
-              : ""}
+            ${renderKnowledgeBaseBackupToolbarActions()}
             ${rawHref
               ? `<a class="ghost-button toolbar-control" href="${escapeHtml(rawHref)}" target="_blank" rel="noreferrer">raw</a>`
               : ""}
@@ -38271,6 +38285,33 @@ function bindShellEvents() {
         button.textContent = "backup now";
       }
     }
+  });
+  document.querySelectorAll("[data-link-github-backup]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        const payload = await fetchJson("/api/settings", {
+          method: "PATCH",
+          body: JSON.stringify({
+            wikiGitBackupEnabled: true,
+            wikiGitRemoteEnabled: true,
+          }),
+        });
+        applySettingsState(payload.settings);
+        renderShell();
+        // After re-render the settings popover exists. Open it and focus the
+        // remote URL field so the user can paste their GitHub remote.
+        const popover = document.querySelector(".knowledge-settings-popover");
+        if (popover instanceof HTMLDetailsElement) {
+          popover.open = true;
+        }
+        const urlInput = document.querySelector("#wiki-git-remote-url, #advanced-wiki-git-remote-url");
+        if (urlInput instanceof HTMLInputElement) {
+          urlInput.focus();
+        }
+      } catch (error) {
+        window.alert(error.message || "Could not enable Library GitHub backup.");
+      }
+    });
   });
   document.querySelector("#refresh-files")?.addEventListener("click", async () => {
     syncFilesRoot({ force: true });
