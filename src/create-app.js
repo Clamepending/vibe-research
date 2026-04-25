@@ -4783,11 +4783,31 @@ export async function createVibeResearchApp({
   // One-click install for the standalone VideoMemory server. Without this the
   // user has to clone github.com/Clamepending/videomemory and configure the
   // launch command manually before `Open VideoMemory` can reach 127.0.0.1:5050.
+  // We also ensure `uv` is installed because start.sh runs `uv run flask_app/app.py`.
   app.post("/api/videomemory/install-server", async (request, response) => {
     const installRoot = String(
       request.body?.installPath || path.join(homedir(), "videomemory"),
     ).trim();
     const repoUrl = "https://github.com/Clamepending/videomemory.git";
+    const localBinDir = path.join(homedir(), ".local", "bin");
+    const localUvPath = path.join(localBinDir, "uv");
+
+    async function detectUvOnPath() {
+      try {
+        await execFileAsync("uv", ["--version"]);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    async function detectUvAtLocalBin() {
+      try {
+        await execFileAsync(localUvPath, ["--version"]);
+        return true;
+      } catch {
+        return false;
+      }
+    }
 
     try {
       const startScript = path.join(installRoot, "start.sh");
@@ -4806,7 +4826,34 @@ export async function createVibeResearchApp({
         await stat(startScript);
       }
 
-      const launchCommand = `bash ${JSON.stringify(startScript)}`;
+      // start.sh runs `uv run flask_app/app.py`. Install uv via the official
+      // installer if it isn't already on PATH or at ~/.local/bin/uv (the
+      // installer's default destination). Done as a curl|sh pipeline because
+      // that's the documented one-liner; trusted-vendor + first-party install.
+      let uvInstalled = false;
+      let uvAlready = (await detectUvOnPath()) || (await detectUvAtLocalBin());
+      if (!uvAlready) {
+        const installShell = process.env.SHELL || "/bin/sh";
+        await execFileAsync(
+          installShell,
+          ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"],
+          {
+            maxBuffer: 16 * 1024 * 1024,
+            timeout: 5 * 60 * 1000,
+            env: { ...process.env, UV_NO_MODIFY_PATH: "1" },
+          },
+        );
+        if (!(await detectUvAtLocalBin()) && !(await detectUvOnPath())) {
+          throw new Error("uv installer ran but `uv` was not found afterward.");
+        }
+        uvInstalled = true;
+        uvAlready = true;
+      }
+
+      // The detached child inherits process.env at spawn time and PATH is not
+      // re-evaluated from ~/.zshrc, so prepend ~/.local/bin so freshly
+      // installed `uv` is reachable from inside start.sh.
+      const launchCommand = `PATH=${JSON.stringify(`${localBinDir}:`)}"$PATH" bash ${JSON.stringify(startScript)}`;
       await settingsStore.update({
         videoMemoryEnabled: true,
         videoMemoryLaunchCommand: launchCommand,
@@ -4815,13 +4862,15 @@ export async function createVibeResearchApp({
       await applyRuntimeSettings(settingsStore.settings, { backupReason: false });
       // Give the spawned flask server a moment to bind to 5050 before the
       // client refresh asks for devices, otherwise the panel still flashes
-      // "not reachable" on the first response.
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      // "not reachable" on the first response. uv may also need to resolve a
+      // virtualenv on first run, so bias toward longer.
+      await new Promise((resolve) => setTimeout(resolve, uvInstalled ? 2500 : 1200));
       await videoMemoryService.refreshRemoteDevices({ force: true });
 
       response.json({
         installPath: installRoot,
         cloned,
+        uvInstalled,
         repoUrl,
         settings: getSettingsState(),
         videoMemory: videoMemoryService.getStatus(),
