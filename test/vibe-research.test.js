@@ -4102,6 +4102,12 @@ test("placed cosmetic buildings open an Agent Town drawer", async (t) => {
       0,
     );
 
+    await page.route("**/api/agent-town/state", async (route) => {
+      if (route.request().method() === "PUT") {
+        await new Promise((resolve) => setTimeout(resolve, 650));
+      }
+      await route.continue();
+    });
     await page.locator("[data-agent-town-builder-toggle]").click();
     await page.getByRole("button", { name: "Place Tiny Shed" }).click();
     await page.getByText("Placing Tiny Shed", { exact: true }).waitFor({ timeout: 10_000 });
@@ -6008,6 +6014,62 @@ test("visual graph empty canvas click closes the selected session panel and dele
     await page.locator('.session-card[data-session-id="visual-session-1"]').waitFor({ timeout: 10_000 });
     await page.waitForTimeout(1_200);
     const initialShape = await assertCanvasTracksFrame(page, "initial visual game canvas");
+    const readMapCamera = async () => page.evaluate(() => {
+      const canvas = document.querySelector("#visual-game-canvas");
+      return {
+        x: Number(canvas?.dataset.cameraX || 0),
+        y: Number(canvas?.dataset.cameraY || 0),
+        zoom: Number(canvas?.dataset.cameraZoom || 0),
+      };
+    });
+
+    const mapBox = await page.locator("#visual-game-canvas").boundingBox();
+    assert.ok(mapBox, "visual game canvas should be visible for camera controls");
+    const cameraBeforeZoom = await readMapCamera();
+    await page.mouse.move(mapBox.x + mapBox.width / 2, mapBox.y + mapBox.height / 2);
+    await page.mouse.wheel(0, -620);
+    await page.waitForFunction(
+      (previousZoom) => Number(document.querySelector("#visual-game-canvas")?.dataset.cameraZoom || 0) > previousZoom + 0.05,
+      cameraBeforeZoom.zoom,
+      { timeout: 10_000 },
+    );
+    const cameraAfterZoom = await readMapCamera();
+    await page.mouse.down();
+    await page.mouse.move(mapBox.x + mapBox.width / 2 + 96, mapBox.y + mapBox.height / 2 + 48, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForFunction(
+      (previousCamera) => {
+        const canvas = document.querySelector("#visual-game-canvas");
+        const nextX = Number(canvas?.dataset.cameraX || 0);
+        const nextY = Number(canvas?.dataset.cameraY || 0);
+        return Math.abs(nextX - previousCamera.x) > 1 || Math.abs(nextY - previousCamera.y) > 1;
+      },
+      cameraAfterZoom,
+      { timeout: 10_000 },
+    );
+    await page.locator("#visual-game-reset-camera").click();
+    await page.waitForFunction(
+      (zoomedCamera) => {
+        const canvas = document.querySelector("#visual-game-canvas");
+        return Number(canvas?.dataset.cameraZoom || 0) < zoomedCamera.zoom - 0.02;
+      },
+      cameraAfterZoom,
+      { timeout: 10_000 },
+    );
+
+    const lateSessionResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "shell", cwd: workspaceDir, name: "Late Map Agent" }),
+    });
+    assert.equal(lateSessionResponse.status, 201);
+    await page.waitForFunction(
+      () => Array.from(document.querySelectorAll("[data-session-id]")).some((element) => element.textContent?.includes("Late Map Agent")),
+      null,
+      { timeout: 10_000 },
+    );
+    await page.waitForSelector("#visual-game-canvas", { timeout: 10_000 });
+    assert.ok(await findCanvasHoverPoint(page, "Late Map Agent"), "new live sessions should appear in Agent Town without reopening the map");
 
     const agentPoint = await findCanvasHoverPoint(page, "Canvas Agent");
     await page.waitForSelector(".visual-game-agent-hover-card.is-visible .agent-profile-panel-hover", { timeout: 10_000 });

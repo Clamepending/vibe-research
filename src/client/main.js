@@ -115,6 +115,8 @@ const KNOWLEDGE_BASE_GRAPH_LABEL_GAP = 10;
 const KNOWLEDGE_BASE_GRAPH_LABEL_HEIGHT = 14;
 const KNOWLEDGE_BASE_GRAPH_PROJECT_PREFIX = "project:";
 const KNOWLEDGE_BASE_GRAPH_GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const KNOWLEDGE_BASE_GRAPH_INTERACTIVE_SIMULATION_NODE_LIMIT = 140;
+const KNOWLEDGE_BASE_NOTE_LIST_RENDER_LIMIT = 260;
 const KNOWLEDGE_BASE_GRAPH_PHYSICS = Object.freeze({
   alphaDecay: 0.972,
   alphaCooling: 0.0018,
@@ -1968,6 +1970,7 @@ const state = {
   ports: [],
   portsLoadedAt: 0,
   currentView: "shell",
+  mainViewNavigationToken: 0,
   workspaceEmpty: false,
   agentPointer: null,
   globalSearchQuery: "",
@@ -2001,6 +2004,8 @@ const state = {
     inProgress: false,
     toast: null,
   },
+  agentTownMirrorRequestId: 0,
+  agentTownPendingLayoutSignature: "",
   agentTown: {
     actionItems: [],
     alerts: [],
@@ -6738,6 +6743,15 @@ function getMainViewUrl(view) {
   return url.toString();
 }
 
+function beginMainViewNavigation() {
+  state.mainViewNavigationToken += 1;
+  return state.mainViewNavigationToken;
+}
+
+function isMainViewNavigationCurrent(token) {
+  return token === state.mainViewNavigationToken;
+}
+
 function getFolderPickerTitle() {
   if (state.folderPicker.target === "wiki-onboarding") {
     return "select workspace folder";
@@ -10261,7 +10275,7 @@ function requestKnowledgeBaseGraphReplay() {
   state.knowledgeBase.replayGraphOnNextBind = true;
 }
 
-function replayKnowledgeBaseGraphUnfold() {
+function replayKnowledgeBaseGraphUnfold({ forceSimulation = false } = {}) {
   const layout = state.knowledgeBase.graphLayout;
 
   if (!layout.nodes.length) {
@@ -10300,7 +10314,7 @@ function replayKnowledgeBaseGraphUnfold() {
   });
 
   syncKnowledgeBaseGraphDom();
-  startKnowledgeBaseGraphSimulation(0.42);
+  startKnowledgeBaseGraphSimulation(0.42, { force: forceSimulation });
   return true;
 }
 
@@ -10444,10 +10458,23 @@ function scheduleKnowledgeBaseGraphFrame() {
   });
 }
 
-function startKnowledgeBaseGraphSimulation(boost = 0.16) {
+function startKnowledgeBaseGraphSimulation(boost = 0.16, { force = false } = {}) {
   const layout = state.knowledgeBase.graphLayout;
 
   if (!layout.nodes.length) {
+    return;
+  }
+
+  if (
+    layout.nodes.length > KNOWLEDGE_BASE_GRAPH_INTERACTIVE_SIMULATION_NODE_LIMIT
+    && !force
+    && !layout.dragState
+  ) {
+    layout.running = false;
+    layout.alpha = 0;
+    layout.autoFitDuringSimulation = false;
+    layout.autoFitMaxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE;
+    syncKnowledgeBaseGraphDom();
     return;
   }
 
@@ -11173,7 +11200,10 @@ function renderKnowledgeBaseNoteList() {
     return `<div class="blank-state">no notes match "${escapeHtml(state.knowledgeBase.searchQuery)}"</div>`;
   }
 
-  return notes
+  const visibleNotes = notes.slice(0, KNOWLEDGE_BASE_NOTE_LIST_RENDER_LIMIT);
+  const overflowCount = Math.max(0, notes.length - visibleNotes.length);
+
+  return `${visibleNotes
     .map((note) => {
       const isActive = note.relativePath === state.knowledgeBase.selectedNotePath;
       const matchLabel = query ? "matches search" : note.excerpt || note.relativePath || "No preview yet.";
@@ -11196,7 +11226,11 @@ function renderKnowledgeBaseNoteList() {
         </button>
       `;
     })
-	    .join("");
+    .join("")}${
+      overflowCount
+        ? `<div class="blank-state">showing ${visibleNotes.length} of ${notes.length}; search to narrow the list</div>`
+        : ""
+    }`;
 }
 
 function getKnowledgeBasePreviewText(value, maxLength = 320) {
@@ -19656,13 +19690,27 @@ function renderSwarmDetails(graph) {
 function getVisualGraphSessions(graph) {
   const graphSessions = Array.isArray(graph?.sessions) ? graph.sessions : [];
   const liveSessionById = new Map(state.sessions.map((session) => [session.id, session]));
+  const seenSessionIds = new Set();
 
-  return graphSessions
+  const sessions = graphSessions
     .map((graphSession) => {
       const liveSession = liveSessionById.get(graphSession?.id);
-      return liveSession ? { ...graphSession, ...liveSession } : null;
+      if (!liveSession) {
+        return null;
+      }
+      seenSessionIds.add(liveSession.id);
+      return { ...graphSession, ...liveSession };
     })
     .filter(Boolean);
+
+  for (const liveSession of state.sessions) {
+    if (!liveSession?.id || seenSessionIds.has(liveSession.id)) {
+      continue;
+    }
+    sessions.push(liveSession);
+  }
+
+  return sessions;
 }
 
 function pruneVisualGameSessionSelection() {
@@ -22284,16 +22332,31 @@ async function loadAgentTownState({ refreshUi = true } = {}) {
 }
 
 async function mirrorAgentTownState({ refreshUi = true, reason = "mirror" } = {}) {
+  const requestId = state.agentTownMirrorRequestId + 1;
+  state.agentTownMirrorRequestId = requestId;
+  const layout = getAgentTownCurrentLayout();
+  const layoutSignature = getAgentTownLayoutSignature(layout);
+  const layoutSummary = getAgentTownLayoutSummary();
+  state.agentTownPendingLayoutSignature = layoutSignature;
   try {
     const payload = await fetchJson("/api/agent-town/state", {
       method: "PUT",
       body: JSON.stringify({
-        layout: getAgentTownCurrentLayout(),
-        layoutSummary: getAgentTownLayoutSummary(),
+        layout,
+        layoutSummary,
         reason,
       }),
     });
+    if (
+      state.agentTownMirrorRequestId !== requestId ||
+      getAgentTownLayoutSignature(getAgentTownCurrentLayout()) !== layoutSignature
+    ) {
+      return payload.agentTown;
+    }
     applyAgentTownState(payload.agentTown);
+    if (state.agentTownPendingLayoutSignature === layoutSignature) {
+      state.agentTownPendingLayoutSignature = "";
+    }
     if (refreshUi) {
       refreshAgentTownActionItemUi();
       refreshAgentCanvasUi();
@@ -22497,7 +22560,7 @@ async function recordAgentTownEvent(type, detail = {}) {
       method: "POST",
       body: JSON.stringify({ type, ...detail }),
     });
-    applyAgentTownState(payload.agentTown);
+    applyAgentTownState(payload.agentTown, { preserveLocalLayout: true });
     refreshAgentTownActionItemUi();
     refreshAgentCanvasUi();
     return payload.event;
@@ -23739,6 +23802,25 @@ function zoomVisualGameCameraAt(viewportPoint, zoomFactor, viewport = state.visu
   }, viewport);
 }
 
+function syncVisualGameCameraDebugAttributes(canvas, camera) {
+  if (!(canvas instanceof HTMLCanvasElement) || !camera) {
+    return;
+  }
+
+  const nextZoom = Number(camera.zoom || 0).toFixed(4);
+  const nextX = Number(camera.x || 0).toFixed(2);
+  const nextY = Number(camera.y || 0).toFixed(2);
+  if (canvas.dataset.cameraZoom !== nextZoom) {
+    canvas.dataset.cameraZoom = nextZoom;
+  }
+  if (canvas.dataset.cameraX !== nextX) {
+    canvas.dataset.cameraX = nextX;
+  }
+  if (canvas.dataset.cameraY !== nextY) {
+    canvas.dataset.cameraY = nextY;
+  }
+}
+
 function centerVisualGameCameraOnWorldRect(rect, { paddingWorld = 56, maxZoom = 1.6 } = {}) {
   if (!rect) {
     return null;
@@ -24245,6 +24327,7 @@ function mountVisualPixelGame() {
     resizeCanvasToDisplaySize();
     const viewport = getVisualGameCanvasViewport(canvas);
     const camera = syncVisualGameCameraToViewport(viewport);
+    syncVisualGameCameraDebugAttributes(canvas, camera);
     const renderScale = canvas.width / viewport.width;
     const visibleWorld = {
       x: camera.x,
@@ -34398,7 +34481,7 @@ function bindKnowledgeBaseGraphInteractions() {
   document.querySelector("#pulse-knowledge-base-graph")?.addEventListener(
     "click",
     () => {
-      replayKnowledgeBaseGraphUnfold();
+      replayKnowledgeBaseGraphUnfold({ forceSimulation: true });
     },
     { signal },
   );
@@ -36447,14 +36530,22 @@ function normalizeAgentTownTownShares(value) {
     : [];
 }
 
-function applyAgentTownState(payload) {
+function applyAgentTownState(payload, { preserveLocalLayout = false } = {}) {
   const agentTown = payload?.agentTown || payload || {};
   const layoutSummary = agentTown.layoutSummary || {};
-  const serverLayout = agentTown.layout && typeof agentTown.layout === "object" && !Array.isArray(agentTown.layout)
+  const incomingServerLayout = agentTown.layout && typeof agentTown.layout === "object" && !Array.isArray(agentTown.layout)
     ? normalizeAgentTownPersistedLayout(agentTown.layout)
     : null;
   const localLayout = getAgentTownCurrentLayout();
+  const localLayoutSignature = getAgentTownLayoutSignature(localLayout);
+  const serverLayoutSignature = incomingServerLayout ? getAgentTownLayoutSignature(incomingServerLayout) : "";
+  const hasPendingLocalLayout =
+    state.agentTownPendingLayoutSignature &&
+    state.agentTownPendingLayoutSignature === localLayoutSignature &&
+    serverLayoutSignature !== localLayoutSignature;
+  const serverLayout = preserveLocalLayout || hasPendingLocalLayout ? null : incomingServerLayout;
   const nextLayout = serverLayout || localLayout;
+  const nextLayoutSummary = preserveLocalLayout || hasPendingLocalLayout ? getAgentTownLayoutSummary() : layoutSummary;
   const snapshots = normalizeAgentTownLayoutSnapshots(agentTown.layoutSnapshots || agentTown.snapshots);
 
   state.agentTown = {
@@ -36465,11 +36556,11 @@ function applyAgentTownState(payload) {
     layout: nextLayout,
     layoutHistory: normalizeAgentTownLayoutHistory(agentTown.layoutHistory),
     layoutSummary: {
-      cosmeticCount: Number(layoutSummary.cosmeticCount) || 0,
-      functionalCount: Number(layoutSummary.functionalCount) || 0,
-      functionalIds: Array.isArray(layoutSummary.functionalIds) ? layoutSummary.functionalIds : [],
-      pendingFunctionalIds: Array.isArray(layoutSummary.pendingFunctionalIds) ? layoutSummary.pendingFunctionalIds : [],
-      themeId: layoutSummary.themeId || AGENT_TOWN_DEFAULT_THEME_ID,
+      cosmeticCount: Number(nextLayoutSummary.cosmeticCount) || 0,
+      functionalCount: Number(nextLayoutSummary.functionalCount) || 0,
+      functionalIds: Array.isArray(nextLayoutSummary.functionalIds) ? nextLayoutSummary.functionalIds : [],
+      pendingFunctionalIds: Array.isArray(nextLayoutSummary.pendingFunctionalIds) ? nextLayoutSummary.pendingFunctionalIds : [],
+      themeId: nextLayoutSummary.themeId || AGENT_TOWN_DEFAULT_THEME_ID,
     },
     layoutSnapshots: snapshots,
     layoutValidation: normalizeAgentTownLayoutValidation(agentTown.layoutValidation),
@@ -36490,6 +36581,9 @@ function applyAgentTownState(payload) {
     bundleHubPreview: state.agentTown?.bundleHubPreview || { bundleId: "", loading: false, report: null, error: "" },
     bundleHubImport: state.agentTown?.bundleHubImport || { bundleId: "", inProgress: false },
   };
+  if (serverLayoutSignature && serverLayoutSignature === state.agentTownPendingLayoutSignature) {
+    state.agentTownPendingLayoutSignature = "";
+  }
   scheduleGuidedOnboardingSyncSafe();
 
   if (!serverLayout) {
@@ -36844,6 +36938,7 @@ function setCurrentView(nextView, {
 }
 
 async function openMainView(nextView, { buildingId = "", buildingHubTab = state.buildingHubTab, buildingWorkspaceId = "" } = {}) {
+  const navigationToken = beginMainViewNavigation();
   state.workspaceEmpty = false;
   if (nextView === "knowledge-base") {
     setCurrentView("knowledge-base", { buildingWorkspaceId });
@@ -36852,9 +36947,15 @@ async function openMainView(nextView, { buildingId = "", buildingHubTab = state.
 
     if (!state.knowledgeBase.notes.length && !state.knowledgeBase.loading) {
       await loadKnowledgeBaseIndex();
+      if (!isMainViewNavigationCurrent(navigationToken)) {
+        return;
+      }
     }
 
     await ensureKnowledgeBaseSelectionLoaded();
+    if (!isMainViewNavigationCurrent(navigationToken)) {
+      return;
+    }
     updateRoute({ view: "knowledge-base", notePath: state.knowledgeBase.selectedNotePath });
     renderShell();
     return;
@@ -36868,7 +36969,7 @@ async function openMainView(nextView, { buildingId = "", buildingHubTab = state.
   }
 
   if (nextView === "visual-interface" || nextView === "swarm") {
-    await openVisualInterface();
+    await openVisualInterface({ navigationToken });
     return;
   }
 
@@ -36879,6 +36980,9 @@ async function openMainView(nextView, { buildingId = "", buildingHubTab = state.
 
     if (nextView === "search" && !state.knowledgeBase.notes.length && !state.knowledgeBase.loading) {
       await loadKnowledgeBaseIndex();
+      if (!isMainViewNavigationCurrent(navigationToken)) {
+        return;
+      }
       renderShell();
     }
 
@@ -36898,7 +37002,7 @@ async function openMainView(nextView, { buildingId = "", buildingHubTab = state.
   }
 }
 
-async function openVisualInterface({ refresh = false } = {}) {
+async function openVisualInterface({ refresh = false, navigationToken = beginMainViewNavigation() } = {}) {
   const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) || state.sessions[0] || null;
 
   if (activeSession?.cwd) {
@@ -36906,6 +37010,7 @@ async function openVisualInterface({ refresh = false } = {}) {
       fallbackSessionId: activeSession.id,
       projectName: getWorkspacePathLeafName(activeSession.cwd),
       refresh,
+      navigationToken,
     });
     return;
   }
@@ -36916,16 +37021,20 @@ async function openVisualInterface({ refresh = false } = {}) {
       fallbackSessionId: projectGroup.sessions[0]?.id || "",
       projectName: projectGroup.name,
       refresh,
+      navigationToken,
     });
     return;
   }
 
+  if (!isMainViewNavigationCurrent(navigationToken)) {
+    return;
+  }
   setCurrentView("visual-interface");
   closeMobileSidebar();
   renderShell();
 }
 
-async function openSwarmGraph(sessionId, { refresh = false } = {}) {
+async function openSwarmGraph(sessionId, { refresh = false, navigationToken = beginMainViewNavigation() } = {}) {
   const selectedSession = state.sessions.find((session) => session.id === sessionId);
   if (!sessionId || !selectedSession) {
     return;
@@ -36948,6 +37057,9 @@ async function openSwarmGraph(sessionId, { refresh = false } = {}) {
     const payload = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/swarm`, {
       cache: "no-store",
     });
+    if (!isMainViewNavigationCurrent(navigationToken)) {
+      return;
+    }
     state.swarmGraph = {
       sessionId,
       projectCwd: "",
@@ -36958,6 +37070,9 @@ async function openSwarmGraph(sessionId, { refresh = false } = {}) {
       data: payload.graph,
     };
   } catch (error) {
+    if (!isMainViewNavigationCurrent(navigationToken)) {
+      return;
+    }
     state.swarmGraph = {
       sessionId,
       projectCwd: "",
@@ -36972,7 +37087,12 @@ async function openSwarmGraph(sessionId, { refresh = false } = {}) {
   renderShell();
 }
 
-async function openSwarmProjectGraph(projectCwd, { fallbackSessionId = "", projectName = "", refresh = false } = {}) {
+async function openSwarmProjectGraph(projectCwd, {
+  fallbackSessionId = "",
+  projectName = "",
+  refresh = false,
+  navigationToken = beginMainViewNavigation(),
+} = {}) {
   const normalizedCwd = normalizeWorkspaceRoot(projectCwd);
   if (!normalizedCwd) {
     return;
@@ -37008,6 +37128,9 @@ async function openSwarmProjectGraph(projectCwd, { fallbackSessionId = "", proje
         cache: "no-store",
       });
     }
+    if (!isMainViewNavigationCurrent(navigationToken)) {
+      return;
+    }
     state.swarmGraph = {
       sessionId: null,
       projectCwd: normalizedCwd,
@@ -37018,6 +37141,9 @@ async function openSwarmProjectGraph(projectCwd, { fallbackSessionId = "", proje
       data: payload.graph,
     };
   } catch (error) {
+    if (!isMainViewNavigationCurrent(navigationToken)) {
+      return;
+    }
     state.swarmGraph = {
       sessionId: null,
       projectCwd: normalizedCwd,
