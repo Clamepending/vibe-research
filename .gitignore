@@ -4,6 +4,7 @@ public/vendor
 .DS_Store
 .vibe-research
 .remote-vibes
+vibe-research/
 .claude/
 .playwright-cli/
 output/
