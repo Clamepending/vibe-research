@@ -14660,7 +14660,7 @@ select:disabled {
   .sidebar-scrim {
     position: fixed;
     inset: 0;
-    z-index: 4;
+    z-index: 30;
     display: block;
     background: rgba(6, 8, 10, 0.48);
     backdrop-filter: blur(8px);
@@ -14676,7 +14676,7 @@ select:disabled {
 
   .sidebar {
     position: fixed;
-    z-index: 5;
+    z-index: 31;
     width: min(88vw, 340px);
     max-width: calc(100vw - max(20px, calc(var(--safe-left) + var(--safe-right) + 20px)));
     padding-top: 60px;
@@ -14768,6 +14768,26 @@ select:disabled {
     display: none;
   }
 
+  .workspace-split:not(.is-mobile-canvas-view) .agent-canvas-host {
+    display: none;
+  }
+
+  .workspace-split.is-mobile-canvas-view {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .workspace-split.is-mobile-canvas-view .terminal-stack,
+  .workspace-split.is-mobile-canvas-view .file-preview-pane,
+  .workspace-split.is-mobile-canvas-view .workspace-resize-handle {
+    display: none;
+  }
+
+  .workspace-split.is-mobile-canvas-view .agent-canvas-host {
+    display: block;
+  }
+
   .agent-canvas-window,
   .agent-canvas-window.is-floating {
     position: static;
@@ -14776,8 +14796,20 @@ select:disabled {
     max-height: 260px;
   }
 
+  .workspace-split.is-mobile-canvas-view .agent-canvas-window,
+  .workspace-split.is-mobile-canvas-view .agent-canvas-window.is-floating {
+    height: 100%;
+    max-height: none;
+  }
+
   .agent-canvas-window.is-floating {
     box-shadow: none;
+  }
+
+  .icon-button#view-agent-canvas.is-active {
+    background: rgba(242, 138, 104, 0.22);
+    border-color: rgba(242, 138, 104, 0.55);
+    color: #ffd9c8;
   }
 
   .plugins-layout,

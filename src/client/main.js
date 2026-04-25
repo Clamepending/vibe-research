@@ -1991,6 +1991,7 @@ const state = {
   agentInboxTab: "",
   questHint: null,
   canvasPanelOpen: false,
+  mobileWorkspaceView: "cli",
   agentPrompt: "",
   agentPromptPath: "",
   agentPromptCustomPrompt: "",
@@ -12761,8 +12762,29 @@ function renderAgentCanvasPanel(session, selection = state.agentProfile) {
   `;
 }
 
+function isMobileViewport() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  return window.matchMedia("(max-width: 920px)").matches;
+}
+
 function handleViewAgentCanvasClick() {
   clearQuestHintFor("chat-canvas-button", { render: false });
+
+  if (isMobileViewport()) {
+    if (state.mobileWorkspaceView === "canvas") {
+      state.mobileWorkspaceView = "cli";
+      state.canvasPanelOpen = false;
+      renderShell();
+      return;
+    }
+    state.mobileWorkspaceView = "canvas";
+    state.canvasPanelOpen = true;
+    renderShell();
+    return;
+  }
+
   state.canvasPanelOpen = true;
   renderShell();
 
@@ -12773,10 +12795,14 @@ function handleViewAgentCanvasClick() {
 }
 
 function closeAgentCanvasPanel() {
-  if (!state.canvasPanelOpen) {
+  const wasMobileCanvas = state.mobileWorkspaceView === "canvas";
+  if (!state.canvasPanelOpen && !wasMobileCanvas) {
     return;
   }
   state.canvasPanelOpen = false;
+  if (wasMobileCanvas) {
+    state.mobileWorkspaceView = "cli";
+  }
   renderShell();
 }
 
@@ -29740,10 +29766,12 @@ function renderTerminalPanel(activeSession) {
 
   const agentProfileTopBar = renderAgentProfileTopBar(activeSession);
   const hasAgentCanvas = Boolean(getAgentCanvasSignature(activeSession));
+  const isMobileCanvasView = state.mobileWorkspaceView === "canvas" && Boolean(activeSession);
   const workspaceSplitClass = [
     "workspace-split",
     hasAgentCanvas ? "has-agent-canvas" : "",
     state.openFileTabs.length ? "has-file-preview" : "",
+    isMobileCanvasView ? "is-mobile-canvas-view" : "",
   ].filter(Boolean).join(" ");
   const terminalStackClass = [
     "terminal-stack",
@@ -29772,7 +29800,7 @@ function renderTerminalPanel(activeSession) {
             ${renderShellSurfaceToggle(activeSession)}
             <div class="toolbar-canvas-action">
               ${activeSession ? renderQuestHintBubble("chat-canvas-button", { className: "is-trailing" }) : ""}
-              <button class="icon-button ${getQuestHintForAnchor("chat-canvas-button") ? "is-quest-hint" : ""}" type="button" id="view-agent-canvas" aria-label="${escapeHtml(getAgentCanvasForSession(activeSession) ? "View agent canvas" : "How to publish a canvas")}" ${tooltipAttributes(getAgentCanvasForSession(activeSession) ? "View canvas" : "Publish a canvas")} ${activeSession ? "" : "disabled"}>${renderIcon(ImageIcon)}</button>
+              <button class="icon-button ${getQuestHintForAnchor("chat-canvas-button") ? "is-quest-hint" : ""} ${isMobileCanvasView ? "is-active" : ""}" type="button" id="view-agent-canvas" aria-label="${escapeHtml(isMobileCanvasView ? "Show CLI" : (getAgentCanvasForSession(activeSession) ? "View agent canvas" : "How to publish a canvas"))}" aria-pressed="${isMobileCanvasView ? "true" : "false"}" ${tooltipAttributes(isMobileCanvasView ? "Show CLI" : (getAgentCanvasForSession(activeSession) ? "View canvas" : "Publish a canvas"))} ${activeSession ? "" : "disabled"}>${renderIcon(ImageIcon)}</button>
             </div>
             <button class="icon-button" type="button" id="refresh-sessions" aria-label="Refresh sessions" ${tooltipAttributes("Refresh sessions")}>${renderIcon(RefreshCw)}</button>
           </div>
@@ -39125,6 +39153,9 @@ function mountTerminal() {
     const handleResize = () => {
       const mount = document.querySelector("#terminal-mount");
       syncViewportMetrics();
+      if (!isMobileViewport() && state.mobileWorkspaceView === "canvas") {
+        state.mobileWorkspaceView = "cli";
+      }
       refreshLayoutUi();
       applyTerminalDisplayProfile(mount);
       fitTerminalSoon();
