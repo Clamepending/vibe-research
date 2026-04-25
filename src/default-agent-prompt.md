@@ -95,6 +95,25 @@ Do a lightweight literature/current-docs pass before expensive or method-shaping
   - `REPRIORITIZE: <slug> -> row <N> | why <one line>`
 - **Insights touched** (optional) — bullets listing insights this move contributed to: `[<slug>](../../../insights/<slug>.md) — <how this move contributed>`. Filled by review mode, not by the move-runner.
 
+### `projects/<name>/paper.md` — the human-facing growing paper
+
+The result docs are the lab notebook (every move, including failures and abandons). The paper is the current best narrative *across* all moves. The human reads `paper.md` by default; the result docs are the citations.
+
+If `projects/<name>/paper.md` does not exist when you start the first move, copy `templates/paper-template.md` to it, fill Title, Question, and Method, mark Question and Method as locked, then commit. After that, every move updates the paper as part of the loop (see step 5).
+
+Conventions:
+
+- **Section-level edits only.** Use the Edit tool to change one `##` section at a time. Never whole-file rewrites — they destroy the human's scroll position and the diff signal.
+- **Locked sections.** Question and Method carry `<!-- locked: pre-registration -->`. Once the first cycle of the first move commits, you cannot silently rewrite them. To change a locked section, append a `pivot` row to the LOG with one-line justification, then update the paper. Locks are a brake against HARKing.
+- **Footnote every numeric or qualitative claim.** Numbers in Results get inline markdown footnotes citing `<commit-url> · <exact command> · <artifact path>`. No bare numbers in the paper either.
+- **Limitations grows alongside Results.** Each new move lands a one-line addition to Limitations naming what this move did and did NOT test. An empty Limitations section after the second resolved move is a bug.
+- **Abstract is written last.** Leave it as a stub until the first review with admitted insights, then write it in 5-7 sentences: what we asked, what we did, what we found, what we ruled out, what comes next. Re-write at terminate.
+- **"Since last update" header** lives near the top, newest-first. Append one line per cycle: `- @<short-sha> <one line>`. After a `review` LOG row, start a fresh sub-block under a new dated heading so the human sees what changed since their last visit.
+- **Figures.** When a move produces a graph or screenshot worth seeing, embed it in Results as a relative-path image link AND publish to the agent canvas (`vr-agent-canvas`). The paper is the durable record; the canvas is the current eye-catch.
+- **Cross-link, don't duplicate.** Subsections in Results should link out to the relevant `results/<slug>.md` for full provenance instead of restating the cycle log.
+
+Section order, top-down: Title → Since last update → Abstract (stub until last) → 1. Question (locked) → 2. Background & related work → 3. Method (locked) → 4. Results → 5. Discussion → 6. Limitations → 7. Reproducibility appendix → 8. References.
+
 ### `insights/<slug>.md` — one per crystallized cross-move finding
 
 Insights live at the Library root (sibling to `projects/`) because findings often span projects.
@@ -114,13 +133,13 @@ Insights are created and updated only by review mode. Moves produce results; rev
    - Else if QUEUE is non-empty, take row 1.
    - Else (QUEUE empty) -> enter Review mode.
 2. In the code repo: `git checkout <starting-point-branch>` at the pinned SHA, then `git checkout -b r/<slug>`.
-3. Create the result doc with `STATUS: active` and `AGENT: 0`. Fill Question / Hypothesis / Research grounding / Experiment design. Edit the README: remove the move from QUEUE, add a row to ACTIVE with agent `0` and today's date. Commit and push the Library.
-4. Run the experiment. Commit per cycle in the code repo: `r/<slug> cycle N: <change> -> <metric or obs>. qual: <one line>.` Push after each cycle. Analysis-only cycles get `git commit --allow-empty`.
-5. Fill Results / Analysis / Reproducibility. Write TAKEAWAY at the top.
+3. Create the result doc with `STATUS: active` and `AGENT: 0`. Fill Question / Hypothesis / Research grounding / Experiment design. Edit the README: remove the move from QUEUE, add a row to ACTIVE with agent `0` and today's date. If `projects/<name>/paper.md` does not exist yet, copy `templates/paper-template.md` to it and fill Title, Question, and Method (locked). Append a `Since last update` line: `- starting <slug>: <one-line goal>`. Commit and push the Library.
+4. Run the experiment. Commit per cycle in the code repo: `r/<slug> cycle N: <change> -> <metric or obs>. qual: <one line>.` Push after each cycle. Analysis-only cycles get `git commit --allow-empty`. **Do not commit the paper per cycle by default** — cycle lines are batched into one paper commit at step 5. Exception: for moves longer than ~30 minutes, append a `Since last update` line per cycle so the human gets live progress; this is the only time per-cycle paper commits are warranted.
+5. Fill Results / Analysis / Reproducibility in the result doc. Write TAKEAWAY at the top. Then update the paper in one batch of section-targeted Edits: prepend cycle lines (newest-first) to `Since last update` if you didn't already, add or extend a Results subsection cross-linking to `results/<slug>.md` with footnoted claims, append one Limitations bullet naming what this move did NOT test, and (if relevant) extend Discussion. One paper commit per move.
 6. Write the Leaderboard verdict section and the Decision line. See admission rule.
 7. Write Queue updates with ADD / REMOVE / REPRIORITIZE.
 8. Set `STATUS: resolved` if the question is answered, `abandoned` if blocked and not worth reviving.
-9. Apply everything to the README: edit LEADERBOARD per the Decision, remove the row from ACTIVE, apply the Queue updates, append a LOG row (`resolved`, `falsified`, or `abandoned` as fits; `evicted` too if rank 6 drops). Commit and push the Library.
+9. Apply everything to the README: edit LEADERBOARD per the Decision, remove the row from ACTIVE, apply the Queue updates, append a LOG row (`resolved`, `falsified`, or `abandoned` as fits; `evicted` too if rank 6 drops). Append a corresponding line to the paper's `Since last update` block: `- @<short-sha> resolved <slug>: <one-line takeaway>`. Commit and push the Library.
 10. Go to 1.
 
 ## Admission Rule
@@ -168,7 +187,8 @@ After alignment, or autonomously when allowed:
 - QUEUE edits: apply; append a `review` row to the LOG with the one-liner.
 - GOAL / SUCCESS CRITERIA / RANKING CRITERION edits: apply only with explicit human approval; append a `goal-change` or `criterion-change` row to the LOG.
 - INSIGHTS edits: apply INSIGHT / INSIGHT-UPDATE / INSIGHT-SUPERSEDE (verbs below); edit the project README's INSIGHTS section; append an `insight` row to the LOG per new or superseded insight; optionally add backreferences in grounding result docs' `Insights touched` sections.
-- `terminate`: before logging the `terminate` row, publish any distilled insights the project produced via the INSIGHT verbs, even at `medium` confidence. The `terminate` LOG row should cite the insight slugs produced, or explicitly state `no insights crystallized` with why.
+- `paper.md` refresh: write or refresh the Abstract in 5-7 sentences (what we asked, what we did, what we found, what we ruled out, what comes next), and start a fresh dated sub-block under `Since last update` so the human can see what changed since their last visit. If a review admits or evicts a leaderboard entry, reflect it in Discussion. Don't touch locked Question / Method without a `pivot` row.
+- `terminate`: before logging the `terminate` row, publish any distilled insights the project produced via the INSIGHT verbs, even at `medium` confidence. Refresh the paper's Abstract one final time. The `terminate` LOG row should cite the insight slugs produced, or explicitly state `no insights crystallized` with why.
 - Commit and push. Return to step 1 unless a stop condition fired.
 
 Insight verbs (review mode only):
