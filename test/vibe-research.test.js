@@ -6710,7 +6710,12 @@ test("native Codex session view renders markdown tables, code blocks, and symbol
   const workspaceDir = await createTempWorkspace("vibe-research-native-codex-markdown-");
   const userHomeDir = await createTempWorkspace("vibe-research-native-codex-home-");
   const previousHome = process.env.HOME;
+  const previousCodexStreamMode = process.env.VIBE_RESEARCH_CODEX_STREAM_MODE;
   process.env.HOME = userHomeDir;
+  // The session-file-driven native transcript path requires a non-stream
+  // Codex session so the file scanner — not the live exec --json stream —
+  // is the source of truth for rich-session-narrative entries.
+  process.env.VIBE_RESEARCH_CODEX_STREAM_MODE = "0";
 
   let app;
   let browser;
@@ -6799,6 +6804,11 @@ test("native Codex session view renders markdown tables, code blocks, and symbol
       delete process.env.HOME;
     } else {
       process.env.HOME = previousHome;
+    }
+    if (previousCodexStreamMode === undefined) {
+      delete process.env.VIBE_RESEARCH_CODEX_STREAM_MODE;
+    } else {
+      process.env.VIBE_RESEARCH_CODEX_STREAM_MODE = previousCodexStreamMode;
     }
     await browser?.close().catch(() => {});
     await app?.close();
