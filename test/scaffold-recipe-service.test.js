@@ -139,6 +139,108 @@ test("scaffold recipe normalization strips secret-looking portable settings", ()
   assert.equal(getSettingSensitivity("customToken"), "secret");
 });
 
+test("scaffold recipe captures library git commit and branch when supplied", () => {
+  const recipe = buildScaffoldRecipe({
+    agentPrompt: { selectedPromptId: "researcher", prompt: "p" },
+    coreBuildings: [],
+    library: { gitCommit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", gitBranch: "main" },
+    name: "library-pinned",
+    settings: { wikiPath: "/Users/example/library", wikiGitRemoteUrl: "" },
+  });
+  assert.equal(recipe.library.gitCommit, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+  assert.equal(recipe.library.gitBranch, "main");
+  assert.equal(recipe.library.gitRemoteConfigured, false);
+});
+
+test("scaffold recipe omits library git fields when not supplied (backward compatible)", () => {
+  const recipe = buildScaffoldRecipe({
+    agentPrompt: { selectedPromptId: "researcher", prompt: "p" },
+    coreBuildings: [],
+    name: "no-library-pin",
+    settings: {},
+  });
+  assert.equal(recipe.library.gitCommit, "");
+  assert.equal(recipe.library.gitBranch, "");
+});
+
+test("scaffold recipe normalization round-trips library git fields", () => {
+  const recipe = testInternals.normalizeScaffoldRecipe({
+    id: "round-trip",
+    library: { gitCommit: "  abc123  ", commit: "ignored-fallback", gitBranch: "feature/foo" },
+  });
+  assert.equal(recipe.library.gitCommit, "abc123");
+  assert.equal(recipe.library.gitBranch, "feature/foo");
+});
+
+test("preview reports library git pin as pinned when expected commit is set", () => {
+  const recipe = buildScaffoldRecipe({
+    agentPrompt: { selectedPromptId: "researcher", prompt: "p" },
+    coreBuildings: [],
+    library: { gitCommit: "abc123", gitBranch: "main" },
+    name: "pin-ok",
+    settings: {},
+  });
+  const preview = previewScaffoldRecipe(recipe, {
+    availableBuildingIds: recipe.buildings.map((b) => b.id),
+    currentLibraryGitCommit: "abc123",
+    currentLibraryGitBranch: "main",
+  });
+  assert.equal(preview.libraryGitState.pinned, true);
+  assert.equal(preview.libraryGitState.mismatch, false);
+  assert.equal(preview.libraryGitState.unknown, false);
+  assert.equal(preview.libraryGitState.expectedCommit, "abc123");
+  assert.equal(preview.libraryGitState.currentCommit, "abc123");
+});
+
+test("preview flags library git mismatch when local commit differs from recipe", () => {
+  const recipe = buildScaffoldRecipe({
+    agentPrompt: { selectedPromptId: "researcher", prompt: "p" },
+    coreBuildings: [],
+    library: { gitCommit: "abc123" },
+    name: "pin-mismatch",
+    settings: {},
+  });
+  const preview = previewScaffoldRecipe(recipe, {
+    availableBuildingIds: recipe.buildings.map((b) => b.id),
+    currentLibraryGitCommit: "def456",
+  });
+  assert.equal(preview.libraryGitState.pinned, true);
+  assert.equal(preview.libraryGitState.mismatch, true);
+  assert.equal(preview.libraryGitState.unknown, false);
+});
+
+test("preview marks library git pin unknown when expected is set but current is empty", () => {
+  const recipe = buildScaffoldRecipe({
+    agentPrompt: { selectedPromptId: "researcher", prompt: "p" },
+    coreBuildings: [],
+    library: { gitCommit: "abc123" },
+    name: "pin-unknown",
+    settings: {},
+  });
+  const preview = previewScaffoldRecipe(recipe, {
+    availableBuildingIds: recipe.buildings.map((b) => b.id),
+  });
+  assert.equal(preview.libraryGitState.pinned, true);
+  assert.equal(preview.libraryGitState.mismatch, false);
+  assert.equal(preview.libraryGitState.unknown, true);
+});
+
+test("preview library git state is not pinned when recipe has no expected commit", () => {
+  const recipe = buildScaffoldRecipe({
+    agentPrompt: { selectedPromptId: "researcher", prompt: "p" },
+    coreBuildings: [],
+    name: "no-pin",
+    settings: {},
+  });
+  const preview = previewScaffoldRecipe(recipe, {
+    availableBuildingIds: recipe.buildings.map((b) => b.id),
+    currentLibraryGitCommit: "abc123",
+  });
+  assert.equal(preview.libraryGitState.pinned, false);
+  assert.equal(preview.libraryGitState.mismatch, false);
+  assert.equal(preview.libraryGitState.unknown, false);
+});
+
 test("ScaffoldRecipeService persists saved recipes and replaces by id", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "vr-scaffold-recipes-"));
   const service = new ScaffoldRecipeService({

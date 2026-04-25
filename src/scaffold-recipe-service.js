@@ -389,6 +389,8 @@ function normalizeLibrary(value = {}) {
   return {
     mode: normalizeSlug(source.mode || "configured", "configured", 48) || "configured",
     snapshot: normalizeText(source.snapshot || source.snapshotId, 200),
+    gitCommit: normalizeText(source.gitCommit || source.commit, 160),
+    gitBranch: normalizeText(source.gitBranch || source.branch, 160),
     gitRemoteConfigured: Boolean(source.gitRemoteConfigured),
     backupEnabled: Boolean(source.backupEnabled),
     localBindingsRequired: dedupeBindings(source.localBindingsRequired || source.bindings || []),
@@ -662,6 +664,7 @@ export function buildScaffoldRecipe({
   coreBuildings = [],
   defaultProviderId = "claude",
   layout = null,
+  library: libraryInput = {},
   name = "Current Vibe Research scaffold",
   providers = [],
   settings = {},
@@ -712,6 +715,8 @@ export function buildScaffoldRecipe({
     },
     library: {
       mode: "configured",
+      gitCommit: libraryInput?.gitCommit || libraryInput?.commit || "",
+      gitBranch: libraryInput?.gitBranch || libraryInput?.branch || "",
       gitRemoteConfigured: Boolean(settings.wikiGitRemoteUrl),
       backupEnabled: Boolean(settings.wikiGitBackupEnabled),
       localBindingsRequired: [
@@ -765,7 +770,13 @@ function collectRecipeSettings(recipe) {
   };
 }
 
-export function previewScaffoldRecipe(recipe, { availableBuildingIds = [], localBindings = {}, settings = {} } = {}) {
+export function previewScaffoldRecipe(recipe, {
+  availableBuildingIds = [],
+  currentLibraryGitBranch = "",
+  currentLibraryGitCommit = "",
+  localBindings = {},
+  settings = {},
+} = {}) {
   const normalized = normalizeScaffoldRecipe(recipe);
   const available = new Set(availableBuildingIds.map((entry) => normalizeSlug(entry)).filter(Boolean));
   const settingsPatch = collectRecipeSettings(normalized);
@@ -789,6 +800,19 @@ export function previewScaffoldRecipe(recipe, { availableBuildingIds = [], local
     ...binding,
     provided: Object.prototype.hasOwnProperty.call(localBindings || {}, binding.key),
   }));
+  const expectedCommit = normalized.library.gitCommit || "";
+  const expectedBranch = normalized.library.gitBranch || "";
+  const currentCommit = normalizeText(currentLibraryGitCommit, 160);
+  const currentBranch = normalizeText(currentLibraryGitBranch, 160);
+  const libraryGitState = {
+    expectedCommit,
+    expectedBranch,
+    currentCommit,
+    currentBranch,
+    pinned: Boolean(expectedCommit),
+    mismatch: Boolean(expectedCommit) && Boolean(currentCommit) && expectedCommit !== currentCommit,
+    unknown: Boolean(expectedCommit) && !currentCommit,
+  };
   return {
     ok: missingBuildings.length === 0,
     recipe: normalized,
@@ -803,6 +827,7 @@ export function previewScaffoldRecipe(recipe, { availableBuildingIds = [], local
         : null,
       occupation: normalized.occupation.selectedPromptId,
     },
+    libraryGitState,
     missingBuildings,
     localBindingsRequired: bindings,
     redactions: normalized.redactions,

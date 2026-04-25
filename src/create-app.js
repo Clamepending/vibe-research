@@ -1727,8 +1727,35 @@ export async function createVibeResearchApp({
     return { version, commit, branch };
   }
 
+  async function resolveGitState(dirPath) {
+    if (!dirPath) {
+      return { commit: "", branch: "" };
+    }
+    let commit = "";
+    let branch = "";
+    try {
+      const { stdout = "" } = await execFileAsync("git", ["-C", dirPath, "rev-parse", "HEAD"]);
+      commit = stdout.trim();
+    } catch {
+      commit = "";
+    }
+    try {
+      const { stdout = "" } = await execFileAsync("git", ["-C", dirPath, "branch", "--show-current"]);
+      branch = stdout.trim();
+    } catch {
+      branch = "";
+    }
+    return { commit, branch };
+  }
+
+  async function getCurrentLibraryGitState() {
+    const wikiPath = settingsStore.settings?.wikiPath || "";
+    return resolveGitState(wikiPath);
+  }
+
   async function buildCurrentScaffoldRecipe({ name = "Current Vibe Research scaffold", tags = [] } = {}) {
     await buildingHubService.refresh();
+    const libraryGit = await getCurrentLibraryGitState();
     return buildScaffoldRecipe({
       agentPrompt: await agentPromptStore.getState(),
       app: await getAppMetadata(),
@@ -1741,6 +1768,7 @@ export async function createVibeResearchApp({
       coreBuildings: BUILDING_CATALOG,
       defaultProviderId,
       layout: agentTownStore.getState().layout,
+      library: { gitCommit: libraryGit.commit, gitBranch: libraryGit.branch },
       name,
       providers,
       settings: settingsStore.settings,
@@ -2745,10 +2773,13 @@ export async function createVibeResearchApp({
         name: request.query.name || "Current Vibe Research scaffold",
         tags,
       });
+      const libraryGit = await getCurrentLibraryGitState();
       response.json({
         recipe,
         preview: previewScaffoldRecipe(recipe, {
           availableBuildingIds: getAvailableBuildingIds(),
+          currentLibraryGitCommit: libraryGit.commit,
+          currentLibraryGitBranch: libraryGit.branch,
           settings: settingsStore.settings,
         }),
       });
@@ -2811,8 +2842,11 @@ export async function createVibeResearchApp({
   app.post("/api/scaffold-recipes/preview", async (request, response) => {
     try {
       await buildingHubService.refresh();
+      const libraryGit = await getCurrentLibraryGitState();
       const preview = previewScaffoldRecipe(request.body?.recipe || request.body || {}, {
         availableBuildingIds: getAvailableBuildingIds(),
+        currentLibraryGitCommit: libraryGit.commit,
+        currentLibraryGitBranch: libraryGit.branch,
         localBindings: request.body?.localBindings || {},
         settings: settingsStore.settings,
       });
@@ -2847,12 +2881,15 @@ export async function createVibeResearchApp({
       sessionManager.setOccupationId(agentPromptStore.selectedPromptId);
     }
     await syncBuildingAgentGuides({ refreshBuildingHub: true });
+    const libraryGit = await getCurrentLibraryGitState();
     return {
       agentPrompt: await agentPromptStore.getState(),
       agentTown: layoutPayload?.state || agentTownStore.getState(),
       plan,
       preview: previewScaffoldRecipe(plan.recipe, {
         availableBuildingIds: getAvailableBuildingIds(),
+        currentLibraryGitCommit: libraryGit.commit,
+        currentLibraryGitBranch: libraryGit.branch,
         localBindings: input.localBindings || {},
         settings: settingsStore.settings,
       }),
