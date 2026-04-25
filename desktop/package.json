@@ -1,6 +1,6 @@
 {
   "name": "vibe-research-desktop",
-  "version": "1.0.15",
+  "version": "1.0.16",
   "description": "Desktop launcher and first-run installer for Vibe Research.",
   "private": true,
   "main": "src/main.cjs",
