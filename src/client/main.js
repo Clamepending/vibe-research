@@ -10582,11 +10582,153 @@ function renderPaperSinceLastUpdateBanner(banner, currentPath) {
   `;
 }
 
+function findEnclosingPaperBody(node) {
+  let element = node instanceof Element ? node : node?.parentElement || null;
+  while (element) {
+    if (element.classList && element.classList.contains("knowledge-base-paper-body")) {
+      return element;
+    }
+    element = element.parentElement;
+  }
+  return null;
+}
+
+function getPaperAnchorForSelection(selection) {
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  const startNode = range.startContainer;
+  const paperBody = findEnclosingPaperBody(startNode);
+  if (!paperBody) return null;
+  const paperPath = paperBody.dataset.paperPath || "";
+  if (!paperPath) return null;
+
+  const headings = paperBody.querySelectorAll("h1, h2, h3, h4, h5, h6");
+  let sectionEl = null;
+  let sectionLabel = "";
+  for (const heading of headings) {
+    const cmp = heading.compareDocumentPosition(startNode);
+    const headingPrecedes = !!(cmp & Node.DOCUMENT_POSITION_FOLLOWING) || heading.contains(startNode);
+    if (headingPrecedes) {
+      sectionEl = heading;
+      sectionLabel = heading.textContent.replace(/\s+/g, " ").trim();
+    } else {
+      break;
+    }
+  }
+
+  let paragraphIndex = 0;
+  let foundContainingParagraph = false;
+  if (sectionEl) {
+    const allParagraphs = paperBody.querySelectorAll("p");
+    for (const paragraph of allParagraphs) {
+      const cmpToSection = sectionEl.compareDocumentPosition(paragraph);
+      const isAfterSection = !!(cmpToSection & Node.DOCUMENT_POSITION_FOLLOWING);
+      if (!isAfterSection) continue;
+      paragraphIndex += 1;
+      if (paragraph.contains(startNode) || paragraph === startNode) {
+        foundContainingParagraph = true;
+        break;
+      }
+    }
+  }
+
+  return {
+    paperPath,
+    section: sectionLabel,
+    paragraphIndex: foundContainingParagraph ? paragraphIndex : 0,
+  };
+}
+
+function formatPaperQuote(anchor, selectionText) {
+  const today = new Date().toISOString().slice(0, 10);
+  const sectionPart = anchor.section ? ` § ${anchor.section}` : "";
+  const paragraphPart = anchor.paragraphIndex > 0 ? ` ¶${anchor.paragraphIndex}` : "";
+  const refLine = `> ref: ${anchor.paperPath}${sectionPart}${paragraphPart} @ ${today}`;
+  const quoted = String(selectionText || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => (line.trim() ? `> ${line}` : ">"))
+    .join("\n");
+  return `${refLine}\n${quoted}\n\n`;
+}
+
+let paperQuoteFloaterEl = null;
+let paperQuoteFloaterResetTimer = null;
+
+function ensurePaperQuoteFloater() {
+  if (paperQuoteFloaterEl && document.body.contains(paperQuoteFloaterEl)) {
+    return paperQuoteFloaterEl;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "paper-quote-floater";
+  button.textContent = "copy as quote";
+  button.style.display = "none";
+  button.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+  });
+  button.addEventListener("click", async () => {
+    const selection = window.getSelection();
+    const anchor = getPaperAnchorForSelection(selection);
+    if (!anchor) return;
+    const text = selection.toString();
+    if (!text.trim()) return;
+    const formatted = formatPaperQuote(anchor, text);
+    try {
+      await navigator.clipboard.writeText(formatted);
+      button.textContent = "copied";
+    } catch (error) {
+      button.textContent = "copy failed";
+    }
+    if (paperQuoteFloaterResetTimer) {
+      clearTimeout(paperQuoteFloaterResetTimer);
+    }
+    paperQuoteFloaterResetTimer = setTimeout(() => {
+      button.textContent = "copy as quote";
+    }, 1400);
+  });
+  document.body.appendChild(button);
+  paperQuoteFloaterEl = button;
+  return button;
+}
+
+function updatePaperQuoteFloater() {
+  const button = ensurePaperQuoteFloater();
+  const selection = window.getSelection();
+  const anchor = getPaperAnchorForSelection(selection);
+  if (!anchor || !selection || selection.isCollapsed) {
+    button.style.display = "none";
+    return;
+  }
+  const range = selection.getRangeAt(0);
+  const rect = range.getBoundingClientRect();
+  if (!rect || (!rect.width && !rect.height)) {
+    button.style.display = "none";
+    return;
+  }
+  const left = Math.min(window.innerWidth - 140, Math.max(8, rect.right - 90));
+  const top = Math.min(window.innerHeight - 40, Math.max(8, rect.bottom + 8));
+  button.style.left = `${left}px`;
+  button.style.top = `${top}px`;
+  button.style.display = "inline-flex";
+}
+
+let paperQuoteListenerInstalled = false;
+function installPaperQuoteListenerOnce() {
+  if (paperQuoteListenerInstalled) return;
+  paperQuoteListenerInstalled = true;
+  document.addEventListener("selectionchange", updatePaperQuoteFloater);
+  window.addEventListener("scroll", updatePaperQuoteFloater, true);
+  window.addEventListener("resize", updatePaperQuoteFloater);
+}
+
 function renderKnowledgeBaseMarkdown(markdown, currentPath) {
   let prefixHtml = "";
   let source = String(markdown || "");
+  const isPaper = isPaperMarkdownPath(currentPath);
 
-  if (isPaperMarkdownPath(currentPath)) {
+  if (isPaper) {
+    installPaperQuoteListenerOnce();
     const extracted = extractPaperSinceLastUpdate(source);
     if (extracted.banner) {
       prefixHtml = renderPaperSinceLastUpdateBanner(extracted.banner, currentPath);
@@ -10703,7 +10845,11 @@ function renderKnowledgeBaseMarkdown(markdown, currentPath) {
     html.push(`<p>${renderKnowledgeBaseInline(paragraphLines.join(" "), currentPath)}</p>`);
   }
 
-  return prefixHtml + html.join("");
+  const body = prefixHtml + html.join("");
+  if (isPaper) {
+    return `<div class="knowledge-base-paper-body" data-paper-path="${escapeHtml(currentPath || "")}">${body}</div>`;
+  }
+  return body;
 }
 
 function renderKnowledgeBaseNoteList() {

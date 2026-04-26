@@ -10594,6 +10594,27 @@ button.visual-town-building:focus-visible {
   color: rgba(244, 244, 242, 0.5);
 }
 
+.paper-quote-floater {
+  position: fixed;
+  z-index: 9999;
+  appearance: none;
+  border: 1px solid rgba(110, 168, 254, 0.55);
+  background: rgba(20, 24, 35, 0.96);
+  color: rgba(110, 168, 254, 0.98);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+  user-select: none;
+}
+
+.paper-quote-floater:hover {
+  background: rgba(35, 42, 58, 1);
+}
+
 .knowledge-base-markdown > * {
   margin: 0;
 }
