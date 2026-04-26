@@ -108,9 +108,11 @@ Conventions:
 - **Footnote every numeric or qualitative claim.** Numbers in Results get inline markdown footnotes citing `<commit-url> · <exact command> · <artifact path>`. No bare numbers in the paper either.
 - **Limitations grows alongside Results.** Each new move lands a one-line addition to Limitations naming what this move did and did NOT test. An empty Limitations section after the second resolved move is a bug.
 - **Abstract is written last.** Leave it as a stub until the first review with admitted insights, then write it in 5-7 sentences: what we asked, what we did, what we found, what we ruled out, what comes next. Re-write at terminate.
-- **"Since last update" header** lives near the top, newest-first. Append one line per cycle: `- @<short-sha> <one line>`. After a `review` LOG row, start a fresh sub-block under a new dated heading so the human sees what changed since their last visit.
+- **"Since last update" header** lives near the top, newest-first. Prepend one line per cycle: `- @<short-sha> <one line>`. When a single paper update batches multiple cycles plus a resolution, prepend them in strict newest-first order (resolution line at the top, latest cycle next, oldest cycle / starting line at the bottom of the new block). After a `review` LOG row, start a fresh sub-block under a new dated heading so the human sees what changed since their last visit.
+- **Discussion is the one rewritable section.** Results, Limitations, and Since-last-update are append-only across moves; Question and Method are locked. Discussion is a single coherent paragraph (or paragraph + per-move bold lead-in) that can be rewritten end-to-end each move to weave the latest finding in — full-section Edit on Discussion is expected, not forbidden. For a falsified or null-result move, lead the Discussion update with a one-line falsifier-trigger sentence and the prior delta (e.g., "**Update after `<slug>` (falsified, not admitted).** ...") so the null is legible at a glance.
 - **Figures.** When a move produces a graph or screenshot worth seeing, embed it in Results as a relative-path image link AND publish to the agent canvas (`vr-agent-canvas`). The paper is the durable record; the canvas is the current eye-catch.
 - **Cross-link, don't duplicate.** Subsections in Results should link out to the relevant `results/<slug>.md` for full provenance instead of restating the cycle log.
+- **Footnote IDs are global and slug-prefixed.** Markdown footnote IDs in `paper.md` share one namespace across the whole file. Prefix every footnote ID with the move slug (e.g. `[^random-crop-aug-c1]`, `[^no-aug-baseline-agg]`) — never bare `[^c1]` — so later moves cannot silently collide. Cross-section references to an earlier footnote are fine; do not redefine the footnote in the new section.
 
 Section order, top-down: Title → Since last update → Abstract (stub until last) → 1. Question (locked) → 2. Background & related work → 3. Method (locked) → 4. Results → 5. Discussion → 6. Limitations → 7. Reproducibility appendix → 8. References.
 
@@ -138,8 +140,8 @@ Insights are created and updated only by review mode. Moves produce results; rev
 5. Fill Results / Analysis / Reproducibility in the result doc. Write TAKEAWAY at the top. Then update the paper in one batch of section-targeted Edits: prepend cycle lines (newest-first) to `Since last update` if you didn't already, add or extend a Results subsection cross-linking to `results/<slug>.md` with footnoted claims, append one Limitations bullet naming what this move did NOT test, and (if relevant) extend Discussion. One paper commit per move.
 6. Write the Leaderboard verdict section and the Decision line. See admission rule.
 7. Write Queue updates with ADD / REMOVE / REPRIORITIZE.
-8. Set `STATUS: resolved` if the question is answered, `abandoned` if blocked and not worth reviving.
-9. Apply everything to the README: edit LEADERBOARD per the Decision, remove the row from ACTIVE, apply the Queue updates, append a LOG row (`resolved`, `falsified`, or `abandoned` as fits; `evicted` too if rank 6 drops). Append a corresponding line to the paper's `Since last update` block: `- @<short-sha> resolved <slug>: <one-line takeaway>`. Commit and push the Library.
+8. Set `STATUS: resolved` if the question is answered, `abandoned` if blocked and not worth reviving. **STATUS is independent of the LOG event tag.** STATUS records whether the *question* was answered (`resolved`) or *blocked* (`abandoned`); the LOG event tag records the *hypothesis outcome* (`resolved` for confirmed-or-clean-null, `falsified` when the pre-registered falsifier triggered, `abandoned` for blocked). A cleanly-falsified move correctly reads `STATUS: resolved` in the result doc and `event: falsified` (or `falsified+admitted`) in the LOG.
+9. Apply everything to the README: edit LEADERBOARD per the Decision, remove the row from ACTIVE, apply the Queue updates, append a LOG row whose primary tag is `resolved`, `falsified`, or `abandoned`, compounded with `+admitted` if this result was inserted into the LEADERBOARD or `+evicted` if rank 6 dropped (so a move that beats the current rank-1 reads `resolved+admitted`; a falsified move that still displaces a lower rank reads `falsified+admitted`). **Prepend** a corresponding line to the top of the paper's `Since last update` block (newest-first): `- @<short-sha> resolved <slug>: <one-line takeaway>` (or `falsified <slug>: ...` / `abandoned <slug>: ...` to match the LOG primary tag). Commit and push the Library.
 10. Go to 1.
 
 ## Admission Rule
@@ -154,7 +156,7 @@ First row you beat is your rank. Insert, shift lower ranks down, drop rank 6 int
 
 ## Picking The Next Move
 
-Always take QUEUE row 1 at step 1. To pick differently, stop, edit the QUEUE, restart at step 1. Priority judgment is a written change, not an in-head decision.
+Always take QUEUE row 1 at step 1. To pick differently, stop, edit the QUEUE, restart at step 1. Priority judgment is a written change, not an in-head decision. Pre-experiment QUEUE edits (REPRIORITIZE / ADD / REMOVE made before running a move, outside of any result doc's `Queue updates` block) get a `review` LOG row with a one-line justification — they are review-mode actions even when no formal review message is emitted.
 
 ## Review Mode
 
