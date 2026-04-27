@@ -1,7 +1,6 @@
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "xterm-addon-canvas";
-import { WebglAddon } from "xterm-addon-webgl";
 import {
   AppWindow,
   BookOpen,
@@ -2373,7 +2372,6 @@ const state = {
   systemToastDismissedKeys: new Set(),
   terminalInteractionCleanup: null,
   canvasAddon: null,
-  webglAddon: null,
   terminalShowJumpToBottom: false,
   lastVisualViewportHeight: 0,
   mobileKeyboardSettlingUntil: 0,
@@ -38749,15 +38747,6 @@ function disposeTerminal() {
   state.terminalResizeObserver?.disconnect();
   state.terminalResizeObserver = null;
 
-  if (state.webglAddon) {
-    try {
-      state.webglAddon.dispose();
-    } catch (error) {
-      console.warn("[vibe-research] webgl renderer disposal failed", error);
-    }
-    state.webglAddon = null;
-  }
-
   if (state.canvasAddon) {
     try {
       state.canvasAddon.dispose();
@@ -38821,48 +38810,6 @@ function loadCanvasRenderer() {
     state.canvasAddon = canvasAddon;
   } catch (error) {
     console.warn("[vibe-research] canvas renderer unavailable", error);
-  }
-}
-
-// WebGL renderer is dramatically faster than the default DOM renderer for
-// streaming output and for scrolling — VS Code uses it by default for the
-// integrated terminal. We try WebGL first; on context-loss or load failure
-// we dispose, which transparently drops xterm back to its DOM renderer so
-// the terminal keeps working (just slower) instead of going blank.
-function loadGpuRenderer() {
-  if (!state.terminal) {
-    return;
-  }
-
-  // Tear down any prior WebGL addon so we don't leak GL contexts on remount.
-  if (state.webglAddon) {
-    try {
-      state.webglAddon.dispose();
-    } catch (error) {
-      console.warn("[vibe-research] webgl renderer disposal failed", error);
-    }
-    state.webglAddon = null;
-  }
-
-  try {
-    const webglAddon = new WebglAddon();
-    webglAddon.onContextLoss?.(() => {
-      console.info("[vibe-research] webgl context lost — falling back to DOM renderer");
-      try {
-        webglAddon.dispose();
-      } catch {
-        // Already disposed; ignore.
-      }
-      if (state.webglAddon === webglAddon) {
-        state.webglAddon = null;
-      }
-    });
-    state.terminal.loadAddon(webglAddon);
-    state.webglAddon = webglAddon;
-    return;
-  } catch (error) {
-    console.warn("[vibe-research] webgl renderer unavailable, staying on DOM renderer", error);
-    state.webglAddon = null;
   }
 }
 

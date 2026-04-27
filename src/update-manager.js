@@ -948,7 +948,13 @@ for file in ${managedPromptFiles}; do
 done
 reset_checkout_changes
 ${updateCommand}
-echo "[vibe-research-update] update pulled; rebuilding client assets"
+echo "[vibe-research-update] update pulled; installing dependencies"
+# Install before build so the bundle does not blow up when a pulled commit
+# adds a new dependency. Without this, the build fails silently, the script
+# aborts before terminating the old server, and every subsequent "deploy"
+# is a no-op restart while the leaderboard reports the new SHA.
+npm install --no-audit --no-fund --prefer-offline
+echo "[vibe-research-update] dependencies installed; rebuilding client assets"
 npm run build
 echo "[vibe-research-update] client assets rebuilt; stopping current server"
 curl -fsS -X POST ${terminateUrl} >/dev/null 2>&1 || true
