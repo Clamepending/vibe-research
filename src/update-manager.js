@@ -901,6 +901,7 @@ export class UpdateManager {
     const managedPromptFiles = MANAGED_PROMPT_FILES.map((filePath) => shellQuote(filePath)).join(" ");
     const stateUrl = shellQuote(`http://127.0.0.1:${this.port}/api/state`);
     const terminateUrl = shellQuote(`http://127.0.0.1:${this.port}/api/terminate`);
+    const pidFile = shellQuote(path.join(this.stateDir, "server.pid"));
     const updateCommand =
       targetType === "release" && latestTag
         ? [
@@ -957,6 +958,19 @@ for attempt in $(seq 1 100); do
   fi
   sleep 0.2
 done
+if curl -fsS ${stateUrl} >/dev/null 2>&1; then
+  echo "[vibe-research-update] graceful terminate timed out; sending SIGKILL"
+  if [ -s ${pidFile} ]; then
+    server_pid="$(cat ${pidFile} 2>/dev/null || true)"
+    if [ -n "$server_pid" ] && kill -0 "$server_pid" 2>/dev/null; then
+      kill -9 "$server_pid" 2>/dev/null || true
+      for attempt in $(seq 1 50); do
+        kill -0 "$server_pid" 2>/dev/null || break
+        sleep 0.1
+      done
+    fi
+  fi
+fi
 echo "[vibe-research-update] restarting"
 exec ./start.sh
 `;
