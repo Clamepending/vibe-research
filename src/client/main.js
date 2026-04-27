@@ -32390,7 +32390,16 @@ function bindSessionEvents() {
       const sessionId = button.getAttribute("data-delete-session");
 
       try {
-        await fetchJson(`/api/sessions/${sessionId}`, { method: "DELETE" });
+        try {
+          await fetchJson(`/api/sessions/${sessionId}`, { method: "DELETE" });
+        } catch (error) {
+          // 404 means the session is already gone server-side — that's the
+          // end state the user wanted, so just continue with local cleanup
+          // instead of popping an alert.
+          if (error?.status !== 404) {
+            throw error;
+          }
+        }
         state.sessions = state.sessions.filter((session) => session.id !== sessionId);
         const visualSelectionPruned = pruneVisualGameSessionSelection();
 
