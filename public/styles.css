@@ -10326,6 +10326,10 @@ button.visual-town-building:focus-visible {
   overflow: hidden;
 }
 
+.knowledge-base-grid.is-graph-collapsed {
+  grid-template-columns: minmax(220px, 270px) minmax(0, 1fr) auto;
+}
+
 .knowledge-base-column,
 .knowledge-base-graph-card {
   min-height: 0;
@@ -10346,9 +10350,75 @@ button.visual-town-building:focus-visible {
   grid-template-rows: minmax(0, 1fr);
 }
 
+.knowledge-base-grid.is-graph-collapsed .knowledge-base-column-graph {
+  min-height: 0;
+  border: none;
+  background: transparent;
+  backdrop-filter: none;
+  overflow: visible;
+}
+
 .knowledge-base-column-graph .knowledge-base-graph-card {
   min-height: 100%;
   height: 100%;
+}
+
+.knowledge-base-graph-collapsed {
+  display: flex;
+  height: 100%;
+  width: 56px;
+}
+
+.knowledge-base-graph-toggle {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px 6px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.knowledge-base-graph-toggle:hover {
+  color: var(--text);
+  border-color: var(--accent, var(--text));
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.knowledge-base-graph-toggle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.knowledge-base-graph-toggle-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-weight: 600;
+}
+
+.knowledge-base-graph-toggle-meta {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 0.6rem;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: none;
 }
 
 .knowledge-base-column-list {
@@ -14723,6 +14793,10 @@ select:disabled {
     min-height: 560px;
   }
 
+  .knowledge-base-grid.is-graph-collapsed .knowledge-base-column-graph {
+    min-height: 0;
+  }
+
   .knowledge-settings-options,
   .knowledge-settings-remote-grid,
   .agent-prompt-grid {
@@ -15327,6 +15401,10 @@ select:disabled {
 
   .knowledge-base-column-graph {
     min-height: 560px;
+  }
+
+  .knowledge-base-grid.is-graph-collapsed .knowledge-base-column-graph {
+    min-height: 0;
   }
 
   .knowledge-base-column,

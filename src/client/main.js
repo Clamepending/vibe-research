@@ -512,6 +512,7 @@ const AGENT_TOWN_LAYOUT_STORAGE_KEY = "vibe-research-agent-town-layout-v1";
 const AGENT_TOWN_THEME_STORAGE_KEY = "vibe-research-agent-town-theme-v1";
 const AGENT_TOWN_DOG_NAME_STORAGE_KEY = "vibe-research-agent-town-dog-name-v1";
 const GUIDED_ONBOARDING_STORAGE_KEY = "vibe-research-guided-onboarding-v2";
+const KNOWLEDGE_BASE_GRAPH_COLLAPSED_STORAGE_KEY = "vibe-research-knowledge-base-graph-collapsed-v1";
 const AGENT_TOWN_DOG_NAME_DEFAULT = "Dog";
 const AGENT_TOWN_DOG_NAME_MAX_LENGTH = 14;
 const GUIDED_ONBOARDING_EVENT_TYPES = Object.freeze({
@@ -2279,6 +2280,7 @@ const state = {
     noteCache: {},
     pendingGraphFocusPath: "",
     replayGraphOnNextBind: false,
+    graphCollapsed: readKnowledgeBaseGraphCollapsedFromStorage(),
     graphLayout: {
       width: KNOWLEDGE_BASE_GRAPH_WIDTH,
       height: KNOWLEDGE_BASE_GRAPH_HEIGHT,
@@ -9743,7 +9745,7 @@ function replayKnowledgeBaseGraphUnfold({ forceSimulation = false } = {}) {
 function scheduleKnowledgeBaseGraphFrame() {
   const layout = state.knowledgeBase.graphLayout;
 
-  if (state.currentView !== "knowledge-base") {
+  if (state.currentView !== "knowledge-base" || state.knowledgeBase.graphCollapsed) {
     if (layout.frameHandle) {
       window.cancelAnimationFrame(layout.frameHandle);
       layout.frameHandle = 0;
@@ -9763,7 +9765,7 @@ function scheduleKnowledgeBaseGraphFrame() {
       return;
     }
 
-    if (state.currentView !== "knowledge-base") {
+    if (state.currentView !== "knowledge-base" || state.knowledgeBase.graphCollapsed) {
       layout.running = false;
       return;
     }
@@ -9887,7 +9889,10 @@ function scheduleKnowledgeBaseGraphFrame() {
       layout.autoFitMaxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE;
     }
 
-    layout.running = state.currentView === "knowledge-base" && layout.nodes.length > 0;
+    layout.running =
+      state.currentView === "knowledge-base"
+      && !state.knowledgeBase.graphCollapsed
+      && layout.nodes.length > 0;
     if (layout.running) {
       scheduleKnowledgeBaseGraphFrame();
     }
@@ -9897,7 +9902,7 @@ function scheduleKnowledgeBaseGraphFrame() {
 function startKnowledgeBaseGraphSimulation(boost = 0.16, { force = false } = {}) {
   const layout = state.knowledgeBase.graphLayout;
 
-  if (!layout.nodes.length) {
+  if (!layout.nodes.length || state.knowledgeBase.graphCollapsed) {
     return;
   }
 
@@ -11075,11 +11080,89 @@ function getKnowledgeBaseSearchResultLabel() {
     : `${state.knowledgeBase.notes.length} notes`;
 }
 
+function readKnowledgeBaseGraphCollapsedFromStorage() {
+  try {
+    const value = window.localStorage.getItem(KNOWLEDGE_BASE_GRAPH_COLLAPSED_STORAGE_KEY);
+    if (value === null) {
+      return true;
+    }
+    return value !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function writeKnowledgeBaseGraphCollapsedToStorage(collapsed) {
+  try {
+    window.localStorage.setItem(
+      KNOWLEDGE_BASE_GRAPH_COLLAPSED_STORAGE_KEY,
+      collapsed ? "1" : "0",
+    );
+  } catch {
+    // best-effort persistence
+  }
+}
+
+function setKnowledgeBaseGraphCollapsed(collapsed) {
+  const next = Boolean(collapsed);
+  if (state.knowledgeBase.graphCollapsed === next) {
+    return;
+  }
+  state.knowledgeBase.graphCollapsed = next;
+  writeKnowledgeBaseGraphCollapsedToStorage(next);
+  if (next) {
+    teardownKnowledgeBaseGraphInteractions();
+  } else {
+    state.knowledgeBase.replayGraphOnNextBind = true;
+  }
+  renderShell();
+}
+
 function renderKnowledgeBaseGraph() {
   const layout = state.knowledgeBase.graphLayout;
 
+  if (state.knowledgeBase.graphCollapsed) {
+    const meta = layout.nodes.length
+      ? `${layout.nodes.length} notes · ${layout.edges.length} links`
+      : "no notes yet";
+    return `
+      <div class="knowledge-base-graph-collapsed">
+        <button
+          class="knowledge-base-graph-toggle"
+          type="button"
+          data-kb-graph-toggle="show"
+          aria-label="Show graph view"
+          ${tooltipAttributes("Show graph view")}
+        >
+          <span class="knowledge-base-graph-toggle-icon">${renderIcon(Waypoints)}</span>
+          <span class="knowledge-base-graph-toggle-label">Graph View</span>
+          <span class="knowledge-base-graph-toggle-meta">${escapeHtml(meta)}</span>
+        </button>
+      </div>
+    `;
+  }
+
   if (!layout.nodes.length) {
-    return `<div class="blank-state">graph will appear once markdown notes exist</div>`;
+    return `
+      <article class="knowledge-base-graph-card">
+        <div class="knowledge-base-panel-head knowledge-base-graph-head">
+          <div class="knowledge-base-graph-copy">
+            <strong>Graph View</strong>
+            <div class="knowledge-base-panel-meta">no notes yet</div>
+          </div>
+          <div class="knowledge-base-graph-actions">
+            <button
+              class="ghost-button toolbar-control"
+              type="button"
+              data-kb-graph-toggle="hide"
+              aria-label="Hide graph view"
+              ${tooltipAttributes("Hide graph view")}
+            >hide</button>
+          </div>
+        </div>
+        <div class="blank-state">graph will appear once markdown notes exist</div>
+      </article>
+    `;
   }
 
   const selectedPath = state.knowledgeBase.selectedNotePath;
@@ -11113,6 +11196,13 @@ function renderKnowledgeBaseGraph() {
             ${tooltipAttributes("Pulse graph physics")}
           >${renderIcon(Zap)}</button>
           <button class="ghost-button toolbar-control" type="button" id="fit-knowledge-base-graph">fit</button>
+          <button
+            class="ghost-button toolbar-control"
+            type="button"
+            data-kb-graph-toggle="hide"
+            aria-label="Hide graph view"
+            ${tooltipAttributes("Hide graph view")}
+          >hide</button>
         </div>
       </div>
       <div class="knowledge-base-graph-frame">
@@ -11511,7 +11601,7 @@ function renderKnowledgeBaseView() {
           <button class="icon-button toolbar-control refresh-icon-button" type="button" id="refresh-knowledge-base" aria-label="Refresh library" ${tooltipAttributes("Refresh library")}>${renderIcon(RefreshCw)}</button>
         </div>
       </div>
-      <div class="knowledge-base-grid">
+      <div class="knowledge-base-grid ${state.knowledgeBase.graphCollapsed ? "is-graph-collapsed" : ""}">
         <aside class="knowledge-base-column knowledge-base-column-list">
           <div class="knowledge-base-panel-head">
             <div>
@@ -34472,6 +34562,14 @@ function bindKnowledgeBaseEvents() {
       renderShell();
     };
   }
+
+  document.querySelectorAll("[data-kb-graph-toggle]").forEach((button) => {
+    if (!(button instanceof HTMLElement)) return;
+    button.addEventListener("click", () => {
+      const action = button.dataset.kbGraphToggle;
+      setKnowledgeBaseGraphCollapsed(action !== "show");
+    });
+  });
 
   bindPaperSinceLastUpdateEvents();
 }
