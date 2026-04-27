@@ -5955,10 +5955,45 @@ export async function createVibeResearchApp({
       return terminatePromise;
     }
 
+    // Hard cap on how long graceful shutdown can take. websocketServer.close
+    // and server.close wait for clients to drain; with a frontend that
+    // reconnects on failure, "drain" can take forever. The previous behavior
+    // was: terminatePromise gets stuck, every subsequent /api/relaunch and
+    // /api/terminate hits the `if (terminatePromise) return` short-circuit
+    // and silently does nothing. The deploy script's auto-restart then
+    // becomes a no-op while the user is locked out of the terminal.
+    const FORCE_EXIT_AFTER_MS = 8000;
+    const forceExitTimer = setTimeout(() => {
+      console.error(
+        `[vibe-research] graceful shutdown exceeded ${FORCE_EXIT_AFTER_MS}ms; forcing process exit`,
+      );
+      try {
+        if (relaunch && typeof onTerminate === "function") {
+          // Best-effort: still spawn the relaunch child before we hard-exit
+          // so the wrapper sees a successor. onTerminate calls process.exit
+          // synchronously after the spawn, so we just call it directly.
+          Promise.resolve(onTerminate({ relaunch })).catch(() => {
+            process.exit(1);
+          });
+          // Safety net: if onTerminate itself hangs, exit anyway.
+          setTimeout(() => process.exit(1), 1000).unref?.();
+        } else {
+          process.exit(1);
+        }
+      } catch {
+        process.exit(1);
+      }
+    }, FORCE_EXIT_AFTER_MS);
+    forceExitTimer.unref?.();
+
     terminatePromise = (async () => {
-      await close();
-      if (typeof onTerminate === "function") {
-        await onTerminate({ relaunch });
+      try {
+        await close();
+        if (typeof onTerminate === "function") {
+          await onTerminate({ relaunch });
+        }
+      } finally {
+        clearTimeout(forceExitTimer);
       }
     })();
 
