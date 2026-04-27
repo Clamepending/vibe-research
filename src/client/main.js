@@ -6023,19 +6023,6 @@ function flushPendingTerminalOutput() {
     return;
   }
 
-  // While the user has an active selection in xterm, defer writes. Writing
-  // shifts the buffer and xterm's viewport tracks the bottom whenever
-  // ydisp == ybase — which silently pulls the scroll position to the latest
-  // line and ends up looking like a "force scroll to the bottom" when the
-  // user releases the mouse. Re-poll once a frame; flush as soon as the
-  // selection clears (also nudged by the onSelectionChange handler).
-  if (state.terminal.hasSelection?.()) {
-    state.terminalOutputFrame = window.requestAnimationFrame(() => {
-      flushPendingTerminalOutput();
-    });
-    return;
-  }
-
   const nextOutput = sanitizeTerminalOutputForViewport(state.pendingTerminalOutput);
   const shouldScrollToBottom = state.pendingTerminalScrollToBottom;
   state.pendingTerminalOutput = "";
@@ -39085,13 +39072,6 @@ function mountTerminal() {
   state.terminalSelectionDisposable = state.terminal.onSelectionChange?.(() => {
     if (!state.terminal?.hasSelection?.()) {
       scheduleSelectableRefreshFlush(40);
-      // Selection just cleared — kick the output flusher so any output that
-      // queued up while the user was highlighting writes through promptly.
-      if (state.pendingTerminalOutput && !state.terminalOutputFrame) {
-        state.terminalOutputFrame = window.requestAnimationFrame(() => {
-          flushPendingTerminalOutput();
-        });
-      }
     }
   });
   state.terminal.open(mount);
