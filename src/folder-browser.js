@@ -1,6 +1,81 @@
 import path from "node:path";
-import { mkdir, readdir, realpath, stat } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { resolveCwd } from "./session-manager.js";
+
+const PROJECT_TEMPLATES_DIR = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "templates",
+);
+
+function humanizeProjectSlug(slug) {
+  return String(slug || "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function buildProjectReadmeSeed(slug) {
+  const title = humanizeProjectSlug(slug) || slug;
+  return `# ${slug}: ${title}
+
+## GOAL
+
+_One paragraph. What question are we ultimately trying to answer?_
+
+## CODE REPO
+
+_<github-url for this project's code repo>_
+
+## SUCCESS CRITERIA
+
+- _bullet 1_
+- _bullet 2_
+
+## RANKING CRITERION
+
+_quantitative: <metric-name> (higher|lower is better) — OR — qualitative: <dimension> — OR — mix: <metric> + <dimension>_
+
+## LEADERBOARD
+
+| rank | result | branch | commit | score / verdict |
+
+## INSIGHTS
+
+## ACTIVE
+
+| move | result doc | branch | agent | started |
+
+## QUEUE
+
+| move | starting-point | why |
+
+## LOG
+
+| date | event | slug or ref | one-line summary | link |
+`;
+}
+
+async function seedProjectSkeleton(targetPath, slug) {
+  const paperTemplatePath = path.join(PROJECT_TEMPLATES_DIR, "paper-template.md");
+  let paperContent = "";
+  try {
+    paperContent = await readFile(paperTemplatePath, "utf8");
+  } catch {
+    paperContent = "# <Project title>\n";
+  }
+  const titled = paperContent.replace(
+    /^# <Project title>$/m,
+    `# ${humanizeProjectSlug(slug) || slug}`,
+  );
+
+  await writeFile(path.join(targetPath, "paper.md"), titled, "utf8");
+  await writeFile(path.join(targetPath, "README.md"), buildProjectReadmeSeed(slug), "utf8");
+  await mkdir(path.join(targetPath, "results"), { recursive: true });
+  await writeFile(path.join(targetPath, "results", ".gitkeep"), "", "utf8");
+}
 
 function buildHttpError(message, statusCode) {
   const error = new Error(message);
@@ -139,12 +214,22 @@ export async function createFolderEntry({
 
   const realTargetPath = await realpath(targetPath);
 
+  const isProjectFolder = path.basename(realParentPath) === "projects";
+  if (isProjectFolder) {
+    try {
+      await seedProjectSkeleton(realTargetPath, folderName);
+    } catch {
+      // Best-effort scaffolding: leave the empty folder if seeding fails.
+    }
+  }
+
   return {
     folder: {
       name: folderName,
       path: realTargetPath,
       relativePath: normalizeRelativePath(path.relative(realRootPath, realTargetPath)),
       type: "directory",
+      seededAsProject: isProjectFolder || undefined,
     },
   };
 }
