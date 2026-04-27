@@ -69,6 +69,7 @@ import {
   renderWrappedTerminalBufferPlainText,
   sanitizeRichSessionTranscriptText,
 } from "./rich-session-transcript.js";
+import { Marked } from "marked";
 
 const app = document.querySelector("#app");
 let appBootReported = false;
@@ -10404,72 +10405,182 @@ function renderKnowledgeBaseMedia(media, { altText = "", caption = "" } = {}) {
   `;
 }
 
+function createKnowledgeBaseMarked(currentPath) {
+  const wikiLinkExtension = {
+    name: "kbWikiLink",
+    level: "inline",
+    start(src) {
+      const i = src.indexOf("[[");
+      return i >= 0 ? i : undefined;
+    },
+    tokenizer(src) {
+      const match = /^\[\[([^[\]]+)\]\]/.exec(src);
+      if (!match) return undefined;
+      return { type: "kbWikiLink", raw: match[0], body: match[1] };
+    },
+    renderer(token) {
+      const trimmedBody = String(token.body || "").trim();
+      if (!trimmedBody) return "";
+      const [targetWithAnchor, alias] = trimmedBody.split("|");
+      const notePath = resolveKnowledgeBaseNotePath(currentPath, targetWithAnchor);
+      const label = (alias || (targetWithAnchor || "").split("#")[0] || "").trim();
+      if (notePath) {
+        return `<button class="knowledge-base-inline-link" type="button" data-kb-open-note="${escapeHtml(notePath)}">${escapeHtml(label || notePath)}</button>`;
+      }
+      return `<span>${escapeHtml(label || trimmedBody)}</span>`;
+    },
+  };
+
+  const footnoteRefExtension = {
+    name: "kbFootnoteRef",
+    level: "inline",
+    start(src) {
+      const i = src.indexOf("[^");
+      return i >= 0 ? i : undefined;
+    },
+    tokenizer(src) {
+      // Disallow when the line begins with `[^id]:` — that's a definition.
+      const match = /^\[\^([^\]\s^]+)\](?!:)/.exec(src);
+      if (!match) return undefined;
+      return { type: "kbFootnoteRef", raw: match[0], id: match[1] };
+    },
+    renderer(token) {
+      const id = String(token.id || "");
+      const safe = escapeHtml(id);
+      return `<sup class="knowledge-base-footnote-ref"><a href="#fn-${safe}" id="fnref-${safe}">[${safe}]</a></sup>`;
+    },
+  };
+
+  const footnoteDefExtension = {
+    name: "kbFootnoteDef",
+    level: "block",
+    start(src) {
+      if (src.startsWith("[^")) return 0;
+      const i = src.indexOf("\n[^");
+      return i >= 0 ? i + 1 : undefined;
+    },
+    tokenizer(src) {
+      const match = /^\[\^([^\]\s^]+)\]:[ \t]*([^\n]+)(?:\n|$)/.exec(src);
+      if (!match) return undefined;
+      const inlineTokens = [];
+      // Preserve `this` so we can call back into the lexer for inline parsing.
+      this.lexer.inline(match[2], inlineTokens);
+      return {
+        type: "kbFootnoteDef",
+        raw: match[0],
+        id: match[1],
+        body: match[2],
+        tokens: inlineTokens,
+      };
+    },
+    renderer(token) {
+      const id = String(token.id || "");
+      const safe = escapeHtml(id);
+      const inner = this.parser.parseInline(token.tokens || []);
+      return `<aside class="knowledge-base-footnote-def" id="fn-${safe}"><sup class="knowledge-base-footnote-def-marker">[${safe}]</sup> ${inner} <a class="knowledge-base-footnote-back" href="#fnref-${safe}" aria-label="back to reference">↩</a></aside>`;
+    },
+  };
+
+  const renderer = {
+    image({ href, title, text }) {
+      const altText = String(text || "");
+      const media = getKnowledgeBaseMediaResource(currentPath, href, { defaultToImage: true });
+      if (!media) {
+        return `<span>${escapeHtml(altText)}</span>`;
+      }
+      return renderKnowledgeBaseMedia(media, { altText });
+    },
+    link({ href, title, tokens }) {
+      const innerHtml = this.parser.parseInline(tokens || []);
+      const cleanedTarget = cleanMarkdownLinkTarget(href);
+      const notePath = resolveKnowledgeBaseNotePath(currentPath, cleanedTarget);
+
+      if (notePath) {
+        return `<button class="knowledge-base-inline-link" type="button" data-kb-open-note="${escapeHtml(notePath)}">${innerHtml}</button>`;
+      }
+
+      const media = getKnowledgeBaseMediaResource(currentPath, cleanedTarget);
+      if (media) {
+        // Use the rendered inner as the visible label, but fall back to a plain
+        // text caption derived from the link tokens via the textRenderer.
+        let plainLabel = "";
+        try {
+          plainLabel = this.parser.parseInline(tokens || [], this.parser.textRenderer);
+        } catch (_error) {
+          plainLabel = "";
+        }
+        return renderKnowledgeBaseMedia(media, { altText: plainLabel, caption: plainLabel });
+      }
+
+      const absoluteFileHref = getKnowledgeBaseAbsoluteFileUrl(cleanedTarget);
+      const relativeAssetPath = absoluteFileHref ? "" : resolveKnowledgeBaseRelativePath(currentPath, cleanedTarget);
+      const externalHref = absoluteFileHref || (relativeAssetPath
+        ? getKnowledgeBaseNoteRawUrl(relativeAssetPath)
+        : cleanedTarget || String(href || "").trim());
+      return `<a class="knowledge-base-external-link" href="${escapeHtml(externalHref)}" target="_blank" rel="noreferrer">${innerHtml}</a>`;
+    },
+    code({ text, lang }) {
+      const language = normalizeSyntaxLanguage(lang || "text");
+      return renderSyntaxCodeBlock(text, language, "knowledge-base-code");
+    },
+    blockquote({ tokens }) {
+      const inner = this.parser.parse(tokens || []);
+      return `<blockquote class="knowledge-base-blockquote">${inner}</blockquote>`;
+    },
+    hr() {
+      return `<hr class="knowledge-base-rule" />`;
+    },
+    table(token) {
+      const align = Array.isArray(token.align) ? token.align : [];
+      const headHtml = (token.header || [])
+        .map((cell, i) => {
+          const alignClass = align[i] ? ` class="is-${align[i]}"` : "";
+          const inner = this.parser.parseInline(cell.tokens || []);
+          return `<th${alignClass}>${inner}</th>`;
+        })
+        .join("");
+      const bodyHtml = (token.rows || [])
+        .map((row) => {
+          const cells = (row || [])
+            .map((cell, i) => {
+              const alignClass = align[i] ? ` class="is-${align[i]}"` : "";
+              const inner = this.parser.parseInline(cell.tokens || []);
+              return `<td${alignClass}>${inner}</td>`;
+            })
+            .join("");
+          return `<tr>${cells}</tr>`;
+        })
+        .join("");
+      return `
+        <div class="knowledge-base-table-scroll" role="region" aria-label="Markdown table" tabindex="0">
+          <table class="knowledge-base-table">
+            <thead><tr>${headHtml}</tr></thead>
+            ${bodyHtml ? `<tbody>${bodyHtml}</tbody>` : ""}
+          </table>
+        </div>
+      `;
+    },
+  };
+
+  return new Marked({
+    gfm: true,
+    breaks: false,
+    renderer,
+    extensions: [wikiLinkExtension, footnoteRefExtension, footnoteDefExtension],
+  });
+}
+
 function renderKnowledgeBaseInline(text, currentPath) {
-  const tokens = [];
-  const createToken = (html) => `%%KB_TOKEN_${tokens.push(html) - 1}%%`;
-  let output = String(text || "");
-
-  output = output.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, altText, target) => {
-    const media = getKnowledgeBaseMediaResource(currentPath, target, { defaultToImage: true });
-
-    if (!media) {
-      return createToken(`<span>${escapeHtml(altText)}</span>`);
+  const source = String(text || "");
+  if (!source) return "";
+  try {
+    return createKnowledgeBaseMarked(currentPath).parseInline(source);
+  } catch (error) {
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("renderKnowledgeBaseInline failed", error);
     }
-
-    return createToken(renderKnowledgeBaseMedia(media, { altText }));
-  });
-
-  output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, target) => {
-    const cleanedTarget = cleanMarkdownLinkTarget(target);
-    const notePath = resolveKnowledgeBaseNotePath(currentPath, cleanedTarget);
-
-    if (notePath) {
-      return createToken(
-        `<button class="knowledge-base-inline-link" type="button" data-kb-open-note="${escapeHtml(notePath)}">${escapeHtml(label)}</button>`,
-      );
-    }
-
-    const media = getKnowledgeBaseMediaResource(currentPath, cleanedTarget);
-    if (media) {
-      return createToken(renderKnowledgeBaseMedia(media, { altText: label, caption: label }));
-    }
-
-    const absoluteFileHref = getKnowledgeBaseAbsoluteFileUrl(cleanedTarget);
-    const relativeAssetPath = absoluteFileHref ? "" : resolveKnowledgeBaseRelativePath(currentPath, cleanedTarget);
-    const externalHref = absoluteFileHref || (relativeAssetPath
-      ? getKnowledgeBaseNoteRawUrl(relativeAssetPath)
-      : cleanedTarget || String(target || "").trim());
-    return createToken(
-      `<a class="knowledge-base-external-link" href="${escapeHtml(externalHref)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`,
-    );
-  });
-
-  output = output.replace(/\[\[([^[\]]+)\]\]/g, (_match, body) => {
-    const trimmedBody = String(body || "").trim();
-    if (!trimmedBody) {
-      return "";
-    }
-
-    const [targetWithAnchor, alias] = trimmedBody.split("|");
-    const notePath = resolveKnowledgeBaseNotePath(currentPath, targetWithAnchor);
-    const label = (alias || targetWithAnchor.split("#")[0] || "").trim();
-
-    if (notePath) {
-      return createToken(
-        `<button class="knowledge-base-inline-link" type="button" data-kb-open-note="${escapeHtml(notePath)}">${escapeHtml(label || notePath)}</button>`,
-      );
-    }
-
-    return createToken(`<span>${escapeHtml(label || trimmedBody)}</span>`);
-  });
-
-  output = output.replace(/`([^`]+)`/g, (_match, code) => createToken(`<code>${escapeHtml(code)}</code>`));
-  output = escapeHtml(output)
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>")
-    .replace(/~~([^~]+)~~/g, "<del>$1</del>");
-
-  return output.replace(/%%KB_TOKEN_(\d+)%%/g, (_match, index) => tokens[Number(index)] || "");
+    return escapeHtml(source);
+  }
 }
 
 function splitMarkdownTableRow(line) {
@@ -10916,116 +11027,17 @@ function renderKnowledgeBaseMarkdown(markdown, currentPath) {
     prefixHtml = toolbarHtml + prefixHtml;
   }
 
-  const lines = source.replace(/\r\n/g, "\n").split("\n");
-  const html = [];
-  let index = 0;
-
-  const isListLine = (line) => /^\s*(?:[-*+]\s+|\d+\.\s+)/.test(line);
-  const isBlockBoundary = (line) =>
-    !line.trim() ||
-    /^```/.test(line) ||
-    /^#{1,6}\s+/.test(line) ||
-    isMarkdownTableRow(line) ||
-    /^>\s?/.test(line) ||
-    isListLine(line) ||
-    /^([-*_]){3,}\s*$/.test(line.trim());
-
-  while (index < lines.length) {
-    const line = lines[index];
-
-    if (!line.trim()) {
-      index += 1;
-      continue;
+  let mainHtml = "";
+  try {
+    mainHtml = createKnowledgeBaseMarked(currentPath).parse(source);
+  } catch (error) {
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("renderKnowledgeBaseMarkdown failed", error);
     }
-
-    const fenceMatch = line.match(/^```\s*([A-Za-z0-9_.+-]*)/);
-    if (fenceMatch) {
-      const language = normalizeSyntaxLanguage(fenceMatch[1] || "text");
-      index += 1;
-      const codeLines = [];
-
-      while (index < lines.length && !/^```/.test(lines[index])) {
-        codeLines.push(lines[index]);
-        index += 1;
-      }
-
-      if (index < lines.length) {
-        index += 1;
-      }
-
-      html.push(renderSyntaxCodeBlock(codeLines.join("\n"), language, "knowledge-base-code"));
-      continue;
-    }
-
-    if (isMarkdownTableStart(lines, index)) {
-      const table = renderKnowledgeBaseMarkdownTable(lines, index, currentPath);
-      html.push(table.html);
-      index = table.nextIndex;
-      continue;
-    }
-
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
-    if (headingMatch) {
-      const level = Math.min(6, headingMatch[1].length);
-      html.push(`<h${level}>${renderKnowledgeBaseInline(headingMatch[2], currentPath)}</h${level}>`);
-      index += 1;
-      continue;
-    }
-
-    if (/^>\s?/.test(line)) {
-      const quoteLines = [];
-
-      while (index < lines.length && /^>\s?/.test(lines[index])) {
-        quoteLines.push(lines[index].replace(/^>\s?/, ""));
-        index += 1;
-      }
-
-      html.push(
-        `<blockquote class="knowledge-base-blockquote">${quoteLines
-          .map((entry) => `<p>${renderKnowledgeBaseInline(entry, currentPath)}</p>`)
-          .join("")}</blockquote>`,
-      );
-      continue;
-    }
-
-    if (isListLine(line)) {
-      const ordered = /^\s*\d+\.\s+/.test(line);
-      const items = [];
-
-      while (index < lines.length && isListLine(lines[index])) {
-        items.push(lines[index].replace(/^\s*(?:[-*+]\s+|\d+\.\s+)/, ""));
-        index += 1;
-      }
-
-      html.push(
-        `<${ordered ? "ol" : "ul"}>${items
-          .map((item) => `<li>${renderKnowledgeBaseInline(item, currentPath)}</li>`)
-          .join("")}</${ordered ? "ol" : "ul"}>`,
-      );
-      continue;
-    }
-
-    if (/^([-*_]){3,}\s*$/.test(line.trim())) {
-      html.push(`<hr class="knowledge-base-rule" />`);
-      index += 1;
-      continue;
-    }
-
-    const paragraphLines = [];
-    while (index < lines.length && !isBlockBoundary(lines[index])) {
-      paragraphLines.push(lines[index].trim());
-      index += 1;
-    }
-
-    if (!paragraphLines.length) {
-      paragraphLines.push(line.trim());
-      index += 1;
-    }
-
-    html.push(`<p>${renderKnowledgeBaseInline(paragraphLines.join(" "), currentPath)}</p>`);
+    mainHtml = `<pre class="knowledge-base-markdown-error">${escapeHtml(source)}</pre>`;
   }
 
-  const body = prefixHtml + html.join("");
+  const body = prefixHtml + mainHtml;
   if (isPaper) {
     return `<div class="knowledge-base-paper-body" data-paper-path="${escapeHtml(currentPath || "")}">${body}</div>`;
   }

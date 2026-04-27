@@ -61,6 +61,7 @@
     "express-rate-limit": "^8.3.2",
     "http-proxy": "^1.18.1",
     "lucide": "^1.8.0",
+    "marked": "^15.0.12",
     "node-pty": "npm:@lydell/node-pty@^1.2.0-beta.12",
     "playwright-core": "^1.59.1",
     "qrcode-terminal": "^0.12.0",
