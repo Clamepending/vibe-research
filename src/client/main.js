@@ -2334,6 +2334,7 @@ const state = {
   pendingTerminalOutput: "",
   pendingTerminalScrollToBottom: false,
   terminalOutputFrame: null,
+  terminalSelectionDeferStartedAt: 0,
   terminalTranscriptRaw: "",
   terminalTranscriptRenderFrame: null,
   terminalTranscriptScrollToBottom: false,
@@ -6004,6 +6005,14 @@ function buildTerminalLinkHandler() {
   };
 }
 
+// Maximum time we will hold streaming output back while the user has an active
+// xterm selection. After this, we force-flush — otherwise a forgotten or stuck
+// selection would silently freeze the live terminal.
+const TERMINAL_SELECTION_DEFER_MAX_MS = 4000;
+// Maximum bytes we will buffer while deferring. Past this, we force-flush so
+// memory and the eventual single write don't blow up.
+const TERMINAL_SELECTION_DEFER_MAX_BYTES = 256 * 1024;
+
 function clearPendingTerminalOutput() {
   if (state.terminalOutputFrame) {
     window.cancelAnimationFrame(state.terminalOutputFrame);
@@ -6012,6 +6021,7 @@ function clearPendingTerminalOutput() {
 
   state.pendingTerminalOutput = "";
   state.pendingTerminalScrollToBottom = false;
+  state.terminalSelectionDeferStartedAt = 0;
 }
 
 function flushPendingTerminalOutput() {
@@ -6020,8 +6030,39 @@ function flushPendingTerminalOutput() {
   if (!state.terminal || !state.pendingTerminalOutput) {
     state.pendingTerminalOutput = "";
     state.pendingTerminalScrollToBottom = false;
+    state.terminalSelectionDeferStartedAt = 0;
     return;
   }
+
+  // While the user has an active selection in xterm, defer writes. xterm's
+  // viewport tracks the bottom whenever ydisp == ybase, so streaming output
+  // silently scrolls cells out from under the user's drag — the selection
+  // looks broken, and on mouseup the viewport snaps to the latest line.
+  // Bounded by a hard wall-clock cap and a buffer cap so a forgotten or
+  // pathologically long selection can't freeze the terminal forever.
+  if (state.terminal.hasSelection?.()) {
+    const now = getUiNow();
+    if (!state.terminalSelectionDeferStartedAt) {
+      state.terminalSelectionDeferStartedAt = now;
+    }
+
+    const deferDuration = now - state.terminalSelectionDeferStartedAt;
+    const pendingBytes = state.pendingTerminalOutput.length;
+    if (
+      deferDuration < TERMINAL_SELECTION_DEFER_MAX_MS &&
+      pendingBytes < TERMINAL_SELECTION_DEFER_MAX_BYTES
+    ) {
+      state.terminalOutputFrame = window.requestAnimationFrame(() => {
+        flushPendingTerminalOutput();
+      });
+      return;
+    }
+    // Cap exceeded — fall through and force-flush so streaming output keeps
+    // moving even with a selection still active. The onSelectionChange handler
+    // will re-arm normal flushing once selection clears.
+  }
+
+  state.terminalSelectionDeferStartedAt = 0;
 
   const nextOutput = sanitizeTerminalOutputForViewport(state.pendingTerminalOutput);
   const shouldScrollToBottom = state.pendingTerminalScrollToBottom;
@@ -7728,7 +7769,11 @@ function hasMountedTerminalSurface() {
 }
 
 function shouldHandleTerminalClipboardEvent(eventTarget = null) {
-  if (state.currentView !== "shell" || !state.activeSessionId || !state.terminal || !hasMountedTerminalSurface()) {
+  // The terminal mounts under #terminal-mount in both the shell view and the
+  // visual-game view (when a session is selected). Either is valid context for
+  // copying the xterm selection.
+  const inTerminalContext = state.currentView === "shell" || isVisualGameTerminalOpen();
+  if (!inTerminalContext || !state.activeSessionId || !state.terminal || !hasMountedTerminalSurface()) {
     return false;
   }
 
@@ -39081,6 +39126,15 @@ function mountTerminal() {
   state.terminalSelectionDisposable = state.terminal.onSelectionChange?.(() => {
     if (!state.terminal?.hasSelection?.()) {
       scheduleSelectableRefreshFlush(40);
+      // Selection just cleared — kick the output flusher so any output that
+      // queued up while the user was highlighting writes through promptly,
+      // rather than waiting for the next chunk to arrive.
+      state.terminalSelectionDeferStartedAt = 0;
+      if (state.pendingTerminalOutput && !state.terminalOutputFrame) {
+        state.terminalOutputFrame = window.requestAnimationFrame(() => {
+          flushPendingTerminalOutput();
+        });
+      }
     }
   });
   state.terminal.open(mount);
