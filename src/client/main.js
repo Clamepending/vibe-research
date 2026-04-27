@@ -38865,7 +38865,12 @@ function setupTerminalInteractions(mount) {
     configureTerminalTextarea(helperTextarea);
     scheduleTerminalTextareaReset();
     syncViewportMetrics();
-    fitTerminalSoon();
+    // On desktop, focus alone never changes viewport dimensions — skip the fit
+    // so its deferred scroll-snapshot restore can't clobber an in-flight text
+    // selection by snapping the viewport back to the bottom.
+    if (isCoarsePointerDevice()) {
+      fitTerminalSoon();
+    }
   };
 
   const handleTerminalBlur = () => {
