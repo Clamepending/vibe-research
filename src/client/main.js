@@ -39201,10 +39201,14 @@ function mountTerminal() {
   configureTerminalTextarea(state.terminal.textarea);
   resetTerminalTextarea();
   applyTerminalDisplayProfile(mount);
-  // WebGL first (VS Code-style GPU rendering); falls back to DOM on failure.
-  // Canvas renderer is intentionally skipped — its addon has the viewport-
-  // disposal crash that originally drove `shouldUseCanvasRenderer === false`.
-  loadGpuRenderer();
+  // WebGL renderer was tried here but observed to render nothing in some
+  // browser/GPU combos (the addon constructed and loaded without throwing
+  // but the canvas painted black). Until we add a more robust feature-detect
+  // — or migrate to @xterm/xterm@^5.5 + @xterm/addon-webgl@^0.18 which
+  // handles context init more defensively — leave xterm on its DOM renderer.
+  // The other scroll-perf wins (passive wheel listeners, smoothScrollDuration=0)
+  // are independent of the renderer choice and stay.
+  loadCanvasRenderer();
   setupTerminalInteractions(mount);
   renderTerminalTranscriptHistory({ scrollToBottom: true });
   fitTerminalSoon();
