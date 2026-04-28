@@ -2075,6 +2075,171 @@ const CORE_BUILDING_MANIFESTS = [
       docs: [{ label: "@tacticlaunch/mcp-linear", url: "https://www.npmjs.com/package/@tacticlaunch/mcp-linear" }],
     },
   },
+  // Anthropic-maintained AWS Bedrock Knowledge Base retrieval — the
+  // first AWS MCP we ship that doesn't need the local AWS CLI.
+  // Credentials propagate through the user's environment (set
+  // AWS_REGION + AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in the
+  // shell that launched Vibe Research, or use ~/.aws/credentials);
+  // Vibe Research only captures the Knowledge Base ID via auth-paste.
+  {
+    id: "mcp-aws-kb-retrieval",
+    name: "MCP AWS Bedrock KB",
+    category: "MCP",
+    description: "Query AWS Bedrock Knowledge Bases from agent sessions via Anthropic's official MCP server.",
+    icon: Database,
+    status: "one-click install",
+    source: "modelcontextprotocol",
+    install: {
+      enabledSetting: "mcpAwsKbEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpAwsKbId",
+          setupUrl: "https://console.aws.amazon.com/bedrock/home#/knowledge-bases",
+          setupLabel: "Open Bedrock Knowledge Bases",
+          detail: "Paste the Knowledge Base ID. AWS credentials propagate from the user's environment (AWS_REGION + AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, or ~/.aws/credentials).",
+        },
+        verify: [
+          { kind: "command", command: "npm view @modelcontextprotocol/server-aws-kb-retrieval version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-aws-kb-retrieval"],
+            env: { KNOWLEDGE_BASE_ID: "${mcpAwsKbId}" },
+            label: "Launch MCP AWS Bedrock KB retrieval server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "Knowledge Base ID", setting: "mcpAwsKbId", required: true, setupUrl: "https://console.aws.amazon.com/bedrock/home#/knowledge-bases" },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Configure AWS credentials", detail: "Make sure AWS_REGION + AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY are set in the shell that launched Vibe Research, or that ~/.aws/credentials exists." },
+        { title: "Paste the Knowledge Base ID" },
+      ],
+    },
+    agentGuide: {
+      summary: "Query AWS Bedrock knowledge bases from agent sessions. Read-only retrieval; no write actions.",
+      env: [
+        { name: "KNOWLEDGE_BASE_ID", required: true },
+        { name: "AWS_REGION", required: true },
+        { name: "AWS_ACCESS_KEY_ID", required: false },
+        { name: "AWS_SECRET_ACCESS_KEY", required: false },
+      ],
+      docs: [{ label: "@modelcontextprotocol/server-aws-kb-retrieval", url: "https://www.npmjs.com/package/@modelcontextprotocol/server-aws-kb-retrieval" }],
+    },
+  },
+  // Kubernetes MCP — talks to whatever cluster `kubectl` is currently
+  // pointed at via ~/.kube/config. No auth-paste needed; the launch
+  // inherits the user's KUBECONFIG environment.
+  {
+    id: "mcp-kubernetes",
+    name: "MCP Kubernetes",
+    category: "MCP",
+    description: "Inspect and manage Kubernetes clusters from agent sessions via mcp-server-kubernetes.",
+    icon: Boxes,
+    status: "one-click install",
+    source: "community",
+    install: {
+      enabledSetting: "mcpKubernetesEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        verify: [
+          { kind: "command", command: "npm view mcp-server-kubernetes version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "mcp-server-kubernetes"],
+            label: "Launch MCP Kubernetes server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Confirm kubectl context", detail: "Make sure `kubectl get nodes` works in the shell that launched Vibe Research — the MCP server uses the current kube context for all calls." },
+      ],
+    },
+    agentGuide: {
+      summary: "kubectl-style cluster inspection + management from agent sessions. Defers to your current kubeconfig.",
+      env: [{ name: "KUBECONFIG", required: false, detail: "Optional override of the kube config path." }],
+      docs: [{ label: "mcp-server-kubernetes", url: "https://www.npmjs.com/package/mcp-server-kubernetes" }],
+    },
+  },
+  // Obsidian MCP — needs the Obsidian Local REST API plugin running
+  // in the user's Obsidian app + the API key it generated.
+  {
+    id: "mcp-obsidian",
+    name: "MCP Obsidian",
+    category: "MCP",
+    description: "Read, search, and edit notes in your Obsidian vault via obsidian-mcp-server.",
+    icon: BookOpen,
+    status: "one-click install",
+    source: "community",
+    install: {
+      enabledSetting: "mcpObsidianEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpObsidianApiKey",
+          setupUrl: "obsidian://show-plugin?id=obsidian-local-rest-api",
+          setupLabel: "Install Obsidian Local REST API plugin",
+          detail: "Install the Obsidian Local REST API plugin in your vault, copy its API key, then paste it here. Also set the vault path on the building panel.",
+        },
+        verify: [
+          { kind: "command", command: "npm view obsidian-mcp-server version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "obsidian-mcp-server"],
+            env: {
+              OBSIDIAN_API_KEY: "${mcpObsidianApiKey}",
+              OBSIDIAN_BASE_URL: "https://127.0.0.1:27124",
+            },
+            label: "Launch MCP Obsidian server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "Obsidian API key", setting: "mcpObsidianApiKey", required: true, secret: true, setupUrl: "obsidian://show-plugin?id=obsidian-local-rest-api" },
+        { label: "Obsidian vault path", setting: "mcpObsidianVaultPath", required: false },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Install the Obsidian Local REST API plugin in your vault" },
+        { title: "Paste its API key" },
+      ],
+    },
+    agentGuide: {
+      summary: "Search + edit Obsidian notes from agent sessions. Requires the Local REST API plugin in your vault.",
+      env: [
+        { name: "OBSIDIAN_API_KEY", required: true },
+        { name: "OBSIDIAN_BASE_URL", required: false },
+      ],
+      docs: [{ label: "obsidian-mcp-server", url: "https://www.npmjs.com/package/obsidian-mcp-server" }],
+    },
+  },
   // Second wave of MCP-server buildings. Each pulls a verified npm package via
   // npx; install plans skip the install step (npx fetches on first run) and
   // gate usage on either an auth-paste field or, for no-auth servers, just the

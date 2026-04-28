@@ -380,6 +380,21 @@ export class SettingsStore {
       mcpNotionToken: String(this.env.MCP_NOTION_TOKEN || this.env.NOTION_INTEGRATION_TOKEN || "").trim(),
       mcpLinearEnabled: false,
       mcpLinearApiKey: String(this.env.MCP_LINEAR_API_KEY || this.env.LINEAR_API_KEY || "").trim(),
+      // Anthropic-maintained AWS Bedrock Knowledge Base retrieval MCP.
+      // The launch reads AWS_REGION + AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+      // from process.env (so set them in the user's shell or AWS profile);
+      // KB ID comes from this setting.
+      mcpAwsKbEnabled: false,
+      mcpAwsKbId: String(this.env.MCP_AWS_KB_ID || this.env.KNOWLEDGE_BASE_ID || "").trim(),
+      // Kubernetes MCP — uses kubectl config from ~/.kube/config; no
+      // explicit token needed (relies on whichever auth method kubectl
+      // is already set up for).
+      mcpKubernetesEnabled: false,
+      // Obsidian MCP — needs the Local REST API plugin's API key + the
+      // vault path the agent should be allowed to read/write.
+      mcpObsidianEnabled: false,
+      mcpObsidianApiKey: String(this.env.MCP_OBSIDIAN_API_KEY || this.env.OBSIDIAN_API_KEY || "").trim(),
+      mcpObsidianVaultPath: String(this.env.MCP_OBSIDIAN_VAULT_PATH || "").trim(),
       // Second wave of MCP-server buildings (auth-paste only; npm packages
       // verified against the live registry on 2026-04-28).
       mcpPuppeteerEnabled: false,
@@ -727,6 +742,21 @@ export class SettingsStore {
         payload.mcpLinearApiKey === undefined
           ? defaults.mcpLinearApiKey
           : String(payload.mcpLinearApiKey || "").trim(),
+      mcpAwsKbEnabled: normalizeBoolean(payload.mcpAwsKbEnabled, defaults.mcpAwsKbEnabled),
+      mcpAwsKbId:
+        payload.mcpAwsKbId === undefined
+          ? defaults.mcpAwsKbId
+          : String(payload.mcpAwsKbId || "").trim(),
+      mcpKubernetesEnabled: normalizeBoolean(payload.mcpKubernetesEnabled, defaults.mcpKubernetesEnabled),
+      mcpObsidianEnabled: normalizeBoolean(payload.mcpObsidianEnabled, defaults.mcpObsidianEnabled),
+      mcpObsidianApiKey:
+        payload.mcpObsidianApiKey === undefined
+          ? defaults.mcpObsidianApiKey
+          : String(payload.mcpObsidianApiKey || "").trim(),
+      mcpObsidianVaultPath:
+        payload.mcpObsidianVaultPath === undefined
+          ? defaults.mcpObsidianVaultPath
+          : String(payload.mcpObsidianVaultPath || "").trim(),
       mcpPuppeteerEnabled: normalizeBoolean(payload.mcpPuppeteerEnabled, defaults.mcpPuppeteerEnabled),
       mcpMemoryEnabled: normalizeBoolean(payload.mcpMemoryEnabled, defaults.mcpMemoryEnabled),
       mcpRedisEnabled: normalizeBoolean(payload.mcpRedisEnabled, defaults.mcpRedisEnabled),

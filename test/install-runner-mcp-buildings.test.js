@@ -26,6 +26,8 @@ const expectOk = [
   "mcp-memory",
   "mcp-everything",
   "mcp-playwright",
+  // No-auth-needed: kubernetes uses kubectl context from ~/.kube/config.
+  "mcp-kubernetes",
 ];
 const expectAuthRequired = [
   "mcp-github",
@@ -59,6 +61,9 @@ const expectAuthRequired = [
   "mcp-axiom",
   "mcp-upstash",
   "mcp-spotify",
+  // Auth-paste-gated: AWS Knowledge Base ID + Obsidian API key.
+  "mcp-aws-kb-retrieval",
+  "mcp-obsidian",
 ];
 
 for (const id of [...expectOk, ...expectAuthRequired]) {
