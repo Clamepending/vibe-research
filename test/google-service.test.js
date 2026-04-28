@@ -417,3 +417,195 @@ test("createVibeResearchApp exposes /api/google/calendar/events using stored tok
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });
+
+test("GoogleService.searchDriveFiles builds URL with q and pageSize and sends Authorization header", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-google-drive-search-"));
+  try {
+    const tokenStore = new GoogleOAuthTokenStore({ stateDir });
+    await tokenStore.load();
+    await tokenStore.setTokens("google-drive", {
+      accessToken: "drive-token",
+      refreshToken: "drive-refresh",
+      expiresAt: Date.now() + 60 * 60 * 1000,
+      scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+    });
+    const fetchImpl = createFetch([
+      { body: { files: [{ id: "f-1", name: "Project Plan", mimeType: "application/vnd.google-apps.document" }] } },
+    ]);
+    const service = new GoogleService({
+      tokenStore,
+      settingsStore: makeSettingsStore(),
+      fetchImpl,
+    });
+
+    const result = await service.searchDriveFiles({
+      q: "name contains 'project' and trashed=false",
+      pageSize: 5,
+      pageToken: "page-2",
+      orderBy: "modifiedTime desc",
+    });
+
+    assert.deepEqual(result, {
+      files: [{ id: "f-1", name: "Project Plan", mimeType: "application/vnd.google-apps.document" }],
+    });
+    assert.equal(fetchImpl.calls.length, 1);
+    const url = new URL(fetchImpl.calls[0].url);
+    assert.equal(url.origin, "https://www.googleapis.com");
+    assert.equal(url.pathname, "/drive/v3/files");
+    assert.equal(url.searchParams.get("q"), "name contains 'project' and trashed=false");
+    assert.equal(url.searchParams.get("pageSize"), "5");
+    assert.equal(url.searchParams.get("pageToken"), "page-2");
+    assert.equal(url.searchParams.get("orderBy"), "modifiedTime desc");
+    assert.equal(
+      fetchImpl.calls[0].options.headers.Authorization,
+      "Bearer drive-token",
+    );
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("GoogleService.getDriveFile encodes fileId path segment", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-google-drive-get-"));
+  try {
+    const tokenStore = new GoogleOAuthTokenStore({ stateDir });
+    await tokenStore.load();
+    await tokenStore.setTokens("google-drive", {
+      accessToken: "drive-token",
+      refreshToken: "drive-refresh",
+      expiresAt: Date.now() + 60 * 60 * 1000,
+      scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+    });
+    const fetchImpl = createFetch([
+      { body: { id: "weird/id+thing", name: "Doc" } },
+    ]);
+    const service = new GoogleService({
+      tokenStore,
+      settingsStore: makeSettingsStore(),
+      fetchImpl,
+    });
+
+    await service.getDriveFile({ fileId: "weird/id+thing" });
+
+    assert.equal(fetchImpl.calls.length, 1);
+    const url = new URL(fetchImpl.calls[0].url);
+    assert.equal(url.pathname, "/drive/v3/files/weird%2Fid%2Bthing");
+    assert.equal(
+      fetchImpl.calls[0].options.headers.Authorization,
+      "Bearer drive-token",
+    );
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("GoogleService.exportDriveFile returns body + content-type", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-google-drive-export-"));
+  try {
+    const tokenStore = new GoogleOAuthTokenStore({ stateDir });
+    await tokenStore.load();
+    await tokenStore.setTokens("google-drive", {
+      accessToken: "drive-token",
+      refreshToken: "drive-refresh",
+      expiresAt: Date.now() + 60 * 60 * 1000,
+      scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+    });
+    const fetchImpl = async (url, options = {}) => {
+      fetchImpl.calls.push({ url: String(url), options });
+      return new Response("doc body line 1\ndoc body line 2\n", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      });
+    };
+    fetchImpl.calls = [];
+    const service = new GoogleService({
+      tokenStore,
+      settingsStore: makeSettingsStore(),
+      fetchImpl,
+    });
+
+    const result = await service.exportDriveFile({ fileId: "doc-123", mimeType: "text/plain" });
+
+    assert.equal(result.body, "doc body line 1\ndoc body line 2\n");
+    assert.equal(result.contentType, "text/plain");
+    assert.equal(fetchImpl.calls.length, 1);
+    const url = new URL(fetchImpl.calls[0].url);
+    assert.equal(url.pathname, "/drive/v3/files/doc-123/export");
+    assert.equal(url.searchParams.get("mimeType"), "text/plain");
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("createVibeResearchApp exposes /api/google/drive/files using stored tokens", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-google-drive-app-"));
+  const stateDir = path.join(workspaceDir, ".vibe-research");
+  let appContext = null;
+  const fetchImpl = createFetch([
+    {
+      body: {
+        files: [
+          { id: "drive-file-1", name: "Roadmap", mimeType: "application/vnd.google-apps.document" },
+        ],
+      },
+    },
+  ]);
+
+  try {
+    const seedStore = new GoogleOAuthTokenStore({ stateDir });
+    await seedStore.load();
+    await seedStore.setTokens("google-drive", {
+      accessToken: "drive-seeded",
+      refreshToken: "drive-seeded-refresh",
+      expiresAt: Date.now() + 60 * 60 * 1000,
+      scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+    });
+
+    appContext = await createVibeResearchApp({
+      cwd: workspaceDir,
+      port: 0,
+      persistSessions: false,
+      persistentTerminals: false,
+      stateDir,
+      providers: [
+        {
+          id: "claude",
+          label: "Claude Code",
+          available: true,
+          defaultName: "Claude",
+          command: "node",
+          args: ["-e", "setInterval(() => {}, 1000)"],
+        },
+      ],
+      systemMetricsSampleIntervalMs: 0,
+      googleFetchImpl: fetchImpl,
+    });
+
+    const baseUrl = `http://127.0.0.1:${appContext.config.port}`;
+    const response = await fetch(
+      `${baseUrl}/api/google/drive/files?q=${encodeURIComponent(
+        "name contains 'roadmap' and trashed=false",
+      )}&pageSize=5`,
+    );
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.deepEqual(payload, {
+      files: [
+        { id: "drive-file-1", name: "Roadmap", mimeType: "application/vnd.google-apps.document" },
+      ],
+    });
+
+    assert.equal(fetchImpl.calls.length, 1);
+    const url = new URL(fetchImpl.calls[0].url);
+    assert.equal(url.pathname, "/drive/v3/files");
+    assert.equal(url.searchParams.get("q"), "name contains 'roadmap' and trashed=false");
+    assert.equal(url.searchParams.get("pageSize"), "5");
+    assert.equal(
+      fetchImpl.calls[0].options.headers.Authorization,
+      "Bearer drive-seeded",
+    );
+  } finally {
+    await appContext?.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});

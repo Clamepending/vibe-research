@@ -4662,6 +4662,65 @@ export async function createVibeResearchApp({
     }
   });
 
+  app.get("/api/google/drive/files", async (request, response) => {
+    try {
+      const result = await googleService.searchDriveFiles({
+        q: request.query?.q ? String(request.query.q) : undefined,
+        pageSize: request.query?.pageSize ? Number(request.query.pageSize) : undefined,
+        pageToken: request.query?.pageToken ? String(request.query.pageToken) : undefined,
+        orderBy: request.query?.orderBy ? String(request.query.orderBy) : undefined,
+        fields: request.query?.fields ? String(request.query.fields) : undefined,
+        spaces: request.query?.spaces ? String(request.query.spaces) : undefined,
+        corpora: request.query?.corpora ? String(request.query.corpora) : undefined,
+        includeItemsFromAllDrives: request.query?.includeItemsFromAllDrives
+          ? String(request.query.includeItemsFromAllDrives)
+          : undefined,
+        supportsAllDrives: request.query?.supportsAllDrives
+          ? String(request.query.supportsAllDrives)
+          : undefined,
+        driveId: request.query?.driveId ? String(request.query.driveId) : undefined,
+      });
+      response.json(result);
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not search Google Drive files." });
+    }
+  });
+
+  app.get("/api/google/drive/files/:fileId", async (request, response) => {
+    try {
+      const result = await googleService.getDriveFile({
+        fileId: request.params?.fileId,
+        fields: request.query?.fields ? String(request.query.fields) : undefined,
+        supportsAllDrives: request.query?.supportsAllDrives
+          ? String(request.query.supportsAllDrives)
+          : undefined,
+      });
+      response.json(result);
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not load Google Drive file metadata." });
+    }
+  });
+
+  app.get("/api/google/drive/files/:fileId/export", async (request, response) => {
+    try {
+      const mimeType = request.query?.mimeType ? String(request.query.mimeType) : "text/plain";
+      const result = await googleService.exportDriveFile({
+        fileId: request.params?.fileId,
+        mimeType,
+      });
+      response.set("Content-Type", result.contentType || mimeType);
+      response.send(result.body || "");
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not export Google Drive file." });
+    }
+  });
+
   const handleBuildingHubGitHubOAuthDisconnect = async (_request, response) => {
     try {
       await buildingHubAccountService.disconnect({ settings: settingsStore.settings });

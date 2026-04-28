@@ -650,6 +650,43 @@ const CORE_BUILDING_MANIFESTS = [
       label: "Google access",
       detail: "Drive access is enabled for this town. Keep the shared folders narrow so agents see only the files they need.",
     },
+    agentGuide: {
+      summary: "Use Google Drive when an agent needs to search files, inspect file metadata, or pull the text of a Google Doc, Sheet, or Slide for the connected Google account.",
+      useCases: [
+        "Find the most recently modified files matching a topic before reading or summarizing them.",
+        "Look up a single file's metadata (title, owner, mimeType, modifiedTime) before fetching contents.",
+        "Export a Google Doc, Sheet, or Slide as plain text or CSV when the agent needs to read it.",
+      ],
+      commands: [
+        {
+          label: "Search files",
+          command: "curl -s \"$VIBE_RESEARCH_URL/api/google/drive/files?q=name+contains+'project'+and+trashed=false&pageSize=10\"",
+          detail: "Returns Drive file metadata matching the q filter (Drive search syntax).",
+        },
+        {
+          label: "Get file metadata",
+          command: "curl -s \"$VIBE_RESEARCH_URL/api/google/drive/files/<fileId>\"",
+          detail: "Returns title, owners, mimeType, modifiedTime, and webViewLink for a single file.",
+        },
+        {
+          label: "Export Doc as text",
+          command: "curl -s \"$VIBE_RESEARCH_URL/api/google/drive/files/<fileId>/export?mimeType=text/plain\"",
+          detail: "Streams the plain-text export of a Google Doc; use text/csv for Sheets, application/pdf for Slides.",
+        },
+      ],
+      docs: [
+        { label: "Google Drive API files.list", url: "https://developers.google.com/drive/api/v3/reference/files/list" },
+        { label: "Drive search query syntax", url: "https://developers.google.com/drive/api/guides/search-files" },
+        { label: "Google Drive API files.export", url: "https://developers.google.com/drive/api/v3/reference/files/export" },
+      ],
+      env: [
+        { name: "VIBE_RESEARCH_URL", detail: "Base URL for the current Vibe Research instance." },
+      ],
+      setup: [
+        "Confirm Google Drive access from the building detail before sending API requests.",
+        "Prefer searching for files before exporting bulk text — keep agent context windows tight.",
+      ],
+    },
     onboarding: {
       variables: [
         { label: "Google account", value: "Drive access enabled", required: true },
