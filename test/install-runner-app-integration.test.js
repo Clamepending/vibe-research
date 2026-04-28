@@ -394,6 +394,61 @@ test("/api/state: mcp.lastHealth is null until /health is called, then populated
   }
 });
 
+test("PATCH on a referenced setting invalidates lastHandshake + health-monitor cache", async () => {
+  const { baseUrl, cleanup } = await startApp();
+  try {
+    // Install mcp-filesystem so the registry has a launch.
+    const startResp = await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install`, { method: "POST" });
+    const { jobId } = await startResp.json();
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const j = await (await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install/jobs/${jobId}`)).json();
+      if (j.status !== "running") break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    // Sanity: filesystem launch references mcpFilesystemRoots.
+    const launches = (await (await fetch(`${baseUrl}/api/mcp/launches`)).json()).launches;
+    const fsLaunch = launches.find((l) => l.buildingId === "mcp-filesystem");
+    assert.ok(fsLaunch);
+
+    // Run a /health POST so the monitor caches a result.
+    await fetch(`${baseUrl}/api/mcp/launches/health`, { method: "POST" });
+    let state = await (await fetch(`${baseUrl}/api/state`)).json();
+    assert.ok(state.mcp.lastHealth, "health should be cached");
+    const cachedAt = state.mcp.lastHealth.generatedAt;
+
+    // Now PATCH a setting that mcp-filesystem references — its launch
+    // template includes ${mcpFilesystemRoots}.
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mcpFilesystemRoots: "/tmp/new-root" }),
+    });
+
+    // Health monitor cache must have been invalidated. Re-run /health
+    // and the new generatedAt should differ.
+    await fetch(`${baseUrl}/api/mcp/launches/health`, { method: "POST" });
+    state = await (await fetch(`${baseUrl}/api/state`)).json();
+    assert.ok(state.mcp.lastHealth.generatedAt !== cachedAt,
+      "health-monitor cache must be invalidated when a referenced setting changes");
+
+    // PATCH a setting NOT referenced by any launch (mcpHealthCheckIntervalSec).
+    // Run /health — cache should still be reused.
+    const beforeUnrelated = state.mcp.lastHealth.generatedAt;
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mcpHealthCheckIntervalSec: 600 }),
+    });
+    await fetch(`${baseUrl}/api/mcp/launches/health`, { method: "POST" });
+    state = await (await fetch(`${baseUrl}/api/state`)).json();
+    assert.equal(state.mcp.lastHealth.generatedAt, beforeUnrelated,
+      "unrelated setting change must not invalidate the health cache");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("end-to-end: pasting a referenced setting triggers auto-sync without re-Install", { timeout: 120_000 }, async (t) => {
   // Critical UX: install lands as auth-required because no token is set;
   // user pastes the token via PATCH /api/settings; the agent configs

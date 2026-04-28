@@ -565,6 +565,57 @@ test("referencedSettings: ignores plain strings without ${...}", () => {
   assert.equal(r.referencedSettings().size, 0);
 });
 
+test("buildingsReferencingSettings: returns building ids whose launches reference any given key", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("uses-token", [{ command: "node", env: { TOK: "${apiToken}" } }]);
+  r.declare("uses-url", [{ command: "node", args: ["${baseUrl}"] }]);
+  r.declare("uses-both", [{ command: "${binPath}", env: { K: "${apiToken}" } }]);
+  r.declare("uses-neither", [{ command: "node", args: ["server.js"] }]);
+  assert.deepEqual(r.buildingsReferencingSettings(["apiToken"]).sort(), ["uses-both", "uses-token"]);
+  assert.deepEqual(r.buildingsReferencingSettings(["baseUrl"]).sort(), ["uses-url"]);
+  assert.deepEqual(r.buildingsReferencingSettings(["apiToken", "baseUrl"]).sort(), ["uses-both", "uses-token", "uses-url"]);
+  assert.deepEqual(r.buildingsReferencingSettings(["unrelatedKey"]), []);
+  assert.deepEqual(r.buildingsReferencingSettings([]), []);
+});
+
+test("clearLastHandshake: drops the per-launch field across every launch under that building", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("multi", [
+    { command: "a", label: "primary" },
+    { command: "b", label: "secondary" },
+  ]);
+  r.recordHandshake("multi", "primary", { ok: true, status: "tools-listed", toolCount: 1 });
+  r.recordHandshake("multi", "secondary", { ok: true, status: "tools-listed", toolCount: 2 });
+  assert.equal(r.clearLastHandshake("multi"), true);
+  for (const entry of r.list()) {
+    assert.equal(entry.lastHandshake, undefined);
+  }
+});
+
+test("clearLastHandshake: empty / unknown / no-record → false", () => {
+  const r = createMcpLaunchRegistry();
+  assert.equal(r.clearLastHandshake(""), false);
+  assert.equal(r.clearLastHandshake("ghost"), false);
+  // Building exists, but never had a handshake recorded.
+  r.declare("a", [{ command: "x" }]);
+  assert.equal(r.clearLastHandshake("a"), false);
+});
+
+test("clearLastHandshake: persists the change to disk", () => {
+  const { path: filePath, dir } = tmpFile("persist-clear-handshake");
+  try {
+    const r1 = createMcpLaunchRegistry({ persistencePath: filePath });
+    r1.declare("a", [{ command: "x" }]);
+    r1.recordHandshake("a", "", { ok: true, status: "tools-listed" });
+    r1.clearLastHandshake("a");
+    const r2 = createMcpLaunchRegistry({ persistencePath: filePath });
+    const [entry] = r2.list();
+    assert.equal(entry.lastHandshake, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("recordInstall: declare() replacing launches drops the old lastInstall", () => {
   const r = createMcpLaunchRegistry();
   r.declare("x", [{ command: "old" }]);

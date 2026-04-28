@@ -227,6 +227,52 @@ export function createMcpLaunchRegistry({
     has(buildingId) {
       return launchesByBuilding.has(String(buildingId || "").trim());
     },
+    // Drop the lastHandshake record for a building. Used when a setting
+    // referenced by one of its launches changes — the recorded
+    // handshake result is now stale (it tested a different env) and
+    // the UI shouldn't show "tools-listed, 3 days ago" right after
+    // the user rotated a token.
+    clearLastHandshake(buildingId) {
+      const id = String(buildingId || "").trim();
+      if (!id) return false;
+      const launches = launchesByBuilding.get(id);
+      if (!launches || launches.length === 0) return false;
+      let cleared = false;
+      for (const launch of launches) {
+        if (launch.lastHandshake) {
+          delete launch.lastHandshake;
+          cleared = true;
+        }
+      }
+      if (cleared) persist();
+      return cleared;
+    },
+    // Returns the building ids whose launches reference ANY of the
+    // given setting names. Used to figure out which buildings'
+    // lastHandshake should be invalidated when settings change.
+    buildingsReferencingSettings(settingNames) {
+      const wanted = new Set(settingNames || []);
+      if (wanted.size === 0) return [];
+      const out = [];
+      const TEMPLATE_LOOKUP = /\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
+      const containsRef = (text) => {
+        if (typeof text !== "string") return false;
+        TEMPLATE_LOOKUP.lastIndex = 0;
+        let m;
+        while ((m = TEMPLATE_LOOKUP.exec(text)) !== null) {
+          if (wanted.has(m[1])) return true;
+        }
+        return false;
+      };
+      for (const [buildingId, launches] of launchesByBuilding.entries()) {
+        for (const launch of launches) {
+          if (containsRef(launch.command)) { out.push(buildingId); break; }
+          if (Array.isArray(launch.args) && launch.args.some(containsRef)) { out.push(buildingId); break; }
+          if (launch.env && typeof launch.env === "object" && Object.values(launch.env).some(containsRef)) { out.push(buildingId); break; }
+        }
+      }
+      return out;
+    },
     // Returns the set of settings keys referenced by any registered
     // launch's command/args/env templates. Used by the settings PATCH
     // route to decide whether a setting change should re-trigger an

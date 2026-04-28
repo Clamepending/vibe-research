@@ -4284,17 +4284,31 @@ export async function createVibeResearchApp({
       // this, the registry has the resolved value but the agent CLI
       // configs still hold the unresolved template until the user
       // explicitly re-Installs the building.
-      if (!needsAutoSync && runAutoSyncForAgents && request.body && typeof request.body === "object") {
+      const changedReferencedSettings = [];
+      if (request.body && typeof request.body === "object") {
         const referenced = mcpLaunchRegistry.referencedSettings();
         for (const key of referenced) {
           if (Object.prototype.hasOwnProperty.call(request.body, key)) {
-            needsAutoSync = true;
-            break;
+            changedReferencedSettings.push(key);
           }
         }
       }
+      if (changedReferencedSettings.length > 0) needsAutoSync = true;
       if (needsAutoSync && runAutoSyncForAgents) {
         try { runAutoSyncForAgents(); } catch {}
+      }
+      // The user just changed a setting that some launch's env / args
+      // depend on. The recorded lastHandshake (if any) was performed
+      // against a DIFFERENT env value, so it's now stale. Drop it so
+      // the UI stops showing a misleading "tools-listed, 3 days ago"
+      // right after a token rotation, and invalidate the health
+      // monitor cache so the next /health POST re-handshakes.
+      if (changedReferencedSettings.length > 0) {
+        const affectedBuildings = mcpLaunchRegistry.buildingsReferencingSettings(changedReferencedSettings);
+        for (const buildingId of affectedBuildings) {
+          try { mcpLaunchRegistry.clearLastHandshake(buildingId); } catch {}
+        }
+        try { mcpLaunchHealthMonitor.invalidate(); } catch {}
       }
 
       response.json({
