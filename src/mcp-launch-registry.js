@@ -6,7 +6,7 @@
 // pickup point.
 //
 // API:
-//   const registry = createMcpLaunchRegistry();
+//   const registry = createMcpLaunchRegistry({ persistencePath });
 //   registry.declare(buildingId, [{ command, args, env, label }]);
 //   registry.list();                      // raw declarations
 //   registry.list({ settings, resolved }); // ${settingKey} interpolated
@@ -15,8 +15,26 @@
 //
 // `declare()` REPLACES the building's previous launches, so re-running an
 // install plan after a token paste correctly re-installs the resolved env.
+//
+// When `persistencePath` is supplied, the registry is loaded from disk at
+// construction (silently ignoring missing/corrupt files) and re-saved on
+// every mutation. Writes are atomic (write to .tmp then rename) so a
+// crash mid-write can't leave a partial file.
+
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname } from "node:path";
 
 const TEMPLATE_PATTERN = /\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
+const PERSISTENCE_VERSION = 1;
 
 function asArray(value) {
   if (Array.isArray(value)) return value;
@@ -79,26 +97,95 @@ function launchHasUnresolved(launch) {
   return false;
 }
 
-export function createMcpLaunchRegistry({ getSettings = () => ({}) } = {}) {
+function loadFromDisk(persistencePath) {
+  // Returns Map<buildingId, normalizedLaunch[]>. Missing/corrupt files
+  // produce an empty map silently — the registry is best-effort durable,
+  // not a source of truth, so a corrupt file just means the user re-runs
+  // each building's install plan.
+  const out = new Map();
+  if (!persistencePath) return out;
+  let raw;
+  try {
+    raw = readFileSync(persistencePath, "utf8");
+  } catch {
+    return out;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return out;
+  }
+  if (!parsed || typeof parsed !== "object" || !parsed.buildings || typeof parsed.buildings !== "object") {
+    return out;
+  }
+  for (const [buildingId, launches] of Object.entries(parsed.buildings)) {
+    if (!Array.isArray(launches)) continue;
+    const normalized = launches.map(normalizeLaunch).filter(Boolean);
+    if (normalized.length > 0) {
+      out.set(String(buildingId), normalized);
+    }
+  }
+  return out;
+}
+
+function saveToDisk(persistencePath, launchesByBuilding) {
+  if (!persistencePath) return;
+  const buildings = {};
+  for (const [buildingId, launches] of launchesByBuilding.entries()) {
+    buildings[buildingId] = launches;
+  }
+  const payload = { version: PERSISTENCE_VERSION, buildings };
+  const dir = dirname(persistencePath);
+  // Make sure the directory exists. mkdirSync is idempotent with recursive.
+  try { mkdirSync(dir, { recursive: true }); } catch {}
+  // Atomic write: tmp + rename. If anything throws we leak a tmp file at
+  // worst — the original persistencePath stays unchanged.
+  const tmpPath = `${persistencePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    const fd = openSync(tmpPath, "w");
+    try {
+      writeFileSync(fd, `${JSON.stringify(payload, null, 2)}\n`);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmpPath, persistencePath);
+  } catch {
+    try { unlinkSync(tmpPath); } catch {}
+  }
+}
+
+export function createMcpLaunchRegistry({
+  getSettings = () => ({}),
+  persistencePath = null,
+} = {}) {
   // Map<buildingId, normalizedLaunch[]>
-  const launchesByBuilding = new Map();
+  const launchesByBuilding = persistencePath
+    ? loadFromDisk(persistencePath)
+    : new Map();
+
+  const persist = () => saveToDisk(persistencePath, launchesByBuilding);
 
   return {
+    persistencePath,
     declare(buildingId, launches) {
       const id = String(buildingId || "").trim();
       if (!id) return [];
       const normalized = asArray(launches).map(normalizeLaunch).filter(Boolean);
       if (normalized.length === 0) {
-        launchesByBuilding.delete(id);
+        if (launchesByBuilding.delete(id)) persist();
         return [];
       }
       launchesByBuilding.set(id, normalized);
+      persist();
       return normalized;
     },
     remove(buildingId) {
       const id = String(buildingId || "").trim();
       if (!id) return false;
-      return launchesByBuilding.delete(id);
+      const removed = launchesByBuilding.delete(id);
+      if (removed) persist();
+      return removed;
     },
     has(buildingId) {
       return launchesByBuilding.has(String(buildingId || "").trim());
@@ -144,7 +231,9 @@ export function createMcpLaunchRegistry({ getSettings = () => ({}) } = {}) {
       return launchesByBuilding.size;
     },
     clear() {
+      const hadEntries = launchesByBuilding.size > 0;
       launchesByBuilding.clear();
+      if (hadEntries) persist();
     },
   };
 }

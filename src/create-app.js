@@ -1445,6 +1445,10 @@ export async function createVibeResearchApp({
   const installJobStore = createInstallJobStore();
   const mcpLaunchRegistry = createMcpLaunchRegistry({
     getSettings: () => settingsStore.settings,
+    // Durable across server restarts. Without this, every restart wipes
+    // the registry and the user has to re-Install every MCP-server
+    // building before the host agent can pick them up again.
+    persistencePath: path.join(stateDir, "mcp-launch-registry.json"),
   });
   const tutorialRegistry =
     typeof tutorialRegistryFactory === "function"
