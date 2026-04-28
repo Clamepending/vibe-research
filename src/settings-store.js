@@ -401,6 +401,29 @@ export class SettingsStore {
       mcpFirecrawlApiKey: String(this.env.MCP_FIRECRAWL_API_KEY || this.env.FIRECRAWL_API_KEY || "").trim(),
       mcpHubspotEnabled: false,
       mcpHubspotPrivateAppToken: String(this.env.MCP_HUBSPOT_TOKEN || this.env.HUBSPOT_PRIVATE_APP_TOKEN || "").trim(),
+      // Third wave (2026-04-28): Apify, Pinecone, Supabase, Twilio (alpha),
+      // Confluence, E2B, Perplexity, Neon, Playwright. All npm packages
+      // verified live before adding the manifest.
+      mcpApifyEnabled: false,
+      mcpApifyToken: String(this.env.MCP_APIFY_TOKEN || this.env.APIFY_TOKEN || "").trim(),
+      mcpPineconeEnabled: false,
+      mcpPineconeApiKey: String(this.env.MCP_PINECONE_API_KEY || this.env.PINECONE_API_KEY || "").trim(),
+      mcpSupabaseEnabled: false,
+      mcpSupabaseAccessToken: String(this.env.MCP_SUPABASE_ACCESS_TOKEN || this.env.SUPABASE_ACCESS_TOKEN || "").trim(),
+      mcpTwilioEnabled: false,
+      mcpTwilioAccountSid: String(this.env.MCP_TWILIO_ACCOUNT_SID || this.env.TWILIO_ACCOUNT_SID || "").trim(),
+      mcpTwilioAuthToken: String(this.env.MCP_TWILIO_AUTH_TOKEN || this.env.TWILIO_AUTH_TOKEN || "").trim(),
+      mcpConfluenceEnabled: false,
+      mcpConfluenceUrl: String(this.env.MCP_CONFLUENCE_URL || this.env.CONFLUENCE_URL || "").trim(),
+      mcpConfluenceUsername: String(this.env.MCP_CONFLUENCE_USERNAME || this.env.CONFLUENCE_USERNAME || "").trim(),
+      mcpConfluenceApiToken: String(this.env.MCP_CONFLUENCE_API_TOKEN || this.env.CONFLUENCE_API_TOKEN || "").trim(),
+      mcpE2bEnabled: false,
+      mcpE2bApiKey: String(this.env.MCP_E2B_API_KEY || this.env.E2B_API_KEY || "").trim(),
+      mcpPerplexityEnabled: false,
+      mcpPerplexityApiKey: String(this.env.MCP_PERPLEXITY_API_KEY || this.env.PERPLEXITY_API_KEY || "").trim(),
+      mcpNeonEnabled: false,
+      mcpNeonApiKey: String(this.env.MCP_NEON_API_KEY || this.env.NEON_API_KEY || "").trim(),
+      mcpPlaywrightEnabled: false,
       ottoAuthBaseUrl: String(this.env.OTTOAUTH_BASE_URL || getDefaultOttoAuthBaseUrl()).trim(),
       ottoAuthCallbackUrl: String(this.env.OTTOAUTH_CALLBACK_URL || "").trim(),
       ottoAuthDefaultMaxChargeCents: "",
@@ -731,6 +754,59 @@ export class SettingsStore {
         payload.mcpHubspotPrivateAppToken === undefined
           ? defaults.mcpHubspotPrivateAppToken
           : String(payload.mcpHubspotPrivateAppToken || "").trim(),
+      mcpApifyEnabled: normalizeBoolean(payload.mcpApifyEnabled, defaults.mcpApifyEnabled),
+      mcpApifyToken:
+        payload.mcpApifyToken === undefined
+          ? defaults.mcpApifyToken
+          : String(payload.mcpApifyToken || "").trim(),
+      mcpPineconeEnabled: normalizeBoolean(payload.mcpPineconeEnabled, defaults.mcpPineconeEnabled),
+      mcpPineconeApiKey:
+        payload.mcpPineconeApiKey === undefined
+          ? defaults.mcpPineconeApiKey
+          : String(payload.mcpPineconeApiKey || "").trim(),
+      mcpSupabaseEnabled: normalizeBoolean(payload.mcpSupabaseEnabled, defaults.mcpSupabaseEnabled),
+      mcpSupabaseAccessToken:
+        payload.mcpSupabaseAccessToken === undefined
+          ? defaults.mcpSupabaseAccessToken
+          : String(payload.mcpSupabaseAccessToken || "").trim(),
+      mcpTwilioEnabled: normalizeBoolean(payload.mcpTwilioEnabled, defaults.mcpTwilioEnabled),
+      mcpTwilioAccountSid:
+        payload.mcpTwilioAccountSid === undefined
+          ? defaults.mcpTwilioAccountSid
+          : String(payload.mcpTwilioAccountSid || "").trim(),
+      mcpTwilioAuthToken:
+        payload.mcpTwilioAuthToken === undefined
+          ? defaults.mcpTwilioAuthToken
+          : String(payload.mcpTwilioAuthToken || "").trim(),
+      mcpConfluenceEnabled: normalizeBoolean(payload.mcpConfluenceEnabled, defaults.mcpConfluenceEnabled),
+      mcpConfluenceUrl:
+        payload.mcpConfluenceUrl === undefined
+          ? defaults.mcpConfluenceUrl
+          : String(payload.mcpConfluenceUrl || "").trim(),
+      mcpConfluenceUsername:
+        payload.mcpConfluenceUsername === undefined
+          ? defaults.mcpConfluenceUsername
+          : String(payload.mcpConfluenceUsername || "").trim(),
+      mcpConfluenceApiToken:
+        payload.mcpConfluenceApiToken === undefined
+          ? defaults.mcpConfluenceApiToken
+          : String(payload.mcpConfluenceApiToken || "").trim(),
+      mcpE2bEnabled: normalizeBoolean(payload.mcpE2bEnabled, defaults.mcpE2bEnabled),
+      mcpE2bApiKey:
+        payload.mcpE2bApiKey === undefined
+          ? defaults.mcpE2bApiKey
+          : String(payload.mcpE2bApiKey || "").trim(),
+      mcpPerplexityEnabled: normalizeBoolean(payload.mcpPerplexityEnabled, defaults.mcpPerplexityEnabled),
+      mcpPerplexityApiKey:
+        payload.mcpPerplexityApiKey === undefined
+          ? defaults.mcpPerplexityApiKey
+          : String(payload.mcpPerplexityApiKey || "").trim(),
+      mcpNeonEnabled: normalizeBoolean(payload.mcpNeonEnabled, defaults.mcpNeonEnabled),
+      mcpNeonApiKey:
+        payload.mcpNeonApiKey === undefined
+          ? defaults.mcpNeonApiKey
+          : String(payload.mcpNeonApiKey || "").trim(),
+      mcpPlaywrightEnabled: normalizeBoolean(payload.mcpPlaywrightEnabled, defaults.mcpPlaywrightEnabled),
       ottoAuthEnabled: normalizeBoolean(payload.ottoAuthEnabled, defaults.ottoAuthEnabled),
       ottoAuthPrivateKey:
         payload.ottoAuthPrivateKey === undefined

@@ -25,6 +25,7 @@ const expectOk = [
   "mcp-puppeteer",
   "mcp-memory",
   "mcp-everything",
+  "mcp-playwright",
 ];
 const expectAuthRequired = [
   "mcp-github",
@@ -45,6 +46,14 @@ const expectAuthRequired = [
   "mcp-exa",
   "mcp-firecrawl",
   "mcp-hubspot",
+  "mcp-apify",
+  "mcp-pinecone",
+  "mcp-supabase",
+  "mcp-twilio",
+  "mcp-confluence",
+  "mcp-e2b",
+  "mcp-perplexity",
+  "mcp-neon",
 ];
 
 for (const id of [...expectOk, ...expectAuthRequired]) {
