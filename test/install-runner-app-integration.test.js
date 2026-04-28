@@ -208,6 +208,57 @@ test("GET /api/mcp/config/download: returns json with download disposition + mat
   }
 });
 
+test("POST /api/mcp/launches/:buildingId/test: 404 when no launches declared", async () => {
+  const { baseUrl, cleanup } = await startApp();
+  try {
+    const resp = await fetch(`${baseUrl}/api/mcp/launches/mcp-filesystem/test`, { method: "POST" });
+    assert.equal(resp.status, 404);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("POST /api/mcp/launches/:buildingId/test: refuses unresolved templates with 200 + ok=false", async () => {
+  // Install mcp-github WITHOUT pasting a token. The auth-paste step pauses
+  // with status:auth-required and the registry never gets a declaration —
+  // so the test route returns 404 (no launch). Force a declared-but-
+  // unresolved entry by installing mcp-github after pasting an EMPTY
+  // token (which leaves the placeholder behind).
+  const { baseUrl, cleanup } = await startApp();
+  try {
+    // Pre-paste a non-empty token to ensure the install resolves and
+    // declares an mcp-launch. Then blank the token via PATCH so the
+    // launch is declared but the env value is stale.
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mcpGithubToken: "ghp_TEMP_TOKEN" }),
+    });
+    const startResp = await fetch(`${baseUrl}/api/buildings/mcp-github/install`, { method: "POST" });
+    const { jobId } = await startResp.json();
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const j = await (await fetch(`${baseUrl}/api/buildings/mcp-github/install/jobs/${jobId}`)).json();
+      if (j.status !== "running") break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    // Now blank the token. The registry stores the templated form, so
+    // ?resolved against an empty token still leaves ${mcpGithubToken}.
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mcpGithubToken: "" }),
+    });
+    const testResp = await fetch(`${baseUrl}/api/mcp/launches/mcp-github/test`, { method: "POST" });
+    assert.equal(testResp.status, 200);
+    const body = await testResp.json();
+    assert.equal(body.ok, false);
+    assert.equal(body.results[0].status, "unresolved-template");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("install plan: ?resolved=1 interpolates ${settingKey} from live settings", async () => {
   const { baseUrl, cleanup } = await startApp();
   try {

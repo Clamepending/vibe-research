@@ -34,6 +34,7 @@ import { BUILDING_CATALOG } from "./client/building-registry.js";
 import { normalizeBuildingId } from "./client/building-sdk.js";
 import { createInstallJobStore, startInstallJob } from "./install-runner.js";
 import { createMcpLaunchRegistry } from "./mcp-launch-registry.js";
+import { testLaunch as testMcpLaunch } from "./mcp-launch-tester.js";
 import { createFolderEntry, listFolderEntries } from "./folder-browser.js";
 import { GitHubOAuthTokenStore } from "./github-oauth-token-store.js";
 import { GitHubService } from "./github-service.js";
@@ -2767,6 +2768,43 @@ export async function createVibeResearchApp({
   // or pipe it into a host that expects the standard shape.
   app.get("/api/mcp/config", (_request, response) => {
     response.json(mcpLaunchRegistry.toMcpConfig());
+  });
+
+  // Dry-run a building's resolved MCP launch: spawn it, watch for ~1.5s,
+  // kill it, report alive / exited-fast / spawn-failed. The natural
+  // completion of "did clicking Install actually produce a usable MCP
+  // server?" — beyond just the npm-view package check at install time.
+  app.post("/api/mcp/launches/:buildingId/test", async (request, response) => {
+    const buildingId = normalizeBuildingId(String(request.params.buildingId || ""));
+    if (!buildingId) {
+      response.status(400).json({ error: "buildingId is required" });
+      return;
+    }
+    if (!mcpLaunchRegistry.has(buildingId)) {
+      response.status(404).json({ error: `no mcp launches declared for ${buildingId}` });
+      return;
+    }
+    const launches = mcpLaunchRegistry
+      .list({ resolved: true })
+      .filter((entry) => entry.buildingId === buildingId);
+    if (launches.length === 0) {
+      response.status(404).json({ error: `no mcp launches declared for ${buildingId}` });
+      return;
+    }
+    const results = [];
+    for (const launch of launches) {
+      const result = await testMcpLaunch({
+        command: launch.command,
+        args: launch.args,
+        env: launch.env,
+      });
+      results.push({ label: launch.label || "", ...result });
+    }
+    response.json({
+      buildingId,
+      results,
+      ok: results.every((entry) => entry.ok),
+    });
   });
 
   // Same payload as /api/mcp/config but served with a download disposition
