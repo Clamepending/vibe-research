@@ -2001,6 +2001,9 @@ const state = {
   agentPromptPresets: [],
   agentPromptWikiRoot: WORKSPACE_LIBRARY_RELATIVE_PATH,
   agentPromptTargets: [],
+  // buildingInstallJobs[buildingId] = { jobId, status, fields, reason, startedAt }
+  // Populated when one-click install fires; surfaced as system toasts.
+  buildingInstallJobs: {},
   agentTownShare: {
     inProgress: false,
     toast: null,
@@ -7109,6 +7112,60 @@ function getSystemToasts() {
     });
   }
 
+  // Building install jobs in flight. One toast per active job; toast type and
+  // copy reflect the runner's job state.
+  for (const [buildingId, job] of Object.entries(state.buildingInstallJobs || {})) {
+    const baseKey = `building-install:${buildingId}:${job.startedAt}`;
+    if (job.status === "starting" || job.status === "running") {
+      toasts.push({
+        action: "",
+        key: baseKey,
+        title: `Installing ${job.name || buildingId}…`,
+        message: "Running the building's install plan. This can take a minute on first install.",
+        type: "info",
+      });
+      continue;
+    }
+    if (job.status === "ok") {
+      toasts.push({
+        action: "dismiss-building-install",
+        actionPayload: buildingId,
+        key: `${baseKey}:ok`,
+        title: `${job.name || buildingId} ready`,
+        message: "Install plan finished cleanly. The building is wired up for agents.",
+        type: "info",
+      });
+      continue;
+    }
+    if (job.status === "auth-required") {
+      const fields = Array.isArray(job.fields) ? job.fields : [];
+      const firstField = fields[0] || null;
+      const url = firstField?.setupUrl || "";
+      toasts.push({
+        action: "open-building-detail",
+        actionPayload: buildingId,
+        actionUrl: url,
+        key: `${baseKey}:auth`,
+        title: `${job.name || buildingId} needs sign-in`,
+        message: fields.length
+          ? `Paste your ${fields.map((f) => f.label || f.setting).join(", ")} into the building panel to finish.`
+          : "Finish the sign-in flow to wire up the building.",
+        type: "warning",
+      });
+      continue;
+    }
+    if (job.status === "failed") {
+      toasts.push({
+        action: "dismiss-building-install",
+        actionPayload: buildingId,
+        key: `${baseKey}:failed`,
+        title: `${job.name || buildingId} install failed`,
+        message: job.reason || "The install plan reported a failure. Check the building panel for details.",
+        type: "error",
+      });
+    }
+  }
+
   return toasts.filter((toast) => !state.systemToastDismissedKeys.has(toast.key));
 }
 
@@ -7138,6 +7195,29 @@ function renderSystemToastActions(toast) {
     return `
       <button class="primary-button system-toast-action" type="button" data-system-toast-action="retry-update-check" data-system-toast-key="${escapeHtml(toast.key)}">
         check again
+      </button>
+    `;
+  }
+
+  if (toast.action === "open-building-detail") {
+    return `
+      <button class="primary-button system-toast-action" type="button"
+        data-system-toast-action="open-building-detail"
+        data-system-toast-key="${escapeHtml(toast.key)}"
+        data-system-toast-payload="${escapeHtml(toast.actionPayload || "")}"
+        data-system-toast-url="${escapeHtml(toast.actionUrl || "")}">
+        open building
+      </button>
+    `;
+  }
+
+  if (toast.action === "dismiss-building-install") {
+    return `
+      <button class="ghost-button system-toast-action" type="button"
+        data-system-toast-action="dismiss-building-install"
+        data-system-toast-key="${escapeHtml(toast.key)}"
+        data-system-toast-payload="${escapeHtml(toast.actionPayload || "")}">
+        dismiss
       </button>
     `;
   }
@@ -14502,6 +14582,81 @@ function setPluginInstallPlacementPending(pluginId, pending) {
   }
 
   return state.pluginInstallPlacementPendingIds.delete(normalizedPluginId);
+}
+
+// One-click install runner. Posts to /api/buildings/:id/install and polls the
+// job status until the runner returns ok | auth-required | failed. Logs the
+// final state into state.buildingInstallJobs so toasts surface it. Returns the
+// final job payload on resolve so callers can chain UI behaviour off it.
+async function runBuildingInstallPlan(building) {
+  if (!building?.install?.plan) {
+    return null;
+  }
+  const buildingId = getPluginId(building);
+  if (!buildingId) return null;
+
+  const startedAt = new Date().toISOString();
+  state.buildingInstallJobs = {
+    ...state.buildingInstallJobs,
+    [buildingId]: { jobId: "", status: "starting", startedAt, name: building.name || buildingId },
+  };
+  refreshSystemToastsUi({ force: true });
+
+  let initial;
+  try {
+    initial = await fetchJson(`/api/buildings/${encodeURIComponent(buildingId)}/install`, { method: "POST" });
+  } catch (error) {
+    state.buildingInstallJobs[buildingId] = {
+      ...state.buildingInstallJobs[buildingId],
+      status: "failed",
+      reason: error?.message || "could not start install",
+      finishedAt: new Date().toISOString(),
+    };
+    refreshSystemToastsUi({ force: true });
+    return null;
+  }
+
+  state.buildingInstallJobs[buildingId] = {
+    ...state.buildingInstallJobs[buildingId],
+    jobId: initial.jobId,
+    status: initial.status || "running",
+  };
+  refreshSystemToastsUi({ force: true });
+
+  // Poll until the job leaves "running"/"starting".
+  const POLL_MS = 750;
+  const MAX_POLLS = 200;  // 2.5 min cap; long-running installs already finish before this.
+  let final = initial;
+  for (let i = 0; i < MAX_POLLS; i += 1) {
+    if (final.status && final.status !== "running" && final.status !== "starting") {
+      break;
+    }
+    await sleep(POLL_MS);
+    try {
+      final = await fetchJson(`/api/buildings/${encodeURIComponent(buildingId)}/install/jobs/${encodeURIComponent(initial.jobId)}`);
+    } catch {
+      // Network blip; keep polling.
+      continue;
+    }
+  }
+
+  state.buildingInstallJobs[buildingId] = {
+    ...state.buildingInstallJobs[buildingId],
+    status: final.status || "failed",
+    fields: final.fields || final.result?.fields || null,
+    reason: final.reason || final.result?.reason || "",
+    finishedAt: new Date().toISOString(),
+    log: Array.isArray(final.log) ? final.log : (final.result?.log || []),
+  };
+  refreshSystemToastsUi({ force: true });
+  return state.buildingInstallJobs[buildingId];
+}
+
+function dismissBuildingInstallJob(buildingId) {
+  if (!buildingId) return;
+  if (!state.buildingInstallJobs[buildingId]) return;
+  delete state.buildingInstallJobs[buildingId];
+  refreshSystemToastsUi({ force: true });
 }
 
 function startFunctionalPluginPlacementInstall(pluginId) {
@@ -32798,6 +32953,15 @@ async function setPluginInstalled(pluginId, installed, { force = false, placeAft
     setPluginInstallPlacementPending(normalizedPluginId, false);
     delete state.pluginInstallActions[normalizedPluginId];
 
+    // Kick off the one-click install plan after the settings flip succeeds so
+    // the catalog shows the building as installed during the long-running
+    // install (CLI install + auth flow can take 30+ s). The plan handler
+    // streams progress into state.buildingInstallJobs which the system-toast
+    // layer renders.
+    if (installed && plugin.install?.plan) {
+      runBuildingInstallPlan(plugin).catch(() => {});
+    }
+
     if (normalizedPluginId === "localhost-apps") {
       if (!installed) {
         clearLocalhostAppsSurfaces();
@@ -34140,6 +34304,27 @@ function bindSystemToastEvents() {
           state.lastUpdateError = null;
           await loadUpdateStatus({ force: true });
           refreshSystemToastsUi();
+        }
+
+        if (action === "dismiss-building-install") {
+          const buildingId = button.getAttribute("data-system-toast-payload") || "";
+          dismissBuildingInstallJob(buildingId);
+          if (key) {
+            state.systemToastDismissedKeys.add(key);
+          }
+          return;
+        }
+
+        if (action === "open-building-detail") {
+          const buildingId = button.getAttribute("data-system-toast-payload") || "";
+          const setupUrl = button.getAttribute("data-system-toast-url") || "";
+          if (buildingId) {
+            openPluginDetail(buildingId);
+          }
+          if (setupUrl) {
+            try { window.open(setupUrl, "_blank", "noopener"); } catch { /* ignore */ }
+          }
+          return;
         }
       } catch (error) {
         if (button instanceof HTMLButtonElement) {

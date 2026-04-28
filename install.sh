@@ -1310,6 +1310,12 @@ install_systemd_service() {
 Description=Vibe Research
 After=network-online.target tailscaled.service
 Wants=network-online.target
+# Cap respawn attempts: if start.sh fails 5 times within 60s (e.g. port 4826
+# held by another process, missing node, broken node_modules), let systemd
+# stop trying so the failure mode is "service inactive" instead of "device
+# burns CPU and battery respawning every 5 seconds forever."
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=forking
@@ -1420,6 +1426,15 @@ resolve_checkout_ref() {
   if tag="$(latest_release_tag)" && [ -n "$tag" ]; then
     printf '%s\n' "$tag"
     return
+  fi
+
+  # Friend ran the canonical curl-install with the default release channel
+  # but both the GitHub Releases API and the static release-channel.json
+  # came back empty (rate-limited, offline, or no release published yet).
+  # Falling back to the configured branch is the right answer, but log it
+  # so the install output makes clear we're on `main` rather than a tag.
+  if [ "$UPDATE_CHANNEL" = "release" ] && [ "$REPO_REF_WAS_SET" != "1" ] && [ -z "$REPO_URL" ]; then
+    log "Could not resolve a release tag (offline or no release published); falling back to branch '$REPO_REF'" >&2
   fi
 
   printf '%s\n' "$REPO_REF"

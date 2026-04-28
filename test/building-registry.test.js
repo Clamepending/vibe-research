@@ -151,7 +151,10 @@ test("building registry exposes core building manifests", () => {
   const modal = BUILDING_CATALOG.find((building) => building.id === "modal");
   assert.equal(modal.category, "Cloud Compute");
   assert.equal(modal.visual.shape, "lab");
-  assert.equal(modal.status, "CLI install required");
+  assert.equal(modal.status, "one-click install");
+  assert.ok(modal.install?.plan, "modal must declare a one-click install plan");
+  assert.equal(modal.install.plan.preflight[0].command, "command -v modal");
+  assert.equal(modal.install.plan.auth.kind, "auth-browser-cli");
   assert.match(modal.access.detail, /MODAL_TOKEN_ID/i);
   assert.match(modal.access.detail, /cloud costs stay in the agent runtime/i);
   assert.ok(modal.agentGuide.commands.some((command) => command.command === "modal token info"));
@@ -330,4 +333,59 @@ test("custom building manifests normalize through the registry sdk", () => {
 test("defineBuilding rejects empty manifests", () => {
   assert.throws(() => defineBuilding(null), /Building manifest/);
   assert.throws(() => defineBuilding({ id: "", name: "" }), /requires an id or name/);
+});
+
+test("popular MCP-server buildings are registered with one-click install plans", () => {
+  const expectedMcpBuildings = [
+    { id: "mcp-filesystem", verifyPackage: "@modelcontextprotocol/server-filesystem", needsAuth: false },
+    { id: "mcp-github", verifyPackage: "@modelcontextprotocol/server-github", needsAuth: true, authSetting: "mcpGithubToken" },
+    { id: "mcp-postgres", verifyPackage: "@modelcontextprotocol/server-postgres", needsAuth: true, authSetting: "mcpPostgresUrl" },
+    { id: "mcp-sqlite", verifyPackage: "mcp-server-sqlite", needsAuth: true, authSetting: "mcpSqliteDbPath" },
+    { id: "mcp-brave-search", verifyPackage: "@modelcontextprotocol/server-brave-search", needsAuth: true, authSetting: "mcpBraveSearchApiKey" },
+    { id: "mcp-slack", verifyPackage: "@modelcontextprotocol/server-slack", needsAuth: true, authSetting: "mcpSlackBotToken" },
+    { id: "mcp-sentry", verifyPackage: "@sentry/mcp-server", needsAuth: true, authSetting: "mcpSentryAuthToken" },
+    { id: "mcp-notion", verifyPackage: "@notionhq/notion-mcp-server", needsAuth: true, authSetting: "mcpNotionToken" },
+    { id: "mcp-linear", verifyPackage: "@tacticlaunch/mcp-linear", needsAuth: true, authSetting: "mcpLinearApiKey" },
+  ];
+
+  for (const expected of expectedMcpBuildings) {
+    const building = BUILDING_CATALOG.find((entry) => entry.id === expected.id);
+    assert.ok(building, `${expected.id} must be registered`);
+    assert.equal(building.category, "MCP", `${expected.id} should be categorized as MCP`);
+    assert.equal(building.status, "one-click install", `${expected.id} status`);
+    const plan = building.install?.plan;
+    assert.ok(plan, `${expected.id} must declare install.plan`);
+    assert.ok(plan.preflight.some((step) => step.command === "command -v npx"), `${expected.id} preflight checks npx`);
+    assert.ok(
+      plan.verify.some((step) => step.command?.includes(`npm view ${expected.verifyPackage}`)),
+      `${expected.id} verify uses npm view ${expected.verifyPackage}`,
+    );
+    assert.ok(plan.mcp.length > 0, `${expected.id} declares mcp launch`);
+    if (expected.needsAuth) {
+      assert.ok(plan.auth, `${expected.id} declares auth step`);
+      assert.equal(plan.auth.kind, "auth-paste");
+      assert.equal(plan.auth.setting, expected.authSetting);
+    } else {
+      assert.equal(plan.auth, null, `${expected.id} should not declare auth`);
+    }
+  }
+});
+
+test("modal + ottoauth declare install plans", () => {
+  const modal = BUILDING_CATALOG.find((entry) => entry.id === "modal");
+  assert.ok(modal.install.plan);
+  assert.equal(modal.install.plan.auth.kind, "auth-browser-cli");
+  assert.equal(modal.install.plan.auth.command, "modal token new --source web");
+
+  const otto = BUILDING_CATALOG.find((entry) => entry.id === "ottoauth");
+  assert.ok(otto.install.plan);
+  const httpStep = otto.install.plan.install.find((step) => step.kind === "http");
+  assert.ok(httpStep, "ottoauth should declare an http install step");
+  assert.equal(httpStep.url, "https://ottoauth.vercel.app/api/agents/create");
+  assert.deepEqual(httpStep.captureSettings, {
+    username: "ottoAuthUsername",
+    privateKey: "ottoAuthPrivateKey",
+    callbackUrl: "ottoAuthCallbackUrl",
+  });
+  assert.equal(otto.install.plan.auth.kind, "auth-paste");
 });

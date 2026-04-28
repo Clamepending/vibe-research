@@ -29,6 +29,69 @@ const PNG_FIXTURE = Buffer.from([
 ]);
 const GIF_FIXTURE = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
 
+// Listen on a session WebSocket and resolve with a unified snapshot envelope
+// regardless of whether the server sent the legacy single-frame `snapshot`
+// payload or the chunked `snapshot-start` + `snapshot-chunk` + `snapshot-end`
+// stream. Match callbacks can short-circuit on partial data (e.g. wait for a
+// specific marker line); they receive the running concatenated transcript.
+function awaitSessionSnapshot(websocket, { timeoutMs = 8_000, match } = {}) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("Timed out waiting for session snapshot."));
+    }, timeoutMs);
+
+    let started = null;
+    let chunks = [];
+    let buffered = "";
+
+    const finish = (envelope) => {
+      clearTimeout(timeout);
+      resolve(envelope);
+    };
+
+    websocket.on("message", (chunk) => {
+      let payload;
+      try {
+        payload = JSON.parse(String(chunk));
+      } catch {
+        return;
+      }
+
+      if (payload.type === "snapshot") {
+        if (typeof match === "function" && !match(payload.data || "", payload)) {
+          return;
+        }
+        finish({ type: "snapshot", session: payload.session, data: payload.data || "" });
+        return;
+      }
+
+      if (payload.type === "snapshot-start") {
+        started = payload;
+        chunks = [];
+        buffered = "";
+        return;
+      }
+
+      if (payload.type === "snapshot-chunk") {
+        chunks[payload.index] = payload.data || "";
+        buffered += payload.data || "";
+        if (typeof match === "function" && match(buffered, started)) {
+          finish({ type: "snapshot", session: started?.session, data: buffered });
+        }
+        return;
+      }
+
+      if (payload.type === "snapshot-end") {
+        const data = chunks.join("");
+        if (typeof match === "function" && !match(data, started)) {
+          return;
+        }
+        finish({ type: "snapshot", session: started?.session, data });
+      }
+    });
+  });
+}
+
 async function startApp(options = {}) {
   const cwd = options.cwd || process.cwd();
   const stateDir = options.stateDir || path.join(cwd, ".vibe-research");
@@ -789,7 +852,6 @@ test("state is available without authentication", async () => {
   } finally {
     await app.close();
     await removeTempWorkspace(workspaceDir);
-    await rm(volatileRoot, { recursive: true, force: true });
   }
 });
 
@@ -7663,23 +7725,11 @@ test("shell session keeps running while the browser websocket disconnects", asyn
     await new Promise((resolve) => setTimeout(resolve, 1_000));
 
     secondSocket = new WebSocket(websocketUrl);
-    const reattachedOutput = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error("Timed out waiting for reattached websocket output."));
-      }, 8_000);
-
-      secondSocket.on("message", (chunk) => {
-        const payload = JSON.parse(String(chunk));
-        const data = payload.data || "";
-
-        if (payload.type === "snapshot" && data.includes("RV_WS_KEEPALIVE_5")) {
-          clearTimeout(timeout);
-          resolve(data);
-        }
-      });
+    const reattached = await awaitSessionSnapshot(secondSocket, {
+      match: (data) => data.includes("RV_WS_KEEPALIVE_5"),
     });
 
-    assert.match(reattachedOutput, /RV_WS_KEEPALIVE_5/);
+    assert.match(reattached.data, /RV_WS_KEEPALIVE_5/);
   } finally {
     if (firstSocket && firstSocket.readyState < WebSocket.CLOSING) {
       firstSocket.close();
@@ -8495,21 +8545,7 @@ test("sessions can be forked and report whether provider memory is resumable", a
     const websocket = new WebSocket(
       `${baseUrl.replace("http", "ws")}/ws?sessionId=${firstForkPayload.session.id}`,
     );
-    const snapshot = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error("Timed out waiting for forked session snapshot."));
-      }, 8_000);
-
-      websocket.on("message", (chunk) => {
-        const payload = JSON.parse(String(chunk));
-
-        if (payload.type === "snapshot") {
-          clearTimeout(timeout);
-          resolve(payload);
-        }
-      });
-    });
-
+    const snapshot = await awaitSessionSnapshot(websocket);
     assert.match(snapshot.data, /forked from: Parent Session/);
     assert.match(snapshot.data, /no provider memory id was available to resume/i);
 
@@ -9027,21 +9063,7 @@ test("running sessions are restored with their transcript after restart", async 
     const restoredSocket = new WebSocket(
       `${secondRun.baseUrl.replace("http", "ws")}/ws?sessionId=${sessionsPayload.sessions[0].id}`,
     );
-    const snapshot = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error("Timed out waiting for restored session snapshot."));
-      }, 8_000);
-
-      restoredSocket.on("message", (chunk) => {
-        const payload = JSON.parse(String(chunk));
-
-        if (payload.type === "snapshot") {
-          clearTimeout(timeout);
-          resolve(payload);
-        }
-      });
-    });
-
+    const snapshot = await awaitSessionSnapshot(restoredSocket);
     assert.match(snapshot.data, new RegExp(marker));
     restoredSocket.close();
     await once(restoredSocket, "close");
@@ -9306,21 +9328,7 @@ test("persisted sessions with missing workspaces stay visible and show restore f
     assert.equal(sessionsPayload.sessions[0].status, "exited");
 
     const websocket = new WebSocket(`${baseUrl.replace("http", "ws")}/ws?sessionId=${persistedSessionId}`);
-    const snapshot = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error("Timed out waiting for missing-workspace snapshot."));
-      }, 8_000);
-
-      websocket.on("message", (chunk) => {
-        const payload = JSON.parse(String(chunk));
-
-        if (payload.type === "snapshot") {
-          clearTimeout(timeout);
-          resolve(payload);
-        }
-      });
-    });
-
+    const snapshot = await awaitSessionSnapshot(websocket);
     assert.match(snapshot.data, /previous transcript/);
     assert.match(snapshot.data, /could not restore the session/i);
     assert.match(snapshot.data, /Working directory does not exist/i);

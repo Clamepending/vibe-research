@@ -352,6 +352,92 @@ export class SettingsStore {
           this.env.GOOGLE_OAUTH_CLIENT_SECRET ||
           "",
       ).trim(),
+      modalEnabled: false,
+      runpodEnabled: false,
+      harborEnabled: false,
+      // Popular MCP-server buildings: each has an enabled flag + a secret/config setting.
+      mcpFilesystemEnabled: false,
+      mcpFilesystemRoots: String(this.env.MCP_FILESYSTEM_ROOTS || "").trim(),
+      mcpGithubEnabled: false,
+      mcpGithubToken: String(this.env.MCP_GITHUB_TOKEN || this.env.GITHUB_PERSONAL_ACCESS_TOKEN || "").trim(),
+      mcpPostgresEnabled: false,
+      mcpPostgresUrl: String(this.env.MCP_POSTGRES_URL || this.env.DATABASE_URL || "").trim(),
+      mcpSqliteEnabled: false,
+      mcpSqliteDbPath: String(this.env.MCP_SQLITE_DB_PATH || "").trim(),
+      mcpBraveSearchEnabled: false,
+      mcpBraveSearchApiKey: String(this.env.MCP_BRAVE_SEARCH_API_KEY || this.env.BRAVE_API_KEY || "").trim(),
+      mcpSlackEnabled: false,
+      mcpSlackBotToken: String(this.env.MCP_SLACK_BOT_TOKEN || this.env.SLACK_BOT_TOKEN || "").trim(),
+      mcpSlackTeamId: String(this.env.MCP_SLACK_TEAM_ID || this.env.SLACK_TEAM_ID || "").trim(),
+      mcpSentryEnabled: false,
+      mcpSentryAuthToken: String(this.env.MCP_SENTRY_AUTH_TOKEN || this.env.SENTRY_AUTH_TOKEN || "").trim(),
+      mcpNotionEnabled: false,
+      mcpNotionToken: String(this.env.MCP_NOTION_TOKEN || this.env.NOTION_INTEGRATION_TOKEN || "").trim(),
+      mcpLinearEnabled: false,
+      mcpLinearApiKey: String(this.env.MCP_LINEAR_API_KEY || this.env.LINEAR_API_KEY || "").trim(),
+      // Second wave of MCP-server buildings (auth-paste only; npm packages
+      // verified against the live registry on 2026-04-28).
+      mcpPuppeteerEnabled: false,
+      mcpMemoryEnabled: false,
+      mcpRedisEnabled: false,
+      mcpRedisUrl: String(this.env.MCP_REDIS_URL || this.env.REDIS_URL || "").trim(),
+      mcpGitlabEnabled: false,
+      mcpGitlabToken: String(this.env.MCP_GITLAB_TOKEN || this.env.GITLAB_PERSONAL_ACCESS_TOKEN || "").trim(),
+      mcpGitlabUrl: String(this.env.MCP_GITLAB_URL || this.env.GITLAB_API_URL || "https://gitlab.com/api/v4").trim(),
+      mcpGoogleMapsEnabled: false,
+      mcpGoogleMapsApiKey: String(this.env.MCP_GOOGLE_MAPS_API_KEY || this.env.GOOGLE_MAPS_API_KEY || "").trim(),
+      mcpEverythingEnabled: false,
+      mcpStripeEnabled: false,
+      mcpStripeApiKey: String(this.env.MCP_STRIPE_API_KEY || this.env.STRIPE_SECRET_KEY || "").trim(),
+      mcpMongodbEnabled: false,
+      mcpMongodbUri: String(this.env.MCP_MONGODB_URI || this.env.MONGODB_URI || "").trim(),
+      mcpCloudflareEnabled: false,
+      mcpCloudflareApiToken: String(this.env.MCP_CLOUDFLARE_API_TOKEN || this.env.CLOUDFLARE_API_TOKEN || "").trim(),
+      mcpTavilyEnabled: false,
+      mcpTavilyApiKey: String(this.env.MCP_TAVILY_API_KEY || this.env.TAVILY_API_KEY || "").trim(),
+      mcpExaEnabled: false,
+      mcpExaApiKey: String(this.env.MCP_EXA_API_KEY || this.env.EXA_API_KEY || "").trim(),
+      mcpFirecrawlEnabled: false,
+      mcpFirecrawlApiKey: String(this.env.MCP_FIRECRAWL_API_KEY || this.env.FIRECRAWL_API_KEY || "").trim(),
+      mcpHubspotEnabled: false,
+      mcpHubspotPrivateAppToken: String(this.env.MCP_HUBSPOT_TOKEN || this.env.HUBSPOT_PRIVATE_APP_TOKEN || "").trim(),
+      // Third wave (2026-04-28): Apify, Pinecone, Supabase, Twilio (alpha),
+      // Confluence, E2B, Perplexity, Neon, Playwright. All npm packages
+      // verified live before adding the manifest.
+      mcpApifyEnabled: false,
+      mcpApifyToken: String(this.env.MCP_APIFY_TOKEN || this.env.APIFY_TOKEN || "").trim(),
+      mcpPineconeEnabled: false,
+      mcpPineconeApiKey: String(this.env.MCP_PINECONE_API_KEY || this.env.PINECONE_API_KEY || "").trim(),
+      mcpSupabaseEnabled: false,
+      mcpSupabaseAccessToken: String(this.env.MCP_SUPABASE_ACCESS_TOKEN || this.env.SUPABASE_ACCESS_TOKEN || "").trim(),
+      mcpTwilioEnabled: false,
+      mcpTwilioAccountSid: String(this.env.MCP_TWILIO_ACCOUNT_SID || this.env.TWILIO_ACCOUNT_SID || "").trim(),
+      mcpTwilioAuthToken: String(this.env.MCP_TWILIO_AUTH_TOKEN || this.env.TWILIO_AUTH_TOKEN || "").trim(),
+      mcpConfluenceEnabled: false,
+      mcpConfluenceUrl: String(this.env.MCP_CONFLUENCE_URL || this.env.CONFLUENCE_URL || "").trim(),
+      mcpConfluenceUsername: String(this.env.MCP_CONFLUENCE_USERNAME || this.env.CONFLUENCE_USERNAME || "").trim(),
+      mcpConfluenceApiToken: String(this.env.MCP_CONFLUENCE_API_TOKEN || this.env.CONFLUENCE_API_TOKEN || "").trim(),
+      mcpE2bEnabled: false,
+      mcpE2bApiKey: String(this.env.MCP_E2B_API_KEY || this.env.E2B_API_KEY || "").trim(),
+      mcpPerplexityEnabled: false,
+      mcpPerplexityApiKey: String(this.env.MCP_PERPLEXITY_API_KEY || this.env.PERPLEXITY_API_KEY || "").trim(),
+      mcpNeonEnabled: false,
+      mcpNeonApiKey: String(this.env.MCP_NEON_API_KEY || this.env.NEON_API_KEY || "").trim(),
+      mcpPlaywrightEnabled: false,
+      // Fourth wave (2026-04-28): Replicate, Vercel, Axiom, Upstash, Spotify.
+      mcpReplicateEnabled: false,
+      mcpReplicateApiToken: String(this.env.MCP_REPLICATE_API_TOKEN || this.env.REPLICATE_API_TOKEN || "").trim(),
+      mcpVercelEnabled: false,
+      mcpVercelApiToken: String(this.env.MCP_VERCEL_API_TOKEN || this.env.VERCEL_TOKEN || "").trim(),
+      mcpAxiomEnabled: false,
+      mcpAxiomToken: String(this.env.MCP_AXIOM_TOKEN || this.env.AXIOM_TOKEN || "").trim(),
+      mcpAxiomOrgId: String(this.env.MCP_AXIOM_ORG_ID || this.env.AXIOM_ORG_ID || "").trim(),
+      mcpUpstashEnabled: false,
+      mcpUpstashEmail: String(this.env.MCP_UPSTASH_EMAIL || this.env.UPSTASH_EMAIL || "").trim(),
+      mcpUpstashApiKey: String(this.env.MCP_UPSTASH_API_KEY || this.env.UPSTASH_API_KEY || "").trim(),
+      mcpSpotifyEnabled: false,
+      mcpSpotifyClientId: String(this.env.MCP_SPOTIFY_CLIENT_ID || this.env.SPOTIFY_CLIENT_ID || "").trim(),
+      mcpSpotifyClientSecret: String(this.env.MCP_SPOTIFY_CLIENT_SECRET || this.env.SPOTIFY_CLIENT_SECRET || "").trim(),
       ottoAuthBaseUrl: String(this.env.OTTOAUTH_BASE_URL || getDefaultOttoAuthBaseUrl()).trim(),
       ottoAuthCallbackUrl: String(this.env.OTTOAUTH_CALLBACK_URL || "").trim(),
       ottoAuthDefaultMaxChargeCents: "",
@@ -573,6 +659,205 @@ export class SettingsStore {
       ottoAuthDefaultMaxChargeCents: String(
         payload.ottoAuthDefaultMaxChargeCents || defaults.ottoAuthDefaultMaxChargeCents || "",
       ).trim(),
+      modalEnabled: normalizeBoolean(payload.modalEnabled, defaults.modalEnabled),
+      runpodEnabled: normalizeBoolean(payload.runpodEnabled, defaults.runpodEnabled),
+      harborEnabled: normalizeBoolean(payload.harborEnabled, defaults.harborEnabled),
+      mcpFilesystemEnabled: normalizeBoolean(payload.mcpFilesystemEnabled, defaults.mcpFilesystemEnabled),
+      mcpFilesystemRoots:
+        payload.mcpFilesystemRoots === undefined
+          ? defaults.mcpFilesystemRoots
+          : String(payload.mcpFilesystemRoots || "").trim(),
+      mcpGithubEnabled: normalizeBoolean(payload.mcpGithubEnabled, defaults.mcpGithubEnabled),
+      mcpGithubToken:
+        payload.mcpGithubToken === undefined
+          ? defaults.mcpGithubToken
+          : String(payload.mcpGithubToken || "").trim(),
+      mcpPostgresEnabled: normalizeBoolean(payload.mcpPostgresEnabled, defaults.mcpPostgresEnabled),
+      mcpPostgresUrl:
+        payload.mcpPostgresUrl === undefined
+          ? defaults.mcpPostgresUrl
+          : String(payload.mcpPostgresUrl || "").trim(),
+      mcpSqliteEnabled: normalizeBoolean(payload.mcpSqliteEnabled, defaults.mcpSqliteEnabled),
+      mcpSqliteDbPath:
+        payload.mcpSqliteDbPath === undefined
+          ? defaults.mcpSqliteDbPath
+          : String(payload.mcpSqliteDbPath || "").trim(),
+      mcpBraveSearchEnabled: normalizeBoolean(payload.mcpBraveSearchEnabled, defaults.mcpBraveSearchEnabled),
+      mcpBraveSearchApiKey:
+        payload.mcpBraveSearchApiKey === undefined
+          ? defaults.mcpBraveSearchApiKey
+          : String(payload.mcpBraveSearchApiKey || "").trim(),
+      mcpSlackEnabled: normalizeBoolean(payload.mcpSlackEnabled, defaults.mcpSlackEnabled),
+      mcpSlackBotToken:
+        payload.mcpSlackBotToken === undefined
+          ? defaults.mcpSlackBotToken
+          : String(payload.mcpSlackBotToken || "").trim(),
+      mcpSlackTeamId:
+        payload.mcpSlackTeamId === undefined
+          ? defaults.mcpSlackTeamId
+          : String(payload.mcpSlackTeamId || "").trim(),
+      mcpSentryEnabled: normalizeBoolean(payload.mcpSentryEnabled, defaults.mcpSentryEnabled),
+      mcpSentryAuthToken:
+        payload.mcpSentryAuthToken === undefined
+          ? defaults.mcpSentryAuthToken
+          : String(payload.mcpSentryAuthToken || "").trim(),
+      mcpNotionEnabled: normalizeBoolean(payload.mcpNotionEnabled, defaults.mcpNotionEnabled),
+      mcpNotionToken:
+        payload.mcpNotionToken === undefined
+          ? defaults.mcpNotionToken
+          : String(payload.mcpNotionToken || "").trim(),
+      mcpLinearEnabled: normalizeBoolean(payload.mcpLinearEnabled, defaults.mcpLinearEnabled),
+      mcpLinearApiKey:
+        payload.mcpLinearApiKey === undefined
+          ? defaults.mcpLinearApiKey
+          : String(payload.mcpLinearApiKey || "").trim(),
+      mcpPuppeteerEnabled: normalizeBoolean(payload.mcpPuppeteerEnabled, defaults.mcpPuppeteerEnabled),
+      mcpMemoryEnabled: normalizeBoolean(payload.mcpMemoryEnabled, defaults.mcpMemoryEnabled),
+      mcpRedisEnabled: normalizeBoolean(payload.mcpRedisEnabled, defaults.mcpRedisEnabled),
+      mcpRedisUrl:
+        payload.mcpRedisUrl === undefined
+          ? defaults.mcpRedisUrl
+          : String(payload.mcpRedisUrl || "").trim(),
+      mcpGitlabEnabled: normalizeBoolean(payload.mcpGitlabEnabled, defaults.mcpGitlabEnabled),
+      mcpGitlabToken:
+        payload.mcpGitlabToken === undefined
+          ? defaults.mcpGitlabToken
+          : String(payload.mcpGitlabToken || "").trim(),
+      mcpGitlabUrl:
+        payload.mcpGitlabUrl === undefined
+          ? defaults.mcpGitlabUrl
+          : String(payload.mcpGitlabUrl || "").trim(),
+      mcpGoogleMapsEnabled: normalizeBoolean(payload.mcpGoogleMapsEnabled, defaults.mcpGoogleMapsEnabled),
+      mcpGoogleMapsApiKey:
+        payload.mcpGoogleMapsApiKey === undefined
+          ? defaults.mcpGoogleMapsApiKey
+          : String(payload.mcpGoogleMapsApiKey || "").trim(),
+      mcpEverythingEnabled: normalizeBoolean(payload.mcpEverythingEnabled, defaults.mcpEverythingEnabled),
+      mcpStripeEnabled: normalizeBoolean(payload.mcpStripeEnabled, defaults.mcpStripeEnabled),
+      mcpStripeApiKey:
+        payload.mcpStripeApiKey === undefined
+          ? defaults.mcpStripeApiKey
+          : String(payload.mcpStripeApiKey || "").trim(),
+      mcpMongodbEnabled: normalizeBoolean(payload.mcpMongodbEnabled, defaults.mcpMongodbEnabled),
+      mcpMongodbUri:
+        payload.mcpMongodbUri === undefined
+          ? defaults.mcpMongodbUri
+          : String(payload.mcpMongodbUri || "").trim(),
+      mcpCloudflareEnabled: normalizeBoolean(payload.mcpCloudflareEnabled, defaults.mcpCloudflareEnabled),
+      mcpCloudflareApiToken:
+        payload.mcpCloudflareApiToken === undefined
+          ? defaults.mcpCloudflareApiToken
+          : String(payload.mcpCloudflareApiToken || "").trim(),
+      mcpTavilyEnabled: normalizeBoolean(payload.mcpTavilyEnabled, defaults.mcpTavilyEnabled),
+      mcpTavilyApiKey:
+        payload.mcpTavilyApiKey === undefined
+          ? defaults.mcpTavilyApiKey
+          : String(payload.mcpTavilyApiKey || "").trim(),
+      mcpExaEnabled: normalizeBoolean(payload.mcpExaEnabled, defaults.mcpExaEnabled),
+      mcpExaApiKey:
+        payload.mcpExaApiKey === undefined
+          ? defaults.mcpExaApiKey
+          : String(payload.mcpExaApiKey || "").trim(),
+      mcpFirecrawlEnabled: normalizeBoolean(payload.mcpFirecrawlEnabled, defaults.mcpFirecrawlEnabled),
+      mcpFirecrawlApiKey:
+        payload.mcpFirecrawlApiKey === undefined
+          ? defaults.mcpFirecrawlApiKey
+          : String(payload.mcpFirecrawlApiKey || "").trim(),
+      mcpHubspotEnabled: normalizeBoolean(payload.mcpHubspotEnabled, defaults.mcpHubspotEnabled),
+      mcpHubspotPrivateAppToken:
+        payload.mcpHubspotPrivateAppToken === undefined
+          ? defaults.mcpHubspotPrivateAppToken
+          : String(payload.mcpHubspotPrivateAppToken || "").trim(),
+      mcpApifyEnabled: normalizeBoolean(payload.mcpApifyEnabled, defaults.mcpApifyEnabled),
+      mcpApifyToken:
+        payload.mcpApifyToken === undefined
+          ? defaults.mcpApifyToken
+          : String(payload.mcpApifyToken || "").trim(),
+      mcpPineconeEnabled: normalizeBoolean(payload.mcpPineconeEnabled, defaults.mcpPineconeEnabled),
+      mcpPineconeApiKey:
+        payload.mcpPineconeApiKey === undefined
+          ? defaults.mcpPineconeApiKey
+          : String(payload.mcpPineconeApiKey || "").trim(),
+      mcpSupabaseEnabled: normalizeBoolean(payload.mcpSupabaseEnabled, defaults.mcpSupabaseEnabled),
+      mcpSupabaseAccessToken:
+        payload.mcpSupabaseAccessToken === undefined
+          ? defaults.mcpSupabaseAccessToken
+          : String(payload.mcpSupabaseAccessToken || "").trim(),
+      mcpTwilioEnabled: normalizeBoolean(payload.mcpTwilioEnabled, defaults.mcpTwilioEnabled),
+      mcpTwilioAccountSid:
+        payload.mcpTwilioAccountSid === undefined
+          ? defaults.mcpTwilioAccountSid
+          : String(payload.mcpTwilioAccountSid || "").trim(),
+      mcpTwilioAuthToken:
+        payload.mcpTwilioAuthToken === undefined
+          ? defaults.mcpTwilioAuthToken
+          : String(payload.mcpTwilioAuthToken || "").trim(),
+      mcpConfluenceEnabled: normalizeBoolean(payload.mcpConfluenceEnabled, defaults.mcpConfluenceEnabled),
+      mcpConfluenceUrl:
+        payload.mcpConfluenceUrl === undefined
+          ? defaults.mcpConfluenceUrl
+          : String(payload.mcpConfluenceUrl || "").trim(),
+      mcpConfluenceUsername:
+        payload.mcpConfluenceUsername === undefined
+          ? defaults.mcpConfluenceUsername
+          : String(payload.mcpConfluenceUsername || "").trim(),
+      mcpConfluenceApiToken:
+        payload.mcpConfluenceApiToken === undefined
+          ? defaults.mcpConfluenceApiToken
+          : String(payload.mcpConfluenceApiToken || "").trim(),
+      mcpE2bEnabled: normalizeBoolean(payload.mcpE2bEnabled, defaults.mcpE2bEnabled),
+      mcpE2bApiKey:
+        payload.mcpE2bApiKey === undefined
+          ? defaults.mcpE2bApiKey
+          : String(payload.mcpE2bApiKey || "").trim(),
+      mcpPerplexityEnabled: normalizeBoolean(payload.mcpPerplexityEnabled, defaults.mcpPerplexityEnabled),
+      mcpPerplexityApiKey:
+        payload.mcpPerplexityApiKey === undefined
+          ? defaults.mcpPerplexityApiKey
+          : String(payload.mcpPerplexityApiKey || "").trim(),
+      mcpNeonEnabled: normalizeBoolean(payload.mcpNeonEnabled, defaults.mcpNeonEnabled),
+      mcpNeonApiKey:
+        payload.mcpNeonApiKey === undefined
+          ? defaults.mcpNeonApiKey
+          : String(payload.mcpNeonApiKey || "").trim(),
+      mcpPlaywrightEnabled: normalizeBoolean(payload.mcpPlaywrightEnabled, defaults.mcpPlaywrightEnabled),
+      mcpReplicateEnabled: normalizeBoolean(payload.mcpReplicateEnabled, defaults.mcpReplicateEnabled),
+      mcpReplicateApiToken:
+        payload.mcpReplicateApiToken === undefined
+          ? defaults.mcpReplicateApiToken
+          : String(payload.mcpReplicateApiToken || "").trim(),
+      mcpVercelEnabled: normalizeBoolean(payload.mcpVercelEnabled, defaults.mcpVercelEnabled),
+      mcpVercelApiToken:
+        payload.mcpVercelApiToken === undefined
+          ? defaults.mcpVercelApiToken
+          : String(payload.mcpVercelApiToken || "").trim(),
+      mcpAxiomEnabled: normalizeBoolean(payload.mcpAxiomEnabled, defaults.mcpAxiomEnabled),
+      mcpAxiomToken:
+        payload.mcpAxiomToken === undefined
+          ? defaults.mcpAxiomToken
+          : String(payload.mcpAxiomToken || "").trim(),
+      mcpAxiomOrgId:
+        payload.mcpAxiomOrgId === undefined
+          ? defaults.mcpAxiomOrgId
+          : String(payload.mcpAxiomOrgId || "").trim(),
+      mcpUpstashEnabled: normalizeBoolean(payload.mcpUpstashEnabled, defaults.mcpUpstashEnabled),
+      mcpUpstashEmail:
+        payload.mcpUpstashEmail === undefined
+          ? defaults.mcpUpstashEmail
+          : String(payload.mcpUpstashEmail || "").trim(),
+      mcpUpstashApiKey:
+        payload.mcpUpstashApiKey === undefined
+          ? defaults.mcpUpstashApiKey
+          : String(payload.mcpUpstashApiKey || "").trim(),
+      mcpSpotifyEnabled: normalizeBoolean(payload.mcpSpotifyEnabled, defaults.mcpSpotifyEnabled),
+      mcpSpotifyClientId:
+        payload.mcpSpotifyClientId === undefined
+          ? defaults.mcpSpotifyClientId
+          : String(payload.mcpSpotifyClientId || "").trim(),
+      mcpSpotifyClientSecret:
+        payload.mcpSpotifyClientSecret === undefined
+          ? defaults.mcpSpotifyClientSecret
+          : String(payload.mcpSpotifyClientSecret || "").trim(),
       ottoAuthEnabled: normalizeBoolean(payload.ottoAuthEnabled, defaults.ottoAuthEnabled),
       ottoAuthPrivateKey:
         payload.ottoAuthPrivateKey === undefined

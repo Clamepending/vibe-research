@@ -20,6 +20,101 @@ function normalizeOnboarding(onboarding) {
   };
 }
 
+const INSTALL_PLAN_STEP_KINDS = new Set([
+  "command",
+  "http",
+  "auth-browser-cli",
+  "auth-paste",
+  "mcp-launch",
+]);
+
+function normalizeInstallPlanStep(step) {
+  if (!step || typeof step !== "object" || Array.isArray(step)) {
+    return null;
+  }
+
+  const kind = String(step.kind || "").trim();
+  if (!INSTALL_PLAN_STEP_KINDS.has(kind)) {
+    return null;
+  }
+
+  const base = {
+    kind,
+    label: String(step.label || "").trim(),
+    detail: String(step.detail || "").trim(),
+  };
+
+  if (kind === "command" || kind === "auth-browser-cli") {
+    const command = String(step.command || "").trim();
+    if (!command) return null;
+    base.command = command;
+    base.timeoutSec = Number.isFinite(step.timeoutSec) ? step.timeoutSec : 60;
+    base.okExitCodes = Array.isArray(step.okExitCodes) && step.okExitCodes.length
+      ? step.okExitCodes.map((value) => Number(value) | 0)
+      : [0];
+    base.shell = step.shell === false ? false : true;
+    return base;
+  }
+
+  if (kind === "http") {
+    const url = String(step.url || "").trim();
+    if (!url) return null;
+    base.url = url;
+    base.method = String(step.method || "GET").trim().toUpperCase() || "GET";
+    base.headers = step.headers && typeof step.headers === "object" ? { ...step.headers } : {};
+    if (step.body !== undefined) base.body = step.body;
+    base.timeoutSec = Number.isFinite(step.timeoutSec) ? step.timeoutSec : 30;
+    base.captureSettings = step.captureSettings && typeof step.captureSettings === "object"
+      ? { ...step.captureSettings }
+      : {};
+    base.okStatusCodes = Array.isArray(step.okStatusCodes) && step.okStatusCodes.length
+      ? step.okStatusCodes.map((value) => Number(value) | 0)
+      : [200, 201];
+    return base;
+  }
+
+  if (kind === "auth-paste") {
+    const setting = String(step.setting || "").trim();
+    if (!setting) return null;
+    base.setting = setting;
+    base.setupUrl = String(step.setupUrl || "").trim();
+    base.setupLabel = String(step.setupLabel || "").trim();
+    return base;
+  }
+
+  if (kind === "mcp-launch") {
+    const command = String(step.command || "").trim();
+    if (!command) return null;
+    base.command = command;
+    base.args = Array.isArray(step.args) ? step.args.map((value) => String(value)) : [];
+    base.env = step.env && typeof step.env === "object" ? { ...step.env } : {};
+    return base;
+  }
+
+  return null;
+}
+
+function normalizeInstallPlanStepList(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map(normalizeInstallPlanStep).filter(Boolean);
+}
+
+function normalizeInstallPlan(plan) {
+  if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
+    return null;
+  }
+
+  const auth = normalizeInstallPlanStep(plan.auth);
+
+  return {
+    preflight: normalizeInstallPlanStepList(plan.preflight),
+    install: normalizeInstallPlanStepList(plan.install),
+    auth: auth || null,
+    verify: normalizeInstallPlanStepList(plan.verify),
+    mcp: normalizeInstallPlanStepList(plan.mcp),
+  };
+}
+
 function normalizeInstallContract(install) {
   if (!install || typeof install !== "object" || Array.isArray(install)) {
     return {};
@@ -30,6 +125,7 @@ function normalizeInstallContract(install) {
     enabledSetting: String(install.enabledSetting || "").trim(),
     system: Boolean(install.system),
     storedFallback: install.storedFallback === undefined ? true : Boolean(install.storedFallback),
+    plan: normalizeInstallPlan(install.plan),
   };
 }
 

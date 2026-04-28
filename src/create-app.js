@@ -32,6 +32,9 @@ import { BuildingHubService } from "./buildinghub-service.js";
 import { BrowserUseService } from "./browser-use-service.js";
 import { BUILDING_CATALOG } from "./client/building-registry.js";
 import { normalizeBuildingId } from "./client/building-sdk.js";
+import { createInstallJobStore, startInstallJob } from "./install-runner.js";
+import { createMcpLaunchRegistry } from "./mcp-launch-registry.js";
+import { testLaunch as testMcpLaunch } from "./mcp-launch-tester.js";
 import { createFolderEntry, listFolderEntries } from "./folder-browser.js";
 import { GitHubOAuthTokenStore } from "./github-oauth-token-store.js";
 import { GitHubService } from "./github-service.js";
@@ -1439,6 +1442,10 @@ export async function createVibeResearchApp({
     typeof scaffoldRecipeServiceFactory === "function"
       ? scaffoldRecipeServiceFactory(settingsStore.settings, { cwd, stateDir, systemRootPath })
       : new ScaffoldRecipeService({ stateDir });
+  const installJobStore = createInstallJobStore();
+  const mcpLaunchRegistry = createMcpLaunchRegistry({
+    getSettings: () => settingsStore.settings,
+  });
   const tutorialRegistry =
     typeof tutorialRegistryFactory === "function"
       ? tutorialRegistryFactory({ systemRootPath, cwd, stateDir })
@@ -2703,6 +2710,115 @@ export async function createVibeResearchApp({
     }
   });
 
+  app.post("/api/buildings/:buildingId/install", async (request, response) => {
+    const buildingId = normalizeBuildingId(String(request.params.buildingId || ""));
+    const building = BUILDING_CATALOG.find((entry) => entry.id === buildingId);
+    if (!building) {
+      response.status(404).json({ error: "Building not found." });
+      return;
+    }
+    if (!building.install?.plan) {
+      response.status(400).json({ error: "Building has no install plan." });
+      return;
+    }
+    try {
+      const job = startInstallJob({ jobStore: installJobStore, building, settingsStore, mcpRegistry: mcpLaunchRegistry });
+      response.json({
+        jobId: job.id,
+        status: job.status,
+        buildingId: building.id,
+      });
+    } catch (error) {
+      response.status(500).json({ error: error?.message || "install start failed" });
+    }
+  });
+
+  app.get("/api/buildings/:buildingId/install/jobs/:jobId", (request, response) => {
+    const buildingId = normalizeBuildingId(String(request.params.buildingId || ""));
+    const jobId = String(request.params.jobId || "");
+    const job = installJobStore.get(jobId);
+    if (!job || job.buildingId !== buildingId) {
+      response.status(404).json({ error: "Install job not found." });
+      return;
+    }
+    response.json({
+      id: job.id,
+      buildingId: job.buildingId,
+      status: job.status,
+      log: job.log,
+      result: job.result,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+    });
+  });
+
+  // Lists every MCP launch declared by a building's install plan so the
+  // host agent / Claude Desktop / Cursor can pull the spawn config. The
+  // ?resolved=1 query param interpolates ${settingKey} templates against
+  // the live settings store; without it the raw declaration is returned.
+  app.get("/api/mcp/launches", (request, response) => {
+    const resolved = String(request.query.resolved || "") === "1";
+    response.json({
+      launches: mcpLaunchRegistry.list({ resolved }),
+    });
+  });
+
+  // Same data shaped like a Claude Desktop / Cursor MCP config. Always
+  // returns resolved values so the consumer can write it straight to disk
+  // or pipe it into a host that expects the standard shape.
+  app.get("/api/mcp/config", (_request, response) => {
+    response.json(mcpLaunchRegistry.toMcpConfig());
+  });
+
+  // Dry-run a building's resolved MCP launch: spawn it, watch for ~1.5s,
+  // kill it, report alive / exited-fast / spawn-failed. The natural
+  // completion of "did clicking Install actually produce a usable MCP
+  // server?" — beyond just the npm-view package check at install time.
+  app.post("/api/mcp/launches/:buildingId/test", async (request, response) => {
+    const buildingId = normalizeBuildingId(String(request.params.buildingId || ""));
+    if (!buildingId) {
+      response.status(400).json({ error: "buildingId is required" });
+      return;
+    }
+    if (!mcpLaunchRegistry.has(buildingId)) {
+      response.status(404).json({ error: `no mcp launches declared for ${buildingId}` });
+      return;
+    }
+    const launches = mcpLaunchRegistry
+      .list({ resolved: true })
+      .filter((entry) => entry.buildingId === buildingId);
+    if (launches.length === 0) {
+      response.status(404).json({ error: `no mcp launches declared for ${buildingId}` });
+      return;
+    }
+    const results = [];
+    for (const launch of launches) {
+      const result = await testMcpLaunch({
+        command: launch.command,
+        args: launch.args,
+        env: launch.env,
+      });
+      results.push({ label: launch.label || "", ...result });
+    }
+    response.json({
+      buildingId,
+      results,
+      ok: results.every((entry) => entry.ok),
+    });
+  });
+
+  // Same payload as /api/mcp/config but served with a download disposition
+  // so a "Sync with Claude Desktop" button in the UI can produce the file
+  // the user drops at ~/Library/Application Support/Claude/claude_desktop_config.json
+  // (or the equivalent path on Windows/Linux). Pretty-printed for legibility.
+  app.get("/api/mcp/config/download", (_request, response) => {
+    const config = mcpLaunchRegistry.toMcpConfig();
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.setHeader("Content-Disposition", "attachment; filename=\"claude_desktop_config.json\"");
+    response.setHeader("Cache-Control", "no-store");
+    response.send(`${JSON.stringify(config, null, 2)}\n`);
+  });
+
   app.get("/", (request, response, next) => {
     if (!isMasterplanHost(request)) {
       next();
@@ -2714,29 +2830,49 @@ export async function createVibeResearchApp({
   });
 
   app.get("/api/state", async (_request, response) => {
-    await buildingHubService.refresh();
-    await syncBuildingAgentGuides();
-    response.json({
-      appName: "Vibe Research",
-      agentPrompt: await agentPromptStore.getState(),
-      agentTown: agentTownStore.getState(),
-      buildingHub: {
-        buildings: buildingHubService.listBuildings(),
-        layouts: buildingHubService.listLayouts(),
-        recipes: buildingHubService.listRecipes ? buildingHubService.listRecipes() : [],
-        status: buildingHubService.getStatus(),
-      },
-      cwd,
-      defaultSessionCwd: sessionDefaultCwd,
-      defaultProviderId,
-      providers,
-      sessions: sessionManager.listSessions(),
-      settings: getSettingsState(),
-      stateDir,
-      urls,
-      preferredUrl,
-      ports: await listNamedPorts(),
-    });
+    // /api/state is the first thing the browser hits on page load. If anything
+    // here throws (network blip refreshing the BuildingHub catalog, transient
+    // file error syncing agent guides, port-scan hiccup), an unhandled async
+    // rejection leaves the response hanging and the user sees a blank page.
+    // Catch and emit a 500 with the message so the UI can show something.
+    try {
+      await buildingHubService.refresh();
+      await syncBuildingAgentGuides();
+      // Compact summary of the MCP-launch registry so the UI can show
+      // "N MCP servers wired up, K still need a token" without an extra
+      // round-trip. Detail lives at GET /api/mcp/launches.
+      const mcpLaunches = mcpLaunchRegistry.list({ resolved: true });
+      response.json({
+        appName: "Vibe Research",
+        agentPrompt: await agentPromptStore.getState(),
+        agentTown: agentTownStore.getState(),
+        buildingHub: {
+          buildings: buildingHubService.listBuildings(),
+          layouts: buildingHubService.listLayouts(),
+          recipes: buildingHubService.listRecipes ? buildingHubService.listRecipes() : [],
+          status: buildingHubService.getStatus(),
+        },
+        cwd,
+        defaultSessionCwd: sessionDefaultCwd,
+        defaultProviderId,
+        providers,
+        sessions: sessionManager.listSessions(),
+        settings: getSettingsState(),
+        stateDir,
+        urls,
+        preferredUrl,
+        ports: await listNamedPorts(),
+        mcp: {
+          totalLaunches: mcpLaunches.length,
+          unresolvedLaunches: mcpLaunches.filter((entry) => entry.unresolved).length,
+          buildings: [...new Set(mcpLaunches.map((entry) => entry.buildingId))].sort(),
+        },
+      });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not load Vibe Research state." });
+    }
   });
 
   app.get("/healthz", (_request, response) => {
@@ -2988,9 +3124,13 @@ export async function createVibeResearchApp({
   });
 
   app.get("/api/ports", async (_request, response) => {
-    response.json({
-      ports: await listNamedPorts(),
-    });
+    try {
+      response.json({ ports: await listNamedPorts() });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not list named ports." });
+    }
   });
 
   app.get("/api/system", async (_request, response) => {
@@ -3106,9 +3246,15 @@ export async function createVibeResearchApp({
   });
 
   app.get("/api/update/status", async (request, response) => {
-    const force = request.query.force === "1" || request.query.force === "true";
-    const update = await updateManager.getStatus({ force });
-    response.json({ update });
+    try {
+      const force = request.query.force === "1" || request.query.force === "true";
+      const update = await updateManager.getStatus({ force });
+      response.json({ update });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not check update status." });
+    }
   });
 
   // Diagnostic: open a WebSocket from the server back to its OWN /ws endpoint
@@ -3752,6 +3898,17 @@ export async function createVibeResearchApp({
 
   app.patch("/api/settings", async (request, response) => {
     try {
+      // Snapshot the previously-installed building set BEFORE the update so
+      // we can detect uninstalls and clean up MCP-launch declarations. The
+      // alternative — leaving stale launches in the registry after a
+      // building gets uninstalled — would surprise the host agent: it would
+      // keep launching MCP servers for buildings the user thought they
+      // turned off.
+      const previousInstalled = new Set(
+        Array.isArray(settingsStore.settings.installedPluginIds)
+          ? settingsStore.settings.installedPluginIds
+          : [],
+      );
       await settingsStore.update({
         agentAutomations: request.body?.agentAutomations,
         agentAnthropicApiKey: request.body?.agentAnthropicApiKey,
@@ -3795,6 +3952,28 @@ export async function createVibeResearchApp({
         githubOAuthClientSecret: request.body?.githubOAuthClientSecret,
         googleOAuthClientId: request.body?.googleOAuthClientId,
         googleOAuthClientSecret: request.body?.googleOAuthClientSecret,
+        modalEnabled: request.body?.modalEnabled,
+        runpodEnabled: request.body?.runpodEnabled,
+        harborEnabled: request.body?.harborEnabled,
+        mcpFilesystemEnabled: request.body?.mcpFilesystemEnabled,
+        mcpFilesystemRoots: request.body?.mcpFilesystemRoots,
+        mcpGithubEnabled: request.body?.mcpGithubEnabled,
+        mcpGithubToken: request.body?.mcpGithubToken,
+        mcpPostgresEnabled: request.body?.mcpPostgresEnabled,
+        mcpPostgresUrl: request.body?.mcpPostgresUrl,
+        mcpSqliteEnabled: request.body?.mcpSqliteEnabled,
+        mcpSqliteDbPath: request.body?.mcpSqliteDbPath,
+        mcpBraveSearchEnabled: request.body?.mcpBraveSearchEnabled,
+        mcpBraveSearchApiKey: request.body?.mcpBraveSearchApiKey,
+        mcpSlackEnabled: request.body?.mcpSlackEnabled,
+        mcpSlackBotToken: request.body?.mcpSlackBotToken,
+        mcpSlackTeamId: request.body?.mcpSlackTeamId,
+        mcpSentryEnabled: request.body?.mcpSentryEnabled,
+        mcpSentryAuthToken: request.body?.mcpSentryAuthToken,
+        mcpNotionEnabled: request.body?.mcpNotionEnabled,
+        mcpNotionToken: request.body?.mcpNotionToken,
+        mcpLinearEnabled: request.body?.mcpLinearEnabled,
+        mcpLinearApiKey: request.body?.mcpLinearApiKey,
         ottoAuthBaseUrl: request.body?.ottoAuthBaseUrl,
         ottoAuthCallbackUrl: request.body?.ottoAuthCallbackUrl,
         ottoAuthDefaultMaxChargeCents: request.body?.ottoAuthDefaultMaxChargeCents,
@@ -3832,6 +4011,23 @@ export async function createVibeResearchApp({
       await applyRuntimeSettings(settingsStore.settings, {
         backupReason: shouldSyncLibraryForSettingsPatch(request.body) ? "settings" : false,
       });
+
+      // Reconcile the MCP-launch registry against the post-update install
+      // set. Buildings that were uninstalled in this PATCH lose their
+      // declared launches so the next /api/mcp/launches read won't include
+      // them. Re-installing the same building re-runs the install plan,
+      // which re-declares the launches. (Buildings that stay installed
+      // are untouched here.)
+      const currentInstalled = new Set(
+        Array.isArray(settingsStore.settings.installedPluginIds)
+          ? settingsStore.settings.installedPluginIds
+          : [],
+      );
+      for (const buildingId of previousInstalled) {
+        if (!currentInstalled.has(buildingId) && mcpLaunchRegistry.has(buildingId)) {
+          mcpLaunchRegistry.remove(buildingId);
+        }
+      }
 
       response.json({
         settings: getSettingsState(),
@@ -4206,11 +4402,17 @@ export async function createVibeResearchApp({
   });
 
   app.post("/api/wiki/backup", async (_request, response) => {
-    const status = await wikiBackupService.runBackup({ reason: "manual" });
-    response.json({
-      backup: status,
-      settings: getSettingsState(),
-    });
+    try {
+      const status = await wikiBackupService.runBackup({ reason: "manual" });
+      response.json({
+        backup: status,
+        settings: getSettingsState(),
+      });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Library backup failed." });
+    }
   });
 
   app.get("/api/agentmail/status", (_request, response) => {
@@ -4831,12 +5033,18 @@ export async function createVibeResearchApp({
   });
 
   app.get("/api/videomemory/status", async (_request, response) => {
-    await videoMemoryService.refreshRemoteMonitorStates();
-    await videoMemoryService.refreshRemoteDevices();
-    response.json({
-      monitors: videoMemoryService.listMonitors(),
-      videoMemory: videoMemoryService.getStatus(),
-    });
+    try {
+      await videoMemoryService.refreshRemoteMonitorStates();
+      await videoMemoryService.refreshRemoteDevices();
+      response.json({
+        monitors: videoMemoryService.listMonitors(),
+        videoMemory: videoMemoryService.getStatus(),
+      });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not load video memory status." });
+    }
   });
 
   app.get("/api/videomemory/devices", async (_request, response) => {
@@ -5160,13 +5368,19 @@ export async function createVibeResearchApp({
   });
 
   app.delete("/api/browser-use/sessions/:browserUseSessionId", async (request, response) => {
-    const session = await browserUseService.deleteSession(request.params.browserUseSessionId);
-    if (!session) {
-      response.status(404).json({ error: "Browser-use session not found." });
-      return;
-    }
+    try {
+      const session = await browserUseService.deleteSession(request.params.browserUseSessionId);
+      if (!session) {
+        response.status(404).json({ error: "Browser-use session not found." });
+        return;
+      }
 
-    response.json({ ok: true, session });
+      response.json({ ok: true, session });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not delete browser-use session." });
+    }
   });
 
   app.get("/api/ottoauth/tasks", (_request, response) => {
@@ -5575,7 +5789,13 @@ export async function createVibeResearchApp({
   app.patch("/api/sessions/:sessionId", handleSessionRename);
 
   app.get("/api/agent-prompt", async (_request, response) => {
-    response.json(await agentPromptStore.getState());
+    try {
+      response.json(await agentPromptStore.getState());
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not load agent prompt." });
+    }
   });
 
   app.put("/api/agent-prompt", async (request, response) => {
@@ -5702,6 +5922,36 @@ export async function createVibeResearchApp({
       },
     }),
   );
+
+  // Last-resort error handler. Express does not auto-translate async route
+  // rejections into 500s, so any handler that forgets a try/catch ends with a
+  // hung response. Each `/api/*` route is supposed to handle its own errors,
+  // but if one slips through we still want the browser to see *something*
+  // rather than spin forever waiting for a response.
+  app.use((error, _request, response, next) => {
+    if (response.headersSent) {
+      next(error);
+      return;
+    }
+    // The Express `send` library (used by sendFile) attaches `error.status`,
+    // not `error.statusCode`, on a missing-file 404 — accept either so we
+    // don't turn legitimate 404s into 500s.
+    const candidate = Number.isInteger(error?.statusCode)
+      ? error.statusCode
+      : Number.isInteger(error?.status)
+      ? error.status
+      : null;
+    const status = candidate && candidate >= 400 && candidate < 600 ? candidate : 500;
+    const message = error?.message || "Internal server error.";
+    if (status >= 500) {
+      try {
+        console.error("[vibe-research] unhandled route error:", error);
+      } catch {
+        // ignore logging failures
+      }
+    }
+    response.status(status).json({ error: message });
+  });
 
   const server = await new Promise((resolve, reject) => {
     const nextServer = app.listen(port, host, () => resolve(nextServer));
