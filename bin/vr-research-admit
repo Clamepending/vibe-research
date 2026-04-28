@@ -15,18 +15,23 @@ function printHelp() {
 Compare a candidate result doc against the project's leaderboard using the
 declared ranking criterion. For quantitative criteria the candidate (and the
 incumbent rows it is compared against) must carry YAML frontmatter with at
-least \`metric\`, \`mean\`, and \`std\`.
+least \`metric\`, \`mean\`, and \`std\`. If the project has a benchmark.md, the
+candidate must also cite a \`benchmark_version\` matching the current bench.
 
 Usage:
   vr-research-admit <project-dir> <candidate-result-path>
   vr-research-admit <project-dir> <candidate-result-path> --json
+  vr-research-admit <project-dir> <candidate-result-path> --allow-cross-version
 `);
 }
 
-const args = process.argv.slice(2).filter((a) => a !== "--json");
-const jsonMode = process.argv.includes("--json");
+const rawArgs = process.argv.slice(2);
+const flags = new Set(rawArgs.filter((a) => a.startsWith("--")));
+const args = rawArgs.filter((a) => !a.startsWith("--"));
+const jsonMode = flags.has("--json");
+const allowCrossVersion = flags.has("--allow-cross-version");
 
-if (args.length < 2 || args[0] === "--help" || args[0] === "-h") {
+if (args.length < 2 || flags.has("--help") || flags.has("-h")) {
   printHelp();
   process.exit(args.length < 2 ? 1 : 0);
 }
@@ -38,11 +43,13 @@ const candidateResultPath = path.isAbsolute(candidateArg)
   : candidateArg;
 
 try {
-  const report = await runAdmit({ projectDir, candidateResultPath });
+  const report = await runAdmit({ projectDir, candidateResultPath, allowCrossVersion });
   if (jsonMode) {
     process.stdout.write(`${JSON.stringify({
       candidateTitle: report.candidate?.title || "",
       candidateQuant: report.candidateQuant,
+      candidateBenchVersion: report.candidateBenchVersion || "",
+      currentBenchVersion: report.currentBenchVersion || "",
       verdictRows: report.verdictRows,
       decision: report.decision,
       criterionKind: report.criterionKind,

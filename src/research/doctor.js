@@ -18,6 +18,13 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { parseProjectReadme } from "./project-readme.js";
 import { parseResultDoc } from "./result-doc.js";
+import {
+  loadBenchmark,
+  validateBenchmark,
+  benchmarkVersionString,
+  benchmarkKnownVersions,
+  benchmarkMetricNames,
+} from "./benchmark.js";
 
 const TREE_URL = /^(https?:\/\/[^\s]+?)\/tree\/([^@\s]+)(?:@([0-9a-f]+))?$/;
 const COMMIT_URL = /^(https?:\/\/[^\s]+?)\/commit\/([0-9a-f]+)$/;
@@ -48,7 +55,72 @@ async function loadResultDoc(projectDir, relativePath) {
   }
 }
 
-async function checkLeaderboard(projectDir, leaderboard) {
+function resultBenchmarkVersion(doc) {
+  const v = doc?.frontmatter?.benchmark_version;
+  if (v === null || v === undefined || v === "") return "";
+  return String(v);
+}
+
+function resultMetric(doc) {
+  const m = doc?.frontmatter?.metric;
+  if (!m) return "";
+  return String(m);
+}
+
+function checkResultBenchmarkVersion(where, doc, benchmark) {
+  if (!benchmark) return [];
+  const issues = [];
+  const declared = resultBenchmarkVersion(doc);
+  const current = benchmarkVersionString(benchmark);
+  if (!declared) {
+    issues.push(makeIssue(
+      "error",
+      "result_missing_benchmark_version",
+      where,
+      `result doc frontmatter is missing benchmark_version (project has benchmark.md)`,
+    ));
+  } else {
+    const knownVersions = benchmarkKnownVersions(benchmark);
+    if (!knownVersions.has(declared)) {
+      issues.push(makeIssue(
+        "warning",
+        "result_unknown_benchmark_version",
+        where,
+        `result doc cites benchmark_version=${declared} but it is not the current version (${current}) and not in HISTORY`,
+      ));
+    } else if (current && declared !== current) {
+      issues.push(makeIssue(
+        "info",
+        "result_stale_benchmark_version",
+        where,
+        `result doc cites benchmark_version=${declared}; current bench is ${current}`,
+      ));
+    }
+  }
+
+  const metricName = resultMetric(doc);
+  const metricNames = benchmarkMetricNames(benchmark);
+  if (metricNames.size) {
+    if (!metricName) {
+      issues.push(makeIssue(
+        "warning",
+        "result_missing_metric",
+        where,
+        "result doc frontmatter has no `metric` field; benchmark declares METRICS, so the result must name which one it scored against",
+      ));
+    } else if (!metricNames.has(metricName)) {
+      issues.push(makeIssue(
+        "error",
+        "result_metric_unknown",
+        where,
+        `result doc cites metric="${metricName}" but benchmark METRICS only declares: ${[...metricNames].join(", ")}`,
+      ));
+    }
+  }
+  return issues;
+}
+
+async function checkLeaderboard(projectDir, leaderboard, benchmark) {
   const issues = [];
   for (const row of leaderboard) {
     const where = `LEADERBOARD rank ${row.rank} (${row.slug || "unnamed"})`;
@@ -92,11 +164,12 @@ async function checkLeaderboard(projectDir, leaderboard) {
     if (doc.status && doc.status !== "resolved") {
       issues.push(makeIssue("error", "leaderboard_result_status", where, `result doc STATUS is "${doc.status}" but leaderboard implies resolved`));
     }
+    issues.push(...checkResultBenchmarkVersion(where, doc, benchmark));
   }
   return issues;
 }
 
-async function checkActive(projectDir, active) {
+async function checkActive(projectDir, active, benchmark) {
   const issues = [];
   for (const row of active) {
     const where = `ACTIVE row ${row.slug || "unnamed"}`;
@@ -120,8 +193,54 @@ async function checkActive(projectDir, active) {
     if (doc.status && doc.status !== "active") {
       issues.push(makeIssue("error", "active_result_status", where, `result doc STATUS is "${doc.status}" but row is ACTIVE`));
     }
+    issues.push(...checkResultBenchmarkVersion(where, doc, benchmark));
   }
   return issues;
+}
+
+function checkBenchmarkPresence(criterion, benchmark) {
+  const issues = [];
+  const kind = criterion?.kind;
+  if (!benchmark && (kind === "qualitative" || kind === "mix")) {
+    issues.push(makeIssue(
+      "error",
+      "benchmark_required",
+      "benchmark.md",
+      `RANKING CRITERION is ${kind} but benchmark.md is missing — qualitative and mix projects must declare a benchmark spec`,
+    ));
+  }
+  if (benchmark && criterion && kind && kind !== "unknown") {
+    const description = String(criterion.description || "").trim().toLowerCase();
+    const metricNames = benchmark.metrics.map((m) => m.name.toLowerCase()).filter(Boolean);
+    // RANKING CRITERION should bind to a declared metric for ALL bench-having
+    // projects, not just quant/mix — qualitative dimensions are operationalised
+    // by exactly the rubric/judge metric we declared.
+    if (metricNames.length && kind !== "unknown") {
+      const referenced = metricNames.some((name) => description.includes(name));
+      if (!referenced) {
+        issues.push(makeIssue(
+          "warning",
+          "ranking_criterion_metric_unbound",
+          "RANKING CRITERION",
+          `RANKING CRITERION does not reference any metric declared in benchmark.md (${metricNames.join(", ")})`,
+        ));
+      }
+    }
+  }
+  return issues;
+}
+
+function checkFrozenBenchmark(benchmark, active) {
+  if (!benchmark) return [];
+  const status = String(benchmark.frontmatter?.status || "").toLowerCase();
+  if (status !== "frozen") return [];
+  if (!active.length) return [];
+  return [makeIssue(
+    "error",
+    "benchmark_frozen_with_active_moves",
+    "benchmark.md",
+    `benchmark.md status is "frozen" but ACTIVE has ${active.length} row(s); frozen benches reject new moves — bump to a new version (active) or unfreeze`,
+  )];
 }
 
 function checkQueue(queue) {
@@ -219,17 +338,25 @@ export async function runDoctor(projectDir, { readmeText } = {}) {
   }
   const parsed = parseProjectReadme(text);
 
+  const benchmark = await loadBenchmark(projectDir);
+
   const issues = [];
   issues.push(...checkRankingCriterion(parsed.rankingCriterion));
   issues.push(...checkLeaderboardCap(parsed.leaderboard));
-  issues.push(...await checkLeaderboard(projectDir, parsed.leaderboard));
-  issues.push(...await checkActive(projectDir, parsed.active));
+  issues.push(...checkBenchmarkPresence(parsed.rankingCriterion, benchmark));
+  issues.push(...checkFrozenBenchmark(benchmark, parsed.active));
+  if (benchmark) {
+    issues.push(...await validateBenchmark(projectDir, benchmark));
+  }
+  issues.push(...await checkLeaderboard(projectDir, parsed.leaderboard, benchmark));
+  issues.push(...await checkActive(projectDir, parsed.active, benchmark));
   issues.push(...checkQueue(parsed.queue));
   issues.push(...await checkInsights(projectDir, parsed.insights));
   issues.push(...await checkLog(projectDir, parsed.log));
 
   return {
     project: parsed,
+    benchmark,
     issues,
     summary: summarize(issues),
   };

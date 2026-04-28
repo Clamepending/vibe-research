@@ -9,6 +9,7 @@ import { parseResultDoc, parseFrontmatter } from "../src/research/result-doc.js"
 import { runDoctor } from "../src/research/doctor.js";
 import { runAdmit, formatVerdict } from "../src/research/admit.js";
 import { lintPaper } from "../src/research/paper-lint.js";
+import { parseBenchmark, validateBenchmark, loadBenchmark } from "../src/research/benchmark.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PROJECT = path.join(
@@ -18,6 +19,14 @@ const FIXTURE_PROJECT = path.join(
   "library",
   "projects",
   "widget-tuning",
+);
+const FIXTURE_BENCHED_PROJECT = path.join(
+  HERE,
+  "fixtures",
+  "research",
+  "library",
+  "projects",
+  "prose-style",
 );
 
 async function copyDir(src, dest) {
@@ -244,6 +253,418 @@ test("lintPaper: flags missing figures and bare numbers without footnotes", asyn
     await rm(tmp, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// benchmark.md: parser, validator, doctor, admit cross-version checks.
+// ---------------------------------------------------------------------------
+
+test("parseBenchmark: parses frontmatter, metrics, datasets, rubrics, calibration, history", async () => {
+  const text = await readFile(path.join(FIXTURE_BENCHED_PROJECT, "benchmark.md"), "utf8");
+  const bench = parseBenchmark(text);
+
+  assert.equal(bench.frontmatter.version, "v1");
+  assert.equal(bench.frontmatter.status, "active");
+  assert.match(bench.purpose, /readability/i);
+
+  assert.equal(bench.metrics.length, 1);
+  assert.equal(bench.metrics[0].name, "readability");
+  assert.equal(bench.metrics[0].kind, "rubric");
+  assert.equal(bench.metrics[0].direction, "higher");
+  assert.match(bench.metrics[0].computedBy, /python eval\/judge\.py/);
+
+  assert.equal(bench.datasets.length, 2);
+  assert.equal(bench.datasets[0].split, "golden");
+  assert.equal(bench.datasets[1].split, "dev");
+
+  assert.equal(bench.rubrics.length, 1);
+  assert.equal(bench.rubrics[0].path, "benchmark/judge-rubric.md");
+
+  assert.equal(bench.calibration.length, 1);
+  assert.equal(bench.calibration[0].metric, "readability");
+
+  assert.equal(bench.history.length, 1);
+  assert.equal(bench.history[0].version, "v1");
+});
+
+test("validateBenchmark: clean fixture passes with no errors", async () => {
+  const bench = await loadBenchmark(FIXTURE_BENCHED_PROJECT);
+  const issues = await validateBenchmark(FIXTURE_BENCHED_PROJECT, bench);
+  const errors = issues.filter((i) => i.severity === "error");
+  assert.equal(errors.length, 0, `unexpected errors: ${JSON.stringify(errors)}`);
+});
+
+test("validateBenchmark: flags missing required sections, invalid metric kind, missing rubric file", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-bench-bad-"));
+  try {
+    await writeFile(
+      path.join(tmp, "benchmark.md"),
+      `---\nversion: v1\n---\n# bad-bench\n\n## METRICS\n\n| name | kind | direction | computed by |\n|------|------|-----------|-------------|\n| foo | banana | sideways | echo hi |\n\n## RUBRICS\n\n- [missing](benchmark/missing.md) — does not exist\n`,
+    );
+    const bench = await loadBenchmark(tmp);
+    const issues = await validateBenchmark(tmp, bench);
+    const codes = issues.map((i) => i.code);
+    assert.ok(codes.includes("benchmark_missing_section"), `expected benchmark_missing_section in ${codes.join(",")}`);
+    assert.ok(codes.includes("benchmark_metric_kind"), `expected benchmark_metric_kind in ${codes.join(",")}`);
+    assert.ok(codes.includes("benchmark_metric_direction"), `expected benchmark_metric_direction in ${codes.join(",")}`);
+    assert.ok(codes.includes("benchmark_rubric_missing_file"), `expected benchmark_rubric_missing_file in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("validateBenchmark: rubric/judge metrics without calibration row are flagged", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-bench-cal-"));
+  try {
+    await writeFile(
+      path.join(tmp, "benchmark.md"),
+      `---\nversion: v1\nlast_updated: 2026-04-28\n---\n# x\n\n## PURPOSE\n\nfoo\n\n## METRICS\n\n| name | kind | direction | computed by |\n|------|------|-----------|-------------|\n| readability | rubric | higher | echo |\n\n## DATASETS\n\n| split | path | size | provenance |\n|------|------|------|-----|\n\n## RUBRICS\n\n## CALIBRATION\n\n## CONTAMINATION CHECKS\n\n## HISTORY\n\n| version | date | change | reason | superseded |\n|---|---|---|---|---|\n| v1 | 2026-04-28 | initial | first cut | - |\n`,
+    );
+    const bench = await loadBenchmark(tmp);
+    const issues = await validateBenchmark(tmp, bench);
+    const codes = issues.map((i) => i.code);
+    assert.ok(codes.includes("benchmark_metric_no_calibration"), `expected benchmark_metric_no_calibration in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: clean qualitative fixture with benchmark.md has no errors", async () => {
+  const report = await runDoctor(FIXTURE_BENCHED_PROJECT);
+  const errors = report.issues.filter((i) => i.severity === "error");
+  assert.equal(errors.length, 0, `unexpected errors: ${JSON.stringify(errors)}`);
+});
+
+test("runDoctor: qualitative project without benchmark.md errors", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-doctor-noBench-"));
+  try {
+    await writeFile(
+      path.join(tmp, "README.md"),
+      `# x\n\n## GOAL\n\ntest\n\n## CODE REPO\n\nhttps://example.com\n\n## SUCCESS CRITERIA\n\n- foo\n\n## RANKING CRITERION\n\n\`qualitative: prose quality\`\n\n## LEADERBOARD\n\n| rank | result | branch | commit | score |\n|------|--------|--------|--------|-------|\n\n## INSIGHTS\n\n## ACTIVE\n\n| move | result doc | branch | agent | started |\n|------|-----------|--------|-------|---------|\n\n## QUEUE\n\n| move | starting-point | why |\n|------|----------------|-----|\n\n## LOG\n\n| date | event | slug or ref | one-line summary | link |\n|------|-------|-------------|-------------------|------|\n`,
+    );
+    const report = await runDoctor(tmp);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("benchmark_required"), `expected benchmark_required in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: result doc missing benchmark_version when bench exists -> error", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-doctor-badResult-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    // Strip benchmark_version from v1-baseline.
+    const v1Path = path.join(project, "results", "v1-baseline.md");
+    let v1 = await readFile(v1Path, "utf8");
+    v1 = v1.replace("benchmark_version: v1\n", "");
+    await writeFile(v1Path, v1);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("result_missing_benchmark_version"), `expected result_missing_benchmark_version in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: result doc citing unknown benchmark version -> warning", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-doctor-unknownVersion-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    const v1Path = path.join(project, "results", "v1-baseline.md");
+    let v1 = await readFile(v1Path, "utf8");
+    v1 = v1.replace("benchmark_version: v1", "benchmark_version: v999");
+    await writeFile(v1Path, v1);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("result_unknown_benchmark_version"), `expected result_unknown_benchmark_version in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: result doc citing stale (older) bench version -> info", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-doctor-staleVersion-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    // Bump benchmark to v2 with v1 in history.
+    const benchPath = path.join(project, "benchmark.md");
+    let bench = await readFile(benchPath, "utf8");
+    bench = bench.replace("version: v1", "version: v2");
+    bench = bench.replace(
+      "| v1 | 2026-04-27 | initial | first cut | - |",
+      "| v2 | 2026-04-28 | tightened rubric | clarity dim collapsed two levels | - |\n| v1 | 2026-04-27 | initial | first cut | v2 |",
+    );
+    await writeFile(benchPath, bench);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("result_stale_benchmark_version"), `expected result_stale_benchmark_version in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runAdmit: cross-version comparison is blocked by default", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-admit-crossVer-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    // Bump bench to v2.
+    const benchPath = path.join(project, "benchmark.md");
+    let bench = await readFile(benchPath, "utf8");
+    bench = bench.replace("version: v1", "version: v2");
+    bench = bench.replace(
+      "| v1 | 2026-04-27 | initial | first cut | - |",
+      "| v2 | 2026-04-28 | tightened rubric | second cut | - |\n| v1 | 2026-04-27 | initial | first cut | v2 |",
+    );
+    await writeFile(benchPath, bench);
+    // Add a candidate citing v2 — incumbents are still on v1.
+    await writeFile(
+      path.join(project, "results", "v3-candidate.md"),
+      `---\nmetric: readability\nbenchmark_version: v2\n---\n# v3-candidate\n\n## STATUS\n\nresolved\n`,
+    );
+    const report = await runAdmit({ projectDir: project, candidateResultPath: "results/v3-candidate.md" });
+    assert.equal(report.decision.admit, false);
+    assert.equal(report.decision.blocked, true);
+    assert.match(report.decision.reason, /cross-version|benchmark_version/i);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runAdmit: --allow-cross-version unblocks cross-version comparison", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-admit-allowCross-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    const benchPath = path.join(project, "benchmark.md");
+    let bench = await readFile(benchPath, "utf8");
+    bench = bench.replace("version: v1", "version: v2");
+    bench = bench.replace(
+      "| v1 | 2026-04-27 | initial | first cut | - |",
+      "| v2 | 2026-04-28 | tightened rubric | second cut | - |\n| v1 | 2026-04-27 | initial | first cut | v2 |",
+    );
+    await writeFile(benchPath, bench);
+    await writeFile(
+      path.join(project, "results", "v3-candidate.md"),
+      `---\nmetric: readability\nbenchmark_version: v2\n---\n# v3-candidate\n\n## STATUS\n\nresolved\n`,
+    );
+    const report = await runAdmit({
+      projectDir: project,
+      candidateResultPath: "results/v3-candidate.md",
+      allowCrossVersion: true,
+    });
+    // Qualitative criterion → manual verdicts; not blocked.
+    assert.notEqual(report.decision.blocked, true);
+    assert.ok(report.verdictRows.every((r) => r.comparison !== "cross-version"));
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runAdmit: candidate missing benchmark_version (project has bench) -> blocked", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-admit-missingVer-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    await writeFile(
+      path.join(project, "results", "v3-candidate.md"),
+      `---\nmetric: readability\n---\n# v3-candidate\n\n## STATUS\n\nresolved\n`,
+    );
+    const report = await runAdmit({ projectDir: project, candidateResultPath: "results/v3-candidate.md" });
+    assert.equal(report.decision.blocked, true);
+    assert.match(report.decision.reason, /benchmark_version/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runAdmit: quantitative project without bench still works (back-compat)", async () => {
+  const report = await runAdmit({
+    projectDir: FIXTURE_PROJECT,
+    candidateResultPath: "results/v3-candidate.md",
+  });
+  assert.equal(report.decision.admit, true);
+  assert.equal(report.decision.atRank, 1);
+});
+
+test("runDoctor: result doc citing metric not in METRICS -> error", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-doctor-badMetric-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    const v1Path = path.join(project, "results", "v1-baseline.md");
+    let v1 = await readFile(v1Path, "utf8");
+    v1 = v1.replace("metric: readability", "metric: reaadability"); // typo
+    await writeFile(v1Path, v1);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("result_metric_unknown"), `expected result_metric_unknown in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: frozen benchmark with ACTIVE rows -> error", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-doctor-frozen-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    // Freeze the bench.
+    const benchPath = path.join(project, "benchmark.md");
+    const bench = (await readFile(benchPath, "utf8")).replace("status: active", "status: frozen");
+    await writeFile(benchPath, bench);
+    // Add an active row + active result doc.
+    const readmePath = path.join(project, "README.md");
+    let readme = await readFile(readmePath, "utf8");
+    readme = readme.replace(
+      "## ACTIVE\n\n| move | result doc | branch | agent | started |\n|------|-----------|--------|-------|---------|",
+      "## ACTIVE\n\n| move | result doc | branch | agent | started |\n|------|-----------|--------|-------|---------|\n| v3-fewshot | [v3-fewshot](results/v3-fewshot.md) | [r/v3-fewshot](https://github.com/example/prose-style/tree/r/v3-fewshot) | 0 | 2026-04-28 |",
+    );
+    await writeFile(readmePath, readme);
+    await writeFile(
+      path.join(project, "results", "v3-fewshot.md"),
+      `---\nmetric: readability\nbenchmark_version: v1\n---\n# v3-fewshot\n\n## STATUS\n\nactive\n`,
+    );
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("benchmark_frozen_with_active_moves"), `expected benchmark_frozen_with_active_moves in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runAdmit: legacy incumbent (no benchmark_version) blocks admission", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-admit-legacy-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    // Strip benchmark_version from incumbent (rank 1).
+    const v2Path = path.join(project, "results", "v2-scaffold.md");
+    let v2 = await readFile(v2Path, "utf8");
+    v2 = v2.replace("benchmark_version: v1\n", "");
+    await writeFile(v2Path, v2);
+    // Add a candidate with valid version.
+    await writeFile(
+      path.join(project, "results", "v3-candidate.md"),
+      `---\nmetric: readability\nbenchmark_version: v1\n---\n# v3-candidate\n\n## STATUS\n\nresolved\n`,
+    );
+    const report = await runAdmit({ projectDir: project, candidateResultPath: "results/v3-candidate.md" });
+    assert.equal(report.decision.blocked, true);
+    assert.match(report.decision.reason, /legacy|no benchmark_version/i);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runAdmit: candidate metric not in METRICS blocks admission", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-admit-badMetric-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    await writeFile(
+      path.join(project, "results", "v3-candidate.md"),
+      `---\nmetric: clarity\nbenchmark_version: v1\n---\n# v3-candidate\n\n## STATUS\n\nresolved\n`,
+    );
+    const report = await runAdmit({ projectDir: project, candidateResultPath: "results/v3-candidate.md" });
+    assert.equal(report.decision.blocked, true);
+    assert.match(report.decision.reason, /not declared in benchmark\.md METRICS|metric=/i);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runAdmit: frozen bench blocks admission entirely", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-admit-frozen-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    const benchPath = path.join(project, "benchmark.md");
+    const bench = (await readFile(benchPath, "utf8")).replace("status: active", "status: frozen");
+    await writeFile(benchPath, bench);
+    await writeFile(
+      path.join(project, "results", "v3-candidate.md"),
+      `---\nmetric: readability\nbenchmark_version: v1\n---\n# v3-candidate\n\n## STATUS\n\nresolved\n`,
+    );
+    const report = await runAdmit({ projectDir: project, candidateResultPath: "results/v3-candidate.md" });
+    assert.equal(report.decision.blocked, true);
+    assert.match(report.decision.reason, /frozen/i);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("validateBenchmark: numeric YAML version (status: active) is treated as a string", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-bench-numericVer-"));
+  try {
+    await writeFile(
+      path.join(tmp, "benchmark.md"),
+      `---\nversion: 2\nlast_updated: 2026-04-28\nstatus: active\n---\n# x\n\n## PURPOSE\n\nfoo\n\n## METRICS\n\n| name | kind | direction | computed by |\n|------|------|-----------|-------------|\n| acc | numeric | higher | echo hi |\n\n## DATASETS\n\n| split | path | size | provenance |\n|------|------|------|-----|\n\n## RUBRICS\n\n## CALIBRATION\n\n## CONTAMINATION CHECKS\n\n## HISTORY\n\n| version | date | change | reason | superseded |\n|---|---|---|---|---|\n| 2 | 2026-04-28 | initial | first | - |\n`,
+    );
+    const bench = await loadBenchmark(tmp);
+    const issues = await validateBenchmark(tmp, bench);
+    const errorCodes = issues.filter((i) => i.severity === "error").map((i) => i.code);
+    assert.ok(!errorCodes.includes("benchmark_missing_version"), `did not expect benchmark_missing_version when YAML coerced numeric: ${errorCodes.join(",")}`);
+    assert.ok(!errorCodes.includes("benchmark_history_missing_current"), `numeric version should match history: ${errorCodes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("validateBenchmark: active bench without rubric calibration -> error (was warning)", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-bench-activeCal-"));
+  try {
+    await writeFile(
+      path.join(tmp, "benchmark.md"),
+      `---\nversion: v1\nlast_updated: 2026-04-28\nstatus: active\n---\n# x\n\n## PURPOSE\n\nfoo\n\n## METRICS\n\n| name | kind | direction | computed by |\n|------|------|-----------|-------------|\n| readability | rubric | higher | echo |\n\n## DATASETS\n\n## RUBRICS\n\n## CALIBRATION\n\n## CONTAMINATION CHECKS\n\n## HISTORY\n\n| version | date | change | reason | superseded |\n|---|---|---|---|---|\n| v1 | 2026-04-28 | initial | first | - |\n`,
+    );
+    const bench = await loadBenchmark(tmp);
+    const issues = await validateBenchmark(tmp, bench);
+    const calibration = issues.find((i) => i.code === "benchmark_metric_no_calibration");
+    assert.ok(calibration, "expected benchmark_metric_no_calibration");
+    assert.equal(calibration.severity, "error", "active bench should error, not warn");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("validateBenchmark: draft bench without calibration is warning, not error", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-bench-draftCal-"));
+  try {
+    await writeFile(
+      path.join(tmp, "benchmark.md"),
+      `---\nversion: v1\nlast_updated: 2026-04-28\nstatus: draft\n---\n# x\n\n## PURPOSE\n\nfoo\n\n## METRICS\n\n| name | kind | direction | computed by |\n|------|------|-----------|-------------|\n| readability | rubric | higher | echo |\n\n## DATASETS\n\n## RUBRICS\n\n## CALIBRATION\n\n## CONTAMINATION CHECKS\n\n## HISTORY\n\n| version | date | change | reason | superseded |\n|---|---|---|---|---|\n| v1 | 2026-04-28 | initial | first | - |\n`,
+    );
+    const bench = await loadBenchmark(tmp);
+    const issues = await validateBenchmark(tmp, bench);
+    const calibration = issues.find((i) => i.code === "benchmark_metric_no_calibration");
+    assert.ok(calibration, "expected benchmark_metric_no_calibration");
+    assert.equal(calibration.severity, "warning", "draft bench should warn, not error");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("formatVerdict: includes benchmark line when project has bench", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-format-bench-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    await writeFile(
+      path.join(project, "results", "v3-candidate.md"),
+      `---\nmetric: readability\nbenchmark_version: v1\n---\n# v3-candidate\n\n## STATUS\n\nresolved\n`,
+    );
+    const report = await runAdmit({ projectDir: project, candidateResultPath: "results/v3-candidate.md" });
+    const text = formatVerdict(report);
+    assert.match(text, /benchmark: v1/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 
 test("lintPaper: flags non-slug-prefixed footnote IDs and missing definitions", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-lint-fn-"));

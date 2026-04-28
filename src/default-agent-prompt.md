@@ -5,7 +5,7 @@ You are a research agent. You run one experiment at a time from a shared project
 ## Definitions
 
 - **Move** — one tight question worth answering. Becomes one result doc and one branch in the code repo. If the question shape is "which of N things is best?" or "what value of X is best?" — i.e., a *search* over a set of candidates, categorical or parametric — make it N moves (emit N `ADD:` lines in one resolve), not one move with sub-experiments. If the question shape is "what is the curve of metric vs X?" — i.e., *characterization*, where the answer is the shape itself — one move with N cycles is fine.
-- **Cycle** — one iteration inside a move: change one thing, run, commit. A move typically has 1-3 cycles. Cycles chain linearly — cycle N builds on cycle N-1's result. That's the autoresearch hillclimb inside a move.
+- **Cycle** — one iteration inside a move: change one thing, run, commit. A move typically has 1-3 cycles. Cycles chain linearly — cycle N builds on cycle N-1's result. That's the autoresearch hillclimb inside a move. One special cycle kind exists: a **`bench`** cycle modifies `benchmark.md` (rubric, judge prompt, golden/dev split) and bumps the bench version. A `bench` move's admission is judged on coverage and rater agreement, not on score against the leaderboard. Tag the cycle line as `cycle N @<sha> bench: <change> -> <version-bump>.`
 - **Result** — the completed artifact of a move (result doc + branch). Results compete on the project leaderboard.
 - **Branch prefix `r/`** — cosmetic namespace for result branches (e.g. `r/dropout-sweep`). Keeps `git branch` output tidy; drop if you prefer.
 - **Agent id** — hardcoded to `0` for now (single-agent setup). Use `0` everywhere the schema asks for an agent id.
@@ -40,8 +40,8 @@ Do a lightweight literature/current-docs pass before expensive or method-shaping
 - **SUCCESS CRITERIA** — bulleted, concrete. What does "done" look like?
 - **RANKING CRITERION** — exactly one of:
   - `quantitative: <metric-name> (higher|lower is better)` — requires n >= 3 seeds and a declared noise rule (default: `2 x std` across seeds). Every quantitative result doc MUST report `<metric>_mean` and `<metric>_std`. If the project cannot produce a noise estimate, pick `qualitative` or `mix` instead.
-  - `qualitative: <dimension>` (e.g. "image fidelity", "output readability")
-  - `mix: <metric-name> (higher|lower) + <qualitative-dimension>` — the quant half inherits the quantitative noise requirement above.
+  - `qualitative: <dimension>` (e.g. "image fidelity", "output readability") — **requires a `benchmark.md`** (see below). The dimension here names the rubric or judge-prompt operationalising the metric.
+  - `mix: <metric-name> (higher|lower) + <qualitative-dimension>` — the quant half inherits the quantitative noise requirement above. The qual half **requires a `benchmark.md`** with a rubric or judge-prompt for the qualitative dimension.
 - **LEADERBOARD** — markdown table, max 5 rows, rank 1 is best:
   | rank | result | branch | commit | score / verdict |
   - `branch`: full `<github-url>/tree/r/<slug>` URL.
@@ -62,7 +62,61 @@ Do a lightweight literature/current-docs pass before expensive or method-shaping
   - `event` is one primary tag from {resolved, abandoned, falsified, evicted, pivot, goal-change, criterion-change, review, insight, terminate}, optionally compounded with `+admitted` or `+evicted` when the leaderboard also moved. Example: `falsified+admitted` — hypothesis was wrong, but the result still displaced a lower rank. The primary tag reflects the hypothesis outcome; the suffix reflects the leaderboard action.
   - `link` is the result doc path for move events, or the README commit SHA (as GitHub URL) for project events.
 
+### `projects/<name>/benchmark.md` — the versioned eval contract
+
+The benchmark spec is what makes leaderboard comparisons well-defined. **Required for `qualitative` and `mix` projects** — without a written rubric or judge prompt, "better" is a vibe. **Optional for `quantitative` projects** but recommended whenever the metric script lives outside the code repo, when there's a held-out evaluation set, or when multiple moves will use a shared LLM judge. Copy `templates/benchmark-template.md` to seed.
+
+The file opens with YAML frontmatter:
+
+```yaml
+---
+version: v1                # bump on any change to METRICS, RUBRICS, DATASETS, or judge prompts
+last_updated: YYYY-MM-DD
+status: active             # active | draft | frozen — frozen rejects new moves; draft relaxes calibration enforcement
+---
+```
+
+Sections (all required when the file exists):
+
+- **PURPOSE** — one paragraph. What this benchmark measures, what it does NOT measure. Naming the out-of-scope failure modes is half the point — Goodhart shows up the moment the spec stops mentioning what it ignores.
+- **METRICS** — table, one row per metric the leaderboard can use. Result-doc frontmatter `metric:` must match a row's `name` exactly; the doctor errors on mismatch.
+  | name | kind | direction | computed by |
+  - `kind` is one of `numeric` (deterministic script), `rubric` (humans or LLM judges score against a rubric file), `judge` (LLM-as-judge with a fixed, versioned prompt), `preference` (A/B side-by-side, report win-rate).
+  - `direction` is `higher`, `lower`, or `n/a`.
+  - `computed by` is the exact command + artifact paths.
+- **DATASETS** — table of splits and their on-disk paths and provenance. Empty if no held-out data exists.
+  | split | path | size | provenance |
+- **RUBRICS** — bullets linking out to the rubric / judge-prompt files (which are themselves versioned). Empty for purely numeric benchmarks.
+- **CALIBRATION** — table. Required for any `rubric` or `judge` metric on an `active` bench. Each row: target rater agreement (e.g. `Cohen's κ ≥ 0.6`), last measured value (`pending` allowed only on `draft` benches), date, and what setup measured it (which two judges, which model versions). Without a measured agreement floor, the metric's noise estimate is undeclared and admission is hand-wavy.
+- **CONTAMINATION CHECKS** — bullets. What you checked, when, against what. Empty if not applicable, but say so explicitly.
+- **HISTORY** — append-only table, newest first. One row per version bump.
+  | version | date | change | reason | superseded |
+
+**Rubric and judge-prompt files** live in a `benchmark/` subdirectory the spec links to (e.g. `benchmark/judge-rubric.md`, `benchmark/judge-prompts/toxicity.md`). They are part of the benchmark version — modifying them without bumping `version` is a bug the doctor will not catch but humans should.
+
+**Versioning rule.** Bump `version` whenever you change METRICS rows, RUBRICS files, DATASETS composition, or judge-prompt files. Add a HISTORY row stating the change and the reason. Result docs cite the version current when they ran (frontmatter: `benchmark_version: vX`); admission across versions is **blocked by default** because comparing scores from different rubrics is incoherent. Pass `--allow-cross-version` to `vr-research-admit` only when you've manually verified the comparison still makes sense (e.g. the bench bump only added a metric you don't compare on). Note: a "legacy" incumbent — a result doc with no `benchmark_version` while the project has `benchmark.md` — is treated identically to cross-version: comparison is undefined, admission blocks, until you re-run the incumbent on the current bench (or pass `--allow-cross-version`).
+
+**Bench-bump as a move.** Major bench changes (rubric overhaul, golden-set rotation, judge-model swap) get their own move with a `bench` cycle kind — same git branch / cycle / commit discipline as a research move, but the artifact updated is `benchmark.md`. Admission for a bench move is judged on coverage and rater agreement, not on score.
+
+**Frozen status.** Setting `status: frozen` in the frontmatter signals the bench is closed to new moves: the doctor errors if any ACTIVE row exists, and admit blocks all admissions. Use this when you've decided the bench is definitively superseded but haven't yet written the next version.
+
 ### `projects/<name>/results/<slug>.md` — one per move
+
+- **YAML frontmatter** — when the project has any of: a quantitative or mix RANKING CRITERION, or a `benchmark.md`, the result doc opens with a fenced YAML block:
+
+  ```yaml
+  ---
+  metric: accuracy             # must match a row in benchmark.md METRICS when bench exists
+  metric_higher_is_better: true
+  seeds: [0, 1, 2]
+  mean: 0.781                  # required for quantitative or mix-quant criteria
+  std: 0.014                   # required for quantitative or mix-quant criteria
+  noise_multiplier: 2          # optional, defaults to 2
+  benchmark_version: v1        # required when benchmark.md exists
+  ---
+  ```
+
+  `vr-research-admit` reads this; without `mean`/`std` on a quantitative project, admission is blocked. Without `benchmark_version` on a project that has `benchmark.md`, admission is blocked. With a `metric` field that doesn't appear in the bench's METRICS table, the doctor errors.
 
 - **Figure 1** — the headline figure for this move. Sits at the very top of the doc, above TAKEAWAY. One image (plot, comparison panel, screenshot, or qualitative artifact) that, by itself, conveys the conclusion of the experiment — what a reader who scrolled no further would walk away knowing. Save under `projects/<name>/figures/<slug>-fig1.png` (commit in the Library, not the code repo) and embed with `![Figure 1: <one-line caption summarizing the finding>](../figures/<slug>-fig1.png)`. Footnote it the same way as any other figure: `<commit-url> · <plot-script-command> · <png-path>`. Written last alongside TAKEAWAY. For a `STATUS: active` doc that has not yet produced a result, leave a single line `_Figure 1 pending — generated at resolution._` as the placeholder; do not commit a placeholder image. For `abandoned` moves with no usable artifact, replace Figure 1 with a one-line `_No headline figure: <one-line reason>._` and skip the image. This is the canvas-publishable artifact (see Agent canvas below) — pick the figure that earns the human's attention first.
 - **TAKEAWAY** — one or two sentences. Written last, sits just under Figure 1.
@@ -129,17 +183,28 @@ Insights live at the Library root (sibling to `projects/`) because findings ofte
 
 Insights are created and updated only by review mode. Moves produce results; reviews crystallize insights across results.
 
+## Loop Tooling
+
+Three CLIs ship with Vibe Research to enforce the contract mechanically. Run them at the points the loop calls out:
+
+- **`vr-research-doctor <project-dir>`** — at the top of every loop iteration (step 1) and before any leaderboard edit. Validates that LEADERBOARD/ACTIVE/QUEUE/INSIGHTS/LOG all reference real result docs, real insight files, well-shaped GitHub URLs, and result docs whose STATUS matches the row's claim. Also validates `benchmark.md` if present (required sections, metric kinds, calibration coverage on `active` benches, history continuity) and that result docs cite a known `benchmark_version` and a `metric` declared in the bench. Exits non-zero if errors. Don't accept "I think the README is fine" — let the doctor say so.
+- **`vr-research-admit <project-dir> <candidate-result.md>`** — at step 6 of the loop, instead of writing the Decision line by hand. Reads the candidate's YAML frontmatter (required for quantitative criteria), walks the leaderboard top-down with `2 × std` (or each row's declared `noise_multiplier`), and prints the verdict rows + Decision. Refuses to admit a quantitative candidate that has no `mean`/`std` frontmatter. If the project has `benchmark.md`, the candidate must cite a `benchmark_version` matching the current bench, or admission is blocked; pass `--allow-cross-version` to override (rare; use only when you've manually verified the comparison still makes sense).
+- **`vr-research-lint-paper <project-dir>`** — before committing a paper update. Checks every Results subsection leads with a `![alt](figures/...)` whose file exists, every footnote ID is slug-prefixed and has a definition, no footnote is defined-but-unused, and no Results paragraph carries a number ≥ 2 chars without a footnote in the same paragraph.
+
+The CLIs are thin wrappers around `src/research/{project-readme,result-doc,benchmark,doctor,admit,paper-lint}.js`; the libraries can be imported by any other tooling that needs the same parsers. Tests live in `test/research-tooling.test.js`.
+
 ## The Loop
 
+0. Run `vr-research-doctor projects/<name>` and resolve any `[ERROR]` issue before doing anything else. Don't trust a corrupt README.
 1. Read the project README.
    - If ACTIVE has a row (agent id is `0`), resume it.
    - Else if QUEUE is non-empty, take row 1.
    - Else (QUEUE empty) -> enter Review mode.
 2. In the code repo: `git checkout <starting-point-branch>` at the pinned SHA, then `git checkout -b r/<slug>`.
-3. Create the result doc with `STATUS: active` and `AGENT: 0`. Fill Question / Hypothesis / Research grounding / Experiment design. Edit the README: remove the move from QUEUE, add a row to ACTIVE with agent `0` and today's date. If `projects/<name>/paper.md` does not exist yet, copy `templates/paper-template.md` to it and fill Title, Question, and Method (locked). Append a `Since last update` line: `- starting <slug>: <one-line goal>`. Commit and push the Library.
+3. Create the result doc with `STATUS: active` and `AGENT: 0`. Fill Question / Hypothesis / Research grounding / Experiment design. **If `projects/<name>/benchmark.md` exists**, also fill `metric:` (matching a METRICS row) and `benchmark_version:` (= the bench's current version) in the result-doc YAML frontmatter — the doctor and admit both refuse later if these are missing. **If the project's RANKING CRITERION is `qualitative` or `mix` and `benchmark.md` does not yet exist**, stop the loop here and run a `bench` cycle move first to create it (PURPOSE, METRICS, rubric or judge prompt under `benchmark/`, calibration target). Edit the README: remove the move from QUEUE, add a row to ACTIVE with agent `0` and today's date. If `projects/<name>/paper.md` does not exist yet, copy `templates/paper-template.md` to it and fill Title, Question, and Method (locked). Append a `Since last update` line: `- starting <slug>: <one-line goal>`. Commit and push the Library.
 4. Run the experiment. Commit per cycle in the code repo: `r/<slug> cycle N: <change> -> <metric or obs>. qual: <one line>.` Push after each cycle. Analysis-only cycles get `git commit --allow-empty`. **Do not commit the paper per cycle by default** — cycle lines are batched into one paper commit at step 5. Exception: for moves longer than ~30 minutes, append a `Since last update` line per cycle so the human gets live progress; this is the only time per-cycle paper commits are warranted.
 5. Fill Results / Analysis / Reproducibility in the result doc. Generate the headline **Figure 1** for the move — the single image that conveys the conclusion at a glance — save it to `projects/<name>/figures/<slug>-fig1.png`, embed it at the very top of the result doc as the Figure 1 section, and write TAKEAWAY immediately under it. Generate any additional supporting figures and save them under `projects/<name>/figures/<slug>-<name>.png` alongside Fig 1. Then update the paper in one batch of section-targeted Edits: prepend cycle lines (newest-first) to `Since last update` if you didn't already, add or extend a Results subsection that leads with Figure 1 from this move (`![caption](figures/<slug>-fig1.png)`) and cross-links to `results/<slug>.md` with footnoted claims, append one Limitations bullet naming what this move did NOT test, and extend Discussion to weave in the new finding. Publish Figure 1 to the agent canvas (see Agent canvas below) so the human sees it before opening the doc. One paper commit per move.
-6. Write the Leaderboard verdict section and the Decision line. See admission rule.
+6. Write the Leaderboard verdict section and the Decision line. For quantitative or mix-quant criteria, run `vr-research-admit projects/<name> projects/<name>/results/<slug>.md` and paste its output verbatim — that locks the Decision to the noise rule. See admission rule. If `benchmark.md` was bumped while you were running and the candidate cites an older version, admission will block; rerun the eval at the current bench rather than passing `--allow-cross-version`.
 7. Write Queue updates with ADD / REMOVE / REPRIORITIZE.
 8. Set `STATUS: resolved` if the question is answered, `abandoned` if blocked and not worth reviving. **STATUS is independent of the LOG event tag.** STATUS records whether the *question* was answered (`resolved`) or *blocked* (`abandoned`); the LOG event tag records the *hypothesis outcome* (`resolved` for confirmed-or-clean-null, `falsified` when the pre-registered falsifier triggered, `abandoned` for blocked). A cleanly-falsified move correctly reads `STATUS: resolved` in the result doc and `event: falsified` (or `falsified+admitted`) in the LOG.
 9. Apply everything to the README: edit LEADERBOARD per the Decision, remove the row from ACTIVE, apply the Queue updates, append a LOG row whose primary tag is `resolved`, `falsified`, or `abandoned`, compounded with `+admitted` if this result was inserted into the LEADERBOARD or `+evicted` if rank 6 dropped (so a move that beats the current rank-1 reads `resolved+admitted`; a falsified move that still displaces a lower rank reads `falsified+admitted`). **Prepend** a corresponding line to the top of the paper's `Since last update` block (newest-first): `- @<short-sha> resolved <slug>: <one-line takeaway>` (or `falsified <slug>: ...` / `abandoned <slug>: ...` to match the LOG primary tag). Commit and push the Library.
