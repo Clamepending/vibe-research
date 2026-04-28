@@ -38,6 +38,7 @@ import { testLaunch as testMcpLaunch } from "./mcp-launch-tester.js";
 import { handshakeWithLaunch as handshakeMcpLaunch } from "./mcp-protocol-handshake.js";
 import { createMcpLaunchHealthMonitor } from "./mcp-launch-health.js";
 import { createMcpLaunchHealthScheduler } from "./mcp-launch-health-scheduler.js";
+import { syncToClaudeCode, syncToCodex } from "./mcp-config-sync.js";
 import { createFolderEntry, listFolderEntries } from "./folder-browser.js";
 import { GitHubOAuthTokenStore } from "./github-oauth-token-store.js";
 import { GitHubService } from "./github-service.js";
@@ -2966,6 +2967,27 @@ export async function createVibeResearchApp({
       response.json(result);
     } catch (error) {
       response.status(500).json({ error: error?.message || "health check failed" });
+    }
+  });
+
+  // Sync the MCP-launch registry into Claude Code (~/.claude.json) and
+  // Codex (~/.codex/config.toml) so those agent CLIs actually see the
+  // MCP servers Vibe Research has installed. Each managed entry carries
+  // a _vibeResearchManaged: true marker so subsequent syncs replace
+  // ours cleanly without clobbering hand-edited entries.
+  app.post("/api/mcp/sync", async (request, response) => {
+    const targets = String(request.query.target || request.body?.target || "all").toLowerCase();
+    try {
+      const out = {};
+      if (targets === "all" || targets === "claude") {
+        out.claude = syncToClaudeCode({ registry: mcpLaunchRegistry });
+      }
+      if (targets === "all" || targets === "codex") {
+        out.codex = syncToCodex({ registry: mcpLaunchRegistry });
+      }
+      response.json(out);
+    } catch (error) {
+      response.status(500).json({ error: error?.message || "sync failed" });
     }
   });
 
