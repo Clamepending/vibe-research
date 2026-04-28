@@ -3,6 +3,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   createMcpLaunchRegistry,
@@ -250,4 +253,151 @@ test("executeInstallPlan: failing install does NOT touch the mcp registry", asyn
   const list = r.list();
   assert.equal(list.length, 1);
   assert.equal(list[0].command, "previous-cmd");
+});
+
+// ---- Persistence ----
+
+function tmpFile(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), `${prefix}-`));
+  return { path: join(dir, "registry.json"), dir };
+}
+
+test("persistence: declare writes the file; new registry loads same data", () => {
+  const { path: filePath, dir } = tmpFile("persist-declare");
+  try {
+    const r1 = createMcpLaunchRegistry({ persistencePath: filePath });
+    r1.declare("mcp-a", [{ command: "node", args: ["x"], env: { K: "v" }, label: "demo" }]);
+    // The file should now exist.
+    const onDisk = JSON.parse(readFileSync(filePath, "utf8"));
+    assert.equal(onDisk.version, 1);
+    assert.equal(onDisk.buildings["mcp-a"][0].command, "node");
+
+    // A fresh registry constructed with the same path loads the data.
+    const r2 = createMcpLaunchRegistry({ persistencePath: filePath });
+    assert.equal(r2.size(), 1);
+    const list = r2.list();
+    assert.equal(list[0].buildingId, "mcp-a");
+    assert.deepEqual(list[0].args, ["x"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistence: remove writes a smaller file", () => {
+  const { path: filePath, dir } = tmpFile("persist-remove");
+  try {
+    const r = createMcpLaunchRegistry({ persistencePath: filePath });
+    r.declare("a", [{ command: "x" }]);
+    r.declare("b", [{ command: "y" }]);
+    r.remove("a");
+    const onDisk = JSON.parse(readFileSync(filePath, "utf8"));
+    assert.equal(Object.keys(onDisk.buildings).length, 1);
+    assert.ok(onDisk.buildings.b);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistence: clear() empties the file", () => {
+  const { path: filePath, dir } = tmpFile("persist-clear");
+  try {
+    const r = createMcpLaunchRegistry({ persistencePath: filePath });
+    r.declare("a", [{ command: "x" }]);
+    r.declare("b", [{ command: "y" }]);
+    r.clear();
+    const onDisk = JSON.parse(readFileSync(filePath, "utf8"));
+    assert.deepEqual(onDisk.buildings, {});
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistence: corrupt JSON file is tolerated, registry starts empty", () => {
+  const { path: filePath, dir } = tmpFile("persist-corrupt");
+  try {
+    writeFileSync(filePath, "this is not json {[}");
+    const r = createMcpLaunchRegistry({ persistencePath: filePath });
+    assert.equal(r.size(), 0);
+    // The first declare should overwrite the corrupt file with valid data.
+    r.declare("a", [{ command: "x" }]);
+    const onDisk = JSON.parse(readFileSync(filePath, "utf8"));
+    assert.ok(onDisk.buildings.a);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistence: missing parent directory is created on first write", () => {
+  const { dir } = tmpFile("persist-mkdir");
+  const filePath = join(dir, "nested", "deeper", "registry.json");
+  try {
+    const r = createMcpLaunchRegistry({ persistencePath: filePath });
+    r.declare("a", [{ command: "x" }]);
+    const onDisk = JSON.parse(readFileSync(filePath, "utf8"));
+    assert.ok(onDisk.buildings.a);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistence: missing file is tolerated, registry starts empty", () => {
+  const { dir } = tmpFile("persist-missing");
+  const filePath = join(dir, "does-not-exist.json");
+  try {
+    const r = createMcpLaunchRegistry({ persistencePath: filePath });
+    assert.equal(r.size(), 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistence: empty-array declare clears the building from disk", () => {
+  const { path: filePath, dir } = tmpFile("persist-clear-one");
+  try {
+    const r = createMcpLaunchRegistry({ persistencePath: filePath });
+    r.declare("a", [{ command: "x" }]);
+    r.declare("a", []);
+    const onDisk = JSON.parse(readFileSync(filePath, "utf8"));
+    assert.deepEqual(onDisk.buildings, {});
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistence: declare normalization round-trips through the file", () => {
+  const { path: filePath, dir } = tmpFile("persist-roundtrip");
+  try {
+    const r1 = createMcpLaunchRegistry({ persistencePath: filePath });
+    r1.declare("a", [
+      { command: "good" },
+      { command: "" },                  // dropped
+      "string",                         // dropped
+      { command: "second", env: { X: "1" } },
+    ]);
+    const r2 = createMcpLaunchRegistry({ persistencePath: filePath });
+    const cmds = r2.list().map((entry) => entry.command).sort();
+    assert.deepEqual(cmds, ["good", "second"]);
+    assert.deepEqual(r2.list().find((e) => e.command === "second").env, { X: "1" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistence: file with wrong shape is tolerated", () => {
+  const { path: filePath, dir } = tmpFile("persist-wrong-shape");
+  try {
+    writeFileSync(filePath, JSON.stringify({ version: 1, buildings: "not an object" }));
+    const r = createMcpLaunchRegistry({ persistencePath: filePath });
+    assert.equal(r.size(), 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistence: persistencePath omitted disables persistence", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("a", [{ command: "x" }]);
+  // Nothing crashed and the data is in-memory only.
+  assert.equal(r.size(), 1);
+  assert.equal(r.persistencePath, null);
 });
