@@ -2769,6 +2769,18 @@ export async function createVibeResearchApp({
     response.json(mcpLaunchRegistry.toMcpConfig());
   });
 
+  // Same payload as /api/mcp/config but served with a download disposition
+  // so a "Sync with Claude Desktop" button in the UI can produce the file
+  // the user drops at ~/Library/Application Support/Claude/claude_desktop_config.json
+  // (or the equivalent path on Windows/Linux). Pretty-printed for legibility.
+  app.get("/api/mcp/config/download", (_request, response) => {
+    const config = mcpLaunchRegistry.toMcpConfig();
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.setHeader("Content-Disposition", "attachment; filename=\"claude_desktop_config.json\"");
+    response.setHeader("Cache-Control", "no-store");
+    response.send(`${JSON.stringify(config, null, 2)}\n`);
+  });
+
   app.get("/", (request, response, next) => {
     if (!isMasterplanHost(request)) {
       next();

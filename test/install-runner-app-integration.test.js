@@ -167,6 +167,47 @@ test("install plan: PATCH /api/settings removing a building from installedPlugin
   }
 });
 
+test("GET /api/mcp/config/download: returns json with download disposition + matching body", async () => {
+  const { baseUrl, cleanup } = await startApp();
+  try {
+    // Empty registry first — should still be a valid file with mcpServers: {}
+    const empty = await fetch(`${baseUrl}/api/mcp/config/download`);
+    assert.equal(empty.status, 200);
+    assert.equal(empty.headers.get("content-type"), "application/json; charset=utf-8");
+    const dispEmpty = empty.headers.get("content-disposition");
+    assert.ok(dispEmpty);
+    assert.match(dispEmpty, /attachment/);
+    assert.match(dispEmpty, /claude_desktop_config\.json/);
+    const emptyBody = await empty.text();
+    assert.ok(emptyBody.endsWith("\n"), "downloadable file must end in a newline");
+    assert.deepEqual(JSON.parse(emptyBody), { mcpServers: {} });
+
+    // Install a building so the file has actual content.
+    const startResp = await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install`, { method: "POST" });
+    const { jobId } = await startResp.json();
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const j = await (await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install/jobs/${jobId}`)).json();
+      if (j.status !== "running") break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    // Download should now contain the entry.
+    const dl = await fetch(`${baseUrl}/api/mcp/config/download`);
+    assert.equal(dl.status, 200);
+    const text = await dl.text();
+    const parsed = JSON.parse(text);
+    assert.ok(parsed.mcpServers["mcp-filesystem"]);
+    // The downloadable form must match the body of /api/mcp/config exactly.
+    const apiResp = await (await fetch(`${baseUrl}/api/mcp/config`)).json();
+    assert.deepEqual(parsed, apiResp);
+    // Pretty-printed (i.e. has at least one newline inside the body, not just at end).
+    assert.ok(text.includes("\n  "), "downloadable file should be pretty-printed");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("install plan: ?resolved=1 interpolates ${settingKey} from live settings", async () => {
   const { baseUrl, cleanup } = await startApp();
   try {
