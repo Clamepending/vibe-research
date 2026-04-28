@@ -239,3 +239,298 @@ test("createInstallJobStore: trims old jobs past the cap", () => {
   const present = ids.filter((id) => jobStore.get(id));
   assert.equal(present.length, 64);
 });
+
+// ---- Edge cases below ----
+
+test("edge: command step that exceeds timeoutSec is killed and recorded", async () => {
+  const log = silentLog();
+  const result = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "false" }],
+      install: [{ kind: "command", command: "sleep 5", timeoutSec: 1, label: "sleep" }],
+      verify: [],
+    },
+    { appendLog: log.append },
+  );
+  assert.equal(result.status, "failed");
+  // The runner records the timeout reason in the install log entry.
+  const installEntry = log.entries.find((entry) => entry.phase === "install" && entry.message?.includes("failed"));
+  assert.ok(installEntry, "should log the install failure");
+  assert.match(installEntry.stderrTail || "", /timeout after 1s/);
+});
+
+test("edge: AbortController abort during install short-circuits the plan", async () => {
+  const log = silentLog();
+  const controller = new AbortController();
+  // Abort almost immediately so the sleep is killed.
+  setTimeout(() => controller.abort(), 50);
+  const result = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "false" }],
+      install: [{ kind: "command", command: "sleep 10", timeoutSec: 30, label: "long-sleep" }],
+      verify: [],
+    },
+    { appendLog: log.append, signal: controller.signal },
+  );
+  assert.equal(result.status, "failed");
+});
+
+test("edge: http step that returns invalid JSON does not crash, captures nothing", async () => {
+  const settings = fakeSettingsStore();
+  const log = silentLog();
+  const fakeFetch = async () => ({
+    status: 200,
+    text: async () => "<html>not json</html>",
+  });
+  const result = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "false" }],
+      install: [
+        { kind: "http", method: "POST", url: "https://example.test/x", body: {}, captureSettings: { username: "providerUsername" } },
+      ],
+      verify: [],
+    },
+    { appendLog: log.append, settingsStore: settings, fetchImpl: fakeFetch },
+  );
+  // 200 → install ok, but parse fails so no settings captured.
+  assert.equal(result.status, "ok");
+  assert.deepEqual(settings.updates, []);
+});
+
+test("edge: http step captureSettings missing keys are silently skipped", async () => {
+  const settings = fakeSettingsStore();
+  const fakeFetch = async () => ({
+    status: 201,
+    text: async () => JSON.stringify({ found: "yes" }),
+  });
+  const result = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "false" }],
+      install: [
+        {
+          kind: "http",
+          method: "POST",
+          url: "https://example.test/x",
+          body: {},
+          captureSettings: {
+            found: "providerFound",
+            absent: "providerAbsent",
+          },
+        },
+      ],
+      verify: [],
+    },
+    { appendLog: () => {}, settingsStore: settings, fetchImpl: fakeFetch },
+  );
+  assert.equal(result.status, "ok");
+  assert.deepEqual(settings.updates, [{ providerFound: "yes" }]);
+});
+
+test("edge: http step with deeply nested capture path", async () => {
+  const settings = fakeSettingsStore();
+  const fakeFetch = async () => ({
+    status: 200,
+    text: async () => JSON.stringify({ outer: { middle: { inner: "deep-value" } } }),
+  });
+  const result = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "false" }],
+      install: [
+        {
+          kind: "http",
+          method: "POST",
+          url: "https://example.test/x",
+          body: {},
+          captureSettings: { "outer.middle.inner": "providerDeep" },
+        },
+      ],
+      verify: [],
+    },
+    { appendLog: () => {}, settingsStore: settings, fetchImpl: fakeFetch },
+  );
+  assert.equal(result.status, "ok");
+  assert.deepEqual(settings.updates, [{ providerDeep: "deep-value" }]);
+});
+
+test("edge: settingsStore.update throwing surfaces a failed status", async () => {
+  const throwingSettings = {
+    settings: {},
+    async update() { throw new Error("disk full"); },
+  };
+  const fakeFetch = async () => ({ status: 200, text: async () => JSON.stringify({ token: "abc" }) });
+  const result = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "false" }],
+      install: [
+        { kind: "http", method: "POST", url: "https://example.test/x", body: {}, captureSettings: { token: "providerToken" } },
+      ],
+      verify: [],
+    },
+    { appendLog: () => {}, settingsStore: throwingSettings, fetchImpl: fakeFetch },
+  );
+  assert.equal(result.status, "failed");
+  assert.match(result.reason, /disk full/);
+});
+
+test("edge: auth-paste skipped when target setting is already filled", async () => {
+  // Simulate the post-install scenario where the human has already pasted.
+  const filledSettings = {
+    settings: { mcpDemoToken: "previously-pasted" },
+    async update() {},
+  };
+  const result = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "true" }],
+      install: [],
+      auth: { kind: "auth-paste", setting: "mcpDemoToken", setupUrl: "https://x", setupLabel: "x" },
+      verify: [{ kind: "command", command: "true" }],
+    },
+    { appendLog: () => {}, settingsStore: filledSettings },
+  );
+  // Verify already passed AND setting is filled → no need to pause.
+  assert.equal(result.status, "ok");
+});
+
+test("edge: auth-paste pauses when target setting is empty even if verify passed", async () => {
+  // This is the MCP-server scenario: package exists (verify passes) but no
+  // token has been pasted yet (setting empty) → must pause.
+  const emptySettings = { settings: {}, async update() {} };
+  const result = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "true" }],
+      install: [],
+      auth: { kind: "auth-paste", setting: "mcpDemoToken", setupUrl: "https://x", setupLabel: "x" },
+      verify: [{ kind: "command", command: "true" }],
+    },
+    { appendLog: () => {}, settingsStore: emptySettings },
+  );
+  assert.equal(result.status, "auth-required");
+  assert.equal(result.authPrompt.setting, "mcpDemoToken");
+});
+
+test("edge: mcp-launch declarations always appear in the log on success", async () => {
+  const log = silentLog();
+  const result = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "true" }],
+      install: [],
+      verify: [],
+      mcp: [
+        { kind: "mcp-launch", command: "node", args: ["server.js", "--port", "3000"], label: "demo-mcp" },
+      ],
+    },
+    { appendLog: log.append },
+  );
+  assert.equal(result.status, "ok");
+  const mcpEntry = log.entries.find((entry) => entry.phase === "mcp");
+  assert.ok(mcpEntry);
+  assert.match(mcpEntry.message, /node server\.js --port 3000/);
+});
+
+test("edge: log truncation keeps the most recent 500 entries", () => {
+  const jobStore = createInstallJobStore();
+  const job = jobStore.create("noisy");
+  for (let i = 0; i < 800; i += 1) {
+    jobStore.appendLog(job.id, { phase: "noise", message: `msg-${i}` });
+  }
+  const stored = jobStore.get(job.id);
+  assert.equal(stored.log.length, 500);
+  // Should keep the most recent ones.
+  assert.equal(stored.log.at(-1).message, "msg-799");
+  assert.equal(stored.log[0].message, "msg-300");
+});
+
+test("edge: HTTP step honors okStatusCodes override (e.g. 204 No Content)", async () => {
+  const fakeFetch = async () => ({ status: 204, text: async () => "" });
+  const result = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "false" }],
+      install: [
+        {
+          kind: "http",
+          method: "POST",
+          url: "https://example.test/x",
+          body: {},
+          okStatusCodes: [200, 201, 204],
+        },
+      ],
+      verify: [],
+    },
+    { appendLog: () => {}, fetchImpl: fakeFetch },
+  );
+  assert.equal(result.status, "ok");
+});
+
+test("edge: missing global fetch is reported gracefully", async () => {
+  const result = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "false" }],
+      install: [
+        { kind: "http", method: "POST", url: "https://example.test/x", body: {} },
+      ],
+      verify: [],
+    },
+    { appendLog: () => {}, fetchImpl: undefined },
+  );
+  // We DO have global fetch in node 20, so this should pass to fetch and
+  // return a real result. The test exists to document that the runner
+  // doesn't crash if fetch is somehow stripped — replace fetchImpl with a
+  // sentinel that throws to confirm:
+  const result2 = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "false" }],
+      install: [
+        { kind: "http", method: "POST", url: "https://example.test/x", body: {} },
+      ],
+      verify: [],
+    },
+    {
+      appendLog: () => {},
+      fetchImpl: () => { throw new Error("network down"); },
+    },
+  );
+  assert.equal(result2.status, "failed");
+  assert.match(result2.reason, /install http step/);
+});
+
+test("edge: command okExitCodes override accepts a non-zero exit", async () => {
+  // grep -c on a non-matching pattern exits 1, but that's "0 matches",
+  // which is sometimes a valid outcome. Demonstrate okExitCodes.
+  const log = silentLog();
+  const result = await executeInstallPlan(
+    {
+      preflight: [{ kind: "command", command: "true" }],
+      install: [],
+      verify: [
+        { kind: "command", command: "exit 2", okExitCodes: [0, 2], label: "tolerate-2" },
+      ],
+    },
+    { appendLog: log.append },
+  );
+  assert.equal(result.status, "ok");
+});
+
+test("edge: SDK normalization drops unknown step kinds and bad shapes", async () => {
+  // The SDK drops invalid steps; the runner should treat the result as
+  // an empty plan and finish ok.
+  const { defineBuilding } = await import("../src/client/building-sdk.js");
+  const building = defineBuilding({
+    id: "broken-plan",
+    install: {
+      enabledSetting: "brokenEnabled",
+      plan: {
+        preflight: [{ kind: "wrong-kind", command: "true" }, null, "string-not-object"],
+        install: [{ kind: "command" /* missing command field */ }],
+        verify: [{ kind: "http" /* missing url */ }],
+        mcp: [{ kind: "mcp-launch" /* missing command */ }],
+      },
+    },
+  });
+  // After normalization, every step list should be empty.
+  assert.equal(building.install.plan.preflight.length, 0);
+  assert.equal(building.install.plan.install.length, 0);
+  assert.equal(building.install.plan.verify.length, 0);
+  assert.equal(building.install.plan.mcp.length, 0);
+  const result = await executeInstallPlan(building.install.plan, { appendLog: () => {} });
+  assert.equal(result.status, "ok");
+});

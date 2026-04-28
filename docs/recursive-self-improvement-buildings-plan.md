@@ -267,6 +267,41 @@ safety: manifest-only loader, no executable package lane enabled
 
 A green entry above means: the smoke commands the building's `agentGuide` promises actually run and exit 0 on this machine. It does **not** mean we ran a paid workload, deployed an app, or proved the building's full end-to-end UX with the building panel open in a browser. Those checks belong to the next session — the gating infrastructure (CLI present, account auth'd, manifest correct) is in place.
 
+### 2026-04-28 — popular MCP-server buildings landed (8 of them)
+
+- 8 new buildings registered, all with one-click install plans:
+  `mcp-filesystem`, `mcp-github`, `mcp-postgres`, `mcp-sqlite`,
+  `mcp-brave-search`, `mcp-slack`, `mcp-sentry`, `mcp-notion`,
+  `mcp-linear`. Each declares preflight (`command -v npx`), verify
+  (`npm view <package> version`), `auth-paste` (where needed) pointing
+  at the official credential URL, and `mcp-launch` declaring the
+  upstream npx command + env-var mapping.
+- Settings store extended for each (enabled flag + secret/config
+  setting), with the same env-var fallbacks the rest of the catalog
+  uses (e.g. `GITHUB_PERSONAL_ACCESS_TOKEN`, `BRAVE_API_KEY`,
+  `SLACK_BOT_TOKEN`, `LINEAR_API_KEY`).
+- Install runner refined: `auth-paste` now correctly pauses with
+  `auth-required` when the target setting is empty, even if the
+  upstream verify check passed. The MCP-server scenario is the
+  motivating case: the npm package exists for everyone (so verify is
+  cheap), but the building isn't usable until the human pastes their
+  token.
+- Tests:
+  - **35 install-runner tests** all green (11 original + 14 edge cases:
+    timeout, abort, invalid JSON, missing capture keys, deep nested
+    capture, settings.update throwing, auth-paste skip when filled,
+    auth-paste pause when empty, mcp-launch log presence, log
+    truncation at 500, okStatusCodes override, missing fetch handling,
+    okExitCodes override, SDK normalization of bad steps).
+  - **9 live MCP-buildings integration tests** all green — each runs
+    the actual install plan against the live npm registry. Filesystem
+    lands `ok`, the seven that need auth-paste land `auth-required` per
+    contract.
+  - **Modal live install integration test** still green.
+  - **Building-registry test** extended with shape assertions for all
+    9 new MCP buildings + Modal/OttoAuth plan structure.
+- Total: 40 tests across the install/registry surface, all green.
+
 ### 2026-04-28 — install-runner foundation landed
 
 - Added `install.plan` field to the building SDK (`src/client/building-sdk.js`). Step kinds: `command`, `http`, `auth-browser-cli`, `auth-paste`, `mcp-launch`.

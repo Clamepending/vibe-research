@@ -284,43 +284,59 @@ export async function executeInstallPlan(plan, options = {}) {
   }
 
   const firstVerify = await runVerify();
-  if (!firstVerify.ok && plan.auth) {
-    appendLog({ phase: "auth", level: "info", step: plan.auth.command || plan.auth.setting || plan.auth.kind, message: "running" });
-    if (plan.auth.kind === "auth-browser-cli") {
-      const result = await runShellCommand({ ...plan.auth, timeoutSec: plan.auth.timeoutSec || 300 }, { signal });
-      appendLog({
-        phase: "auth",
-        level: result.ok ? "info" : "warn",
-        step: plan.auth.command,
-        message: result.ok ? "ok" : `failed (exit=${result.exitCode}, reason=${result.reason || "exit-code"})`,
-        stdoutTail: result.stdout?.slice(-400),
-        stderrTail: result.stderr?.slice(-400),
-      });
-    } else if (plan.auth.kind === "auth-paste") {
-      appendLog({
-        phase: "auth",
-        level: "info",
-        step: plan.auth.setting,
-        message: `auth-required: paste credential into setting "${plan.auth.setting}"`,
-      });
-      // Apply any captured settings before pausing for the human.
-      if (settingsStore && Object.keys(capturedSettings).length) {
-        try { await settingsStore.update(capturedSettings); } catch (err) {
-          appendLog({ phase: "settings", level: "warn", message: `settings update failed: ${err?.message || err}` });
-        }
+
+  // For auth-paste, the runner pauses whenever the target setting is empty
+  // — that's the contract: the package is verified, but the human still
+  // needs to paste a token before the building is functional. Even if the
+  // upstream verify passed (e.g. `npm view ... version` succeeds), an
+  // auth-paste building remains in `auth-required` until the setting is
+  // filled. This is what powers the "click Install → see paste field"
+  // panel UX for popular MCP-server integrations.
+  const pasteSettingMissing = (() => {
+    if (plan.auth?.kind !== "auth-paste") return false;
+    const setting = plan.auth.setting;
+    if (!setting) return false;
+    const captured = capturedSettings[setting];
+    if (captured !== undefined && captured !== null && String(captured).trim() !== "") return false;
+    const current = settingsStore?.settings?.[setting];
+    if (current !== undefined && current !== null && String(current).trim() !== "") return false;
+    return true;
+  })();
+
+  if (!firstVerify.ok && plan.auth?.kind === "auth-browser-cli") {
+    appendLog({ phase: "auth", level: "info", step: plan.auth.command, message: "running" });
+    const result = await runShellCommand({ ...plan.auth, timeoutSec: plan.auth.timeoutSec || 300 }, { signal });
+    appendLog({
+      phase: "auth",
+      level: result.ok ? "info" : "warn",
+      step: plan.auth.command,
+      message: result.ok ? "ok" : `failed (exit=${result.exitCode}, reason=${result.reason || "exit-code"})`,
+      stdoutTail: result.stdout?.slice(-400),
+      stderrTail: result.stderr?.slice(-400),
+    });
+  } else if (plan.auth?.kind === "auth-paste" && pasteSettingMissing) {
+    appendLog({
+      phase: "auth",
+      level: "info",
+      step: plan.auth.setting,
+      message: `auth-required: paste credential into setting "${plan.auth.setting}"`,
+    });
+    if (settingsStore && Object.keys(capturedSettings).length) {
+      try { await settingsStore.update(capturedSettings); } catch (err) {
+        appendLog({ phase: "settings", level: "warn", message: `settings update failed: ${err?.message || err}` });
       }
-      return {
-        status: "auth-required",
-        reason: "paste-token",
-        capturedSettings,
-        authPrompt: {
-          setting: plan.auth.setting,
-          setupUrl: plan.auth.setupUrl,
-          setupLabel: plan.auth.setupLabel,
-          detail: plan.auth.detail,
-        },
-      };
     }
+    return {
+      status: "auth-required",
+      reason: "paste-token",
+      capturedSettings,
+      authPrompt: {
+        setting: plan.auth.setting,
+        setupUrl: plan.auth.setupUrl,
+        setupLabel: plan.auth.setupLabel,
+        detail: plan.auth.detail,
+      },
+    };
   }
 
   // 4) Apply captured settings (e.g. ottoauth privateKey from /api/agents/create)

@@ -1571,6 +1571,471 @@ const CORE_BUILDING_MANIFESTS = [
       ],
     },
   },
+  // Popular MCP-server buildings. Each one is a thin wrapper around an
+  // npm-published Model Context Protocol server. The install plan
+  // verifies npx is available and that the upstream package exists in
+  // the npm registry; the human pastes the API key (or chooses a path),
+  // and the runtime owns mcp-launch lifecycle.
+  {
+    id: "mcp-filesystem",
+    name: "MCP Filesystem",
+    category: "MCP",
+    description: "Give agents a sandboxed view of one or more directories via the official Model Context Protocol filesystem server.",
+    icon: Database,
+    status: "one-click install",
+    source: "modelcontextprotocol",
+    install: {
+      enabledSetting: "mcpFilesystemEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [
+          { kind: "command", command: "command -v npx", label: "Detect npx" },
+        ],
+        install: [],
+        verify: [
+          {
+            kind: "command",
+            command: "npm view @modelcontextprotocol/server-filesystem version",
+            label: "Verify @modelcontextprotocol/server-filesystem package exists",
+            timeoutSec: 60,
+          },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-filesystem", "${mcpFilesystemRoots}"],
+            label: "Launch MCP filesystem server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "Directory roots", setting: "mcpFilesystemRoots", required: true, setupHint: "Comma-separated absolute paths the MCP server should expose. Keep the scope narrow." },
+      ],
+      steps: [
+        { title: "Install the server", detail: "Click install — the runner verifies npx and the upstream npm package.", completeWhen: { type: "installed" } },
+        { title: "Pick directory roots", detail: "Set the absolute paths agents may read and write. One per line." },
+      ],
+    },
+    agentGuide: {
+      summary: "The MCP filesystem server lets agents list, read, and write files inside the configured roots.",
+      env: [{ name: "MCP_FILESYSTEM_ROOTS", detail: "Comma-separated absolute paths the server is allowed to touch.", required: true }],
+      docs: [{ label: "MCP filesystem server", url: "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem" }],
+    },
+  },
+  {
+    id: "mcp-github",
+    name: "MCP GitHub",
+    category: "MCP",
+    description: "Browse, search, and edit GitHub repositories via the official Model Context Protocol GitHub server.",
+    icon: GitPullRequest,
+    status: "one-click install",
+    source: "modelcontextprotocol",
+    install: {
+      enabledSetting: "mcpGithubEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [
+          { kind: "command", command: "command -v npx", label: "Detect npx" },
+        ],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpGithubToken",
+          setupUrl: "https://github.com/settings/tokens?type=beta",
+          setupLabel: "Create GitHub PAT",
+          detail: "Create a fine-grained personal access token with the repository scopes you want to expose, then paste it.",
+        },
+        verify: [
+          {
+            kind: "command",
+            command: "npm view @modelcontextprotocol/server-github version",
+            label: "Verify @modelcontextprotocol/server-github package exists",
+            timeoutSec: 60,
+          },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-github"],
+            env: { GITHUB_PERSONAL_ACCESS_TOKEN: "${mcpGithubToken}" },
+            label: "Launch MCP GitHub server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "GitHub PAT", setting: "mcpGithubToken", required: true, secret: true, setupUrl: "https://github.com/settings/tokens?type=beta" },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Paste a fine-grained PAT", detail: "Restrict scopes to the repos agents should touch." },
+      ],
+    },
+    agentGuide: {
+      summary: "MCP GitHub gives agents repo browsing, issue management, file edits, and PR creation. Always use a fine-grained PAT.",
+      env: [{ name: "GITHUB_PERSONAL_ACCESS_TOKEN", required: true }],
+      docs: [{ label: "MCP GitHub server", url: "https://github.com/modelcontextprotocol/servers/tree/main/src/github" }],
+    },
+  },
+  {
+    id: "mcp-postgres",
+    name: "MCP Postgres",
+    category: "MCP",
+    description: "Read-only Postgres access for agents through the official Model Context Protocol Postgres server.",
+    icon: Database,
+    status: "one-click install",
+    source: "modelcontextprotocol",
+    install: {
+      enabledSetting: "mcpPostgresEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpPostgresUrl",
+          setupLabel: "Paste connection string",
+          detail: "Use a read-only role. Format: postgres://user:pass@host:port/db",
+        },
+        verify: [
+          { kind: "command", command: "npm view @modelcontextprotocol/server-postgres version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-postgres", "${mcpPostgresUrl}"],
+            label: "Launch MCP Postgres server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "Connection string", setting: "mcpPostgresUrl", required: true, secret: true },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Paste a read-only Postgres URL", detail: "Use a role scoped to SELECT only when possible." },
+      ],
+    },
+    agentGuide: {
+      summary: "Read-only Postgres access. Always pass a connection string scoped to a SELECT-only role.",
+      docs: [{ label: "MCP Postgres server", url: "https://github.com/modelcontextprotocol/servers/tree/main/src/postgres" }],
+    },
+  },
+  {
+    id: "mcp-sqlite",
+    name: "MCP SQLite",
+    category: "MCP",
+    description: "Local SQLite access for agents via the mcp-server-sqlite package.",
+    icon: Database,
+    status: "one-click install",
+    source: "community",
+    install: {
+      enabledSetting: "mcpSqliteEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpSqliteDbPath",
+          setupLabel: "Paste SQLite db path",
+          detail: "Absolute path to the .db file you want agents to query.",
+        },
+        verify: [
+          { kind: "command", command: "npm view mcp-server-sqlite version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "mcp-server-sqlite", "${mcpSqliteDbPath}"],
+            label: "Launch MCP SQLite server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "SQLite db path", setting: "mcpSqliteDbPath", required: true },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Set the db path", detail: "Absolute path to the .db file." },
+      ],
+    },
+    agentGuide: {
+      summary: "Query a local SQLite file from an agent session.",
+      docs: [{ label: "mcp-server-sqlite", url: "https://www.npmjs.com/package/mcp-server-sqlite" }],
+    },
+  },
+  {
+    id: "mcp-brave-search",
+    name: "MCP Brave Search",
+    category: "MCP",
+    description: "Web search for agents via Brave Search through the official Model Context Protocol server.",
+    icon: Lightbulb,
+    status: "one-click install",
+    source: "modelcontextprotocol",
+    install: {
+      enabledSetting: "mcpBraveSearchEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpBraveSearchApiKey",
+          setupUrl: "https://api.search.brave.com/app/keys",
+          setupLabel: "Get Brave API key",
+          detail: "Create a Brave Search API key, then paste it. The free tier is enough for most agent traffic.",
+        },
+        verify: [
+          { kind: "command", command: "npm view @modelcontextprotocol/server-brave-search version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-brave-search"],
+            env: { BRAVE_API_KEY: "${mcpBraveSearchApiKey}" },
+            label: "Launch MCP Brave Search server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "Brave API key", setting: "mcpBraveSearchApiKey", required: true, secret: true, setupUrl: "https://api.search.brave.com/app/keys" },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Paste your Brave API key" },
+      ],
+    },
+    agentGuide: {
+      summary: "Web + local search via Brave Search. Use sparingly — the API has request quotas.",
+      env: [{ name: "BRAVE_API_KEY", required: true }],
+      docs: [{ label: "MCP Brave Search server", url: "https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search" }],
+    },
+  },
+  {
+    id: "mcp-slack",
+    name: "MCP Slack",
+    category: "MCP",
+    description: "Read and post Slack messages from agent sessions via the official Model Context Protocol Slack server.",
+    icon: MessageCircle,
+    status: "one-click install",
+    source: "modelcontextprotocol",
+    install: {
+      enabledSetting: "mcpSlackEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpSlackBotToken",
+          setupUrl: "https://api.slack.com/apps",
+          setupLabel: "Open Slack apps",
+          detail: "Create or pick a Slack app, install it to your workspace, then paste the Bot User OAuth Token (starts with xoxb-).",
+        },
+        verify: [
+          { kind: "command", command: "npm view @modelcontextprotocol/server-slack version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-slack"],
+            env: {
+              SLACK_BOT_TOKEN: "${mcpSlackBotToken}",
+              SLACK_TEAM_ID: "${mcpSlackTeamId}",
+            },
+            label: "Launch MCP Slack server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "Slack bot token", setting: "mcpSlackBotToken", required: true, secret: true, setupUrl: "https://api.slack.com/apps" },
+        { label: "Slack team id", setting: "mcpSlackTeamId", required: false },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Paste a Slack bot token", detail: "xoxb-... from your Slack app." },
+        { title: "Set the team id", detail: "Optional but improves channel disambiguation." },
+      ],
+    },
+    agentGuide: {
+      summary: "Read channel history, list users/channels, post messages via a Slack app's bot token.",
+      env: [
+        { name: "SLACK_BOT_TOKEN", required: true },
+        { name: "SLACK_TEAM_ID", required: false },
+      ],
+      docs: [{ label: "MCP Slack server", url: "https://github.com/modelcontextprotocol/servers/tree/main/src/slack" }],
+    },
+  },
+  {
+    id: "mcp-sentry",
+    name: "MCP Sentry",
+    category: "MCP",
+    description: "Surface Sentry issues, events, and stack traces in agent sessions via the official Sentry MCP server.",
+    icon: Activity,
+    status: "one-click install",
+    source: "sentry",
+    install: {
+      enabledSetting: "mcpSentryEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpSentryAuthToken",
+          setupUrl: "https://sentry.io/settings/account/api/auth-tokens/",
+          setupLabel: "Create a Sentry auth token",
+          detail: "Create a personal API token with the org:read + project:read + event:read scopes minimum.",
+        },
+        verify: [
+          { kind: "command", command: "npm view @sentry/mcp-server version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "@sentry/mcp-server"],
+            env: { SENTRY_AUTH_TOKEN: "${mcpSentryAuthToken}" },
+            label: "Launch MCP Sentry server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "Sentry auth token", setting: "mcpSentryAuthToken", required: true, secret: true, setupUrl: "https://sentry.io/settings/account/api/auth-tokens/" },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Paste a Sentry auth token" },
+      ],
+    },
+    agentGuide: {
+      summary: "Triage Sentry issues from an agent: list orgs/projects, fetch issue details, page through events.",
+      env: [{ name: "SENTRY_AUTH_TOKEN", required: true }],
+      docs: [{ label: "Sentry MCP server", url: "https://www.npmjs.com/package/@sentry/mcp-server" }],
+    },
+  },
+  {
+    id: "mcp-notion",
+    name: "MCP Notion",
+    category: "MCP",
+    description: "Read and edit Notion pages and databases via the official Notion Model Context Protocol server.",
+    icon: Notebook,
+    status: "one-click install",
+    source: "notion",
+    install: {
+      enabledSetting: "mcpNotionEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpNotionToken",
+          setupUrl: "https://www.notion.so/my-integrations",
+          setupLabel: "Create a Notion integration",
+          detail: "Create an internal integration, share the workspace pages you want to expose with it, then paste the integration token.",
+        },
+        verify: [
+          { kind: "command", command: "npm view @notionhq/notion-mcp-server version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "@notionhq/notion-mcp-server"],
+            env: {
+              OPENAPI_MCP_HEADERS: "{\"Authorization\": \"Bearer ${mcpNotionToken}\", \"Notion-Version\": \"2022-06-28\"}",
+            },
+            label: "Launch MCP Notion server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "Notion integration token", setting: "mcpNotionToken", required: true, secret: true, setupUrl: "https://www.notion.so/my-integrations" },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Create the integration + share pages", detail: "Notion only sees pages explicitly shared with the integration." },
+      ],
+    },
+    agentGuide: {
+      summary: "Read or edit Notion pages and databases. Pages must be explicitly shared with the integration in Notion's UI.",
+      env: [{ name: "NOTION_INTEGRATION_TOKEN", required: true }],
+      docs: [{ label: "@notionhq/notion-mcp-server", url: "https://www.npmjs.com/package/@notionhq/notion-mcp-server" }],
+    },
+  },
+  {
+    id: "mcp-linear",
+    name: "MCP Linear",
+    category: "MCP",
+    description: "Read and edit Linear issues from agent sessions via the @tacticlaunch/mcp-linear server.",
+    icon: Activity,
+    status: "one-click install",
+    source: "community",
+    install: {
+      enabledSetting: "mcpLinearEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpLinearApiKey",
+          setupUrl: "https://linear.app/settings/api",
+          setupLabel: "Create a Linear personal API key",
+          detail: "Use a personal API key (lin_api_...) scoped to the workspaces agents should touch.",
+        },
+        verify: [
+          { kind: "command", command: "npm view @tacticlaunch/mcp-linear version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "@tacticlaunch/mcp-linear"],
+            env: { LINEAR_API_KEY: "${mcpLinearApiKey}" },
+            label: "Launch MCP Linear server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "Linear API key", setting: "mcpLinearApiKey", required: true, secret: true, setupUrl: "https://linear.app/settings/api" },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Paste a Linear personal API key" },
+      ],
+    },
+    agentGuide: {
+      summary: "List, search, create, and update Linear issues from agent sessions.",
+      env: [{ name: "LINEAR_API_KEY", required: true }],
+      docs: [{ label: "@tacticlaunch/mcp-linear", url: "https://www.npmjs.com/package/@tacticlaunch/mcp-linear" }],
+    },
+  },
   {
     id: "knowledge-base",
     name: "Library",

@@ -355,6 +355,26 @@ export class SettingsStore {
       modalEnabled: false,
       runpodEnabled: false,
       harborEnabled: false,
+      // Popular MCP-server buildings: each has an enabled flag + a secret/config setting.
+      mcpFilesystemEnabled: false,
+      mcpFilesystemRoots: String(this.env.MCP_FILESYSTEM_ROOTS || "").trim(),
+      mcpGithubEnabled: false,
+      mcpGithubToken: String(this.env.MCP_GITHUB_TOKEN || this.env.GITHUB_PERSONAL_ACCESS_TOKEN || "").trim(),
+      mcpPostgresEnabled: false,
+      mcpPostgresUrl: String(this.env.MCP_POSTGRES_URL || this.env.DATABASE_URL || "").trim(),
+      mcpSqliteEnabled: false,
+      mcpSqliteDbPath: String(this.env.MCP_SQLITE_DB_PATH || "").trim(),
+      mcpBraveSearchEnabled: false,
+      mcpBraveSearchApiKey: String(this.env.MCP_BRAVE_SEARCH_API_KEY || this.env.BRAVE_API_KEY || "").trim(),
+      mcpSlackEnabled: false,
+      mcpSlackBotToken: String(this.env.MCP_SLACK_BOT_TOKEN || this.env.SLACK_BOT_TOKEN || "").trim(),
+      mcpSlackTeamId: String(this.env.MCP_SLACK_TEAM_ID || this.env.SLACK_TEAM_ID || "").trim(),
+      mcpSentryEnabled: false,
+      mcpSentryAuthToken: String(this.env.MCP_SENTRY_AUTH_TOKEN || this.env.SENTRY_AUTH_TOKEN || "").trim(),
+      mcpNotionEnabled: false,
+      mcpNotionToken: String(this.env.MCP_NOTION_TOKEN || this.env.NOTION_INTEGRATION_TOKEN || "").trim(),
+      mcpLinearEnabled: false,
+      mcpLinearApiKey: String(this.env.MCP_LINEAR_API_KEY || this.env.LINEAR_API_KEY || "").trim(),
       ottoAuthBaseUrl: String(this.env.OTTOAUTH_BASE_URL || getDefaultOttoAuthBaseUrl()).trim(),
       ottoAuthCallbackUrl: String(this.env.OTTOAUTH_CALLBACK_URL || "").trim(),
       ottoAuthDefaultMaxChargeCents: "",
@@ -579,6 +599,55 @@ export class SettingsStore {
       modalEnabled: normalizeBoolean(payload.modalEnabled, defaults.modalEnabled),
       runpodEnabled: normalizeBoolean(payload.runpodEnabled, defaults.runpodEnabled),
       harborEnabled: normalizeBoolean(payload.harborEnabled, defaults.harborEnabled),
+      mcpFilesystemEnabled: normalizeBoolean(payload.mcpFilesystemEnabled, defaults.mcpFilesystemEnabled),
+      mcpFilesystemRoots:
+        payload.mcpFilesystemRoots === undefined
+          ? defaults.mcpFilesystemRoots
+          : String(payload.mcpFilesystemRoots || "").trim(),
+      mcpGithubEnabled: normalizeBoolean(payload.mcpGithubEnabled, defaults.mcpGithubEnabled),
+      mcpGithubToken:
+        payload.mcpGithubToken === undefined
+          ? defaults.mcpGithubToken
+          : String(payload.mcpGithubToken || "").trim(),
+      mcpPostgresEnabled: normalizeBoolean(payload.mcpPostgresEnabled, defaults.mcpPostgresEnabled),
+      mcpPostgresUrl:
+        payload.mcpPostgresUrl === undefined
+          ? defaults.mcpPostgresUrl
+          : String(payload.mcpPostgresUrl || "").trim(),
+      mcpSqliteEnabled: normalizeBoolean(payload.mcpSqliteEnabled, defaults.mcpSqliteEnabled),
+      mcpSqliteDbPath:
+        payload.mcpSqliteDbPath === undefined
+          ? defaults.mcpSqliteDbPath
+          : String(payload.mcpSqliteDbPath || "").trim(),
+      mcpBraveSearchEnabled: normalizeBoolean(payload.mcpBraveSearchEnabled, defaults.mcpBraveSearchEnabled),
+      mcpBraveSearchApiKey:
+        payload.mcpBraveSearchApiKey === undefined
+          ? defaults.mcpBraveSearchApiKey
+          : String(payload.mcpBraveSearchApiKey || "").trim(),
+      mcpSlackEnabled: normalizeBoolean(payload.mcpSlackEnabled, defaults.mcpSlackEnabled),
+      mcpSlackBotToken:
+        payload.mcpSlackBotToken === undefined
+          ? defaults.mcpSlackBotToken
+          : String(payload.mcpSlackBotToken || "").trim(),
+      mcpSlackTeamId:
+        payload.mcpSlackTeamId === undefined
+          ? defaults.mcpSlackTeamId
+          : String(payload.mcpSlackTeamId || "").trim(),
+      mcpSentryEnabled: normalizeBoolean(payload.mcpSentryEnabled, defaults.mcpSentryEnabled),
+      mcpSentryAuthToken:
+        payload.mcpSentryAuthToken === undefined
+          ? defaults.mcpSentryAuthToken
+          : String(payload.mcpSentryAuthToken || "").trim(),
+      mcpNotionEnabled: normalizeBoolean(payload.mcpNotionEnabled, defaults.mcpNotionEnabled),
+      mcpNotionToken:
+        payload.mcpNotionToken === undefined
+          ? defaults.mcpNotionToken
+          : String(payload.mcpNotionToken || "").trim(),
+      mcpLinearEnabled: normalizeBoolean(payload.mcpLinearEnabled, defaults.mcpLinearEnabled),
+      mcpLinearApiKey:
+        payload.mcpLinearApiKey === undefined
+          ? defaults.mcpLinearApiKey
+          : String(payload.mcpLinearApiKey || "").trim(),
       ottoAuthEnabled: normalizeBoolean(payload.ottoAuthEnabled, defaults.ottoAuthEnabled),
       ottoAuthPrivateKey:
         payload.ottoAuthPrivateKey === undefined
