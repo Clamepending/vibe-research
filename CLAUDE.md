@@ -8,7 +8,10 @@ You are a research agent. You run one experiment at a time from a shared project
 ## Definitions
 
 - **Move** — one tight question worth answering. Becomes one result doc and one branch in the code repo. If the question shape is "which of N things is best?" or "what value of X is best?" — i.e., a *search* over a set of candidates, categorical or parametric — make it N moves (emit N `ADD:` lines in one resolve), not one move with sub-experiments. If the question shape is "what is the curve of metric vs X?" — i.e., *characterization*, where the answer is the shape itself — one move with N cycles is fine.
-- **Cycle** — one iteration inside a move: change one thing, run, commit. A move typically has 1-3 cycles. Cycles chain linearly — cycle N builds on cycle N-1's result. That's the autoresearch hillclimb inside a move.
+- **Cycle** — one iteration inside a move: change one thing, run, commit. A move typically has 1-3 cycles. Cycles chain linearly *for change-cycles* (cycle N builds on cycle N-1's result). Three cycle kinds are explicit:
+  - **`change`** — the default. One thing changes vs the previous cycle. These are the chained ones; the autoresearch hillclimb runs through them.
+  - **`rerun`** — same configuration as a previous cycle, more seeds, to nail down the noise estimate. Does *not* break the chain — a `change` cycle that follows a `rerun` builds on the (now better-characterised) prior cycle.
+  - **`analysis`** — no PTY change; a notebook/plot pass over an artifact already on disk. Commit with `git commit --allow-empty`. Also does not break the chain.
 - **Result** — the completed artifact of a move (result doc + branch). Results compete on the project leaderboard.
 - **Branch prefix `r/`** — cosmetic namespace for result branches (e.g. `r/dropout-sweep`). Keeps `git branch` output tidy; drop if you prefer.
 - **Agent id** — your handle as the operator of this loop. For a solo project (you are the only collaborator on the project repo and on any insights repo this project touches), use `0`. For a shared project, use your GitHub username — the same identity that pushes commits, so an `agent` column entry in ACTIVE matches `git log --author` on the corresponding cycle commits. Mixing is fine across projects: a solo project in your monorepo Library uses `0` while a shared project sitting next to it uses your username.
@@ -89,6 +92,16 @@ Do a lightweight literature/current-docs pass before expensive or method-shaping
 - If there is no credible literature/doc support, say that explicitly and lower the prior. "No support found" is a result, not a reason to invent confidence.
 - Prefer primary sources for claims that steer the experiment: papers, official docs, code, datasets, benchmark pages, or result artifacts. No bare numbers.
 
+## Loop Tooling
+
+Three CLIs ship with Vibe Research to enforce the contract mechanically. Run them at the points the loop calls out:
+
+- **`vr-research-doctor <project-dir>`** — at the top of every loop iteration (step 1) and before any leaderboard edit. Validates that LEADERBOARD/ACTIVE/QUEUE/INSIGHTS/LOG all reference real result docs, real insight files, well-shaped GitHub URLs, and result docs whose STATUS matches the row's claim. Exits non-zero if errors. Don't accept "I think the README is fine" — let the doctor say so.
+- **`vr-research-admit <project-dir> <candidate-result.md>`** — at step 6 of the loop, instead of writing the Decision line by hand. Reads the candidate's YAML frontmatter (required for quantitative criteria), walks the leaderboard top-down with `2 × std` (or each row's declared `noise_multiplier`), and prints the verdict rows + Decision. Refuses to admit a quantitative candidate that has no `mean`/`std` frontmatter — that's the noise-estimate gate working as intended.
+- **`vr-research-lint-paper <project-dir>`** — before committing a paper update. Checks every Results subsection leads with a `![alt](figures/...)` whose file exists, every footnote ID is slug-prefixed and has a definition, no footnote is defined-but-unused, and no Results paragraph carries a number ≥ 2 chars without a footnote in the same paragraph.
+
+The CLIs are thin wrappers around `src/research/{project-readme,result-doc,doctor,admit,paper-lint}.js`; the libraries can be imported by any other tooling that needs the same parsers. Tests live in `test/research-tooling.test.js`.
+
 ## The Files You Maintain In The Library
 
 ### `projects/<name>/README.md` — the project index
@@ -122,6 +135,19 @@ Do a lightweight literature/current-docs pass before expensive or method-shaping
 
 ### `projects/<name>/results/<slug>.md` — one per move
 
+- **YAML frontmatter (quantitative only)** — when the project's RANKING CRITERION is `quantitative` or `mix`, the result doc opens with a fenced YAML block carrying the machine-checkable noise estimate. `vr-research-admit` reads this; without it, admission is blocked.
+
+  ```yaml
+  ---
+  metric: accuracy
+  metric_higher_is_better: true
+  seeds: [0, 1, 2]
+  mean: 0.781
+  std: 0.014
+  noise_multiplier: 2  # optional, defaults to 2
+  ---
+  ```
+
 - **TAKEAWAY** — one or two sentences. Written last, sits at top.
 - **STATUS** — `active`, `resolved`, or `abandoned`.
 - **STARTING POINT** — `<github-url>/tree/<branch>` at commit `<sha>`.
@@ -131,13 +157,14 @@ Do a lightweight literature/current-docs pass before expensive or method-shaping
 - **Hypothesis** — prior (numeric, e.g. "70% confident") + falsifier (concrete observation that would reduce the prior). Anchor: priors on "one-knob change beats a tuned baseline by 2σ" should default to **<= 15%** unless tied to a specific mechanistic diagnostic. Published defaults are hard to beat; most moves are ablations of the plateau, not breakthroughs.
 - **Research grounding** — Library notes, papers, citation trail, current docs, source code, datasets, or "none found" with implications for the prior.
 - **Experiment design** — what you will change, what you will measure.
-- **Cycles** — one line per cycle: `cycle N @<sha>: <change> -> <metric or observation>. qual: <one line>.`
-  Cycles chain linearly: cycle N builds on cycle N-1's result.
+- **Cycles** — one line per cycle: `cycle N @<sha> [kind]: <change> -> <metric or observation>. qual: <one line>.` Kind tag is one of `change` (default, may be omitted), `rerun` (same config, more seeds), or `analysis` (no PTY change, notebook only). Change-cycles chain linearly; `rerun` and `analysis` cycles do *not* break the chain.
   Example:
   - `cycle 1 @a3f2c10: baseline default config -> accuracy=0.72. qual: carrier wave off in 2/8.`
   - `cycle 2 @b4e5d11: +dropout=0.3 -> accuracy=0.74. qual: carrier wave off in 1/8.`
-  - `cycle 3 @c5f6e22: +dropout=0.3 +aug -> accuracy=0.78. qual: carrier wave clean 8/8.`
-  If you find yourself wanting to branch cycles (run two variants in parallel and compare), close this move and open sibling moves instead.
+  - `cycle 3 @c5f6e22 rerun: cycle 2 with seeds {3,4,5} -> accuracy_mean=0.74 std=0.01. qual: rerun confirms cycle-2 mean.`
+  - `cycle 4 @c5f6e22 analysis: per-class breakdown of cycle-2 outputs -> carrier wave fails on classes 3,7,9.`
+  - `cycle 5 @c5f6e22: +dropout=0.3 +aug -> accuracy=0.78. qual: carrier wave clean 8/8.`
+  If you find yourself wanting to branch *change-cycles* (run two variants in parallel and compare), close this move and open sibling moves instead.
 - **Results** — numbers, tables, links to artifacts. No bare numbers; every figure cites commit + command + artifact path. For qualitative or mix criteria, link representative artifacts a reader can inspect.
 - **Agent canvas** — when the move produces a graph, image, screenshot, sample, or other visual artifact, publish the most significant qualitative result so far to the agent canvas with `vr-agent-canvas --image <path> --title "<short title>" --caption "<what changed>"`. Keep the result doc as the durable record; use the canvas as the current thing the human should see first.
 - **Analysis** — what the results show, what they rule out, how the prior updated.
@@ -188,6 +215,7 @@ Insights are created and updated only by review mode. Moves produce results; rev
 
 ## The Loop
 
+0. Run `vr-research-doctor projects/<name>` and resolve any `[ERROR]` issue before doing anything else. Don't trust a corrupt README.
 1. **Pull, then read the project README.** On a shared project repo, run `git pull --rebase` before reading so you see the latest claims and leaderboard. On a solo project, the pull is a no-op and you can skip it.
    - If ACTIVE has a row whose `agent` matches your agent id (an unfinished move you previously claimed), resume it.
    - Else if ACTIVE has a row whose `agent` is another collaborator's id, that move is locked by them — do NOT take it. Look at QUEUE instead. (If the row looks stale per the rule in **Conflict points**, follow the stale-ACTIVE recovery procedure rather than just taking it.)
@@ -197,7 +225,7 @@ Insights are created and updated only by review mode. Moves produce results; rev
 3. Create the result doc with `STATUS: active` and `AGENT: <your-agent-id>`. Fill Question / Hypothesis / Research grounding / Experiment design. Edit the README: remove the move from QUEUE, add a row to ACTIVE with your agent id and today's date. **For a shared project, commit and push the README claim immediately — before doing any cycle work — so other collaborators see the lock.** If the push is rejected because someone else also claimed concurrently, `git pull --rebase`, observe their ACTIVE row, abandon your local result-doc draft for this move, and restart from step 1 against the freshly-pulled README. If `projects/<name>/paper.md` does not exist yet, copy `templates/paper-template.md` to it and fill Title, Question, and Method (locked). Append a `Since last update` line: `- starting <slug>: <one-line goal>`. Commit and push the Library.
 4. Run the experiment. Commit per cycle in the code repo: `r/<slug> cycle N: <change> -> <metric or obs>. qual: <one line>.` Push after each cycle. Analysis-only cycles get `git commit --allow-empty`. **Do not commit the paper per cycle by default** — cycle lines are batched into one paper commit at step 5. Exception: for moves longer than ~30 minutes, append a `Since last update` line per cycle so the human gets live progress; this is the only time per-cycle paper commits are warranted.
 5. Fill Results / Analysis / Reproducibility in the result doc. Write TAKEAWAY at the top. Generate at least one figure for the move (plot, comparison panel, or qualitative artifact) and save it to `projects/<name>/figures/<slug>-<name>.png`. Then update the paper in one batch of section-targeted Edits: prepend cycle lines (newest-first) to `Since last update` if you didn't already, add or extend a Results subsection that leads with the figure (`![caption](figures/<slug>-<name>.png)`) and cross-links to `results/<slug>.md` with footnoted claims, append one Limitations bullet naming what this move did NOT test, and extend Discussion to weave in the new finding. One paper commit per move.
-6. Write the Leaderboard verdict section and the Decision line. See admission rule.
+6. Write the Leaderboard verdict section and the Decision line. For quantitative or mix-quant criteria, run `vr-research-admit projects/<name> projects/<name>/results/<slug>.md` and paste its output verbatim — that locks the Decision to the noise rule. See admission rule.
 7. Write Queue updates with ADD / REMOVE / REPRIORITIZE.
 8. Set `STATUS: resolved` if the question is answered, `abandoned` if blocked and not worth reviving. **STATUS is independent of the LOG event tag.** STATUS records whether the *question* was answered (`resolved`) or *blocked* (`abandoned`); the LOG event tag records the *hypothesis outcome* (`resolved` for confirmed-or-clean-null, `falsified` when the pre-registered falsifier triggered, `abandoned` for blocked). A cleanly-falsified move correctly reads `STATUS: resolved` in the result doc and `event: falsified` (or `falsified+admitted`) in the LOG.
 9. Apply everything to the README: edit LEADERBOARD per the Decision, remove the row from ACTIVE, apply the Queue updates, append a LOG row whose primary tag is `resolved`, `falsified`, or `abandoned`, compounded with `+admitted` if this result was inserted into the LEADERBOARD or `+evicted` if rank 6 dropped (so a move that beats the current rank-1 reads `resolved+admitted`; a falsified move that still displaces a lower rank reads `falsified+admitted`). **Prepend** a corresponding line to the top of the paper's `Since last update` block (newest-first): `- @<short-sha> resolved <slug>: <one-line takeaway>` (or `falsified <slug>: ...` / `abandoned <slug>: ...` to match the LOG primary tag). **For a shared project, `git pull --rebase` first**, and if the leaderboard changed while you were running, re-run the admission rule against the new leaderboard before committing — your verdict and target rank may have shifted (a row above you may have been admitted, evicted, or shifted, changing both the comparison set and the noise radii). If a real merge conflict lands in the README or `paper.md` Discussion section, resolve it by hand. Commit and push the Library.

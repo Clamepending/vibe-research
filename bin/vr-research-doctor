@@ -1,0 +1,56 @@
+#!/usr/bin/env node
+// Validate the loop bookkeeping for one project.
+//
+// Usage:
+//   vr-research-doctor <project-dir>
+//   vr-research-doctor projects/horror-prompt-tuning --json
+
+import path from "node:path";
+import process from "node:process";
+import { runDoctor, formatIssue } from "../src/research/doctor.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-doctor
+
+Validate that a Vibe Research project's README, result docs, branches, and
+insight links are internally consistent.
+
+Usage:
+  vr-research-doctor <project-dir>
+  vr-research-doctor <project-dir> --json
+`);
+}
+
+const args = process.argv.slice(2);
+if (!args.length || args[0] === "--help" || args[0] === "-h") {
+  printHelp();
+  process.exit(args.length ? 0 : 1);
+}
+
+const jsonMode = args.includes("--json");
+const projectDir = path.resolve(args.find((arg) => !arg.startsWith("--")) || ".");
+
+try {
+  const report = await runDoctor(projectDir);
+  if (jsonMode) {
+    process.stdout.write(`${JSON.stringify({
+      projectDir,
+      summary: report.summary,
+      issues: report.issues,
+    }, null, 2)}\n`);
+  } else {
+    process.stdout.write(`vr-research doctor: ${projectDir}\n`);
+    if (!report.issues.length) {
+      process.stdout.write(`OK — no issues across LEADERBOARD/ACTIVE/QUEUE/INSIGHTS/LOG.\n`);
+    } else {
+      for (const issue of report.issues) {
+        process.stdout.write(`${formatIssue(issue)}\n`);
+      }
+      process.stdout.write(`\nsummary: ${report.summary.error} errors, ${report.summary.warning} warnings, ${report.summary.info} info\n`);
+    }
+  }
+  process.exit(report.summary.error ? 2 : 0);
+} catch (error) {
+  process.stderr.write(`[vr-research-doctor] error: ${error.message}\n`);
+  process.exit(1);
+}

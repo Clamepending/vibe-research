@@ -1,0 +1,57 @@
+#!/usr/bin/env node
+// Lint a project's paper.md against the conventions in CLAUDE.md.
+//
+// Usage:
+//   vr-research-lint-paper <project-dir>
+//   vr-research-lint-paper projects/<name> --json
+
+import path from "node:path";
+import process from "node:process";
+import { lintPaper, formatPaperIssue } from "../src/research/paper-lint.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-lint-paper
+
+Lint a project's paper.md for: footnote slug-prefixing, footnote ref/def
+balance, Results subsections leading with markdown images, image files
+existing on disk, and bare numbers without footnotes.
+
+Usage:
+  vr-research-lint-paper <project-dir>
+  vr-research-lint-paper <project-dir> --json
+`);
+}
+
+const args = process.argv.slice(2);
+if (!args.length || args[0] === "--help" || args[0] === "-h") {
+  printHelp();
+  process.exit(args.length ? 0 : 1);
+}
+
+const jsonMode = args.includes("--json");
+const projectDir = path.resolve(args.find((arg) => !arg.startsWith("--")) || ".");
+
+try {
+  const report = await lintPaper(projectDir);
+  if (jsonMode) {
+    process.stdout.write(`${JSON.stringify({
+      projectDir,
+      summary: report.summary,
+      issues: report.issues,
+    }, null, 2)}\n`);
+  } else {
+    process.stdout.write(`vr-research lint-paper: ${path.join(projectDir, "paper.md")}\n`);
+    if (!report.issues.length) {
+      process.stdout.write(`OK — no issues.\n`);
+    } else {
+      for (const issue of report.issues) {
+        process.stdout.write(`${formatPaperIssue(issue)}\n`);
+      }
+      process.stdout.write(`\nsummary: ${report.summary.error} errors, ${report.summary.warning} warnings, ${report.summary.info} info\n`);
+    }
+  }
+  process.exit(report.summary.error ? 2 : 0);
+} catch (error) {
+  process.stderr.write(`[vr-research-lint-paper] error: ${error.message}\n`);
+  process.exit(1);
+}
