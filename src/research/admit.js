@@ -13,6 +13,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseProjectReadme } from "./project-readme.js";
 import { parseResultDoc } from "./result-doc.js";
+import { loadBenchmark, benchmarkMetricNames } from "./benchmark.js";
 
 const DEFAULT_NOISE_MULTIPLIER = 2;
 
@@ -65,9 +66,52 @@ async function loadLeaderboardWithDocs(projectDir, leaderboard) {
   return out;
 }
 
-function buildVerdictRows(criterionKind, candidateQuant, leaderboardWithDocs) {
+function benchmarkVersionFromDoc(doc) {
+  return doc?.frontmatter?.benchmark_version
+    ? String(doc.frontmatter.benchmark_version)
+    : "";
+}
+
+function buildVerdictRows(criterionKind, candidateQuant, leaderboardWithDocs, options = {}) {
+  const {
+    candidateBenchVersion = "",
+    currentBenchVersion = "",
+    allowCrossVersion = false,
+    benchmarkPresent = false,
+  } = options;
   const rows = [];
   for (const { row, doc } of leaderboardWithDocs) {
+    const incumbentBenchVersion = benchmarkVersionFromDoc(doc);
+
+    // Legacy incumbent: project has a benchmark.md but this incumbent's result
+    // doc has no `benchmark_version`. The comparison is meaningless because we
+    // don't know which rubric/version the score was measured against. Treat
+    // exactly like a cross-version block, NOT a silent same-version match.
+    if (benchmarkPresent && !incumbentBenchVersion && !allowCrossVersion) {
+      rows.push({
+        rank: row.rank,
+        slug: row.slug,
+        comparison: "legacy-incumbent",
+        detail: `vs rank ${row.rank} (${row.slug}): incumbent has no benchmark_version (legacy result doc); comparison is undefined — re-run the incumbent on ${currentBenchVersion || "the current bench"} or pass --allow-cross-version`,
+      });
+      continue;
+    }
+
+    if (
+      currentBenchVersion
+      && candidateBenchVersion
+      && incumbentBenchVersion
+      && candidateBenchVersion !== incumbentBenchVersion
+      && !allowCrossVersion
+    ) {
+      rows.push({
+        rank: row.rank,
+        slug: row.slug,
+        comparison: "cross-version",
+        detail: `vs rank ${row.rank} (${row.slug}): cross-version comparison blocked (candidate=${candidateBenchVersion}, incumbent=${incumbentBenchVersion}); rerun on ${currentBenchVersion} or pass --allow-cross-version`,
+      });
+      continue;
+    }
     if (criterionKind === "quantitative" && candidateQuant) {
       const incumbentQuant = quantFromFrontmatter(doc?.frontmatter);
       if (!incumbentQuant) {
@@ -110,6 +154,20 @@ function decideAdmission(verdictRows) {
         blocked: true,
       };
     }
+    if (row.comparison === "cross-version") {
+      return {
+        admit: false,
+        reason: row.detail,
+        blocked: true,
+      };
+    }
+    if (row.comparison === "legacy-incumbent") {
+      return {
+        admit: false,
+        reason: row.detail,
+        blocked: true,
+      };
+    }
   }
   return {
     admit: false,
@@ -118,7 +176,7 @@ function decideAdmission(verdictRows) {
   };
 }
 
-export async function runAdmit({ projectDir, candidateResultPath }) {
+export async function runAdmit({ projectDir, candidateResultPath, allowCrossVersion = false }) {
   const readmePath = path.join(projectDir, "README.md");
   const readmeText = await readFile(readmePath, "utf8");
   const project = parseProjectReadme(readmeText);
@@ -131,10 +189,116 @@ export async function runAdmit({ projectDir, candidateResultPath }) {
 
   const criterionKind = project.rankingCriterion?.kind || "unknown";
 
+  const benchmark = await loadBenchmark(projectDir);
+  const candidateBenchVersion = benchmarkVersionFromDoc(candidate);
+  const currentBenchVersion = benchmark?.frontmatter?.version
+    ? String(benchmark.frontmatter.version)
+    : "";
+  const benchStatus = benchmark?.frontmatter?.status
+    ? String(benchmark.frontmatter.status).toLowerCase()
+    : "";
+
+  if (benchmark && benchStatus === "frozen") {
+    return {
+      candidate,
+      project,
+      benchmark,
+      candidateBenchVersion,
+      currentBenchVersion,
+      verdictRows: [],
+      decision: {
+        admit: false,
+        blocked: true,
+        reason: `benchmark.md status is "frozen" at ${currentBenchVersion || "(unknown version)"}; admission against a frozen bench is not allowed — bump to a new version (active) or unfreeze`,
+      },
+      criterionKind,
+    };
+  }
+
+  if (benchmark && !candidateBenchVersion) {
+    return {
+      candidate,
+      project,
+      benchmark,
+      candidateBenchVersion,
+      currentBenchVersion,
+      verdictRows: [],
+      decision: {
+        admit: false,
+        blocked: true,
+        reason: "project has benchmark.md but candidate result doc frontmatter is missing benchmark_version",
+      },
+      criterionKind,
+    };
+  }
+
+  if (benchmark) {
+    const benchMetrics = benchmarkMetricNames(benchmark);
+    const candidateMetric = candidate.frontmatter?.metric ? String(candidate.frontmatter.metric) : "";
+    if (benchMetrics.size && candidateMetric && !benchMetrics.has(candidateMetric)) {
+      return {
+        candidate,
+        project,
+        benchmark,
+        candidateBenchVersion,
+        currentBenchVersion,
+        verdictRows: [],
+        decision: {
+          admit: false,
+          blocked: true,
+          reason: `candidate metric="${candidateMetric}" is not declared in benchmark.md METRICS (${[...benchMetrics].join(", ")})`,
+        },
+        criterionKind,
+      };
+    }
+    if (benchMetrics.size && !candidateMetric) {
+      return {
+        candidate,
+        project,
+        benchmark,
+        candidateBenchVersion,
+        currentBenchVersion,
+        verdictRows: [],
+        decision: {
+          admit: false,
+          blocked: true,
+          reason: "project has benchmark.md but candidate result doc frontmatter has no `metric` — must match a row in METRICS",
+        },
+        criterionKind,
+      };
+    }
+  }
+
+  if (
+    benchmark
+    && currentBenchVersion
+    && candidateBenchVersion
+    && candidateBenchVersion !== currentBenchVersion
+    && !allowCrossVersion
+  ) {
+    return {
+      candidate,
+      project,
+      benchmark,
+      candidateBenchVersion,
+      currentBenchVersion,
+      verdictRows: [],
+      decision: {
+        admit: false,
+        blocked: true,
+        reason: `candidate cites benchmark_version=${candidateBenchVersion} but the current bench is ${currentBenchVersion}; rerun on the current bench or pass --allow-cross-version`,
+      },
+      criterionKind,
+    };
+  }
+
   if (criterionKind === "quantitative" && !candidateQuant) {
     return {
       candidate,
       project,
+      benchmark,
+      candidateBenchVersion,
+      currentBenchVersion,
       verdictRows: [],
       decision: {
         admit: false,
@@ -142,17 +306,26 @@ export async function runAdmit({ projectDir, candidateResultPath }) {
         reason:
           "ranking criterion is quantitative but the candidate result doc has no YAML frontmatter with mean/std",
       },
+      criterionKind,
     };
   }
 
   const leaderboardWithDocs = await loadLeaderboardWithDocs(projectDir, project.leaderboard);
-  const verdictRows = buildVerdictRows(criterionKind, candidateQuant, leaderboardWithDocs);
+  const verdictRows = buildVerdictRows(criterionKind, candidateQuant, leaderboardWithDocs, {
+    candidateBenchVersion,
+    currentBenchVersion,
+    allowCrossVersion,
+    benchmarkPresent: Boolean(benchmark),
+  });
   const decision = decideAdmission(verdictRows);
 
   return {
     candidate,
     candidateQuant,
+    candidateBenchVersion,
+    currentBenchVersion,
     project,
+    benchmark,
     verdictRows,
     decision,
     criterionKind,
@@ -168,6 +341,15 @@ export function formatVerdict(report) {
     );
   } else {
     lines.push(`candidate: ${report.candidate?.title || ""} (criterion: ${report.criterionKind})`);
+  }
+  if (report.benchmark) {
+    lines.push(
+      `benchmark: ${report.currentBenchVersion || "?"}${
+        report.candidateBenchVersion && report.candidateBenchVersion !== report.currentBenchVersion
+          ? ` (candidate cites ${report.candidateBenchVersion})`
+          : ""
+      }`,
+    );
   }
   for (const row of report.verdictRows) {
     lines.push(`  ${row.detail}`);
