@@ -227,6 +227,35 @@ export function createMcpLaunchRegistry({
     has(buildingId) {
       return launchesByBuilding.has(String(buildingId || "").trim());
     },
+    // Returns the set of settings keys referenced by any registered
+    // launch's command/args/env templates. Used by the settings PATCH
+    // route to decide whether a setting change should re-trigger an
+    // auto-sync to the agent CLIs (paste a Github token → auto-sync
+    // so claude mcp list immediately shows mcp-github with the
+    // resolved value).
+    referencedSettings() {
+      const refs = new Set();
+      const harvest = (text) => {
+        if (typeof text !== "string") return;
+        TEMPLATE_PATTERN.lastIndex = 0;
+        let match;
+        while ((match = TEMPLATE_PATTERN.exec(text)) !== null) {
+          refs.add(match[1]);
+        }
+      };
+      for (const launches of launchesByBuilding.values()) {
+        for (const launch of launches) {
+          harvest(launch.command);
+          if (Array.isArray(launch.args)) {
+            for (const arg of launch.args) harvest(arg);
+          }
+          if (launch.env && typeof launch.env === "object") {
+            for (const value of Object.values(launch.env)) harvest(value);
+          }
+        }
+      }
+      return refs;
+    },
     // Record the most-recent handshake outcome for a (buildingId, label)
     // pair so the UI can show "tools-listed (5 tools), 30s ago" inline.
     // Match-by-label so multi-launch buildings track each launch

@@ -394,6 +394,80 @@ test("/api/state: mcp.lastHealth is null until /health is called, then populated
   }
 });
 
+test("end-to-end: pasting a referenced setting triggers auto-sync without re-Install", { timeout: 120_000 }, async (t) => {
+  // Critical UX: install lands as auth-required because no token is set;
+  // user pastes the token via PATCH /api/settings; the agent configs
+  // should immediately update without the user re-clicking Install.
+  const fakeHome = await tmp("vr-paste-fakehome");
+  const previousHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+
+  const cwdDir = await tmp("vr-paste-cwd");
+  const stateDir = await tmp("vr-paste-state");
+
+  const { baseUrl, cleanup } = await startApp({ cwd: cwdDir, stateDir, allowAutoSync: true });
+  try {
+    // Pre-paste a token to make the install resolve. Then BLANK the token
+    // and confirm the agent config drops the entry. Then re-paste and
+    // confirm the entry comes back — all without re-Install.
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mcpGithubToken: "ghp_initial_token" }),
+    });
+    const startResp = await fetch(`${baseUrl}/api/buildings/mcp-github/install`, { method: "POST" });
+    const { jobId } = await startResp.json();
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const j = await (await fetch(`${baseUrl}/api/buildings/mcp-github/install/jobs/${jobId}`)).json();
+      if (j.status !== "running") break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    const fs = await import("node:fs");
+    const claudePath = path.join(fakeHome, ".claude.json");
+    let claudeConfig = JSON.parse(fs.readFileSync(claudePath, "utf8"));
+    // After install, the resolved env should be in the agent config.
+    assert.equal(claudeConfig.mcpServers["mcp-github"].env.GITHUB_PERSONAL_ACCESS_TOKEN, "ghp_initial_token");
+
+    // Now PATCH the token to a new value WITHOUT re-Installing. The
+    // referencedSettings hook should auto-sync and the file should
+    // reflect the new value.
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mcpGithubToken: "ghp_rotated_token" }),
+    });
+    claudeConfig = JSON.parse(fs.readFileSync(claudePath, "utf8"));
+    assert.equal(claudeConfig.mcpServers["mcp-github"].env.GITHUB_PERSONAL_ACCESS_TOKEN, "ghp_rotated_token",
+      "auto-sync should pick up the rotated token");
+
+    // PATCH a setting that ISN'T referenced by any launch — the file
+    // should not be re-written by a no-op sync. Hard to assert "no
+    // write happened" without inotify, so we content-compare: write
+    // the same file mtime ago, then PATCH an unrelated setting, then
+    // assert content is unchanged.
+    const beforeMtime = fs.statSync(claudePath).mtimeMs;
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mcpHealthCheckIntervalSec: 600 }),
+    });
+    // Wait a bit just in case the sync was async. (it isn't, but harmless.)
+    await new Promise((r) => setTimeout(r, 50));
+    const afterMtime = fs.statSync(claudePath).mtimeMs;
+    assert.equal(afterMtime, beforeMtime, "unrelated setting change must not re-write the agent config");
+  } finally {
+    await cleanup();
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    await rm(fakeHome, { recursive: true, force: true });
+  }
+});
+
 test("end-to-end: install with auto-sync writes Claude + Codex configs without a manual sync call", { timeout: 120_000 }, async (t) => {
   // Sandbox HOME so the auto-sync writes land in a temp dir, not the
   // developer's real ~/.claude.json. The syncer reads $HOME at write

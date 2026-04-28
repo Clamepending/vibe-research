@@ -542,6 +542,29 @@ test("persistence: lastInstall round-trips through the file", () => {
   }
 });
 
+test("referencedSettings: returns ${...} keys across command + args + env", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("a", [
+    { command: "${binPath}", args: ["-y", "${pkgName}", "${rootDir}"], env: { TOK: "${apiToken}", BASE: "static" } },
+  ]);
+  r.declare("b", [
+    { command: "node", args: ["server.js"], env: { K: "${apiToken}" } }, // shared with a
+  ]);
+  const refs = r.referencedSettings();
+  assert.deepEqual([...refs].sort(), ["apiToken", "binPath", "pkgName", "rootDir"]);
+});
+
+test("referencedSettings: empty registry returns empty set", () => {
+  const r = createMcpLaunchRegistry();
+  assert.equal(r.referencedSettings().size, 0);
+});
+
+test("referencedSettings: ignores plain strings without ${...}", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("a", [{ command: "node", args: ["server.js", "--token", "$NOT_A_TEMPLATE"] }]);
+  assert.equal(r.referencedSettings().size, 0);
+});
+
 test("recordInstall: declare() replacing launches drops the old lastInstall", () => {
   const r = createMcpLaunchRegistry();
   r.declare("x", [{ command: "old" }]);

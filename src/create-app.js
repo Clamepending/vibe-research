@@ -4278,7 +4278,22 @@ export async function createVibeResearchApp({
       // + Codex configs so they don't keep launching the now-unregistered
       // server. Best-effort — sync errors are swallowed to keep the
       // PATCH /api/settings response shape stable.
-      if (removedAny && runAutoSyncForAgents) {
+      let needsAutoSync = removedAny;
+      // Also sync when a setting referenced by ANY current launch
+      // changed — that's the "user just pasted a token" path. Without
+      // this, the registry has the resolved value but the agent CLI
+      // configs still hold the unresolved template until the user
+      // explicitly re-Installs the building.
+      if (!needsAutoSync && runAutoSyncForAgents && request.body && typeof request.body === "object") {
+        const referenced = mcpLaunchRegistry.referencedSettings();
+        for (const key of referenced) {
+          if (Object.prototype.hasOwnProperty.call(request.body, key)) {
+            needsAutoSync = true;
+            break;
+          }
+        }
+      }
+      if (needsAutoSync && runAutoSyncForAgents) {
         try { runAutoSyncForAgents(); } catch {}
       }
 
