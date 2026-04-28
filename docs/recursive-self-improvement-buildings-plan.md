@@ -317,12 +317,56 @@ A green entry above means: the smoke commands the building's `agentGuide` promis
 
 Status as of this commit: **install runner is production-ready for two buildings (Modal + OttoAuth)**. Remaining cloud/MCP catalog buildings are the queue items below — each one gets its own move, plan, verify-on-this-machine, commit.
 
+### 2026-04-28 — second wave of MCP buildings + client wiring
+
+- **13 additional MCP-server buildings** added on top of PR #21's nine. Each manifest landed only after the upstream npm package resolved live (`npm view <pkg> version`) and the install plan ran clean against the live registry from this Mac.
+  - No-auth: `mcp-puppeteer`, `mcp-memory`, `mcp-everything`.
+  - Auth-paste: `mcp-redis`, `mcp-gitlab`, `mcp-google-maps`, `mcp-stripe`, `mcp-mongodb`, `mcp-cloudflare`, `mcp-tavily`, `mcp-exa`, `mcp-firecrawl`, `mcp-hubspot`.
+- Settings store extended: each new building gets its enabled flag plus a secret/config field with env-var fallback (`REDIS_URL`, `GITLAB_PERSONAL_ACCESS_TOKEN`, `GOOGLE_MAPS_API_KEY`, `STRIPE_SECRET_KEY`, `MONGODB_URI`, `CLOUDFLARE_API_TOKEN`, `TAVILY_API_KEY`, `EXA_API_KEY`, `FIRECRAWL_API_KEY`, `HUBSPOT_PRIVATE_APP_TOKEN`).
+- `test/install-runner-mcp-buildings.test.js` extended to **22 live integration tests** (4 expect `ok`, 18 expect `auth-required`). Total run ~9s. **81/81 across the install + research + google + building-registry suites.**
+
+### 2026-04-28 — client install button hooked to the one-click runner
+
+- New helper `runBuildingInstallPlan(building)` in `src/client/main.js`: posts to `/api/buildings/:id/install`, polls the job-status route until the runner returns a final status, writes progress into `state.buildingInstallJobs`, and refreshes system toasts so the human sees `Installing X…` → `X ready` / `X needs sign-in` / `X install failed`.
+- Toast actions added: `open-building-detail` (warning toast on `auth-required` — opens the building panel and the field's `setupUrl` in a new tab) and `dismiss-building-install` (clears the job from state).
+- The legacy `enabledSetting` flip still runs first so the catalog UI shows the building as installed during the install. Buildings without `install.plan` keep the legacy flow unchanged.
+
+### 2026-04-28 — research-loop critique items shipped (mostly prompt-only)
+
+CLAUDE.md edits encoding the highest-leverage critique items as prompt rules, per the user's "keep research-loop changes prompt-only" preference:
+
+- **#3 Periodic review trigger** — Review Mode now also fires after 5 resolved moves since the last review, after 3 consecutive resolved-but-not-admitted moves, when any `+evicted` row lands, or when a `BUDGET` cap is hit.
+- **#4 Project-level BUDGET envelope** — README gains compute / dollars / calendar axes; each `resolved` row debits; cap → `event: budget-cap` and human-only decision.
+- **#7 Anti-false-falsification** — Self-Unblocking now requires a baseline rerun cycle before logging `falsified`. If the baseline drifted as much as the variant, it's environment noise, not a real falsification.
+- **#9 Pivot approval gate in autonomous mode** — `pivot` rows that change a locked Question/Method now need an Agent Inbox card with capability tag `pivot-locked-section`; rejected pivots log `event: pivot-rejected`.
+- **#10 Cross-project DEPENDS ON** — README gains a DEPENDS ON section; upstream commit changes flag a pivot review.
+- Smaller fixes: insight confidence bump rule (low→medium at 2 decisive citations, medium→high at 5; demote on first contradiction); live-monitor `vr-agent-canvas --url`; footnote provenance `n=<rows>`; project-level `cycle_commit_strategy`; LOG event enum extended with `pivot-rejected` and `budget-cap`.
+- Three CLIs already shipped and referenced from CLAUDE.md: `vr-research-doctor` (loop-state validator), `vr-research-admit` (mechanical 2σ admission), `vr-research-lint-paper` (footnote / figure / ID-collision linter).
+
+### Status as of this batch
+
+**Shipped:**
+- Loop tooling: doctor, admit, lint-paper (3 CLIs + libs + 16 tests).
+- Loop prompt rules: critique items #3/#4/#7/#9/#10 + smaller fixes encoded in CLAUDE.md.
+- Install runner: command / http / auth-browser-cli / auth-paste / mcp-launch step kinds, in-memory job store, secret redaction.
+- Install routes: `POST /api/buildings/:id/install` + `GET /api/buildings/:id/install/jobs/:jobId`. First-party-only by design (BUILDING_CATALOG lookup; community manifests can never inject).
+- Client install button: posts + polls + toasts (Installing → ready / needs sign-in / failed).
+- Buildings with one-click install plans: **Modal, OttoAuth, mcp-filesystem, mcp-github, mcp-postgres, mcp-sqlite, mcp-brave-search, mcp-slack, mcp-sentry, mcp-notion, mcp-linear, mcp-puppeteer, mcp-memory, mcp-everything, mcp-redis, mcp-gitlab, mcp-google-maps, mcp-stripe, mcp-mongodb, mcp-cloudflare, mcp-tavily, mcp-exa, mcp-firecrawl, mcp-hubspot** — 24 first-party buildings whose Install button actually installs.
+- Google Drive: full `searchDriveFiles` / `getDriveFile` / `exportDriveFile` plumbing on `GoogleService` + 3 routes + agentGuide commands + 4 new tests.
+
+**Still queued:**
+- **AWS / GCP** — still blocked on credentials/CLI install on this machine. Per the hard rule, no stub manifests. Resume when `aws sts get-caller-identity` succeeds or `gcloud` is installed.
+- **Harbor**: optional `harbor init` smoke command for the agent guide.
+- **Google Drive end-to-end UX verification** needs a browser session.
+- **More MCP servers** as they land in npm: e.g. Atlassian MCP, Apify MCP, Twilio MCP, Supabase MCP, HuggingFace MCP, Pinecone / Qdrant / Chroma MCP. Drop into the same pattern (preflight `npx` + verify `npm view` + auth-paste + mcp-launch + settings-store entry + integration-test row).
+
 ### Resume instructions for the next session
 
 1. Read this doc top to bottom.
 2. If `aws sts get-caller-identity` or `gcloud auth list` now succeeds, draft an AWS or GCP building manifest in `src/client/building-registry.js` modeled on the Modal/RunPod entries (lab visual shape, env list, agent-guide commands ranked by safety: read-only smoke checks first, then read-write only after explicit approval).
 3. After that drafting, **rerun the smoke commands by hand** before declaring the building "verified".
 4. For Harbor: optionally run `harbor init` to scaffold a tiny task and prove the local trial path with a mock model. Decide whether the existing manifest needs an additional `harbor init` smoke-check command.
-5. For Google Drive: the verification needs a browser. Run an in-app session, click `Enable Drive access`, and confirm the agent can `ListFiles` via the host MCP. Update this doc.
-6. Then: pick from the bucket-D backlog (Replicate, HuggingFace Hub, Vast.ai, Lambda Labs, Fly.io, R2/B2, Pinecone, Linear, …) and re-enter the same loop: install + auth + smoke check + manifest + verification block.
+5. For Google Drive: the verification needs a browser. Run an in-app session, click `Enable Drive access`, and confirm the agent can list files via `/api/google/drive/files`. Update this doc.
+6. **To add another MCP server**: probe `npm view <package> version` first; if it resolves, copy a sibling manifest (e.g. `mcp-tavily`), wire the settings-store entry + env-var fallback, add a row to the live integration-test array in `test/install-runner-mcp-buildings.test.js`, run that test, commit. ~10 minutes per building once the pattern is internalized.
+7. Then: pick from the broader backlog (Replicate, HuggingFace Hub, Vast.ai, Lambda Labs, Fly.io, R2/B2, Pinecone, Qdrant, Chroma, Apify, Twilio, Atlassian, Supabase, …) and re-enter the same loop: install + auth + smoke check + manifest + verification block.
 
