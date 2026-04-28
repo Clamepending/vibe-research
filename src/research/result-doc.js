@@ -7,8 +7,12 @@
 
 const FRONTMATTER_FENCE = /^---\s*$/;
 const SECTION_HEADER = /^##\s+(.+?)\s*$/;
-const CYCLE_LINE = /^[-\s*]*`?cycle\s+(\d+)(?:\s+@([0-9a-f]+))?:?\s*(.*?)`?\s*$/i;
+// Captures: index, optional sha, optional kind (change|rerun|analysis|bench),
+// descriptor. The kind tag must come right after the @sha (if any) and before
+// the colon. Cycle lines without an explicit kind default to `change`.
+const CYCLE_LINE = /^[-\s*]*`?cycle\s+(\d+)(?:\s+@([0-9a-f]+))?(?:\s+(change|rerun|analysis|bench))?\s*:?\s*(.*?)`?\s*$/i;
 const STATUS_VALUE = /^([a-z][a-z\-]+)/i;
+const VALID_CYCLE_KINDS = new Set(["change", "rerun", "analysis", "bench"]);
 
 function splitLines(text) {
   return String(text || "").replace(/\r\n/g, "\n").split("\n");
@@ -121,12 +125,14 @@ function parseCycles(body) {
     .map((line) => {
       const match = CYCLE_LINE.exec(line);
       if (!match) {
-        return { raw: line };
+        return { raw: line, kind: "change" };
       }
-      const [, indexStr, sha, descriptor] = match;
+      const [, indexStr, sha, kindMatch, descriptor] = match;
+      const kind = kindMatch ? kindMatch.toLowerCase() : "change";
       return {
         index: Number(indexStr),
         sha: sha || "",
+        kind,
         descriptor: (descriptor || "").trim(),
         raw: line,
       };
@@ -160,6 +166,11 @@ export function parseResultDoc(text) {
   const leaderboardVerdict = sections.get("Leaderboard verdict") || "";
   const decision = parseDecision(leaderboardVerdict);
 
+  // Derived: true if any cycle is `bench` kind. Bench moves modify
+  // benchmark.md / rubrics / golden set rather than running an experiment;
+  // admit gives them a special carve-out (no leaderboard touch).
+  const isBenchMove = cycles.some((c) => c.kind === "bench");
+
   return {
     title,
     frontmatter: frontmatter || null,
@@ -171,6 +182,7 @@ export function parseResultDoc(text) {
     question,
     hypothesis,
     cycles,
+    isBenchMove,
     decision,
     sections: Array.from(sections.keys()),
   };
@@ -182,4 +194,5 @@ export const __internal = {
   parseScalar,
   parseCycles,
   parseDecision,
+  VALID_CYCLE_KINDS,
 };

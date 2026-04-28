@@ -96,6 +96,17 @@ function checkResultBenchmarkVersion(where, doc, benchmark) {
         `result doc cites benchmark_version=${declared}; current bench is ${current}`,
       ));
     }
+    // A bench-move's whole purpose is to INSTALL the current bench version.
+    // If the result doc has bench cycles but doesn't cite the current version,
+    // the move didn't do its declared job.
+    if (doc.isBenchMove && current && declared !== current) {
+      issues.push(makeIssue(
+        "error",
+        "bench_move_version_mismatch",
+        where,
+        `result doc has bench cycles (kind: bench) but cites benchmark_version=${declared}, not the current ${current} — a bench move must install the current bench version`,
+      ));
+    }
   }
 
   const metricName = resultMetric(doc);

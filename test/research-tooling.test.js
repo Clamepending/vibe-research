@@ -647,6 +647,122 @@ test("validateBenchmark: draft bench without calibration is warning, not error",
   }
 });
 
+// ---------------------------------------------------------------------------
+// bench cycle kind: parsing, admit carve-out, doctor check
+// ---------------------------------------------------------------------------
+
+test("parseResultDoc: cycle kinds parse (change default, rerun, analysis, bench)", () => {
+  const text = `# foo
+
+## STATUS
+
+resolved
+
+## Cycles
+
+- \`cycle 1 @aaaaaaa: baseline -> 0.72.\`
+- \`cycle 2 @bbbbbbb rerun: same config more seeds -> 0.74 std=0.01.\`
+- \`cycle 3 @ccccccc analysis: per-class breakdown -> classes 3,7,9 fail.\`
+- \`cycle 4 @ddddddd bench: bumped rubric to v2 -> readability rubric tightened.\`
+`;
+  const doc = parseResultDoc(text);
+  assert.equal(doc.cycles.length, 4);
+  assert.equal(doc.cycles[0].kind, "change", "default kind is change");
+  assert.equal(doc.cycles[1].kind, "rerun");
+  assert.equal(doc.cycles[2].kind, "analysis");
+  assert.equal(doc.cycles[3].kind, "bench");
+  assert.equal(doc.isBenchMove, true);
+});
+
+test("parseResultDoc: result doc without bench cycles is not flagged as bench move", () => {
+  const text = `# foo
+
+## STATUS
+
+resolved
+
+## Cycles
+
+- \`cycle 1 @aaaaaaa: baseline -> 0.72.\`
+- \`cycle 2 @bbbbbbb rerun: more seeds -> 0.73.\`
+`;
+  const doc = parseResultDoc(text);
+  assert.equal(doc.isBenchMove, false);
+});
+
+test("runAdmit: bench-move result doc returns clean bench-bump verdict (no leaderboard touch)", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-admit-bench-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    await writeFile(
+      path.join(project, "results", "v3-bench-v2.md"),
+      `---\nmetric: readability\nbenchmark_version: v1\n---\n# v3-bench-v2\n\n## STATUS\n\nresolved\n\n## Cycles\n\n- \`cycle 1 @ddddddd bench: tighten rubric to v2 -> rubric.md updated.\`\n`,
+    );
+    const report = await runAdmit({ projectDir: project, candidateResultPath: "results/v3-bench-v2.md" });
+    assert.equal(report.decision.admit, false);
+    assert.equal(report.decision.blocked, false);
+    assert.equal(report.decision.bench, true);
+    assert.match(report.decision.reason, /bench-bump|coverage and rater agreement/i);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("formatVerdict: bench-bump decision prints clean bench-bump line", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-format-bench-bump-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    await writeFile(
+      path.join(project, "results", "v3-bench-v2.md"),
+      `---\nmetric: readability\nbenchmark_version: v1\n---\n# v3-bench-v2\n\n## STATUS\n\nresolved\n\n## Cycles\n\n- \`cycle 1 @ddddddd bench: bumped rubric -> v2.\`\n`,
+    );
+    const report = await runAdmit({ projectDir: project, candidateResultPath: "results/v3-bench-v2.md" });
+    const text = formatVerdict(report);
+    assert.match(text, /Decision: bench-bump \(no leaderboard admission\)/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: bench move whose benchmark_version doesn't match current bench -> error", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-doctor-benchMismatch-"));
+  try {
+    const project = path.join(tmp, "prose-style");
+    await copyDir(FIXTURE_BENCHED_PROJECT, project);
+    // Bump bench to v2.
+    const benchPath = path.join(project, "benchmark.md");
+    let bench = await readFile(benchPath, "utf8");
+    bench = bench.replace("version: v1", "version: v2");
+    bench = bench.replace(
+      "| v1 | 2026-04-27 | initial | first cut | - |",
+      "| v2 | 2026-04-28 | tightened rubric | second cut | - |\n| v1 | 2026-04-27 | initial | first cut | v2 |",
+    );
+    await writeFile(benchPath, bench);
+    // A bench move whose result doc still cites v1 (the old version) — it
+    // should have cited v2 since its purpose was to install v2.
+    const readmePath = path.join(project, "README.md");
+    let readme = await readFile(readmePath, "utf8");
+    readme = readme.replace(
+      "## ACTIVE\n\n| move | result doc | branch | agent | started |\n|------|-----------|--------|-------|---------|",
+      "## ACTIVE\n\n| move | result doc | branch | agent | started |\n|------|-----------|--------|-------|---------|\n| v3-bench | [v3-bench](results/v3-bench.md) | [r/v3-bench](https://github.com/example/prose-style/tree/r/v3-bench) | 0 | 2026-04-28 |",
+    );
+    await writeFile(readmePath, readme);
+    await writeFile(
+      path.join(project, "results", "v3-bench.md"),
+      `---\nmetric: readability\nbenchmark_version: v1\n---\n# v3-bench\n\n## STATUS\n\nactive\n\n## Cycles\n\n- \`cycle 1 @ddddddd bench: tightened rubric.\`\n`,
+    );
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("bench_move_version_mismatch"), `expected bench_move_version_mismatch in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+
 test("formatVerdict: includes benchmark line when project has bench", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-format-bench-"));
   try {

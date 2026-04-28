@@ -198,6 +198,29 @@ export async function runAdmit({ projectDir, candidateResultPath, allowCrossVers
     ? String(benchmark.frontmatter.status).toLowerCase()
     : "";
 
+  // Bench-move carve-out: a result doc whose cycles are all/some `bench` kind
+  // is installing a new benchmark version, not competing on the leaderboard.
+  // Admission for a bench move is judged on coverage and rater agreement,
+  // which the doctor / validateBenchmark cover — admit just acknowledges and
+  // returns a clean non-admission verdict.
+  if (candidate.isBenchMove) {
+    return {
+      candidate,
+      project,
+      benchmark,
+      candidateBenchVersion,
+      currentBenchVersion,
+      verdictRows: [],
+      decision: {
+        admit: false,
+        blocked: false,
+        bench: true,
+        reason: `bench-bump move (no leaderboard admission); coverage and rater agreement are checked by vr-research-doctor against benchmark.md, not by admit`,
+      },
+      criterionKind,
+    };
+  }
+
   if (benchmark && benchStatus === "frozen") {
     return {
       candidate,
@@ -356,6 +379,8 @@ export function formatVerdict(report) {
   }
   if (report.decision.admit) {
     lines.push(`Decision: admit at rank ${report.decision.atRank} — ${report.decision.reason}`);
+  } else if (report.decision.bench) {
+    lines.push(`Decision: bench-bump (no leaderboard admission) — ${report.decision.reason}`);
   } else if (report.decision.blocked) {
     lines.push(`Decision: BLOCKED — ${report.decision.reason}`);
   } else {
