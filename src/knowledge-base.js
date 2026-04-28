@@ -104,6 +104,170 @@ function extractExcerpt(content) {
   return text ? text.slice(0, 180) : "";
 }
 
+const HEADLINE_IMAGE_EXTENSIONS = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".svg",
+  ".avif",
+]);
+
+const HEADLINE_TAKEAWAY_LIMIT = 280;
+
+function* iterateImageMarkdown(content) {
+  const text = String(content || "");
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    const start = text.indexOf("![", cursor);
+    if (start < 0) {
+      return;
+    }
+
+    if (start > 0 && text[start - 1] === "\\") {
+      cursor = start + 2;
+      continue;
+    }
+
+    let altDepth = 1;
+    let altCursor = start + 2;
+    while (altCursor < text.length && altDepth > 0) {
+      const character = text[altCursor];
+      if (character === "\\") {
+        altCursor += 2;
+        continue;
+      }
+
+      if (character === "[") {
+        altDepth += 1;
+      } else if (character === "]") {
+        altDepth -= 1;
+        if (altDepth === 0) {
+          break;
+        }
+      }
+
+      altCursor += 1;
+    }
+
+    if (altDepth !== 0 || text[altCursor] !== "]" || text[altCursor + 1] !== "(") {
+      cursor = start + 2;
+      continue;
+    }
+
+    const alt = text.slice(start + 2, altCursor);
+
+    let parenDepth = 1;
+    let parenCursor = altCursor + 2;
+    while (parenCursor < text.length && parenDepth > 0) {
+      const character = text[parenCursor];
+      if (character === "\\") {
+        parenCursor += 2;
+        continue;
+      }
+
+      if (character === "(") {
+        parenDepth += 1;
+      } else if (character === ")") {
+        parenDepth -= 1;
+        if (parenDepth === 0) {
+          break;
+        }
+      }
+
+      parenCursor += 1;
+    }
+
+    if (parenDepth !== 0) {
+      cursor = start + 2;
+      continue;
+    }
+
+    const destinationField = text.slice(altCursor + 2, parenCursor).trim();
+    yield { alt: alt.trim(), destinationField };
+    cursor = parenCursor + 1;
+  }
+}
+
+function parseImageDestination(destinationField) {
+  if (!destinationField) {
+    return "";
+  }
+
+  let candidate = destinationField;
+  if (candidate.startsWith("<")) {
+    const closing = candidate.indexOf(">");
+    if (closing >= 0) {
+      candidate = candidate.slice(1, closing);
+    } else {
+      candidate = candidate.slice(1);
+    }
+  } else {
+    const whitespaceMatch = candidate.match(/\s/);
+    if (whitespaceMatch) {
+      candidate = candidate.slice(0, whitespaceMatch.index);
+    }
+  }
+
+  return candidate.trim();
+}
+
+function extractHeadlineImage(content) {
+  for (const candidate of iterateImageMarkdown(content)) {
+    const url = parseImageDestination(candidate.destinationField);
+    if (!url) {
+      continue;
+    }
+
+    const [pathPart] = url.split("#");
+    const [pathWithoutQuery] = pathPart.split("?");
+    const lowercasePath = pathWithoutQuery.toLowerCase();
+    const dotIndex = lowercasePath.lastIndexOf(".");
+    if (dotIndex < 0) {
+      continue;
+    }
+
+    const extension = lowercasePath.slice(dotIndex);
+    if (!HEADLINE_IMAGE_EXTENSIONS.has(extension)) {
+      continue;
+    }
+
+    return { url, alt: candidate.alt };
+  }
+
+  return { url: "", alt: "" };
+}
+
+function extractTakeaway(content) {
+  const text = String(content || "");
+
+  const headingMatch = text.match(
+    /(?:^|\r?\n)#{1,6}[ \t]+(?:\*\*)?TAKEAWAY(?:\*\*)?[ \t]*(?:\r?\n)+([\s\S]*?)(?=\r?\n#{1,6}[ \t]+|$)/,
+  );
+
+  if (headingMatch?.[1]) {
+    const stripped = stripMarkdown(headingMatch[1]).trim();
+    if (stripped) {
+      return stripped.slice(0, HEADLINE_TAKEAWAY_LIMIT);
+    }
+  }
+
+  const inlineMatch = text.match(
+    /(?:^|\r?\n)[ \t]*(?:[-*][ \t]+)?\*\*TAKEAWAY\*\*[ \t]*[—–\-:]?[ \t]*([^\r\n]+(?:\r?\n(?![ \t]*\*\*[A-Z]|[ \t]*#{1,6}[ \t]|[ \t]*\r?\n)[^\r\n]+)*)/,
+  );
+
+  if (inlineMatch?.[1]) {
+    const stripped = stripMarkdown(inlineMatch[1]).trim();
+    if (stripped) {
+      return stripped.slice(0, HEADLINE_TAKEAWAY_LIMIT);
+    }
+  }
+
+  return "";
+}
+
 function collectRawLinkTargets(content) {
   const targets = [];
   const standardLinkPattern = /(!?)\[([^\]]*)\]\(([^)]+)\)/g;
@@ -321,6 +485,8 @@ export async function listKnowledgeBase({ rootPath, relativeRoot = "vibe-researc
         relativePath,
         title: extractTitle(content, relativePath),
         excerpt: extractExcerpt(content),
+        headlineImage: extractHeadlineImage(content),
+        takeaway: extractTakeaway(content),
         content,
       };
     }),
@@ -342,6 +508,9 @@ export async function listKnowledgeBase({ rootPath, relativeRoot = "vibe-researc
         relativePath: note.relativePath,
         title: note.title,
         excerpt: note.excerpt,
+        headlineImageUrl: note.headlineImage.url,
+        headlineImageAlt: note.headlineImage.alt,
+        takeaway: note.takeaway,
         links: Array.from(new Set(links)),
         searchText: stripMarkdown(note.content),
       };
@@ -408,6 +577,7 @@ export async function readKnowledgeBaseNote({ rootPath, relativePath, relativeRo
   }
 
   const content = await readFile(realTargetPath, "utf8");
+  const headlineImage = extractHeadlineImage(content);
 
   return {
     rootPath: resolvedRootPath,
@@ -416,6 +586,9 @@ export async function readKnowledgeBaseNote({ rootPath, relativePath, relativeRo
       relativePath: nextRelativePath,
       title: extractTitle(content, nextRelativePath),
       excerpt: extractExcerpt(content),
+      headlineImageUrl: headlineImage.url,
+      headlineImageAlt: headlineImage.alt,
+      takeaway: extractTakeaway(content),
       content,
     },
   };
