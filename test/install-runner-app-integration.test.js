@@ -208,6 +208,66 @@ test("GET /api/mcp/config/download: returns json with download disposition + mat
   }
 });
 
+test("end-to-end: install mcp-filesystem then handshake against the real server", { timeout: 120_000 }, async (t) => {
+  // Real-server test: lets npx fetch + run the actual MCP filesystem
+  // server, then drives a real protocol handshake against it. The only
+  // MCP-server building that needs no auth — perfect for the smoke test.
+  const cwdDir = await tmp("vr-e2e-cwd");
+  const stateDir = await tmp("vr-e2e-state");
+  // The roots arg the filesystem server scopes itself to.
+  const fsRoot = await tmp("vr-e2e-fsroot");
+
+  const { baseUrl, cleanup } = await startApp({ cwd: cwdDir, stateDir });
+  try {
+    // 1) Set mcpFilesystemRoots so the install plan resolves.
+    const patchResp = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mcpFilesystemRoots: fsRoot }),
+    });
+    assert.equal(patchResp.status, 200);
+
+    // 2) Install. npx will fetch the package on first run, so allow
+    //    plenty of time for the install job to complete.
+    const startResp = await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install`, { method: "POST" });
+    assert.equal(startResp.status, 200);
+    const { jobId } = await startResp.json();
+    const installDeadline = Date.now() + 90_000;
+    let installFinal = null;
+    while (Date.now() < installDeadline) {
+      const j = await (await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install/jobs/${jobId}`)).json();
+      if (j.status !== "running") { installFinal = j; break; }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    assert.ok(installFinal, "install must finish within 90s");
+    assert.equal(installFinal.status, "ok", `install failed: ${JSON.stringify(installFinal.result)}`);
+
+    // 3) Confirm the registry has the resolved launch with the temp dir
+    //    interpolated into args.
+    const launchesResp = await fetch(`${baseUrl}/api/mcp/launches?resolved=1`);
+    const launches = (await launchesResp.json()).launches;
+    const fsEntry = launches.find((entry) => entry.buildingId === "mcp-filesystem");
+    assert.ok(fsEntry, "filesystem launch must be in registry");
+    assert.ok(fsEntry.args.includes(fsRoot), `args should include ${fsRoot}, got ${JSON.stringify(fsEntry.args)}`);
+    assert.equal(fsEntry.unresolved, false);
+
+    // 4) Real handshake. Speaks MCP against the actually-spawned server.
+    const handshakeResp = await fetch(`${baseUrl}/api/mcp/launches/mcp-filesystem/handshake`, { method: "POST" });
+    assert.equal(handshakeResp.status, 200);
+    const handshakeBody = await handshakeResp.json();
+    assert.equal(handshakeBody.ok, true, `handshake failed: ${JSON.stringify(handshakeBody.results)}`);
+    assert.equal(handshakeBody.results[0].status, "tools-listed");
+    assert.ok(
+      handshakeBody.results[0].toolCount >= 4,
+      `expected >= 4 tools (filesystem MCP exposes read_file, write_file, list_directory, etc.), got ${handshakeBody.results[0].toolCount}`,
+    );
+    assert.ok(handshakeBody.results[0].serverName, "server should report its name");
+  } finally {
+    await cleanup();
+    await rm(fsRoot, { recursive: true, force: true });
+  }
+});
+
 test("POST /api/mcp/launches/:buildingId/test: 404 when no launches declared", async () => {
   const { baseUrl, cleanup } = await startApp();
   try {
