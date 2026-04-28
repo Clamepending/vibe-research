@@ -2714,29 +2714,40 @@ export async function createVibeResearchApp({
   });
 
   app.get("/api/state", async (_request, response) => {
-    await buildingHubService.refresh();
-    await syncBuildingAgentGuides();
-    response.json({
-      appName: "Vibe Research",
-      agentPrompt: await agentPromptStore.getState(),
-      agentTown: agentTownStore.getState(),
-      buildingHub: {
-        buildings: buildingHubService.listBuildings(),
-        layouts: buildingHubService.listLayouts(),
-        recipes: buildingHubService.listRecipes ? buildingHubService.listRecipes() : [],
-        status: buildingHubService.getStatus(),
-      },
-      cwd,
-      defaultSessionCwd: sessionDefaultCwd,
-      defaultProviderId,
-      providers,
-      sessions: sessionManager.listSessions(),
-      settings: getSettingsState(),
-      stateDir,
-      urls,
-      preferredUrl,
-      ports: await listNamedPorts(),
-    });
+    // /api/state is the first thing the browser hits on page load. If anything
+    // here throws (network blip refreshing the BuildingHub catalog, transient
+    // file error syncing agent guides, port-scan hiccup), an unhandled async
+    // rejection leaves the response hanging and the user sees a blank page.
+    // Catch and emit a 500 with the message so the UI can show something.
+    try {
+      await buildingHubService.refresh();
+      await syncBuildingAgentGuides();
+      response.json({
+        appName: "Vibe Research",
+        agentPrompt: await agentPromptStore.getState(),
+        agentTown: agentTownStore.getState(),
+        buildingHub: {
+          buildings: buildingHubService.listBuildings(),
+          layouts: buildingHubService.listLayouts(),
+          recipes: buildingHubService.listRecipes ? buildingHubService.listRecipes() : [],
+          status: buildingHubService.getStatus(),
+        },
+        cwd,
+        defaultSessionCwd: sessionDefaultCwd,
+        defaultProviderId,
+        providers,
+        sessions: sessionManager.listSessions(),
+        settings: getSettingsState(),
+        stateDir,
+        urls,
+        preferredUrl,
+        ports: await listNamedPorts(),
+      });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not load Vibe Research state." });
+    }
   });
 
   app.get("/healthz", (_request, response) => {
@@ -2988,9 +2999,13 @@ export async function createVibeResearchApp({
   });
 
   app.get("/api/ports", async (_request, response) => {
-    response.json({
-      ports: await listNamedPorts(),
-    });
+    try {
+      response.json({ ports: await listNamedPorts() });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not list named ports." });
+    }
   });
 
   app.get("/api/system", async (_request, response) => {
@@ -3106,9 +3121,15 @@ export async function createVibeResearchApp({
   });
 
   app.get("/api/update/status", async (request, response) => {
-    const force = request.query.force === "1" || request.query.force === "true";
-    const update = await updateManager.getStatus({ force });
-    response.json({ update });
+    try {
+      const force = request.query.force === "1" || request.query.force === "true";
+      const update = await updateManager.getStatus({ force });
+      response.json({ update });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not check update status." });
+    }
   });
 
   // Diagnostic: open a WebSocket from the server back to its OWN /ws endpoint
@@ -4206,11 +4227,17 @@ export async function createVibeResearchApp({
   });
 
   app.post("/api/wiki/backup", async (_request, response) => {
-    const status = await wikiBackupService.runBackup({ reason: "manual" });
-    response.json({
-      backup: status,
-      settings: getSettingsState(),
-    });
+    try {
+      const status = await wikiBackupService.runBackup({ reason: "manual" });
+      response.json({
+        backup: status,
+        settings: getSettingsState(),
+      });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Library backup failed." });
+    }
   });
 
   app.get("/api/agentmail/status", (_request, response) => {
@@ -4831,12 +4858,18 @@ export async function createVibeResearchApp({
   });
 
   app.get("/api/videomemory/status", async (_request, response) => {
-    await videoMemoryService.refreshRemoteMonitorStates();
-    await videoMemoryService.refreshRemoteDevices();
-    response.json({
-      monitors: videoMemoryService.listMonitors(),
-      videoMemory: videoMemoryService.getStatus(),
-    });
+    try {
+      await videoMemoryService.refreshRemoteMonitorStates();
+      await videoMemoryService.refreshRemoteDevices();
+      response.json({
+        monitors: videoMemoryService.listMonitors(),
+        videoMemory: videoMemoryService.getStatus(),
+      });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not load video memory status." });
+    }
   });
 
   app.get("/api/videomemory/devices", async (_request, response) => {
@@ -5160,13 +5193,19 @@ export async function createVibeResearchApp({
   });
 
   app.delete("/api/browser-use/sessions/:browserUseSessionId", async (request, response) => {
-    const session = await browserUseService.deleteSession(request.params.browserUseSessionId);
-    if (!session) {
-      response.status(404).json({ error: "Browser-use session not found." });
-      return;
-    }
+    try {
+      const session = await browserUseService.deleteSession(request.params.browserUseSessionId);
+      if (!session) {
+        response.status(404).json({ error: "Browser-use session not found." });
+        return;
+      }
 
-    response.json({ ok: true, session });
+      response.json({ ok: true, session });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not delete browser-use session." });
+    }
   });
 
   app.get("/api/ottoauth/tasks", (_request, response) => {
@@ -5575,7 +5614,13 @@ export async function createVibeResearchApp({
   app.patch("/api/sessions/:sessionId", handleSessionRename);
 
   app.get("/api/agent-prompt", async (_request, response) => {
-    response.json(await agentPromptStore.getState());
+    try {
+      response.json(await agentPromptStore.getState());
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not load agent prompt." });
+    }
   });
 
   app.put("/api/agent-prompt", async (request, response) => {
@@ -5702,6 +5747,29 @@ export async function createVibeResearchApp({
       },
     }),
   );
+
+  // Last-resort error handler. Express does not auto-translate async route
+  // rejections into 500s, so any handler that forgets a try/catch ends with a
+  // hung response. Each `/api/*` route is supposed to handle its own errors,
+  // but if one slips through we still want the browser to see *something*
+  // rather than spin forever waiting for a response.
+  app.use((error, _request, response, next) => {
+    if (response.headersSent) {
+      next(error);
+      return;
+    }
+    const status =
+      Number.isInteger(error?.statusCode) && error.statusCode >= 400 && error.statusCode < 600
+        ? error.statusCode
+        : 500;
+    const message = error?.message || "Internal server error.";
+    try {
+      console.error("[vibe-research] unhandled route error:", error);
+    } catch {
+      // ignore logging failures
+    }
+    response.status(status).json({ error: message });
+  });
 
   const server = await new Promise((resolve, reject) => {
     const nextServer = app.listen(port, host, () => resolve(nextServer));
