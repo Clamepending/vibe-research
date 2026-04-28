@@ -488,3 +488,66 @@ test("recordHandshake: declare() that REPLACES launches drops old lastHandshake"
   assert.equal(entry.command, "new");
   assert.equal(entry.lastHandshake, undefined);
 });
+
+// ---- recordInstall / lastInstall ----
+
+test("recordInstall: writes the same record to every launch under a building", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("multi", [
+    { command: "a", label: "primary" },
+    { command: "b", label: "secondary" },
+  ]);
+  const wrote = r.recordInstall("multi", { jobId: "job_42", ok: true, status: "ok" });
+  assert.equal(wrote, true);
+  const list = r.list();
+  for (const entry of list) {
+    assert.ok(entry.lastInstall);
+    assert.equal(entry.lastInstall.ok, true);
+    assert.equal(entry.lastInstall.status, "ok");
+    assert.equal(entry.lastInstall.jobId, "job_42");
+    assert.ok(typeof entry.lastInstall.at === "number");
+  }
+});
+
+test("recordInstall: empty buildingId / unknown id is a no-op", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("a", [{ command: "x" }]);
+  assert.equal(r.recordInstall("", { ok: true, status: "ok" }), false);
+  assert.equal(r.recordInstall("ghost", { ok: true, status: "ok" }), false);
+});
+
+test("recordInstall: failed install records ok=false + reason", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("a", [{ command: "x" }]);
+  r.recordInstall("a", { jobId: "job_1", ok: false, status: "failed", reason: "verify-failed" });
+  const [entry] = r.list();
+  assert.equal(entry.lastInstall.ok, false);
+  assert.equal(entry.lastInstall.status, "failed");
+  assert.equal(entry.lastInstall.reason, "verify-failed");
+});
+
+test("persistence: lastInstall round-trips through the file", () => {
+  const { path: filePath, dir } = tmpFile("persist-install");
+  try {
+    const r1 = createMcpLaunchRegistry({ persistencePath: filePath });
+    r1.declare("a", [{ command: "x" }]);
+    r1.recordInstall("a", { jobId: "j", ok: true, status: "ok" });
+    const r2 = createMcpLaunchRegistry({ persistencePath: filePath });
+    const [entry] = r2.list();
+    assert.ok(entry.lastInstall);
+    assert.equal(entry.lastInstall.jobId, "j");
+    assert.equal(entry.lastInstall.ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("recordInstall: declare() replacing launches drops the old lastInstall", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("x", [{ command: "old" }]);
+  r.recordInstall("x", { jobId: "j1", ok: true, status: "ok" });
+  r.declare("x", [{ command: "new" }]);
+  const [entry] = r.list();
+  assert.equal(entry.command, "new");
+  assert.equal(entry.lastInstall, undefined);
+});

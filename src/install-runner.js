@@ -498,6 +498,21 @@ export function startInstallJob({
         mcpRegistry,
         buildingId: building.id,
       });
+      // Record the install outcome on the registry so /api/mcp/launches
+      // can show "installed 2 days ago, status ok" inline. We do this
+      // BEFORE the optional auto-handshake so that even if the
+      // handshake step is skipped (no runHandshake provided) the
+      // lastInstall stamp still lands.
+      if (mcpRegistry && typeof mcpRegistry.recordInstall === "function") {
+        try {
+          mcpRegistry.recordInstall(building.id, {
+            jobId: job.id,
+            ok: result.status === "ok",
+            status: result.status,
+            reason: result.reason,
+          });
+        } catch {}
+      }
       // Auto-handshake: if the plan succeeded and declared mcp launches,
       // try to actually speak MCP against each one and stash the
       // results. This makes "click Install → see ok" mean "the server

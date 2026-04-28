@@ -111,6 +111,18 @@ function normalizeHandshakeRecord(value) {
   return out;
 }
 
+function normalizeInstallRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const ok = Boolean(value.ok);
+  const status = trimString(value.status || "").trim() || "unknown";
+  const at = Number.isFinite(value.at) ? value.at : null;
+  const out = { ok, status };
+  if (at !== null) out.at = at;
+  if (typeof value.jobId === "string" && value.jobId) out.jobId = value.jobId;
+  if (typeof value.reason === "string" && value.reason) out.reason = value.reason;
+  return out;
+}
+
 function loadFromDisk(persistencePath) {
   // Returns Map<buildingId, normalizedLaunch[]>. Missing/corrupt files
   // produce an empty map silently — the registry is best-effort durable,
@@ -142,6 +154,8 @@ function loadFromDisk(persistencePath) {
         // Preserve a previously-recorded handshake across reload.
         const lastHandshake = normalizeHandshakeRecord(launch?.lastHandshake);
         if (lastHandshake) base.lastHandshake = lastHandshake;
+        const lastInstall = normalizeInstallRecord(launch?.lastInstall);
+        if (lastInstall) base.lastInstall = lastInstall;
         return base;
       })
       .filter(Boolean);
@@ -235,6 +249,25 @@ export function createMcpLaunchRegistry({
       persist();
       return true;
     },
+    // Record the most-recent install result. Unlike handshake, install
+    // is per-building (it touches every launch the building declares
+    // at once), so we write the same record to every launch entry.
+    // The UI uses lastInstall + lastHandshake together to render
+    // "installed 2 days ago, last handshake ok 30s ago" without an
+    // extra round-trip.
+    recordInstall(buildingId, result) {
+      const id = String(buildingId || "").trim();
+      if (!id) return false;
+      const launches = launchesByBuilding.get(id);
+      if (!launches || launches.length === 0) return false;
+      const normalized = normalizeInstallRecord({ ...result, at: Date.now() });
+      if (!normalized) return false;
+      for (const launch of launches) {
+        launch.lastInstall = normalized;
+      }
+      persist();
+      return true;
+    },
     list({ settings, resolved = false } = {}) {
       const effectiveSettings = settings || getSettings();
       const out = [];
@@ -250,6 +283,7 @@ export function createMcpLaunchRegistry({
             unresolved: launchHasUnresolved(finalLaunch),
           };
           if (launch.lastHandshake) entry.lastHandshake = { ...launch.lastHandshake };
+          if (launch.lastInstall) entry.lastInstall = { ...launch.lastInstall };
           out.push(entry);
         }
       }

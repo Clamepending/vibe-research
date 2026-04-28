@@ -749,6 +749,56 @@ test("auto-handshake: skipped when runHandshake not provided", async () => {
   assert.equal(finished.result.handshakes, undefined);
 });
 
+test("install-runner: records lastInstall on success even when no handshake runs", async () => {
+  const { createMcpLaunchRegistry } = await import("../src/mcp-launch-registry.js");
+  const jobStore = createInstallJobStore();
+  const registry = createMcpLaunchRegistry();
+  const building = {
+    id: "install-record-ok",
+    install: {
+      plan: {
+        preflight: [{ kind: "command", command: "true" }],
+        verify: [],
+        mcp: [{ kind: "mcp-launch", command: "node" }],
+      },
+    },
+  };
+  // No runHandshake provided — so the auto-handshake branch is skipped.
+  // recordInstall must STILL fire.
+  const job = startInstallJob({ jobStore, building, mcpRegistry: registry });
+  await waitForJob(jobStore, job.id, { timeoutMs: 4000 });
+  const [entry] = registry.list();
+  assert.ok(entry.lastInstall);
+  assert.equal(entry.lastInstall.ok, true);
+  assert.equal(entry.lastInstall.status, "ok");
+  assert.equal(entry.lastInstall.jobId, job.id);
+});
+
+test("install-runner: records lastInstall on failure too", async () => {
+  const { createMcpLaunchRegistry } = await import("../src/mcp-launch-registry.js");
+  const jobStore = createInstallJobStore();
+  const registry = createMcpLaunchRegistry();
+  // Pre-declare a launch so recordInstall has somewhere to write.
+  registry.declare("install-record-fail", [{ command: "node" }]);
+  const building = {
+    id: "install-record-fail",
+    install: {
+      plan: {
+        preflight: [{ kind: "command", command: "false" }],
+        install: [{ kind: "command", command: "false", label: "always-fail" }],
+        verify: [],
+        mcp: [{ kind: "mcp-launch", command: "node" }],
+      },
+    },
+  };
+  const job = startInstallJob({ jobStore, building, mcpRegistry: registry });
+  await waitForJob(jobStore, job.id, { timeoutMs: 4000 });
+  const [entry] = registry.list();
+  assert.ok(entry.lastInstall);
+  assert.equal(entry.lastInstall.ok, false);
+  assert.equal(entry.lastInstall.status, "failed");
+});
+
 test("auto-handshake: records each handshake into the registry's lastHandshake", async () => {
   const { createMcpLaunchRegistry } = await import("../src/mcp-launch-registry.js");
   const jobStore = createInstallJobStore();
