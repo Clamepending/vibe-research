@@ -36,6 +36,7 @@ import { createInstallJobStore, startInstallJob } from "./install-runner.js";
 import { createMcpLaunchRegistry } from "./mcp-launch-registry.js";
 import { testLaunch as testMcpLaunch } from "./mcp-launch-tester.js";
 import { handshakeWithLaunch as handshakeMcpLaunch } from "./mcp-protocol-handshake.js";
+import { createMcpLaunchHealthMonitor } from "./mcp-launch-health.js";
 import { createFolderEntry, listFolderEntries } from "./folder-browser.js";
 import { GitHubOAuthTokenStore } from "./github-oauth-token-store.js";
 import { GitHubService } from "./github-service.js";
@@ -1451,6 +1452,10 @@ export async function createVibeResearchApp({
     // building before the host agent can pick them up again.
     persistencePath: path.join(stateDir, "mcp-launch-registry.json"),
   });
+  const mcpLaunchHealthMonitor = createMcpLaunchHealthMonitor({
+    registry: mcpLaunchRegistry,
+    runHandshake: handshakeMcpLaunch,
+  });
   const tutorialRegistry =
     typeof tutorialRegistryFactory === "function"
       ? tutorialRegistryFactory({ systemRootPath, cwd, stateDir })
@@ -2848,6 +2853,20 @@ export async function createVibeResearchApp({
       results,
       ok: results.every((entry) => entry.ok),
     });
+  });
+
+  // Aggregate health: handshakes every declared launch in parallel batches
+  // (one at a time today; trivially upgradeable). 30s response cache so
+  // repeated UI polls don't stampede the spawner. Pass ?force=1 to skip
+  // the cache.
+  app.post("/api/mcp/launches/health", async (request, response) => {
+    const force = String(request.query.force || "") === "1";
+    try {
+      const result = await mcpLaunchHealthMonitor.checkAll({ force });
+      response.json(result);
+    } catch (error) {
+      response.status(500).json({ error: error?.message || "health check failed" });
+    }
   });
 
   // Same payload as /api/mcp/config but served with a download disposition
