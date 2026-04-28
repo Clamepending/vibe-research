@@ -64,6 +64,10 @@ const expectAuthRequired = [
   // Auth-paste-gated: AWS Knowledge Base ID + Obsidian API key.
   "mcp-aws-kb-retrieval",
   "mcp-obsidian",
+  // CircleCI/Airtable/Datadog batch.
+  "mcp-circleci",
+  "mcp-airtable",
+  "mcp-datadog",
 ];
 
 for (const id of [...expectOk, ...expectAuthRequired]) {

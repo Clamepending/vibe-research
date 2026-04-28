@@ -2240,6 +2240,170 @@ const CORE_BUILDING_MANIFESTS = [
       docs: [{ label: "obsidian-mcp-server", url: "https://www.npmjs.com/package/obsidian-mcp-server" }],
     },
   },
+  // CircleCI-maintained official MCP. Token via CIRCLECI_TOKEN.
+  {
+    id: "mcp-circleci",
+    name: "MCP CircleCI",
+    category: "MCP",
+    description: "Inspect CircleCI projects, pipelines, and workflows from agent sessions via the official @circleci/mcp-server-circleci.",
+    icon: GitPullRequest,
+    status: "one-click install",
+    source: "circleci",
+    install: {
+      enabledSetting: "mcpCircleciEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpCircleciToken",
+          setupUrl: "https://app.circleci.com/settings/user/tokens",
+          setupLabel: "Create a CircleCI personal API token",
+          detail: "Create a personal API token (read scope is enough for inspection-only use).",
+        },
+        verify: [
+          { kind: "command", command: "npm view @circleci/mcp-server-circleci version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "@circleci/mcp-server-circleci"],
+            env: { CIRCLECI_TOKEN: "${mcpCircleciToken}" },
+            label: "Launch MCP CircleCI server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "CircleCI personal API token", setting: "mcpCircleciToken", required: true, secret: true, setupUrl: "https://app.circleci.com/settings/user/tokens" },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Paste a CircleCI personal API token" },
+      ],
+    },
+    agentGuide: {
+      summary: "Read CircleCI projects, pipelines, jobs, and build logs from agent sessions. Token-scoped to read by default.",
+      env: [{ name: "CIRCLECI_TOKEN", required: true }],
+      docs: [{ label: "@circleci/mcp-server-circleci", url: "https://www.npmjs.com/package/@circleci/mcp-server-circleci" }],
+    },
+  },
+  // Airtable MCP — reads + writes records via personal access token.
+  {
+    id: "mcp-airtable",
+    name: "MCP Airtable",
+    category: "MCP",
+    description: "Read + write Airtable bases from agent sessions via airtable-mcp-server.",
+    icon: Database,
+    status: "one-click install",
+    source: "community",
+    install: {
+      enabledSetting: "mcpAirtableEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpAirtableApiKey",
+          setupUrl: "https://airtable.com/create/tokens",
+          setupLabel: "Create an Airtable personal access token",
+          detail: "Create a personal access token scoped to the bases agents should touch. data.records:read at minimum; add data.records:write only if agents should edit.",
+        },
+        verify: [
+          { kind: "command", command: "npm view airtable-mcp-server version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "airtable-mcp-server"],
+            env: { AIRTABLE_API_KEY: "${mcpAirtableApiKey}" },
+            label: "Launch MCP Airtable server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "Airtable personal access token", setting: "mcpAirtableApiKey", required: true, secret: true, setupUrl: "https://airtable.com/create/tokens" },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Paste an Airtable personal access token (scoped to specific bases)" },
+      ],
+    },
+    agentGuide: {
+      summary: "List bases + tables, read records, optionally write records. Scope the token narrowly.",
+      env: [{ name: "AIRTABLE_API_KEY", required: true }],
+      docs: [{ label: "airtable-mcp-server", url: "https://www.npmjs.com/package/airtable-mcp-server" }],
+    },
+  },
+  // Datadog MCP — needs both API key + APP key.
+  {
+    id: "mcp-datadog",
+    name: "MCP Datadog",
+    category: "MCP",
+    description: "Query Datadog metrics, logs, and monitors from agent sessions via datadog-mcp-server.",
+    icon: Activity,
+    status: "one-click install",
+    source: "community",
+    install: {
+      enabledSetting: "mcpDatadogEnabled",
+      storedFallback: false,
+      plan: {
+        preflight: [{ kind: "command", command: "command -v npx", label: "Detect npx" }],
+        install: [],
+        auth: {
+          kind: "auth-paste",
+          setting: "mcpDatadogApiKey",
+          setupUrl: "https://app.datadoghq.com/organization-settings/api-keys",
+          setupLabel: "Create Datadog API + App keys",
+          detail: "Datadog needs BOTH an API key and an Application key. Paste the API key here; the App key goes in the mcpDatadogAppKey setting on the building panel. Set mcpDatadogSite if you're not on US1 (e.g. datadoghq.eu).",
+        },
+        verify: [
+          { kind: "command", command: "npm view datadog-mcp-server version", timeoutSec: 60 },
+        ],
+        mcp: [
+          {
+            kind: "mcp-launch",
+            command: "npx",
+            args: ["-y", "datadog-mcp-server"],
+            env: {
+              DD_API_KEY: "${mcpDatadogApiKey}",
+              DD_APP_KEY: "${mcpDatadogAppKey}",
+              DD_SITE: "${mcpDatadogSite}",
+            },
+            label: "Launch MCP Datadog server",
+          },
+        ],
+      },
+    },
+    onboarding: {
+      variables: [
+        { label: "Datadog API key", setting: "mcpDatadogApiKey", required: true, secret: true, setupUrl: "https://app.datadoghq.com/organization-settings/api-keys" },
+        { label: "Datadog Application key", setting: "mcpDatadogAppKey", required: true, secret: true, setupUrl: "https://app.datadoghq.com/personal-settings/application-keys" },
+        { label: "Datadog site", setting: "mcpDatadogSite", required: false, setupHint: "datadoghq.com (default), datadoghq.eu, us3.datadoghq.com, …" },
+      ],
+      steps: [
+        { title: "Install the server", completeWhen: { type: "installed" } },
+        { title: "Paste API + App keys", detail: "Both required. App key is per-user; create one at /personal-settings/application-keys." },
+        { title: "Set the Datadog site if not US1" },
+      ],
+    },
+    agentGuide: {
+      summary: "Query Datadog metrics, logs, monitors. Read-only by token scope; agents should not create or modify monitors.",
+      env: [
+        { name: "DD_API_KEY", required: true },
+        { name: "DD_APP_KEY", required: true },
+        { name: "DD_SITE", required: false },
+      ],
+      docs: [{ label: "datadog-mcp-server", url: "https://www.npmjs.com/package/datadog-mcp-server" }],
+    },
+  },
   // Second wave of MCP-server buildings. Each pulls a verified npm package via
   // npx; install plans skip the install step (npx fetches on first run) and
   // gate usage on either an auth-paste field or, for no-auth servers, just the

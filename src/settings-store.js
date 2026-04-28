@@ -395,6 +395,19 @@ export class SettingsStore {
       mcpObsidianEnabled: false,
       mcpObsidianApiKey: String(this.env.MCP_OBSIDIAN_API_KEY || this.env.OBSIDIAN_API_KEY || "").trim(),
       mcpObsidianVaultPath: String(this.env.MCP_OBSIDIAN_VAULT_PATH || "").trim(),
+      // CircleCI MCP — maintained by CircleCI engineers. Reads token
+      // from CIRCLECI_TOKEN.
+      mcpCircleciEnabled: false,
+      mcpCircleciToken: String(this.env.MCP_CIRCLECI_TOKEN || this.env.CIRCLECI_TOKEN || "").trim(),
+      // Airtable MCP — solo-maintained by domdomegg (also gmail-mcp).
+      // Reads AIRTABLE_API_KEY (personal access token).
+      mcpAirtableEnabled: false,
+      mcpAirtableApiKey: String(this.env.MCP_AIRTABLE_API_KEY || this.env.AIRTABLE_API_KEY || "").trim(),
+      // Datadog MCP — needs both API key + APP key.
+      mcpDatadogEnabled: false,
+      mcpDatadogApiKey: String(this.env.MCP_DATADOG_API_KEY || this.env.DD_API_KEY || "").trim(),
+      mcpDatadogAppKey: String(this.env.MCP_DATADOG_APP_KEY || this.env.DD_APP_KEY || "").trim(),
+      mcpDatadogSite: String(this.env.MCP_DATADOG_SITE || this.env.DD_SITE || "datadoghq.com").trim(),
       // Second wave of MCP-server buildings (auth-paste only; npm packages
       // verified against the live registry on 2026-04-28).
       mcpPuppeteerEnabled: false,
@@ -757,6 +770,29 @@ export class SettingsStore {
         payload.mcpObsidianVaultPath === undefined
           ? defaults.mcpObsidianVaultPath
           : String(payload.mcpObsidianVaultPath || "").trim(),
+      mcpCircleciEnabled: normalizeBoolean(payload.mcpCircleciEnabled, defaults.mcpCircleciEnabled),
+      mcpCircleciToken:
+        payload.mcpCircleciToken === undefined
+          ? defaults.mcpCircleciToken
+          : String(payload.mcpCircleciToken || "").trim(),
+      mcpAirtableEnabled: normalizeBoolean(payload.mcpAirtableEnabled, defaults.mcpAirtableEnabled),
+      mcpAirtableApiKey:
+        payload.mcpAirtableApiKey === undefined
+          ? defaults.mcpAirtableApiKey
+          : String(payload.mcpAirtableApiKey || "").trim(),
+      mcpDatadogEnabled: normalizeBoolean(payload.mcpDatadogEnabled, defaults.mcpDatadogEnabled),
+      mcpDatadogApiKey:
+        payload.mcpDatadogApiKey === undefined
+          ? defaults.mcpDatadogApiKey
+          : String(payload.mcpDatadogApiKey || "").trim(),
+      mcpDatadogAppKey:
+        payload.mcpDatadogAppKey === undefined
+          ? defaults.mcpDatadogAppKey
+          : String(payload.mcpDatadogAppKey || "").trim(),
+      mcpDatadogSite:
+        payload.mcpDatadogSite === undefined
+          ? defaults.mcpDatadogSite
+          : String(payload.mcpDatadogSite || "").trim(),
       mcpPuppeteerEnabled: normalizeBoolean(payload.mcpPuppeteerEnabled, defaults.mcpPuppeteerEnabled),
       mcpMemoryEnabled: normalizeBoolean(payload.mcpMemoryEnabled, defaults.mcpMemoryEnabled),
       mcpRedisEnabled: normalizeBoolean(payload.mcpRedisEnabled, defaults.mcpRedisEnabled),
