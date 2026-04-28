@@ -219,6 +219,50 @@ test("GET /api/mcp/config/download: returns json with download disposition + mat
   }
 });
 
+test("GET /api/buildings/:id/install/jobs: empty before any install, populated after", async () => {
+  const { baseUrl, cleanup } = await startApp();
+  try {
+    let resp = await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install/jobs`);
+    assert.equal(resp.status, 200);
+    let body = await resp.json();
+    assert.equal(body.buildingId, "mcp-filesystem");
+    assert.deepEqual(body.jobs, []);
+
+    // Trigger a couple of installs in sequence.
+    const job1 = await (await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install`, { method: "POST" })).json();
+    const j1Deadline = Date.now() + 60_000;
+    while (Date.now() < j1Deadline) {
+      const j = await (await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install/jobs/${job1.jobId}`)).json();
+      if (j.status !== "running") break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const job2 = await (await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install`, { method: "POST" })).json();
+    const j2Deadline = Date.now() + 60_000;
+    while (Date.now() < j2Deadline) {
+      const j = await (await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install/jobs/${job2.jobId}`)).json();
+      if (j.status !== "running") break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    resp = await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install/jobs`);
+    body = await resp.json();
+    assert.equal(body.jobs.length, 2);
+    // Most-recent first.
+    assert.equal(body.jobs[0].id, job2.jobId);
+    assert.equal(body.jobs[1].id, job1.jobId);
+    // Listing intentionally omits the verbose log array.
+    assert.equal(body.jobs[0].log, undefined);
+
+    // limit=1 returns just the newest.
+    resp = await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install/jobs?limit=1`);
+    body = await resp.json();
+    assert.equal(body.jobs.length, 1);
+    assert.equal(body.jobs[0].id, job2.jobId);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("/api/state: mcp.lastHealth is null until /health is called, then populated", async () => {
   const { baseUrl, cleanup } = await startApp();
   try {

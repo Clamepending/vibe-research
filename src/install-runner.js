@@ -84,6 +84,19 @@ export function createInstallJobStore() {
       }
       return job;
     },
+    // List jobs for a specific building, most-recent first. Used by the
+    // UI's "show me the last 5 install attempts" history view. Default
+    // limit keeps the response small; -1 returns all jobs we still
+    // remember.
+    byBuilding(buildingId, { limit = 10 } = {}) {
+      const id = String(buildingId || "").trim();
+      if (!id) return [];
+      const matching = [...jobs.values()].filter((job) => job.buildingId === id);
+      matching.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      if (limit > 0) return matching.slice(0, limit);
+      return matching;
+    },
+    size() { return jobs.size; },
   };
 }
 

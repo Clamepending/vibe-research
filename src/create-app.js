@@ -2759,6 +2759,28 @@ export async function createVibeResearchApp({
     }
   });
 
+  // List recent install jobs for a building (newest first). Useful for
+  // "show me the last 5 attempts so I can see when this last worked"
+  // and for diffing log output across runs. Default limit keeps the
+  // response small; ?limit=N can request more.
+  app.get("/api/buildings/:buildingId/install/jobs", (request, response) => {
+    const buildingId = normalizeBuildingId(String(request.params.buildingId || ""));
+    const limit = Math.max(1, Math.min(50, Number(request.query.limit) || 10));
+    const jobs = installJobStore.byBuilding(buildingId, { limit });
+    // Strip the verbose log array from the listing — clients hit
+    // /jobs/:jobId for the full log.
+    response.json({
+      buildingId,
+      jobs: jobs.map((job) => ({
+        id: job.id,
+        status: job.status,
+        result: job.result,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+      })),
+    });
+  });
+
   app.get("/api/buildings/:buildingId/install/jobs/:jobId", (request, response) => {
     const buildingId = normalizeBuildingId(String(request.params.buildingId || ""));
     const jobId = String(request.params.jobId || "");

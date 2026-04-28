@@ -231,6 +231,37 @@ test("startInstallJob + waitForJob: end-to-end via the job store", async () => {
   assert.equal(finished.buildingId, "demo");
 });
 
+test("createInstallJobStore: byBuilding returns most-recent first, respects limit", () => {
+  const jobStore = createInstallJobStore();
+  // Interleave two buildings.
+  jobStore.create("a"); // oldest of "a"
+  jobStore.create("b");
+  jobStore.create("a");
+  jobStore.create("a"); // newest of "a"
+  const aJobs = jobStore.byBuilding("a");
+  assert.equal(aJobs.length, 3);
+  // Most-recent first: each job's createdAt should be >= the next.
+  for (let i = 0; i + 1 < aJobs.length; i += 1) {
+    assert.ok(aJobs[i].createdAt >= aJobs[i + 1].createdAt);
+  }
+  const aLimited = jobStore.byBuilding("a", { limit: 2 });
+  assert.equal(aLimited.length, 2);
+});
+
+test("createInstallJobStore: byBuilding empty/unknown id returns []", () => {
+  const jobStore = createInstallJobStore();
+  jobStore.create("a");
+  assert.deepEqual(jobStore.byBuilding(""), []);
+  assert.deepEqual(jobStore.byBuilding("ghost"), []);
+});
+
+test("createInstallJobStore: byBuilding limit=-1 returns all matching", () => {
+  const jobStore = createInstallJobStore();
+  for (let i = 0; i < 15; i += 1) jobStore.create("a");
+  const all = jobStore.byBuilding("a", { limit: -1 });
+  assert.equal(all.length, 15);
+});
+
 test("createInstallJobStore: trims old jobs past the cap", () => {
   const jobStore = createInstallJobStore();
   const ids = [];
