@@ -244,6 +244,8 @@ export async function executeInstallPlan(plan, options = {}) {
     settingsStore = null,
     signal,
     fetchImpl,
+    mcpRegistry = null,
+    buildingId = null,
   } = options;
 
   // Secret-mask set: every value in here is replaced with [redacted] in
@@ -430,6 +432,7 @@ export async function executeInstallPlan(plan, options = {}) {
   }
 
   // 6) Declare MCP launches (runtime owns lifecycle).
+  const declaredLaunches = [];
   for (const step of plan.mcp || []) {
     appendLog({
       phase: "mcp",
@@ -437,12 +440,25 @@ export async function executeInstallPlan(plan, options = {}) {
       step: step.label || step.command,
       message: `declared mcp launcher: ${step.command} ${asArray(step.args).join(" ")}`,
     });
+    declaredLaunches.push({
+      command: step.command,
+      args: asArray(step.args),
+      env: step.env || {},
+      label: step.label || "",
+    });
+  }
+  if (mcpRegistry && typeof mcpRegistry.declare === "function" && buildingId) {
+    try {
+      mcpRegistry.declare(buildingId, declaredLaunches);
+    } catch (err) {
+      appendLog({ phase: "mcp", level: "warn", message: `mcp registry declare failed: ${err?.message || err}` });
+    }
   }
 
-  return { status: "ok", capturedSettings };
+  return { status: "ok", capturedSettings, declaredLaunches };
 }
 
-export function startInstallJob({ jobStore, building, settingsStore, fetchImpl }) {
+export function startInstallJob({ jobStore, building, settingsStore, fetchImpl, mcpRegistry }) {
   const job = jobStore.create(building.id);
   const controller = new AbortController();
   job.abort = () => controller.abort();
@@ -464,6 +480,8 @@ export function startInstallJob({ jobStore, building, settingsStore, fetchImpl }
         settingsStore,
         signal: controller.signal,
         fetchImpl,
+        mcpRegistry,
+        buildingId: building.id,
       });
       jobStore.update(job.id, {
         status: result.status === "ok" ? "ok" : result.status,

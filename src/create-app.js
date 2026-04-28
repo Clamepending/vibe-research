@@ -33,6 +33,7 @@ import { BrowserUseService } from "./browser-use-service.js";
 import { BUILDING_CATALOG } from "./client/building-registry.js";
 import { normalizeBuildingId } from "./client/building-sdk.js";
 import { createInstallJobStore, startInstallJob } from "./install-runner.js";
+import { createMcpLaunchRegistry } from "./mcp-launch-registry.js";
 import { createFolderEntry, listFolderEntries } from "./folder-browser.js";
 import { GitHubOAuthTokenStore } from "./github-oauth-token-store.js";
 import { GitHubService } from "./github-service.js";
@@ -1441,6 +1442,9 @@ export async function createVibeResearchApp({
       ? scaffoldRecipeServiceFactory(settingsStore.settings, { cwd, stateDir, systemRootPath })
       : new ScaffoldRecipeService({ stateDir });
   const installJobStore = createInstallJobStore();
+  const mcpLaunchRegistry = createMcpLaunchRegistry({
+    getSettings: () => settingsStore.settings,
+  });
   const tutorialRegistry =
     typeof tutorialRegistryFactory === "function"
       ? tutorialRegistryFactory({ systemRootPath, cwd, stateDir })
@@ -2717,7 +2721,7 @@ export async function createVibeResearchApp({
       return;
     }
     try {
-      const job = startInstallJob({ jobStore: installJobStore, building, settingsStore });
+      const job = startInstallJob({ jobStore: installJobStore, building, settingsStore, mcpRegistry: mcpLaunchRegistry });
       response.json({
         jobId: job.id,
         status: job.status,
@@ -2745,6 +2749,24 @@ export async function createVibeResearchApp({
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
     });
+  });
+
+  // Lists every MCP launch declared by a building's install plan so the
+  // host agent / Claude Desktop / Cursor can pull the spawn config. The
+  // ?resolved=1 query param interpolates ${settingKey} templates against
+  // the live settings store; without it the raw declaration is returned.
+  app.get("/api/mcp/launches", (request, response) => {
+    const resolved = String(request.query.resolved || "") === "1";
+    response.json({
+      launches: mcpLaunchRegistry.list({ resolved }),
+    });
+  });
+
+  // Same data shaped like a Claude Desktop / Cursor MCP config. Always
+  // returns resolved values so the consumer can write it straight to disk
+  // or pipe it into a host that expects the standard shape.
+  app.get("/api/mcp/config", (_request, response) => {
+    response.json(mcpLaunchRegistry.toMcpConfig());
   });
 
   app.get("/", (request, response, next) => {

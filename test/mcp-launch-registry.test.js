@@ -1,0 +1,253 @@
+// Unit tests for src/mcp-launch-registry.js. Pure in-memory module so
+// these run in milliseconds with no external dependencies.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  createMcpLaunchRegistry,
+  hasUnresolvedTemplate,
+  resolveTemplate,
+} from "../src/mcp-launch-registry.js";
+import { executeInstallPlan } from "../src/install-runner.js";
+
+// ---- resolveTemplate / hasUnresolvedTemplate ----
+
+test("resolveTemplate: replaces ${key} when settings has the key", () => {
+  assert.equal(resolveTemplate("Bearer ${token}", { token: "xyz" }), "Bearer xyz");
+});
+
+test("resolveTemplate: leaves ${key} as-is when key missing", () => {
+  assert.equal(resolveTemplate("Bearer ${token}", {}), "Bearer ${token}");
+});
+
+test("resolveTemplate: leaves ${key} as-is when value is empty string", () => {
+  // Empty value is treated as 'unresolved' so the host agent surfaces a
+  // missing-credential error rather than launching with a blank token.
+  assert.equal(resolveTemplate("Bearer ${token}", { token: "" }), "Bearer ${token}");
+});
+
+test("resolveTemplate: handles multiple keys + leaves unrecognized syntax alone", () => {
+  assert.equal(
+    resolveTemplate("u=${user};p=${pass};raw=$elsewhere", { user: "alice", pass: "secret" }),
+    "u=alice;p=secret;raw=$elsewhere",
+  );
+});
+
+test("hasUnresolvedTemplate: detects remaining ${key} after partial resolution", () => {
+  const text = resolveTemplate("u=${user};p=${pass}", { user: "alice" });
+  assert.equal(hasUnresolvedTemplate(text), true);
+  assert.equal(hasUnresolvedTemplate(resolveTemplate(text, { pass: "z" })), false);
+});
+
+// ---- registry.declare ----
+
+test("registry.declare: stores normalized launches per building", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("mcp-x", [{ command: "node", args: ["server.js"], env: { PORT: "1" }, label: "x" }]);
+  const list = r.list();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].buildingId, "mcp-x");
+  assert.equal(list[0].command, "node");
+  assert.deepEqual(list[0].args, ["server.js"]);
+  assert.deepEqual(list[0].env, { PORT: "1" });
+});
+
+test("registry.declare: an empty array clears the building's launches", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("mcp-x", [{ command: "node" }]);
+  assert.equal(r.size(), 1);
+  r.declare("mcp-x", []);
+  assert.equal(r.size(), 0);
+});
+
+test("registry.declare: re-declaring REPLACES the building's launches", () => {
+  // Re-running an install plan after a token paste needs to overwrite the
+  // previous (un-resolved) declaration, not append to it.
+  const r = createMcpLaunchRegistry();
+  r.declare("mcp-x", [{ command: "old-cmd" }]);
+  r.declare("mcp-x", [{ command: "new-cmd", args: ["a"] }]);
+  const list = r.list();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].command, "new-cmd");
+});
+
+test("registry.declare: drops malformed launches (no command, wrong shape, etc.)", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("mcp-x", [
+    { command: "good" },
+    { args: ["no-command-field"] },
+    null,
+    "string-not-object",
+    { command: "" },
+  ]);
+  const list = r.list();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].command, "good");
+});
+
+test("registry.declare: empty buildingId is a no-op", () => {
+  const r = createMcpLaunchRegistry();
+  assert.deepEqual(r.declare("", [{ command: "x" }]), []);
+  assert.deepEqual(r.declare(null, [{ command: "x" }]), []);
+  assert.equal(r.size(), 0);
+});
+
+// ---- registry.list ----
+
+test("registry.list({ resolved: false }): returns raw declarations with templates", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("mcp-x", [
+    { command: "node", args: ["server.js"], env: { TOKEN: "${apiToken}" } },
+  ]);
+  const raw = r.list({ resolved: false });
+  assert.equal(raw[0].env.TOKEN, "${apiToken}");
+  assert.equal(raw[0].unresolved, true);
+});
+
+test("registry.list({ resolved: true, settings }): interpolates templates", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("mcp-x", [
+    { command: "node", args: ["server.js", "--token", "${apiToken}"], env: { API: "${apiToken}" } },
+  ]);
+  const live = r.list({ resolved: true, settings: { apiToken: "abc123" } });
+  assert.deepEqual(live[0].args, ["server.js", "--token", "abc123"]);
+  assert.equal(live[0].env.API, "abc123");
+  assert.equal(live[0].unresolved, false);
+});
+
+test("registry.list({ resolved: true }): unresolved=true when a referenced setting is missing", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("mcp-x", [
+    { command: "node", env: { TOKEN: "${absent}" } },
+  ]);
+  const live = r.list({ resolved: true, settings: {} });
+  assert.equal(live[0].unresolved, true);
+  assert.equal(live[0].env.TOKEN, "${absent}");
+});
+
+test("registry.list: defaults settings via getSettings dependency injection", () => {
+  let calls = 0;
+  const r = createMcpLaunchRegistry({
+    getSettings: () => { calls += 1; return { apiToken: "from-getter" }; },
+  });
+  r.declare("mcp-x", [{ command: "node", args: ["${apiToken}"] }]);
+  const live = r.list({ resolved: true });
+  assert.equal(live[0].args[0], "from-getter");
+  assert.ok(calls >= 1, "getSettings should be invoked");
+});
+
+// ---- registry.remove + has + clear ----
+
+test("registry.remove + has + clear", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("a", [{ command: "x" }]);
+  r.declare("b", [{ command: "y" }]);
+  assert.equal(r.has("a"), true);
+  assert.equal(r.remove("a"), true);
+  assert.equal(r.has("a"), false);
+  assert.equal(r.remove("ghost"), false);
+  r.clear();
+  assert.equal(r.size(), 0);
+});
+
+// ---- registry.toMcpConfig ----
+
+test("registry.toMcpConfig: claude_desktop_config.json shape", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("mcp-fs", [{ command: "npx", args: ["-y", "@mcp/fs", "/tmp"] }]);
+  r.declare("mcp-gh", [{ command: "npx", args: ["-y", "@mcp/gh"], env: { TOKEN: "${ghToken}" } }]);
+  const cfg = r.toMcpConfig({ settings: { ghToken: "tok_AAA" } });
+  assert.deepEqual(cfg, {
+    mcpServers: {
+      "mcp-fs": { command: "npx", args: ["-y", "@mcp/fs", "/tmp"] },
+      "mcp-gh": { command: "npx", args: ["-y", "@mcp/gh"], env: { TOKEN: "tok_AAA" } },
+    },
+  });
+});
+
+test("registry.toMcpConfig: multiple launches per building get -1 / -2 suffixes", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("mcp-multi", [
+    { command: "node", args: ["a"] },
+    { command: "node", args: ["b"] },
+  ]);
+  const cfg = r.toMcpConfig({ settings: {} });
+  assert.deepEqual(Object.keys(cfg.mcpServers).sort(), ["mcp-multi-1", "mcp-multi-2"]);
+});
+
+test("registry.toMcpConfig: omits env when env is empty", () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("mcp-fs", [{ command: "npx", args: ["-y", "@mcp/fs"] }]);
+  const cfg = r.toMcpConfig({ settings: {} });
+  assert.equal(Object.prototype.hasOwnProperty.call(cfg.mcpServers["mcp-fs"], "env"), false);
+});
+
+// ---- integration with executeInstallPlan ----
+
+test("executeInstallPlan: hook into mcpRegistry — successful install declares launches", async () => {
+  const r = createMcpLaunchRegistry();
+  const plan = {
+    preflight: [{ kind: "command", command: "true" }],
+    install: [],
+    verify: [{ kind: "command", command: "true" }],
+    mcp: [
+      { kind: "mcp-launch", command: "node", args: ["server.js", "--token", "${myKey}"], env: { K: "${myKey}" }, label: "demo" },
+    ],
+  };
+  const result = await executeInstallPlan(plan, {
+    appendLog: () => {},
+    mcpRegistry: r,
+    buildingId: "demo-building",
+  });
+  assert.equal(result.status, "ok");
+  assert.equal(r.size(), 1);
+  // Resolved against an empty settings → unresolved template stays in.
+  const list = r.list({ resolved: true, settings: {} });
+  assert.equal(list[0].buildingId, "demo-building");
+  assert.equal(list[0].unresolved, true);
+  // Resolved with the matching setting → templates filled.
+  const resolved = r.list({ resolved: true, settings: { myKey: "tok_XYZ" } });
+  assert.equal(resolved[0].unresolved, false);
+  assert.equal(resolved[0].env.K, "tok_XYZ");
+});
+
+test("executeInstallPlan: re-running with new mcp launches replaces old ones for the same buildingId", async () => {
+  const r = createMcpLaunchRegistry();
+  const plan1 = {
+    preflight: [{ kind: "command", command: "true" }],
+    verify: [],
+    mcp: [{ kind: "mcp-launch", command: "old-cmd" }],
+  };
+  const plan2 = {
+    preflight: [{ kind: "command", command: "true" }],
+    verify: [],
+    mcp: [{ kind: "mcp-launch", command: "new-cmd-1" }, { kind: "mcp-launch", command: "new-cmd-2" }],
+  };
+  await executeInstallPlan(plan1, { appendLog: () => {}, mcpRegistry: r, buildingId: "x" });
+  await executeInstallPlan(plan2, { appendLog: () => {}, mcpRegistry: r, buildingId: "x" });
+  const list = r.list();
+  const cmds = list.map((entry) => entry.command).sort();
+  assert.deepEqual(cmds, ["new-cmd-1", "new-cmd-2"]);
+});
+
+test("executeInstallPlan: failing install does NOT touch the mcp registry", async () => {
+  const r = createMcpLaunchRegistry();
+  r.declare("x", [{ command: "previous-cmd" }]);
+  const plan = {
+    preflight: [{ kind: "command", command: "false" }],
+    install: [{ kind: "command", command: "false", label: "boom" }],
+    verify: [{ kind: "command", command: "true" }],
+    mcp: [{ kind: "mcp-launch", command: "should-not-land" }],
+  };
+  const result = await executeInstallPlan(plan, {
+    appendLog: () => {},
+    mcpRegistry: r,
+    buildingId: "x",
+  });
+  assert.equal(result.status, "failed");
+  // Previous declaration must be preserved; new one must NOT be added.
+  const list = r.list();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].command, "previous-cmd");
+});
