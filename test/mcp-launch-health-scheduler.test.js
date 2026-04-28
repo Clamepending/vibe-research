@@ -215,6 +215,46 @@ test("scheduler: tickCount increments per fired tick + per runOnce", async () =>
   scheduler.stop();
 });
 
+test("scheduler: callable intervalMs is re-read on every tick", async () => {
+  const timer = makeManualTimer();
+  const monitor = makeMonitor();
+  let configuredInterval = 5000;
+  const scheduler = createMcpLaunchHealthScheduler({
+    monitor,
+    intervalMs: () => configuredInterval,
+    initialDelayMs: 1,
+    setTimeoutImpl: timer.setTimeoutImpl,
+    clearTimeoutImpl: timer.clearTimeoutImpl,
+  });
+  scheduler.start();
+  await timer.fire();
+  // Now scheduled with current intervalMs.
+  assert.equal(timer.queue[0].delay, 5000);
+  // Change the setting between ticks.
+  configuredInterval = 12345;
+  await timer.fire();
+  // Next scheduled tick should use the NEW interval.
+  assert.equal(timer.queue[0].delay, 12345);
+  scheduler.stop();
+});
+
+test("scheduler: callable intervalMs returning bad value falls back to default", async () => {
+  const timer = makeManualTimer();
+  const monitor = makeMonitor();
+  const scheduler = createMcpLaunchHealthScheduler({
+    monitor,
+    intervalMs: () => "not a number",
+    initialDelayMs: 1,
+    setTimeoutImpl: timer.setTimeoutImpl,
+    clearTimeoutImpl: timer.clearTimeoutImpl,
+  });
+  scheduler.start();
+  await timer.fire();
+  // Default is 5 minutes.
+  assert.equal(timer.queue[0].delay, 5 * 60_000);
+  scheduler.stop();
+});
+
 test("scheduler: isRunning reflects start/stop state", () => {
   const timer = makeManualTimer();
   const scheduler = createMcpLaunchHealthScheduler({

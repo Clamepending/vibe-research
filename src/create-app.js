@@ -1459,6 +1459,9 @@ export async function createVibeResearchApp({
   });
   const mcpLaunchHealthScheduler = createMcpLaunchHealthScheduler({
     monitor: mcpLaunchHealthMonitor,
+    // Re-read the setting on every tick so a settings change takes
+    // effect on the next scheduled fire — no stop/start needed.
+    intervalMs: () => Number(settingsStore.settings.mcpHealthCheckIntervalSec || 300) * 1000,
   });
   // Start in production-ish runs; tests + ephemeral apps can override
   // VIBE_RESEARCH_MCP_HEALTH_SCHEDULE=off to skip the scheduler so they
@@ -4088,6 +4091,7 @@ export async function createVibeResearchApp({
         modalEnabled: request.body?.modalEnabled,
         runpodEnabled: request.body?.runpodEnabled,
         harborEnabled: request.body?.harborEnabled,
+        mcpHealthCheckIntervalSec: request.body?.mcpHealthCheckIntervalSec,
         mcpFilesystemEnabled: request.body?.mcpFilesystemEnabled,
         mcpFilesystemRoots: request.body?.mcpFilesystemRoots,
         mcpGithubEnabled: request.body?.mcpGithubEnabled,

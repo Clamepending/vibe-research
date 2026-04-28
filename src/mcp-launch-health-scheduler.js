@@ -35,6 +35,16 @@ export function createMcpLaunchHealthScheduler({
     throw new TypeError("monitor with checkAll() is required");
   }
 
+  // intervalMs accepts either a Number or a callable that returns the
+  // current desired interval. Callable form lets a settings change take
+  // effect on the next scheduled tick without stop/start dance.
+  const resolveIntervalMs = () => {
+    const raw = typeof intervalMs === "function" ? intervalMs() : intervalMs;
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric) || numeric <= 0) return DEFAULT_INTERVAL_MS;
+    return numeric;
+  };
+
   let timer = null;
   let running = false;
   let tickCount = 0;
@@ -59,7 +69,7 @@ export function createMcpLaunchHealthScheduler({
     inFlight = promise;
     promise.finally(() => {
       if (inFlight === promise) inFlight = null;
-      scheduleNext(intervalMs);
+      scheduleNext(resolveIntervalMs());
     });
     await promise;
   }

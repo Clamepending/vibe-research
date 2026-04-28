@@ -355,6 +355,11 @@ export class SettingsStore {
       modalEnabled: false,
       runpodEnabled: false,
       harborEnabled: false,
+      // How often the background MCP health scheduler runs `checkAll`.
+      // Clamped to [30, 3600] seconds at normalize time. Default 300s
+      // (5 minutes). Setting is read by the scheduler on every tick so
+      // a change takes effect on the next scheduled fire.
+      mcpHealthCheckIntervalSec: 300,
       // Popular MCP-server buildings: each has an enabled flag + a secret/config setting.
       mcpFilesystemEnabled: false,
       mcpFilesystemRoots: String(this.env.MCP_FILESYSTEM_ROOTS || "").trim(),
@@ -662,6 +667,17 @@ export class SettingsStore {
       modalEnabled: normalizeBoolean(payload.modalEnabled, defaults.modalEnabled),
       runpodEnabled: normalizeBoolean(payload.runpodEnabled, defaults.runpodEnabled),
       harborEnabled: normalizeBoolean(payload.harborEnabled, defaults.harborEnabled),
+      mcpHealthCheckIntervalSec: (() => {
+        const raw = payload.mcpHealthCheckIntervalSec ?? defaults.mcpHealthCheckIntervalSec;
+        const numeric = Number(raw);
+        if (!Number.isFinite(numeric)) return defaults.mcpHealthCheckIntervalSec || 300;
+        // Clamp to a sane window: 30s lower bound (avoid hammering the
+        // MCP servers), 1h upper bound (broken servers shouldn't sit
+        // unnoticed for longer than that).
+        if (numeric < 30) return 30;
+        if (numeric > 3600) return 3600;
+        return Math.round(numeric);
+      })(),
       mcpFilesystemEnabled: normalizeBoolean(payload.mcpFilesystemEnabled, defaults.mcpFilesystemEnabled),
       mcpFilesystemRoots:
         payload.mcpFilesystemRoots === undefined
