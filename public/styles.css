@@ -11470,12 +11470,23 @@ button.visual-town-building:focus-visible {
 }
 
 .session-project-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 24px 24px;
+  display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 3px;
   min-width: 0;
   border-radius: 7px;
+}
+
+.session-project-head > .session-project-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.session-project-head > .session-project-graph,
+.session-project-head > .session-project-paper,
+.session-project-head > .session-project-new {
+  flex: 0 0 auto;
 }
 
 .session-project.has-active-session .session-project-head {
