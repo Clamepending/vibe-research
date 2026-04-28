@@ -37,7 +37,17 @@ import { SessionStore } from "./session-store.js";
 import { getLegacyWorkspaceStateDir, getVibeResearchStateDir, getVibeResearchSystemDir } from "./state-paths.js";
 import { WorkspaceStore } from "./workspace-store.js";
 
-const MAX_BUFFER_LENGTH = 2_000_000;
+const MAX_BUFFER_LENGTH = 512_000;
+// Cap how much buffered scrollback we replay on attach. The full PTY buffer can
+// reach MAX_BUFFER_LENGTH, but parsing megabytes of ANSI in the browser's main
+// thread freezes input handling — see attachClient. 256 KB is roughly the last
+// few thousand visible lines for a typical session, which is what users
+// actually care to see, and it parses in single-digit milliseconds.
+const SNAPSHOT_REPLAY_LIMIT = 256_000;
+// Snapshot is split into multiple WebSocket text frames so each JSON.parse on
+// the client is small, the main thread can pump input/scroll events between
+// frames, and xterm's internal write queue gets bite-sized inputs.
+const SNAPSHOT_CHUNK_SIZE = 32_768;
 const STARTUP_DELAY_MS = 180;
 const SESSION_META_THROTTLE_MS = 180;
 const SESSION_PERSIST_THROTTLE_MS = 180;
@@ -3792,19 +3802,86 @@ export class SessionManager {
     }
 
     session.clients.add(socket);
-    socket.send(
-      JSON.stringify({
-        type: "snapshot",
-        session: this.serializeSession(session),
-        data: session.buffer,
-      }),
-    );
 
     socket.on("close", () => {
       session.clients.delete(socket);
     });
 
+    this.sendSnapshot(socket, session);
+
     return session;
+  }
+
+  sendSnapshot(socket, session) {
+    const buffer = String(session.buffer || "");
+    const totalBytes = buffer.length;
+    const replayBuffer =
+      totalBytes > SNAPSHOT_REPLAY_LIMIT ? buffer.slice(totalBytes - SNAPSHOT_REPLAY_LIMIT) : buffer;
+    const replayBytes = replayBuffer.length;
+    const truncated = replayBytes < totalBytes;
+    const chunkSize = SNAPSHOT_CHUNK_SIZE;
+    const chunkCount = replayBytes === 0 ? 0 : Math.ceil(replayBytes / chunkSize);
+
+    const sendJson = (payload) => {
+      if (socket.readyState !== socket.OPEN) {
+        return false;
+      }
+      try {
+        socket.send(JSON.stringify(payload));
+        return true;
+      } catch (error) {
+        console.warn("[vibe-research] snapshot send failed", error);
+        return false;
+      }
+    };
+
+    if (
+      !sendJson({
+        type: "snapshot-start",
+        session: this.serializeSession(session),
+        totalBytes,
+        replayBytes,
+        chunkSize,
+        chunkCount,
+        truncated,
+      })
+    ) {
+      return;
+    }
+
+    if (chunkCount === 0) {
+      sendJson({ type: "snapshot-end", index: 0, chunkCount: 0 });
+      return;
+    }
+
+    let index = 0;
+    const sendNextChunk = () => {
+      if (index >= chunkCount) {
+        sendJson({ type: "snapshot-end", index, chunkCount });
+        return;
+      }
+      if (socket.readyState !== socket.OPEN) {
+        return;
+      }
+      const start = index * chunkSize;
+      const end = Math.min(start + chunkSize, replayBytes);
+      const ok = sendJson({
+        type: "snapshot-chunk",
+        index,
+        chunkCount,
+        data: replayBuffer.slice(start, end),
+      });
+      index += 1;
+      if (!ok) {
+        return;
+      }
+      // setImmediate so each chunk lands on its own event-loop tick → its own
+      // WebSocket frame → its own browser message event. This is what lets the
+      // client stay responsive to keystrokes/scroll while the snapshot streams.
+      setImmediate(sendNextChunk);
+    };
+
+    setImmediate(sendNextChunk);
   }
 
   write(sessionId, input) {

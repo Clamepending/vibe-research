@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
 import { rateLimit } from "express-rate-limit";
-import { WebSocketServer } from "ws";
+import { WebSocket as NodeWebSocket, WebSocketServer } from "ws";
 import {
   buildPortUrlFromBase,
   getTailscaleDnsNameFromStatus,
@@ -2758,29 +2758,40 @@ export async function createVibeResearchApp({
   });
 
   app.get("/api/state", async (_request, response) => {
-    await buildingHubService.refresh();
-    await syncBuildingAgentGuides();
-    response.json({
-      appName: "Vibe Research",
-      agentPrompt: await agentPromptStore.getState(),
-      agentTown: agentTownStore.getState(),
-      buildingHub: {
-        buildings: buildingHubService.listBuildings(),
-        layouts: buildingHubService.listLayouts(),
-        recipes: buildingHubService.listRecipes ? buildingHubService.listRecipes() : [],
-        status: buildingHubService.getStatus(),
-      },
-      cwd,
-      defaultSessionCwd: sessionDefaultCwd,
-      defaultProviderId,
-      providers,
-      sessions: sessionManager.listSessions(),
-      settings: getSettingsState(),
-      stateDir,
-      urls,
-      preferredUrl,
-      ports: await listNamedPorts(),
-    });
+    // /api/state is the first thing the browser hits on page load. If anything
+    // here throws (network blip refreshing the BuildingHub catalog, transient
+    // file error syncing agent guides, port-scan hiccup), an unhandled async
+    // rejection leaves the response hanging and the user sees a blank page.
+    // Catch and emit a 500 with the message so the UI can show something.
+    try {
+      await buildingHubService.refresh();
+      await syncBuildingAgentGuides();
+      response.json({
+        appName: "Vibe Research",
+        agentPrompt: await agentPromptStore.getState(),
+        agentTown: agentTownStore.getState(),
+        buildingHub: {
+          buildings: buildingHubService.listBuildings(),
+          layouts: buildingHubService.listLayouts(),
+          recipes: buildingHubService.listRecipes ? buildingHubService.listRecipes() : [],
+          status: buildingHubService.getStatus(),
+        },
+        cwd,
+        defaultSessionCwd: sessionDefaultCwd,
+        defaultProviderId,
+        providers,
+        sessions: sessionManager.listSessions(),
+        settings: getSettingsState(),
+        stateDir,
+        urls,
+        preferredUrl,
+        ports: await listNamedPorts(),
+      });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not load Vibe Research state." });
+    }
   });
 
   app.get("/healthz", (_request, response) => {
@@ -3032,9 +3043,13 @@ export async function createVibeResearchApp({
   });
 
   app.get("/api/ports", async (_request, response) => {
-    response.json({
-      ports: await listNamedPorts(),
-    });
+    try {
+      response.json({ ports: await listNamedPorts() });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not list named ports." });
+    }
   });
 
   app.get("/api/system", async (_request, response) => {
@@ -3150,9 +3165,59 @@ export async function createVibeResearchApp({
   });
 
   app.get("/api/update/status", async (request, response) => {
-    const force = request.query.force === "1" || request.query.force === "true";
-    const update = await updateManager.getStatus({ force });
-    response.json({ update });
+    try {
+      const force = request.query.force === "1" || request.query.force === "true";
+      const update = await updateManager.getStatus({ force });
+      response.json({ update });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not check update status." });
+    }
+  });
+
+  // Diagnostic: open a WebSocket from the server back to its OWN /ws endpoint
+  // and report what happened. Lets us isolate "WS is broken everywhere" from
+  // "WS is broken when going through Tailscale serve". Pass ?sessionId=...
+  // to also exercise sessionManager.attachClient. No auth required because
+  // the same loopback endpoint is reachable to anyone who can hit /api.
+  app.get("/api/debug/ws-selftest", async (request, response) => {
+    const sessionId = String(request.query.sessionId || "selftest-no-session");
+    const targetPort = exposedPort || port;
+    const targetUrl = `ws://127.0.0.1:${targetPort}/ws?sessionId=${encodeURIComponent(sessionId)}`;
+    const startedAt = Date.now();
+    const events = [];
+    let ws;
+    try {
+      ws = new NodeWebSocket(targetUrl);
+    } catch (error) {
+      response.json({ targetUrl, ctorError: error.message, events });
+      return;
+    }
+    const finish = (verdict) => {
+      try { ws.terminate?.(); } catch {}
+      response.json({
+        targetUrl,
+        verdict,
+        elapsedMs: Date.now() - startedAt,
+        clientsConnected: websocketServer.clients.size,
+        upgradeListeners: server.listenerCount("upgrade"),
+        events,
+      });
+    };
+    ws.on("open", () => events.push({ at: Date.now() - startedAt, ev: "open" }));
+    ws.on("message", (data) => {
+      events.push({ at: Date.now() - startedAt, ev: "message", size: Buffer.isBuffer(data) ? data.length : String(data).length });
+      if (events.filter((e) => e.ev === "message").length >= 1) finish("ok-got-message");
+    });
+    ws.on("error", (error) => events.push({ at: Date.now() - startedAt, ev: "error", message: error?.message }));
+    ws.on("close", (code, reason) => {
+      events.push({ at: Date.now() - startedAt, ev: "close", code, reason: reason?.toString?.() });
+      if (!events.some((e) => e.ev === "message")) finish("closed-without-message");
+    });
+    setTimeout(() => {
+      if (ws.readyState !== NodeWebSocket.CLOSED) finish("timeout-7s");
+    }, 7000);
   });
 
   app.post("/api/update/apply", async (_request, response) => {
@@ -4228,11 +4293,17 @@ export async function createVibeResearchApp({
   });
 
   app.post("/api/wiki/backup", async (_request, response) => {
-    const status = await wikiBackupService.runBackup({ reason: "manual" });
-    response.json({
-      backup: status,
-      settings: getSettingsState(),
-    });
+    try {
+      const status = await wikiBackupService.runBackup({ reason: "manual" });
+      response.json({
+        backup: status,
+        settings: getSettingsState(),
+      });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Library backup failed." });
+    }
   });
 
   app.get("/api/agentmail/status", (_request, response) => {
@@ -4684,6 +4755,65 @@ export async function createVibeResearchApp({
     }
   });
 
+  app.get("/api/google/drive/files", async (request, response) => {
+    try {
+      const result = await googleService.searchDriveFiles({
+        q: request.query?.q ? String(request.query.q) : undefined,
+        pageSize: request.query?.pageSize ? Number(request.query.pageSize) : undefined,
+        pageToken: request.query?.pageToken ? String(request.query.pageToken) : undefined,
+        orderBy: request.query?.orderBy ? String(request.query.orderBy) : undefined,
+        fields: request.query?.fields ? String(request.query.fields) : undefined,
+        spaces: request.query?.spaces ? String(request.query.spaces) : undefined,
+        corpora: request.query?.corpora ? String(request.query.corpora) : undefined,
+        includeItemsFromAllDrives: request.query?.includeItemsFromAllDrives
+          ? String(request.query.includeItemsFromAllDrives)
+          : undefined,
+        supportsAllDrives: request.query?.supportsAllDrives
+          ? String(request.query.supportsAllDrives)
+          : undefined,
+        driveId: request.query?.driveId ? String(request.query.driveId) : undefined,
+      });
+      response.json(result);
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not search Google Drive files." });
+    }
+  });
+
+  app.get("/api/google/drive/files/:fileId", async (request, response) => {
+    try {
+      const result = await googleService.getDriveFile({
+        fileId: request.params?.fileId,
+        fields: request.query?.fields ? String(request.query.fields) : undefined,
+        supportsAllDrives: request.query?.supportsAllDrives
+          ? String(request.query.supportsAllDrives)
+          : undefined,
+      });
+      response.json(result);
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not load Google Drive file metadata." });
+    }
+  });
+
+  app.get("/api/google/drive/files/:fileId/export", async (request, response) => {
+    try {
+      const mimeType = request.query?.mimeType ? String(request.query.mimeType) : "text/plain";
+      const result = await googleService.exportDriveFile({
+        fileId: request.params?.fileId,
+        mimeType,
+      });
+      response.set("Content-Type", result.contentType || mimeType);
+      response.send(result.body || "");
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not export Google Drive file." });
+    }
+  });
+
   const handleBuildingHubGitHubOAuthDisconnect = async (_request, response) => {
     try {
       await buildingHubAccountService.disconnect({ settings: settingsStore.settings });
@@ -4794,12 +4924,18 @@ export async function createVibeResearchApp({
   });
 
   app.get("/api/videomemory/status", async (_request, response) => {
-    await videoMemoryService.refreshRemoteMonitorStates();
-    await videoMemoryService.refreshRemoteDevices();
-    response.json({
-      monitors: videoMemoryService.listMonitors(),
-      videoMemory: videoMemoryService.getStatus(),
-    });
+    try {
+      await videoMemoryService.refreshRemoteMonitorStates();
+      await videoMemoryService.refreshRemoteDevices();
+      response.json({
+        monitors: videoMemoryService.listMonitors(),
+        videoMemory: videoMemoryService.getStatus(),
+      });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not load video memory status." });
+    }
   });
 
   app.get("/api/videomemory/devices", async (_request, response) => {
@@ -5123,13 +5259,19 @@ export async function createVibeResearchApp({
   });
 
   app.delete("/api/browser-use/sessions/:browserUseSessionId", async (request, response) => {
-    const session = await browserUseService.deleteSession(request.params.browserUseSessionId);
-    if (!session) {
-      response.status(404).json({ error: "Browser-use session not found." });
-      return;
-    }
+    try {
+      const session = await browserUseService.deleteSession(request.params.browserUseSessionId);
+      if (!session) {
+        response.status(404).json({ error: "Browser-use session not found." });
+        return;
+      }
 
-    response.json({ ok: true, session });
+      response.json({ ok: true, session });
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not delete browser-use session." });
+    }
   });
 
   app.get("/api/ottoauth/tasks", (_request, response) => {
@@ -5538,7 +5680,13 @@ export async function createVibeResearchApp({
   app.patch("/api/sessions/:sessionId", handleSessionRename);
 
   app.get("/api/agent-prompt", async (_request, response) => {
-    response.json(await agentPromptStore.getState());
+    try {
+      response.json(await agentPromptStore.getState());
+    } catch (error) {
+      response
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Could not load agent prompt." });
+    }
   });
 
   app.put("/api/agent-prompt", async (request, response) => {
@@ -5665,6 +5813,29 @@ export async function createVibeResearchApp({
       },
     }),
   );
+
+  // Last-resort error handler. Express does not auto-translate async route
+  // rejections into 500s, so any handler that forgets a try/catch ends with a
+  // hung response. Each `/api/*` route is supposed to handle its own errors,
+  // but if one slips through we still want the browser to see *something*
+  // rather than spin forever waiting for a response.
+  app.use((error, _request, response, next) => {
+    if (response.headersSent) {
+      next(error);
+      return;
+    }
+    const status =
+      Number.isInteger(error?.statusCode) && error.statusCode >= 400 && error.statusCode < 600
+        ? error.statusCode
+        : 500;
+    const message = error?.message || "Internal server error.";
+    try {
+      console.error("[vibe-research] unhandled route error:", error);
+    } catch {
+      // ignore logging failures
+    }
+    response.status(status).json({ error: message });
+  });
 
   const server = await new Promise((resolve, reject) => {
     const nextServer = app.listen(port, host, () => resolve(nextServer));
@@ -5839,36 +6010,54 @@ export async function createVibeResearchApp({
     systemMetricsTimer.unref?.();
   }
   server.on("upgrade", (request, socket, head) => {
-    const url = new URL(request.url || "/", `http://${request.headers.host}`);
+    // Wrap the whole upgrade dispatch in try/catch so a throw in any branch
+    // (e.g., bad URL, getPortFromReferrer surprise, handleUpgrade synchronous
+    // throw) closes the socket promptly with a logged reason instead of
+    // leaving the client to time out at ~5s with WS code 1006.
+    try {
+      const url = new URL(request.url || "/", `http://${request.headers.host}`);
 
-    if (url.pathname.startsWith("/proxy/")) {
-      const proxyPort = getPortFromProxyPath(url.pathname);
+      if (url.pathname.startsWith("/proxy/")) {
+        const proxyPort = getPortFromProxyPath(url.pathname);
 
-      if (!proxyPort) {
-        socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+        if (!proxyPort) {
+          socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+
+        proxyWebsocketRequest(request, socket, head, proxyServer, proxyPort, true);
+        return;
+      }
+
+      const proxiedPort = getPortFromReferrer(request);
+      if (proxiedPort) {
+        proxyWebsocketRequest(request, socket, head, proxyServer, proxiedPort, false);
+        return;
+      }
+
+      if (url.pathname !== "/ws") {
+        socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
         socket.destroy();
         return;
       }
 
-      proxyWebsocketRequest(request, socket, head, proxyServer, proxyPort, true);
-      return;
+      websocketServer.handleUpgrade(request, socket, head, (websocket) => {
+        websocketServer.emit("connection", websocket, request, url);
+      });
+    } catch (error) {
+      console.error("[vibe-research] websocket upgrade failed", {
+        url: request.url,
+        message: error?.message,
+        stack: error?.stack,
+      });
+      try {
+        socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
+      } catch {}
+      try {
+        socket.destroy();
+      } catch {}
     }
-
-    const proxiedPort = getPortFromReferrer(request);
-    if (proxiedPort) {
-      proxyWebsocketRequest(request, socket, head, proxyServer, proxiedPort, false);
-      return;
-    }
-
-    if (url.pathname !== "/ws") {
-      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
-      socket.destroy();
-      return;
-    }
-
-    websocketServer.handleUpgrade(request, socket, head, (websocket) => {
-      websocketServer.emit("connection", websocket, request, url);
-    });
   });
 
   websocketServer.on("connection", (websocket, _request, url) => {
@@ -5959,10 +6148,45 @@ export async function createVibeResearchApp({
       return terminatePromise;
     }
 
+    // Hard cap on how long graceful shutdown can take. websocketServer.close
+    // and server.close wait for clients to drain; with a frontend that
+    // reconnects on failure, "drain" can take forever. The previous behavior
+    // was: terminatePromise gets stuck, every subsequent /api/relaunch and
+    // /api/terminate hits the `if (terminatePromise) return` short-circuit
+    // and silently does nothing. The deploy script's auto-restart then
+    // becomes a no-op while the user is locked out of the terminal.
+    const FORCE_EXIT_AFTER_MS = 8000;
+    const forceExitTimer = setTimeout(() => {
+      console.error(
+        `[vibe-research] graceful shutdown exceeded ${FORCE_EXIT_AFTER_MS}ms; forcing process exit`,
+      );
+      try {
+        if (relaunch && typeof onTerminate === "function") {
+          // Best-effort: still spawn the relaunch child before we hard-exit
+          // so the wrapper sees a successor. onTerminate calls process.exit
+          // synchronously after the spawn, so we just call it directly.
+          Promise.resolve(onTerminate({ relaunch })).catch(() => {
+            process.exit(1);
+          });
+          // Safety net: if onTerminate itself hangs, exit anyway.
+          setTimeout(() => process.exit(1), 1000).unref?.();
+        } else {
+          process.exit(1);
+        }
+      } catch {
+        process.exit(1);
+      }
+    }, FORCE_EXIT_AFTER_MS);
+    forceExitTimer.unref?.();
+
     terminatePromise = (async () => {
-      await close();
-      if (typeof onTerminate === "function") {
-        await onTerminate({ relaunch });
+      try {
+        await close();
+        if (typeof onTerminate === "function") {
+          await onTerminate({ relaunch });
+        }
+      } finally {
+        clearTimeout(forceExitTimer);
       }
     })();
 

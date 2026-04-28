@@ -1,0 +1,57 @@
+#!/usr/bin/env node
+// Apply the leaderboard admission rule mechanically.
+//
+// Usage:
+//   vr-research-admit <project-dir> <candidate-result-path>
+//   vr-research-admit projects/<name> projects/<name>/results/<slug>.md --json
+
+import path from "node:path";
+import process from "node:process";
+import { runAdmit, formatVerdict } from "../src/research/admit.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-admit
+
+Compare a candidate result doc against the project's leaderboard using the
+declared ranking criterion. For quantitative criteria the candidate (and the
+incumbent rows it is compared against) must carry YAML frontmatter with at
+least \`metric\`, \`mean\`, and \`std\`.
+
+Usage:
+  vr-research-admit <project-dir> <candidate-result-path>
+  vr-research-admit <project-dir> <candidate-result-path> --json
+`);
+}
+
+const args = process.argv.slice(2).filter((a) => a !== "--json");
+const jsonMode = process.argv.includes("--json");
+
+if (args.length < 2 || args[0] === "--help" || args[0] === "-h") {
+  printHelp();
+  process.exit(args.length < 2 ? 1 : 0);
+}
+
+const [projectDirArg, candidateArg] = args;
+const projectDir = path.resolve(projectDirArg);
+const candidateResultPath = path.isAbsolute(candidateArg)
+  ? path.relative(projectDir, candidateArg)
+  : candidateArg;
+
+try {
+  const report = await runAdmit({ projectDir, candidateResultPath });
+  if (jsonMode) {
+    process.stdout.write(`${JSON.stringify({
+      candidateTitle: report.candidate?.title || "",
+      candidateQuant: report.candidateQuant,
+      verdictRows: report.verdictRows,
+      decision: report.decision,
+      criterionKind: report.criterionKind,
+    }, null, 2)}\n`);
+  } else {
+    process.stdout.write(`${formatVerdict(report)}\n`);
+  }
+  process.exit(report.decision.blocked ? 2 : 0);
+} catch (error) {
+  process.stderr.write(`[vr-research-admit] error: ${error.message}\n`);
+  process.exit(1);
+}

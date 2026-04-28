@@ -1,9 +1,11 @@
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3";
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1";
+const GOOGLE_DRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
 
 const CALENDAR_BUILDING_ID = "google-calendar";
 const GMAIL_BUILDING_ID = "gmail";
+const DRIVE_BUILDING_ID = "google-drive";
 
 const TOKEN_REFRESH_SKEW_MS = 60_000;
 
@@ -345,9 +347,120 @@ export class GoogleService {
     );
     return this.requestGoogleApi(GMAIL_BUILDING_ID, { url, method: "GET" });
   }
+
+  async searchDriveFiles({
+    q,
+    pageSize = 25,
+    pageToken,
+    orderBy = "modifiedTime desc",
+    fields = "files(id,name,mimeType,modifiedTime,owners(displayName,emailAddress),webViewLink,size),nextPageToken",
+    spaces = "drive",
+    corpora,
+    includeItemsFromAllDrives,
+    supportsAllDrives,
+    driveId,
+  } = {}) {
+    const url = appendSearchParams(`${GOOGLE_DRIVE_API_BASE}/files`, {
+      q,
+      pageSize,
+      pageToken,
+      orderBy,
+      fields,
+      spaces,
+      corpora,
+      includeItemsFromAllDrives,
+      supportsAllDrives,
+      driveId,
+    });
+    return this.requestGoogleApi(DRIVE_BUILDING_ID, { url, method: "GET" });
+  }
+
+  async getDriveFile({
+    fileId,
+    fields = "id,name,mimeType,modifiedTime,owners(displayName,emailAddress),webViewLink,size,parents",
+    supportsAllDrives,
+  } = {}) {
+    const normalizedFileId = String(fileId || "").trim();
+    if (!normalizedFileId) {
+      throw buildHttpError("Google Drive file id is required.", 400);
+    }
+    const url = appendSearchParams(
+      `${GOOGLE_DRIVE_API_BASE}/files/${encodeURIComponent(normalizedFileId)}`,
+      { fields, supportsAllDrives },
+    );
+    return this.requestGoogleApi(DRIVE_BUILDING_ID, { url, method: "GET" });
+  }
+
+  async exportDriveFile({ fileId, mimeType = "text/plain" } = {}) {
+    const normalizedFileId = String(fileId || "").trim();
+    if (!normalizedFileId) {
+      throw buildHttpError("Google Drive file id is required.", 400);
+    }
+    const normalizedMimeType = String(mimeType || "").trim();
+    if (!normalizedMimeType) {
+      throw buildHttpError("Drive export mimeType is required.", 400);
+    }
+    const url = appendSearchParams(
+      `${GOOGLE_DRIVE_API_BASE}/files/${encodeURIComponent(normalizedFileId)}/export`,
+      { mimeType: normalizedMimeType },
+    );
+    return this.requestGoogleApiText(DRIVE_BUILDING_ID, { url, method: "GET" });
+  }
+
+  async requestGoogleApiText(buildingId, { url, method = "GET" } = {}) {
+    if (typeof this.fetch !== "function") {
+      throw buildHttpError("fetch is not available for Google API requests.", 500);
+    }
+
+    const doRequest = async (accessToken) => {
+      const response = await this.fetch(url, {
+        method,
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const raw = await response.text().catch(() => "");
+      return { response, raw };
+    };
+
+    let accessToken = await this.getValidAccessToken(buildingId);
+    let { response, raw } = await doRequest(accessToken);
+
+    if (response.status === 401) {
+      try {
+        const refreshed = await this.refreshAccessToken(buildingId);
+        accessToken = refreshed.accessToken;
+      } catch (error) {
+        if (!error.statusCode) {
+          error.statusCode = 401;
+        }
+        throw error;
+      }
+      ({ response, raw } = await doRequest(accessToken));
+      if (response.status === 401) {
+        throw buildHttpError(
+          `Google rejected the refreshed access token for ${buildingId}. Reconnect the building.`,
+          401,
+        );
+      }
+    }
+
+    if (!response.ok) {
+      const payload = safeJsonParse(raw);
+      const message = extractGoogleErrorMessage(
+        payload,
+        raw || `Google API request failed (${response.status}).`,
+      );
+      throw buildHttpError(message, response.status || 400);
+    }
+
+    return {
+      contentType: response.headers?.get?.("content-type") || "",
+      body: raw,
+    };
+  }
 }
 
 export const GOOGLE_SERVICE_BUILDING_IDS = Object.freeze({
   CALENDAR: CALENDAR_BUILDING_ID,
   GMAIL: GMAIL_BUILDING_ID,
+  DRIVE: DRIVE_BUILDING_ID,
 });

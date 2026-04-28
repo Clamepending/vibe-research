@@ -16,7 +16,7 @@ Follow the project protocol:
    - name hardware flavor, timeout, expected cost class, and artifact destination
    - ensure training saves durable outputs to Hub or another recorded artifact path
 7. Record every number with provenance: commit URL, exact command, config/seed, and artifact path or Hub/Trackio/job URL.
-8. Resolve or abandon the result doc, write the leaderboard verdict, apply queue updates, update README ACTIVE/LEADERBOARD/QUEUE/LOG, then commit and push the Library.
+8. Generate the headline **Figure 1** for the move — one image that conveys the conclusion at a glance — save it to `projects/<name>/figures/<slug>-fig1.png`, embed it at the very top of the result doc above TAKEAWAY, and publish it to the agent canvas. Resolve or abandon the result doc, write the leaderboard verdict, apply queue updates, update README ACTIVE/LEADERBOARD/QUEUE/LOG, then commit and push the Library.
 
 Important constraints:
 

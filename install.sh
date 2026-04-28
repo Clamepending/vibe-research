@@ -1176,6 +1176,7 @@ systemd_is_running() {
 }
 
 stop_existing_systemd_service() {
+  local name seen
   if [ "$INSTALL_SERVICE" = "0" ]; then
     return
   fi
@@ -1184,14 +1185,40 @@ stop_existing_systemd_service() {
     return
   fi
 
-  if ! systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1; then
-    return
-  fi
+  # Stop both the configured name AND the legacy "remote-vibes" name so a
+  # friend upgrading from the pre-rename install doesn't end up with two
+  # servers fighting for port 4826.
+  seen=""
+  for name in "$SERVICE_NAME" vibe-research remote-vibes; do
+    [ -n "$name" ] || continue
+    case ":$seen:" in
+      *":$name:"*) continue ;;
+    esac
+    seen="$seen:$name"
 
-  log "Stopping existing systemd service ${SERVICE_NAME}.service before update"
-  if ! try_run_as_root_noninteractive systemctl stop "${SERVICE_NAME}.service"; then
-    log "Could not stop existing systemd service without sudo; continuing with foreground launch"
-  fi
+    if ! systemctl cat "${name}.service" >/dev/null 2>&1; then
+      continue
+    fi
+
+    log "Stopping existing systemd service ${name}.service before update"
+    if ! try_run_as_root_noninteractive systemctl stop "${name}.service"; then
+      log "Could not stop ${name}.service without sudo; continuing with foreground launch"
+    fi
+
+    # If we're replacing a legacy service name with the canonical one, also
+    # disable + remove the legacy unit so it doesn't keep auto-starting at
+    # boot alongside the new one.
+    if [ "$name" != "$SERVICE_NAME" ]; then
+      try_run_as_root_noninteractive systemctl disable "${name}.service" >/dev/null 2>&1 || true
+      legacy_file="$SYSTEMD_SERVICE_DIR/${name}.service"
+      if [ -e "$legacy_file" ]; then
+        log "Removing legacy systemd unit: $legacy_file"
+        try_run_as_root_noninteractive rm -f "$legacy_file" || log "Could not remove $legacy_file"
+        try_run_as_root_noninteractive systemctl daemon-reload >/dev/null 2>&1 || true
+        try_run_as_root_noninteractive systemctl reset-failed "${name}.service" >/dev/null 2>&1 || true
+      fi
+    fi
+  done
 }
 
 wait_for_systemd_service_active() {

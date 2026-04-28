@@ -195,55 +195,130 @@ looks_like_vibe_research_server() {
   esac
 }
 
-stop_managed_server() {
-  local state_dir pid_file pid attempt
-  state_dir="$1"
-  pid_file="$state_dir/server.pid"
-
-  if ! pid="$(read_pid_file "$pid_file")"; then
-    rm -f "$pid_file" 2>/dev/null || true
-    return
-  fi
-
-  if ! is_pid_running "$pid"; then
-    rm -f "$pid_file" 2>/dev/null || true
-    return
-  fi
-
-  if ! looks_like_vibe_research_server "$pid"; then
-    log "Leaving pid $pid running because it does not look like a managed Vibe Research server."
-    return
-  fi
-
-  log "Stopping Vibe Research server (pid $pid)"
-  kill "$pid" >/dev/null 2>&1 || true
-
+wait_for_pid_exit() {
+  local pid attempt
+  pid="$1"
   for attempt in $(seq 1 50); do
     if ! is_pid_running "$pid"; then
-      rm -f "$pid_file" 2>/dev/null || true
-      return
+      return 0
     fi
     sleep 0.2
   done
-
-  log "Server did not stop in time, sending SIGKILL"
-  kill -9 "$pid" >/dev/null 2>&1 || true
-  rm -f "$pid_file" 2>/dev/null || true
+  return 1
 }
 
-uninstall_systemd_service() {
-  local service_name service_file service_exists
-  service_name="${VIBE_RESEARCH_SERVICE_NAME:-${REMOTE_VIBES_SERVICE_NAME:-vibe-research}}"
-  service_file="${VIBE_RESEARCH_SYSTEMD_SERVICE_DIR:-${REMOTE_VIBES_SYSTEMD_SERVICE_DIR:-/etc/systemd/system}}/${service_name}.service"
+stop_pid_with_grace() {
+  local pid label
+  pid="$1"
+  label="${2:-server}"
+
+  if ! is_pid_running "$pid"; then
+    return
+  fi
+
+  log "Stopping Vibe Research $label (pid $pid)"
+  kill "$pid" >/dev/null 2>&1 || true
+
+  if wait_for_pid_exit "$pid"; then
+    return
+  fi
+
+  log "$label pid $pid did not stop in time, sending SIGKILL"
+  kill -9 "$pid" >/dev/null 2>&1 || true
+  wait_for_pid_exit "$pid" || true
+}
+
+# List server pids on this host that look like Vibe Research / Remote Vibes:
+# checks the full command line for `node ... src/server.js` invocations so we
+# catch stragglers that the pid file no longer points at.
+collect_orphan_server_pids() {
+  local user pid
+  user="$(id -un 2>/dev/null || true)"
+  if [ -z "$user" ]; then
+    return
+  fi
+
+  # `pgrep -f` matches against the full command line including args; `-u` keeps
+  # us from ever touching another user's node processes. We deliberately match
+  # broadly here — `looks_like_vibe_research_server` is the strict filter
+  # applied downstream before we kill anything.
+  if has_command pgrep; then
+    pgrep -u "$user" -f 'node.*src/server\.js' 2>/dev/null | tr '\n' ' '
+    return
+  fi
+
+  # Fallback: ps-based scan.
+  ps -eo pid=,user=,command= 2>/dev/null | while read -r pid p_user rest; do
+    [ "$p_user" = "$user" ] || continue
+    case "$rest" in
+      *"node "*"src/server.js"*) printf '%s ' "$pid" ;;
+    esac
+  done
+}
+
+# Kill tmux sessions whose names start with the managed prefix. The server
+# spawns sessions named `vibe-research-<sessionId>` (or `remote-vibes-<id>` on
+# legacy installs) — those reference paths under the now-removed app/state dir
+# and serve no purpose after uninstall.
+stop_managed_tmux_sessions() {
+  if ! has_command tmux; then
+    return
+  fi
+
+  local session prefixes prefix
+  prefixes="vibe-research- remote-vibes-"
+
+  # `tmux list-sessions` exits non-zero with no server running; that's fine.
+  for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null); do
+    for prefix in $prefixes; do
+      case "$session" in
+        "${prefix}"*)
+          log "Killing managed tmux session: $session"
+          tmux kill-session -t "$session" 2>/dev/null || true
+          break
+          ;;
+      esac
+    done
+  done
+}
+
+stop_managed_server() {
+  local state_dir pid_file pid orphan_pids orphan_pid
+  state_dir="$1"
+  pid_file="$state_dir/server.pid"
+
+  if pid="$(read_pid_file "$pid_file")"; then
+    if is_pid_running "$pid"; then
+      if looks_like_vibe_research_server "$pid"; then
+        stop_pid_with_grace "$pid" "server"
+      else
+        log "Leaving pid $pid running because it does not look like a managed Vibe Research server."
+      fi
+    fi
+  fi
+  rm -f "$pid_file" 2>/dev/null || true
+
+  # Mop up any orphan server processes the pid file did not know about.
+  orphan_pids="$(collect_orphan_server_pids)"
+  for orphan_pid in $orphan_pids; do
+    [ -n "$orphan_pid" ] || continue
+    if ! is_pid_running "$orphan_pid"; then
+      continue
+    fi
+    if looks_like_vibe_research_server "$orphan_pid"; then
+      stop_pid_with_grace "$orphan_pid" "orphan server"
+    fi
+  done
+
+  stop_managed_tmux_sessions
+}
+
+uninstall_one_systemd_service() {
+  local service_name service_dir service_file service_exists
+  service_name="$1"
+  service_dir="$2"
+  service_file="$service_dir/${service_name}.service"
   service_exists=0
-
-  if [ "${VIBE_RESEARCH_UNINSTALL_SERVICE:-${REMOTE_VIBES_UNINSTALL_SERVICE:-1}}" = "0" ]; then
-    return
-  fi
-
-  if ! is_linux || ! has_command systemctl; then
-    return
-  fi
 
   if try_run_as_root systemctl cat "${service_name}.service" >/dev/null 2>&1; then
     service_exists=1
@@ -266,6 +341,32 @@ uninstall_systemd_service() {
 
   try_run_as_root systemctl daemon-reload >/dev/null 2>&1 || log "Could not reload systemd; continuing."
   try_run_as_root systemctl reset-failed "${service_name}.service" >/dev/null 2>&1 || true
+}
+
+uninstall_systemd_service() {
+  local primary_name service_dir name seen
+  primary_name="${VIBE_RESEARCH_SERVICE_NAME:-${REMOTE_VIBES_SERVICE_NAME:-vibe-research}}"
+  service_dir="${VIBE_RESEARCH_SYSTEMD_SERVICE_DIR:-${REMOTE_VIBES_SYSTEMD_SERVICE_DIR:-/etc/systemd/system}}"
+
+  if [ "${VIBE_RESEARCH_UNINSTALL_SERVICE:-${REMOTE_VIBES_UNINSTALL_SERVICE:-1}}" = "0" ]; then
+    return
+  fi
+
+  if ! is_linux || ! has_command systemctl; then
+    return
+  fi
+
+  # Clean up the configured service name plus the legacy "remote-vibes" name
+  # left behind by older installs that ran before the rename.
+  seen=""
+  for name in "$primary_name" vibe-research remote-vibes; do
+    [ -n "$name" ] || continue
+    case ":$seen:" in
+      *":$name:"*) continue ;;
+    esac
+    seen="$seen:$name"
+    uninstall_one_systemd_service "$name" "$service_dir"
+  done
 }
 
 remove_launcher_commands() {

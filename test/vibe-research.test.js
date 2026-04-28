@@ -5425,6 +5425,116 @@ test("library api indexes markdown notes and linked note content", async () => {
   }
 });
 
+test("library api surfaces headline image and takeaway for result-doc notes", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-knowledge-base-headline-");
+  const wikiDir = getWorkspaceLibraryDir(workspaceDir);
+  const projectDir = path.join(wikiDir, "projects", "demo");
+  const resultsDir = path.join(projectDir, "results");
+  const figuresDir = path.join(projectDir, "figures");
+
+  await mkdir(resultsDir, { recursive: true });
+  await mkdir(figuresDir, { recursive: true });
+
+  await writeFile(
+    path.join(resultsDir, "dropout-sweep.md"),
+    [
+      "# Dropout Sweep",
+      "",
+      "**TAKEAWAY** — Adding dropout=0.3 lifts accuracy from 0.72 to 0.78 on the carrier-wave test set.",
+      "",
+      "![accuracy curve for dropout in [0, 0.5]](../figures/dropout-sweep-accuracy.png)",
+      "",
+      "Other prose with another image ![second](../figures/other.png).",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  await writeFile(
+    path.join(projectDir, "paper.md"),
+    [
+      "# Paper",
+      "",
+      "## TAKEAWAY",
+      "",
+      "Random crop augmentation lifts mean accuracy from 0.74 to 0.79 across n=3 seeds.",
+      "",
+      "Body...",
+      "![figure 1: random crop augmentation results](figures/random-crop-aug-c1.png)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  await writeFile(
+    path.join(projectDir, "no-image.md"),
+    [
+      "# No Image",
+      "",
+      "**TAKEAWAY** — bare prose without any figure attached.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  await writeFile(
+    path.join(projectDir, "non-image-link.md"),
+    [
+      "# Non-Image First Match",
+      "",
+      "![doc link](../docs/notes.md)",
+      "",
+      "![real](figures/real.svg)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir });
+
+  try {
+    const indexResponse = await fetch(`${baseUrl}/api/knowledge-base`);
+    assert.equal(indexResponse.status, 200);
+    const indexPayload = await indexResponse.json();
+    const byPath = new Map(indexPayload.notes.map((note) => [note.relativePath, note]));
+
+    const dropout = byPath.get("projects/demo/results/dropout-sweep.md");
+    assert.ok(dropout, "dropout-sweep result doc indexed");
+    assert.equal(dropout.headlineImageUrl, "../figures/dropout-sweep-accuracy.png");
+    assert.equal(dropout.headlineImageAlt, "accuracy curve for dropout in [0, 0.5]");
+    assert.match(dropout.takeaway, /dropout=0\.3 lifts accuracy from 0\.72 to 0\.78/);
+
+    const paper = byPath.get("projects/demo/paper.md");
+    assert.ok(paper, "paper.md indexed");
+    assert.equal(paper.headlineImageUrl, "figures/random-crop-aug-c1.png");
+    assert.match(paper.takeaway, /Random crop augmentation lifts mean accuracy/);
+
+    const noImage = byPath.get("projects/demo/no-image.md");
+    assert.ok(noImage, "no-image note indexed");
+    assert.equal(noImage.headlineImageUrl, "");
+    assert.equal(noImage.headlineImageAlt, "");
+    assert.match(noImage.takeaway, /bare prose without any figure attached/);
+
+    const skipNonImage = byPath.get("projects/demo/non-image-link.md");
+    assert.ok(skipNonImage, "non-image-link note indexed");
+    assert.equal(skipNonImage.headlineImageUrl, "figures/real.svg");
+    assert.equal(skipNonImage.headlineImageAlt, "real");
+    assert.equal(skipNonImage.takeaway, "");
+
+    const noteResponse = await fetch(
+      `${baseUrl}/api/knowledge-base/note?path=${encodeURIComponent("projects/demo/results/dropout-sweep.md")}`,
+    );
+    assert.equal(noteResponse.status, 200);
+    const notePayload = await noteResponse.json();
+    assert.equal(notePayload.note.headlineImageUrl, "../figures/dropout-sweep-accuracy.png");
+    assert.equal(notePayload.note.headlineImageAlt, "accuracy curve for dropout in [0, 0.5]");
+    assert.match(notePayload.note.takeaway, /dropout=0\.3 lifts accuracy/);
+  } finally {
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+  }
+});
+
 test("library api skips inaccessible and system directories", async () => {
   const workspaceDir = await createTempWorkspace("vibe-research-knowledge-base-skip-");
   const wikiDir = getWorkspaceLibraryDir(workspaceDir);

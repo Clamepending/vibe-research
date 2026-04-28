@@ -723,7 +723,12 @@ stop_existing_server() {
   fi
 
   if ! looks_like_vibe_research_server "$pid"; then
-    fail "Refusing to stop pid $pid because it does not look like a managed Vibe Research server."
+    # The OS recycled the pid into something unrelated (different node binary,
+    # different process entirely). Treat the file as stale rather than aborting
+    # the launch — the user has no easy way to recover from a hard fail here.
+    log "Pid file pointed at unrelated pid $pid; treating as stale and continuing."
+    rm -f "$PID_FILE"
+    return
   fi
 
   log "Stopping existing Vibe Research server (pid $pid)"

@@ -2606,3 +2606,147 @@ test("Claude live overlay drops terminal glyph fragments from the header chrome"
     await cleanupManager(manager, workspaceDir, harness.userHomeDir);
   }
 });
+
+function createFakeSocket() {
+  const messages = [];
+  let onClose = null;
+  return {
+    readyState: 1,
+    OPEN: 1,
+    send(payload) {
+      messages.push(JSON.parse(payload));
+    },
+    on(event, handler) {
+      if (event === "close") {
+        onClose = handler;
+      }
+    },
+    close() {
+      this.readyState = 3;
+      if (onClose) onClose();
+    },
+    messages,
+  };
+}
+
+async function flushSetImmediate() {
+  // Drain a few microtask + macrotask ticks so all queued setImmediate
+  // callbacks in sendSnapshot have a chance to run.
+  for (let i = 0; i < 100; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+test("attachClient streams the session buffer in chunked snapshot frames", async () => {
+  const { manager, workspaceDir, userHomeDir } = await createManager();
+
+  try {
+    const buffer = "x".repeat(80_000);
+    const session = manager.buildSessionRecord({
+      id: "11111111-2222-4333-8444-snapshotchunk",
+      providerId: "shell",
+      providerLabel: "Vanilla Shell",
+      name: "Snapshot Chunked",
+      cwd: workspaceDir,
+      status: "running",
+      buffer,
+    });
+    manager.sessions.set(session.id, session);
+
+    const socket = createFakeSocket();
+    const result = manager.attachClient(session.id, socket);
+    assert.ok(result, "attachClient returned the session");
+
+    await flushSetImmediate();
+
+    const types = socket.messages.map((m) => m.type);
+    assert.equal(types[0], "snapshot-start");
+    assert.equal(types[types.length - 1], "snapshot-end");
+    assert.ok(types.length > 2, "expected at least one chunk between start and end");
+
+    const start = socket.messages[0];
+    assert.equal(start.totalBytes, 80_000);
+    assert.equal(start.replayBytes, 80_000);
+    assert.equal(start.truncated, false);
+    assert.equal(start.session.id, session.id);
+
+    const chunks = socket.messages.filter((m) => m.type === "snapshot-chunk");
+    assert.equal(chunks.length, start.chunkCount);
+    const reassembled = chunks.map((c) => c.data).join("");
+    assert.equal(reassembled, buffer);
+    chunks.forEach((chunk, idx) => {
+      assert.equal(chunk.index, idx);
+    });
+
+    const end = socket.messages[socket.messages.length - 1];
+    assert.equal(end.chunkCount, start.chunkCount);
+  } finally {
+    await cleanupManager(manager, workspaceDir, userHomeDir);
+  }
+});
+
+test("attachClient truncates oversized buffers to the snapshot replay limit", async () => {
+  const { manager, workspaceDir, userHomeDir } = await createManager();
+
+  try {
+    // Build a buffer larger than SNAPSHOT_REPLAY_LIMIT (256_000) so we can
+    // verify that the tail is replayed and the head is dropped.
+    const head = "H".repeat(50_000);
+    const tail = "T".repeat(256_000);
+    const buffer = head + tail;
+    const session = manager.buildSessionRecord({
+      id: "11111111-2222-4333-8444-snapshottrunc",
+      providerId: "shell",
+      providerLabel: "Vanilla Shell",
+      name: "Snapshot Truncated",
+      cwd: workspaceDir,
+      status: "running",
+      buffer,
+    });
+    manager.sessions.set(session.id, session);
+
+    const socket = createFakeSocket();
+    manager.attachClient(session.id, socket);
+    await flushSetImmediate();
+
+    const start = socket.messages[0];
+    assert.equal(start.type, "snapshot-start");
+    assert.equal(start.truncated, true, "snapshot should be marked truncated");
+    assert.equal(start.replayBytes, 256_000);
+
+    const chunks = socket.messages.filter((m) => m.type === "snapshot-chunk");
+    const reassembled = chunks.map((c) => c.data).join("");
+    assert.equal(reassembled.length, 256_000);
+    assert.equal(reassembled, tail, "replay should contain only the tail of the buffer");
+  } finally {
+    await cleanupManager(manager, workspaceDir, userHomeDir);
+  }
+});
+
+test("attachClient sends snapshot-start and snapshot-end with no chunks for an empty buffer", async () => {
+  const { manager, workspaceDir, userHomeDir } = await createManager();
+
+  try {
+    const session = manager.buildSessionRecord({
+      id: "11111111-2222-4333-8444-snapshotempty",
+      providerId: "shell",
+      providerLabel: "Vanilla Shell",
+      name: "Snapshot Empty",
+      cwd: workspaceDir,
+      status: "running",
+      buffer: "",
+    });
+    manager.sessions.set(session.id, session);
+
+    const socket = createFakeSocket();
+    manager.attachClient(session.id, socket);
+    await flushSetImmediate();
+
+    const types = socket.messages.map((m) => m.type);
+    assert.deepEqual(types, ["snapshot-start", "snapshot-end"]);
+    assert.equal(socket.messages[0].chunkCount, 0);
+    assert.equal(socket.messages[0].totalBytes, 0);
+  } finally {
+    await cleanupManager(manager, workspaceDir, userHomeDir);
+  }
+});

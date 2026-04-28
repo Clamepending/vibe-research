@@ -69,6 +69,7 @@ import {
   renderWrappedTerminalBufferPlainText,
   sanitizeRichSessionTranscriptText,
 } from "./rich-session-transcript.js";
+import { Marked } from "marked";
 
 const app = document.querySelector("#app");
 let appBootReported = false;
@@ -512,6 +513,7 @@ const AGENT_TOWN_LAYOUT_STORAGE_KEY = "vibe-research-agent-town-layout-v1";
 const AGENT_TOWN_THEME_STORAGE_KEY = "vibe-research-agent-town-theme-v1";
 const AGENT_TOWN_DOG_NAME_STORAGE_KEY = "vibe-research-agent-town-dog-name-v1";
 const GUIDED_ONBOARDING_STORAGE_KEY = "vibe-research-guided-onboarding-v2";
+const KNOWLEDGE_BASE_GRAPH_COLLAPSED_STORAGE_KEY = "vibe-research-knowledge-base-graph-collapsed-v1";
 const AGENT_TOWN_DOG_NAME_DEFAULT = "Dog";
 const AGENT_TOWN_DOG_NAME_MAX_LENGTH = 14;
 const GUIDED_ONBOARDING_EVENT_TYPES = Object.freeze({
@@ -2279,6 +2281,7 @@ const state = {
     noteCache: {},
     pendingGraphFocusPath: "",
     replayGraphOnNextBind: false,
+    graphCollapsed: readKnowledgeBaseGraphCollapsedFromStorage(),
     graphLayout: {
       width: KNOWLEDGE_BASE_GRAPH_WIDTH,
       height: KNOWLEDGE_BASE_GRAPH_HEIGHT,
@@ -2332,6 +2335,8 @@ const state = {
   pendingTerminalOutput: "",
   pendingTerminalScrollToBottom: false,
   terminalOutputFrame: null,
+  terminalSelectionDeferStartedAt: 0,
+  pendingSnapshot: null,
   terminalTranscriptRaw: "",
   terminalTranscriptRenderFrame: null,
   terminalTranscriptScrollToBottom: false,
@@ -3783,9 +3788,28 @@ function bindLineNumberEditors(root = document) {
 }
 
 function shouldUseCanvasRenderer() {
-  // The canvas addon can leave xterm viewport timers pointed at a disposed renderer
-  // when Vibe Research swaps the terminal for another main view.
-  return false;
+  // The canvas addon used to leave xterm viewport timers pointed at a disposed
+  // renderer when the user swapped main views, throwing "Cannot read properties
+  // of undefined (reading 'dimensions')" from Viewport. That's now defended
+  // two ways: (1) disposeTerminal disposes the canvas addon BEFORE the
+  // terminal so xterm tears down the renderer-aware timers in the right
+  // order, and (2) installTerminalDisposalGuard swallows the specific
+  // viewport error globally if it still races. With both in place, the
+  // canvas renderer is the right default — the DOM renderer's per-cell
+  // <span> recycling shows visibly unstyled rows on fast scroll, and
+  // canvas runs ~5-10x faster on rendering hot paths.
+  if (typeof document === "undefined") {
+    return false;
+  }
+  // Quick capability check: a 2D canvas context is universally available in
+  // every browser we ship to, but if it ever isn't we fall back rather than
+  // booting into a blank renderer like the prior WebGL attempt did.
+  try {
+    const probe = document.createElement("canvas");
+    return Boolean(probe.getContext && probe.getContext("2d"));
+  } catch {
+    return false;
+  }
 }
 
 function isKnownTerminalDisposalError(error) {
@@ -3839,6 +3863,11 @@ function syncViewportMetrics() {
 function getTerminalDisplayProfile(mount) {
   const width = mount?.clientWidth ?? window.innerWidth;
 
+  // smoothScrollDuration is intentionally 0 at every breakpoint: any non-zero
+  // value tweens each scroll line over that many milliseconds, which on
+  // continuous trackpad scrolling stacks into a visible "molasses" lag.
+  // VS Code defaults to 0 for the same reason and only enables tweening for
+  // physical mouse wheels behind an opt-in setting.
   if (width <= 420) {
     return {
       fontSize: 12,
@@ -3853,7 +3882,7 @@ function getTerminalDisplayProfile(mount) {
       fontSize: 13,
       lineHeight: 1.12,
       scrollSensitivity: 1.28,
-      smoothScrollDuration: 30,
+      smoothScrollDuration: 0,
     };
   }
 
@@ -3861,7 +3890,7 @@ function getTerminalDisplayProfile(mount) {
     fontSize: 14,
     lineHeight: 1.18,
     scrollSensitivity: 1.35,
-    smoothScrollDuration: 60,
+    smoothScrollDuration: 0,
   };
 }
 
@@ -5885,10 +5914,14 @@ function routeTerminalTranscriptWheel(event) {
     return false;
   }
 
-  event.preventDefault();
-  event.stopPropagation();
-  event.stopImmediatePropagation?.();
-
+  // Note: this listener is now registered as passive (so the browser can scroll
+  // on the compositor thread without waiting for JS — the previous non-passive
+  // capture listener was the primary cause of the "scroll feels laggy" report).
+  // preventDefault/stopPropagation on a passive listener are no-ops, so we just
+  // route the JS-driven scroll for the transcript-overlay case and let the
+  // native wheel reach xterm in parallel; xterm's wheel is also passive and the
+  // overlay sits on top with `pointer-events: none` on the mount, so the two
+  // paths don't fight in practice.
   return scrollTerminalTranscriptByDelta(getTerminalWheelDeltaY(event));
 }
 
@@ -6002,6 +6035,14 @@ function buildTerminalLinkHandler() {
   };
 }
 
+// Maximum time we will hold streaming output back while the user has an active
+// xterm selection. After this, we force-flush — otherwise a forgotten or stuck
+// selection would silently freeze the live terminal.
+const TERMINAL_SELECTION_DEFER_MAX_MS = 4000;
+// Maximum bytes we will buffer while deferring. Past this, we force-flush so
+// memory and the eventual single write don't blow up.
+const TERMINAL_SELECTION_DEFER_MAX_BYTES = 256 * 1024;
+
 function clearPendingTerminalOutput() {
   if (state.terminalOutputFrame) {
     window.cancelAnimationFrame(state.terminalOutputFrame);
@@ -6010,6 +6051,8 @@ function clearPendingTerminalOutput() {
 
   state.pendingTerminalOutput = "";
   state.pendingTerminalScrollToBottom = false;
+  state.terminalSelectionDeferStartedAt = 0;
+  state.pendingSnapshot = null;
 }
 
 function flushPendingTerminalOutput() {
@@ -6018,8 +6061,39 @@ function flushPendingTerminalOutput() {
   if (!state.terminal || !state.pendingTerminalOutput) {
     state.pendingTerminalOutput = "";
     state.pendingTerminalScrollToBottom = false;
+    state.terminalSelectionDeferStartedAt = 0;
     return;
   }
+
+  // While the user has an active selection in xterm, defer writes. xterm's
+  // viewport tracks the bottom whenever ydisp == ybase, so streaming output
+  // silently scrolls cells out from under the user's drag — the selection
+  // looks broken, and on mouseup the viewport snaps to the latest line.
+  // Bounded by a hard wall-clock cap and a buffer cap so a forgotten or
+  // pathologically long selection can't freeze the terminal forever.
+  if (state.terminal.hasSelection?.()) {
+    const now = getUiNow();
+    if (!state.terminalSelectionDeferStartedAt) {
+      state.terminalSelectionDeferStartedAt = now;
+    }
+
+    const deferDuration = now - state.terminalSelectionDeferStartedAt;
+    const pendingBytes = state.pendingTerminalOutput.length;
+    if (
+      deferDuration < TERMINAL_SELECTION_DEFER_MAX_MS &&
+      pendingBytes < TERMINAL_SELECTION_DEFER_MAX_BYTES
+    ) {
+      state.terminalOutputFrame = window.requestAnimationFrame(() => {
+        flushPendingTerminalOutput();
+      });
+      return;
+    }
+    // Cap exceeded — fall through and force-flush so streaming output keeps
+    // moving even with a selection still active. The onSelectionChange handler
+    // will re-arm normal flushing once selection clears.
+  }
+
+  state.terminalSelectionDeferStartedAt = 0;
 
   const nextOutput = sanitizeTerminalOutputForViewport(state.pendingTerminalOutput);
   const shouldScrollToBottom = state.pendingTerminalScrollToBottom;
@@ -6038,6 +6112,23 @@ function flushPendingTerminalOutput() {
 
     syncTerminalScrollState();
   });
+}
+
+function finalizePendingSnapshot(sessionId) {
+  const pending = state.pendingSnapshot;
+  if (!pending || pending.sessionId !== sessionId) {
+    return;
+  }
+  state.pendingSnapshot = null;
+  const deferred = pending.deferredOutputs || [];
+  if (deferred.length > 0) {
+    const merged = deferred.join("");
+    trackGuidedOnboardingOutputSafe(merged, sessionId);
+    queueTerminalOutput(merged, { scrollToBottom: true });
+    scheduleRichSessionNarrativeRefresh(sessionId);
+  } else if (state.terminal) {
+    state.terminal.scrollToBottom();
+  }
 }
 
 function queueTerminalOutput(chunk, { mirrorTranscript = true, scrollToBottom = false } = {}) {
@@ -7726,7 +7817,11 @@ function hasMountedTerminalSurface() {
 }
 
 function shouldHandleTerminalClipboardEvent(eventTarget = null) {
-  if (state.currentView !== "shell" || !state.activeSessionId || !state.terminal || !hasMountedTerminalSurface()) {
+  // The terminal mounts under #terminal-mount in both the shell view and the
+  // visual-game view (when a session is selected). Either is valid context for
+  // copying the xterm selection.
+  const inTerminalContext = state.currentView === "shell" || isVisualGameTerminalOpen();
+  if (!inTerminalContext || !state.activeSessionId || !state.terminal || !hasMountedTerminalSurface()) {
     return false;
   }
 
@@ -9743,7 +9838,7 @@ function replayKnowledgeBaseGraphUnfold({ forceSimulation = false } = {}) {
 function scheduleKnowledgeBaseGraphFrame() {
   const layout = state.knowledgeBase.graphLayout;
 
-  if (state.currentView !== "knowledge-base") {
+  if (state.currentView !== "knowledge-base" || state.knowledgeBase.graphCollapsed) {
     if (layout.frameHandle) {
       window.cancelAnimationFrame(layout.frameHandle);
       layout.frameHandle = 0;
@@ -9763,7 +9858,7 @@ function scheduleKnowledgeBaseGraphFrame() {
       return;
     }
 
-    if (state.currentView !== "knowledge-base") {
+    if (state.currentView !== "knowledge-base" || state.knowledgeBase.graphCollapsed) {
       layout.running = false;
       return;
     }
@@ -9887,7 +9982,10 @@ function scheduleKnowledgeBaseGraphFrame() {
       layout.autoFitMaxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE;
     }
 
-    layout.running = state.currentView === "knowledge-base" && layout.nodes.length > 0;
+    layout.running =
+      state.currentView === "knowledge-base"
+      && !state.knowledgeBase.graphCollapsed
+      && layout.nodes.length > 0;
     if (layout.running) {
       scheduleKnowledgeBaseGraphFrame();
     }
@@ -9897,7 +9995,7 @@ function scheduleKnowledgeBaseGraphFrame() {
 function startKnowledgeBaseGraphSimulation(boost = 0.16, { force = false } = {}) {
   const layout = state.knowledgeBase.graphLayout;
 
-  if (!layout.nodes.length) {
+  if (!layout.nodes.length || state.knowledgeBase.graphCollapsed) {
     return;
   }
 
@@ -10307,72 +10405,182 @@ function renderKnowledgeBaseMedia(media, { altText = "", caption = "" } = {}) {
   `;
 }
 
+function createKnowledgeBaseMarked(currentPath) {
+  const wikiLinkExtension = {
+    name: "kbWikiLink",
+    level: "inline",
+    start(src) {
+      const i = src.indexOf("[[");
+      return i >= 0 ? i : undefined;
+    },
+    tokenizer(src) {
+      const match = /^\[\[([^[\]]+)\]\]/.exec(src);
+      if (!match) return undefined;
+      return { type: "kbWikiLink", raw: match[0], body: match[1] };
+    },
+    renderer(token) {
+      const trimmedBody = String(token.body || "").trim();
+      if (!trimmedBody) return "";
+      const [targetWithAnchor, alias] = trimmedBody.split("|");
+      const notePath = resolveKnowledgeBaseNotePath(currentPath, targetWithAnchor);
+      const label = (alias || (targetWithAnchor || "").split("#")[0] || "").trim();
+      if (notePath) {
+        return `<button class="knowledge-base-inline-link" type="button" data-kb-open-note="${escapeHtml(notePath)}">${escapeHtml(label || notePath)}</button>`;
+      }
+      return `<span>${escapeHtml(label || trimmedBody)}</span>`;
+    },
+  };
+
+  const footnoteRefExtension = {
+    name: "kbFootnoteRef",
+    level: "inline",
+    start(src) {
+      const i = src.indexOf("[^");
+      return i >= 0 ? i : undefined;
+    },
+    tokenizer(src) {
+      // Disallow when the line begins with `[^id]:` — that's a definition.
+      const match = /^\[\^([^\]\s^]+)\](?!:)/.exec(src);
+      if (!match) return undefined;
+      return { type: "kbFootnoteRef", raw: match[0], id: match[1] };
+    },
+    renderer(token) {
+      const id = String(token.id || "");
+      const safe = escapeHtml(id);
+      return `<sup class="knowledge-base-footnote-ref"><a href="#fn-${safe}" id="fnref-${safe}">[${safe}]</a></sup>`;
+    },
+  };
+
+  const footnoteDefExtension = {
+    name: "kbFootnoteDef",
+    level: "block",
+    start(src) {
+      if (src.startsWith("[^")) return 0;
+      const i = src.indexOf("\n[^");
+      return i >= 0 ? i + 1 : undefined;
+    },
+    tokenizer(src) {
+      const match = /^\[\^([^\]\s^]+)\]:[ \t]*([^\n]+)(?:\n|$)/.exec(src);
+      if (!match) return undefined;
+      const inlineTokens = [];
+      // Preserve `this` so we can call back into the lexer for inline parsing.
+      this.lexer.inline(match[2], inlineTokens);
+      return {
+        type: "kbFootnoteDef",
+        raw: match[0],
+        id: match[1],
+        body: match[2],
+        tokens: inlineTokens,
+      };
+    },
+    renderer(token) {
+      const id = String(token.id || "");
+      const safe = escapeHtml(id);
+      const inner = this.parser.parseInline(token.tokens || []);
+      return `<aside class="knowledge-base-footnote-def" id="fn-${safe}"><sup class="knowledge-base-footnote-def-marker">[${safe}]</sup> ${inner} <a class="knowledge-base-footnote-back" href="#fnref-${safe}" aria-label="back to reference">↩</a></aside>`;
+    },
+  };
+
+  const renderer = {
+    image({ href, title, text }) {
+      const altText = String(text || "");
+      const media = getKnowledgeBaseMediaResource(currentPath, href, { defaultToImage: true });
+      if (!media) {
+        return `<span>${escapeHtml(altText)}</span>`;
+      }
+      return renderKnowledgeBaseMedia(media, { altText });
+    },
+    link({ href, title, tokens }) {
+      const innerHtml = this.parser.parseInline(tokens || []);
+      const cleanedTarget = cleanMarkdownLinkTarget(href);
+      const notePath = resolveKnowledgeBaseNotePath(currentPath, cleanedTarget);
+
+      if (notePath) {
+        return `<button class="knowledge-base-inline-link" type="button" data-kb-open-note="${escapeHtml(notePath)}">${innerHtml}</button>`;
+      }
+
+      const media = getKnowledgeBaseMediaResource(currentPath, cleanedTarget);
+      if (media) {
+        // Use the rendered inner as the visible label, but fall back to a plain
+        // text caption derived from the link tokens via the textRenderer.
+        let plainLabel = "";
+        try {
+          plainLabel = this.parser.parseInline(tokens || [], this.parser.textRenderer);
+        } catch (_error) {
+          plainLabel = "";
+        }
+        return renderKnowledgeBaseMedia(media, { altText: plainLabel, caption: plainLabel });
+      }
+
+      const absoluteFileHref = getKnowledgeBaseAbsoluteFileUrl(cleanedTarget);
+      const relativeAssetPath = absoluteFileHref ? "" : resolveKnowledgeBaseRelativePath(currentPath, cleanedTarget);
+      const externalHref = absoluteFileHref || (relativeAssetPath
+        ? getKnowledgeBaseNoteRawUrl(relativeAssetPath)
+        : cleanedTarget || String(href || "").trim());
+      return `<a class="knowledge-base-external-link" href="${escapeHtml(externalHref)}" target="_blank" rel="noreferrer">${innerHtml}</a>`;
+    },
+    code({ text, lang }) {
+      const language = normalizeSyntaxLanguage(lang || "text");
+      return renderSyntaxCodeBlock(text, language, "knowledge-base-code");
+    },
+    blockquote({ tokens }) {
+      const inner = this.parser.parse(tokens || []);
+      return `<blockquote class="knowledge-base-blockquote">${inner}</blockquote>`;
+    },
+    hr() {
+      return `<hr class="knowledge-base-rule" />`;
+    },
+    table(token) {
+      const align = Array.isArray(token.align) ? token.align : [];
+      const headHtml = (token.header || [])
+        .map((cell, i) => {
+          const alignClass = align[i] ? ` class="is-${align[i]}"` : "";
+          const inner = this.parser.parseInline(cell.tokens || []);
+          return `<th${alignClass}>${inner}</th>`;
+        })
+        .join("");
+      const bodyHtml = (token.rows || [])
+        .map((row) => {
+          const cells = (row || [])
+            .map((cell, i) => {
+              const alignClass = align[i] ? ` class="is-${align[i]}"` : "";
+              const inner = this.parser.parseInline(cell.tokens || []);
+              return `<td${alignClass}>${inner}</td>`;
+            })
+            .join("");
+          return `<tr>${cells}</tr>`;
+        })
+        .join("");
+      return `
+        <div class="knowledge-base-table-scroll" role="region" aria-label="Markdown table" tabindex="0">
+          <table class="knowledge-base-table">
+            <thead><tr>${headHtml}</tr></thead>
+            ${bodyHtml ? `<tbody>${bodyHtml}</tbody>` : ""}
+          </table>
+        </div>
+      `;
+    },
+  };
+
+  return new Marked({
+    gfm: true,
+    breaks: false,
+    renderer,
+    extensions: [wikiLinkExtension, footnoteRefExtension, footnoteDefExtension],
+  });
+}
+
 function renderKnowledgeBaseInline(text, currentPath) {
-  const tokens = [];
-  const createToken = (html) => `%%KB_TOKEN_${tokens.push(html) - 1}%%`;
-  let output = String(text || "");
-
-  output = output.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, altText, target) => {
-    const media = getKnowledgeBaseMediaResource(currentPath, target, { defaultToImage: true });
-
-    if (!media) {
-      return createToken(`<span>${escapeHtml(altText)}</span>`);
+  const source = String(text || "");
+  if (!source) return "";
+  try {
+    return createKnowledgeBaseMarked(currentPath).parseInline(source);
+  } catch (error) {
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("renderKnowledgeBaseInline failed", error);
     }
-
-    return createToken(renderKnowledgeBaseMedia(media, { altText }));
-  });
-
-  output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, target) => {
-    const cleanedTarget = cleanMarkdownLinkTarget(target);
-    const notePath = resolveKnowledgeBaseNotePath(currentPath, cleanedTarget);
-
-    if (notePath) {
-      return createToken(
-        `<button class="knowledge-base-inline-link" type="button" data-kb-open-note="${escapeHtml(notePath)}">${escapeHtml(label)}</button>`,
-      );
-    }
-
-    const media = getKnowledgeBaseMediaResource(currentPath, cleanedTarget);
-    if (media) {
-      return createToken(renderKnowledgeBaseMedia(media, { altText: label, caption: label }));
-    }
-
-    const absoluteFileHref = getKnowledgeBaseAbsoluteFileUrl(cleanedTarget);
-    const relativeAssetPath = absoluteFileHref ? "" : resolveKnowledgeBaseRelativePath(currentPath, cleanedTarget);
-    const externalHref = absoluteFileHref || (relativeAssetPath
-      ? getKnowledgeBaseNoteRawUrl(relativeAssetPath)
-      : cleanedTarget || String(target || "").trim());
-    return createToken(
-      `<a class="knowledge-base-external-link" href="${escapeHtml(externalHref)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`,
-    );
-  });
-
-  output = output.replace(/\[\[([^[\]]+)\]\]/g, (_match, body) => {
-    const trimmedBody = String(body || "").trim();
-    if (!trimmedBody) {
-      return "";
-    }
-
-    const [targetWithAnchor, alias] = trimmedBody.split("|");
-    const notePath = resolveKnowledgeBaseNotePath(currentPath, targetWithAnchor);
-    const label = (alias || targetWithAnchor.split("#")[0] || "").trim();
-
-    if (notePath) {
-      return createToken(
-        `<button class="knowledge-base-inline-link" type="button" data-kb-open-note="${escapeHtml(notePath)}">${escapeHtml(label || notePath)}</button>`,
-      );
-    }
-
-    return createToken(`<span>${escapeHtml(label || trimmedBody)}</span>`);
-  });
-
-  output = output.replace(/`([^`]+)`/g, (_match, code) => createToken(`<code>${escapeHtml(code)}</code>`));
-  output = escapeHtml(output)
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>")
-    .replace(/~~([^~]+)~~/g, "<del>$1</del>");
-
-  return output.replace(/%%KB_TOKEN_(\d+)%%/g, (_match, index) => tokens[Number(index)] || "");
+    return escapeHtml(source);
+  }
 }
 
 function splitMarkdownTableRow(line) {
@@ -10819,116 +11027,17 @@ function renderKnowledgeBaseMarkdown(markdown, currentPath) {
     prefixHtml = toolbarHtml + prefixHtml;
   }
 
-  const lines = source.replace(/\r\n/g, "\n").split("\n");
-  const html = [];
-  let index = 0;
-
-  const isListLine = (line) => /^\s*(?:[-*+]\s+|\d+\.\s+)/.test(line);
-  const isBlockBoundary = (line) =>
-    !line.trim() ||
-    /^```/.test(line) ||
-    /^#{1,6}\s+/.test(line) ||
-    isMarkdownTableRow(line) ||
-    /^>\s?/.test(line) ||
-    isListLine(line) ||
-    /^([-*_]){3,}\s*$/.test(line.trim());
-
-  while (index < lines.length) {
-    const line = lines[index];
-
-    if (!line.trim()) {
-      index += 1;
-      continue;
+  let mainHtml = "";
+  try {
+    mainHtml = createKnowledgeBaseMarked(currentPath).parse(source);
+  } catch (error) {
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("renderKnowledgeBaseMarkdown failed", error);
     }
-
-    const fenceMatch = line.match(/^```\s*([A-Za-z0-9_.+-]*)/);
-    if (fenceMatch) {
-      const language = normalizeSyntaxLanguage(fenceMatch[1] || "text");
-      index += 1;
-      const codeLines = [];
-
-      while (index < lines.length && !/^```/.test(lines[index])) {
-        codeLines.push(lines[index]);
-        index += 1;
-      }
-
-      if (index < lines.length) {
-        index += 1;
-      }
-
-      html.push(renderSyntaxCodeBlock(codeLines.join("\n"), language, "knowledge-base-code"));
-      continue;
-    }
-
-    if (isMarkdownTableStart(lines, index)) {
-      const table = renderKnowledgeBaseMarkdownTable(lines, index, currentPath);
-      html.push(table.html);
-      index = table.nextIndex;
-      continue;
-    }
-
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
-    if (headingMatch) {
-      const level = Math.min(6, headingMatch[1].length);
-      html.push(`<h${level}>${renderKnowledgeBaseInline(headingMatch[2], currentPath)}</h${level}>`);
-      index += 1;
-      continue;
-    }
-
-    if (/^>\s?/.test(line)) {
-      const quoteLines = [];
-
-      while (index < lines.length && /^>\s?/.test(lines[index])) {
-        quoteLines.push(lines[index].replace(/^>\s?/, ""));
-        index += 1;
-      }
-
-      html.push(
-        `<blockquote class="knowledge-base-blockquote">${quoteLines
-          .map((entry) => `<p>${renderKnowledgeBaseInline(entry, currentPath)}</p>`)
-          .join("")}</blockquote>`,
-      );
-      continue;
-    }
-
-    if (isListLine(line)) {
-      const ordered = /^\s*\d+\.\s+/.test(line);
-      const items = [];
-
-      while (index < lines.length && isListLine(lines[index])) {
-        items.push(lines[index].replace(/^\s*(?:[-*+]\s+|\d+\.\s+)/, ""));
-        index += 1;
-      }
-
-      html.push(
-        `<${ordered ? "ol" : "ul"}>${items
-          .map((item) => `<li>${renderKnowledgeBaseInline(item, currentPath)}</li>`)
-          .join("")}</${ordered ? "ol" : "ul"}>`,
-      );
-      continue;
-    }
-
-    if (/^([-*_]){3,}\s*$/.test(line.trim())) {
-      html.push(`<hr class="knowledge-base-rule" />`);
-      index += 1;
-      continue;
-    }
-
-    const paragraphLines = [];
-    while (index < lines.length && !isBlockBoundary(lines[index])) {
-      paragraphLines.push(lines[index].trim());
-      index += 1;
-    }
-
-    if (!paragraphLines.length) {
-      paragraphLines.push(line.trim());
-      index += 1;
-    }
-
-    html.push(`<p>${renderKnowledgeBaseInline(paragraphLines.join(" "), currentPath)}</p>`);
+    mainHtml = `<pre class="knowledge-base-markdown-error">${escapeHtml(source)}</pre>`;
   }
 
-  const body = prefixHtml + html.join("");
+  const body = prefixHtml + mainHtml;
   if (isPaper) {
     return `<div class="knowledge-base-paper-body" data-paper-path="${escapeHtml(currentPath || "")}">${body}</div>`;
   }
@@ -11075,11 +11184,89 @@ function getKnowledgeBaseSearchResultLabel() {
     : `${state.knowledgeBase.notes.length} notes`;
 }
 
+function readKnowledgeBaseGraphCollapsedFromStorage() {
+  try {
+    const value = window.localStorage.getItem(KNOWLEDGE_BASE_GRAPH_COLLAPSED_STORAGE_KEY);
+    if (value === null) {
+      return true;
+    }
+    return value !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function writeKnowledgeBaseGraphCollapsedToStorage(collapsed) {
+  try {
+    window.localStorage.setItem(
+      KNOWLEDGE_BASE_GRAPH_COLLAPSED_STORAGE_KEY,
+      collapsed ? "1" : "0",
+    );
+  } catch {
+    // best-effort persistence
+  }
+}
+
+function setKnowledgeBaseGraphCollapsed(collapsed) {
+  const next = Boolean(collapsed);
+  if (state.knowledgeBase.graphCollapsed === next) {
+    return;
+  }
+  state.knowledgeBase.graphCollapsed = next;
+  writeKnowledgeBaseGraphCollapsedToStorage(next);
+  if (next) {
+    teardownKnowledgeBaseGraphInteractions();
+  } else {
+    state.knowledgeBase.replayGraphOnNextBind = true;
+  }
+  renderShell();
+}
+
 function renderKnowledgeBaseGraph() {
   const layout = state.knowledgeBase.graphLayout;
 
+  if (state.knowledgeBase.graphCollapsed) {
+    const meta = layout.nodes.length
+      ? `${layout.nodes.length} notes · ${layout.edges.length} links`
+      : "no notes yet";
+    return `
+      <div class="knowledge-base-graph-collapsed">
+        <button
+          class="knowledge-base-graph-toggle"
+          type="button"
+          data-kb-graph-toggle="show"
+          aria-label="Show graph view"
+          ${tooltipAttributes("Show graph view")}
+        >
+          <span class="knowledge-base-graph-toggle-icon">${renderIcon(Waypoints)}</span>
+          <span class="knowledge-base-graph-toggle-label">Graph View</span>
+          <span class="knowledge-base-graph-toggle-meta">${escapeHtml(meta)}</span>
+        </button>
+      </div>
+    `;
+  }
+
   if (!layout.nodes.length) {
-    return `<div class="blank-state">graph will appear once markdown notes exist</div>`;
+    return `
+      <article class="knowledge-base-graph-card">
+        <div class="knowledge-base-panel-head knowledge-base-graph-head">
+          <div class="knowledge-base-graph-copy">
+            <strong>Graph View</strong>
+            <div class="knowledge-base-panel-meta">no notes yet</div>
+          </div>
+          <div class="knowledge-base-graph-actions">
+            <button
+              class="ghost-button toolbar-control"
+              type="button"
+              data-kb-graph-toggle="hide"
+              aria-label="Hide graph view"
+              ${tooltipAttributes("Hide graph view")}
+            >hide</button>
+          </div>
+        </div>
+        <div class="blank-state">graph will appear once markdown notes exist</div>
+      </article>
+    `;
   }
 
   const selectedPath = state.knowledgeBase.selectedNotePath;
@@ -11113,6 +11300,13 @@ function renderKnowledgeBaseGraph() {
             ${tooltipAttributes("Pulse graph physics")}
           >${renderIcon(Zap)}</button>
           <button class="ghost-button toolbar-control" type="button" id="fit-knowledge-base-graph">fit</button>
+          <button
+            class="ghost-button toolbar-control"
+            type="button"
+            data-kb-graph-toggle="hide"
+            aria-label="Hide graph view"
+            ${tooltipAttributes("Hide graph view")}
+          >hide</button>
         </div>
       </div>
       <div class="knowledge-base-graph-frame">
@@ -11511,7 +11705,7 @@ function renderKnowledgeBaseView() {
           <button class="icon-button toolbar-control refresh-icon-button" type="button" id="refresh-knowledge-base" aria-label="Refresh library" ${tooltipAttributes("Refresh library")}>${renderIcon(RefreshCw)}</button>
         </div>
       </div>
-      <div class="knowledge-base-grid">
+      <div class="knowledge-base-grid ${state.knowledgeBase.graphCollapsed ? "is-graph-collapsed" : ""}">
         <aside class="knowledge-base-column knowledge-base-column-list">
           <div class="knowledge-base-panel-head">
             <div>
@@ -19675,17 +19869,7 @@ function isOpenClawProviderAgent(agent) {
 function renderClaudeCodeAvatarMarkup() {
   return `
     <span class="claude-code-avatar" aria-hidden="true">
-      <i class="claude-code-avatar-top"></i>
-      <i class="claude-code-avatar-left-arm"></i>
-      <i class="claude-code-avatar-mid"></i>
-      <i class="claude-code-avatar-right-arm"></i>
-      <i class="claude-code-avatar-base"></i>
-      <i class="claude-code-avatar-leg claude-code-avatar-leg-one"></i>
-      <i class="claude-code-avatar-leg claude-code-avatar-leg-two"></i>
-      <i class="claude-code-avatar-leg claude-code-avatar-leg-three"></i>
-      <i class="claude-code-avatar-leg claude-code-avatar-leg-four"></i>
-      <i class="claude-code-avatar-eye claude-code-avatar-eye-left"></i>
-      <i class="claude-code-avatar-eye claude-code-avatar-eye-right"></i>
+      <img class="claude-code-avatar-img" src="/images/claude-headshot.png" alt="" />
     </span>
   `;
 }
@@ -32300,7 +32484,16 @@ function bindSessionEvents() {
       const sessionId = button.getAttribute("data-delete-session");
 
       try {
-        await fetchJson(`/api/sessions/${sessionId}`, { method: "DELETE" });
+        try {
+          await fetchJson(`/api/sessions/${sessionId}`, { method: "DELETE" });
+        } catch (error) {
+          // 404 means the session is already gone server-side — that's the
+          // end state the user wanted, so just continue with local cleanup
+          // instead of popping an alert.
+          if (error?.status !== 404) {
+            throw error;
+          }
+        }
         state.sessions = state.sessions.filter((session) => session.id !== sessionId);
         const visualSelectionPruned = pruneVisualGameSessionSelection();
 
@@ -34472,6 +34665,14 @@ function bindKnowledgeBaseEvents() {
       renderShell();
     };
   }
+
+  document.querySelectorAll("[data-kb-graph-toggle]").forEach((button) => {
+    if (!(button instanceof HTMLElement)) return;
+    button.addEventListener("click", () => {
+      const action = button.dataset.kbGraphToggle;
+      setKnowledgeBaseGraphCollapsed(action !== "show");
+    });
+  });
 
   bindPaperSinceLastUpdateEvents();
 }
@@ -38653,13 +38854,61 @@ function loadCanvasRenderer() {
 
   state.canvasAddon = null;
 
+  let canvasAddon;
   try {
-    const canvasAddon = new CanvasAddon();
+    canvasAddon = new CanvasAddon();
     state.terminal.loadAddon(canvasAddon);
     state.canvasAddon = canvasAddon;
   } catch (error) {
     console.warn("[vibe-research] canvas renderer unavailable", error);
+    return;
   }
+
+  // Belt-and-suspenders render-test: a few frames after the canvas addon
+  // takes over, sample a pixel inside the terminal mount. If the canvas
+  // never painted anything (the failure mode we hit with WebGL on some
+  // browser/GPU combos — the addon constructed cleanly but rendered black),
+  // dispose it and let xterm fall back to the DOM renderer. We prefer a
+  // visible-but-slow terminal over an invisible-and-fast one.
+  window.setTimeout(() => {
+    if (!state.canvasAddon || state.canvasAddon !== canvasAddon || !state.terminal) {
+      return;
+    }
+    try {
+      const root = state.terminal.element;
+      const canvases = root?.querySelectorAll?.("canvas") || [];
+      if (canvases.length === 0) {
+        return; // nothing to verify; trust the addon
+      }
+      let painted = false;
+      for (const canvas of canvases) {
+        if (!canvas.width || !canvas.height) continue;
+        const context = canvas.getContext("2d");
+        if (!context) continue;
+        const sampleSize = Math.min(32, canvas.width, canvas.height);
+        const x = Math.max(0, Math.floor(canvas.width / 2) - Math.floor(sampleSize / 2));
+        const y = Math.max(0, Math.floor(canvas.height / 2) - Math.floor(sampleSize / 2));
+        const imageData = context.getImageData(x, y, sampleSize, sampleSize);
+        for (let i = 3; i < imageData.data.length; i += 4) {
+          if (imageData.data[i] > 0) {
+            painted = true;
+            break;
+          }
+        }
+        if (painted) break;
+      }
+      if (!painted) {
+        console.warn("[vibe-research] canvas renderer painted blank; falling back to DOM");
+        try { state.canvasAddon.dispose(); } catch {}
+        state.canvasAddon = null;
+        try { state.terminal.refresh(0, state.terminal.rows - 1); } catch {}
+      }
+    } catch (error) {
+      // Sampling can fail in cross-origin or paranoid security contexts.
+      // Don't tear down a working renderer over a sampling failure.
+      console.warn("[vibe-research] canvas renderer self-test skipped", error);
+    }
+  }, 350);
 }
 
 function setupTerminalInteractions(mount) {
@@ -38865,7 +39114,12 @@ function setupTerminalInteractions(mount) {
     configureTerminalTextarea(helperTextarea);
     scheduleTerminalTextareaReset();
     syncViewportMetrics();
-    fitTerminalSoon();
+    // On desktop, focus alone never changes viewport dimensions — skip the fit
+    // so its deferred scroll-snapshot restore can't clobber an in-flight text
+    // selection by snapping the viewport back to the bottom.
+    if (isCoarsePointerDevice()) {
+      fitTerminalSoon();
+    }
   };
 
   const handleTerminalBlur = () => {
@@ -38877,14 +39131,22 @@ function setupTerminalInteractions(mount) {
   };
 
   mount.addEventListener("pointerdown", handlePointerDown);
-  mount.addEventListener("wheel", handleTranscriptFallbackWheel, { capture: true, passive: false });
+  // PASSIVE wheel listener — non-passive capture-phase wheel listeners on the
+  // terminal mount were the primary cause of the "scroll feels extremely
+  // laggy" report. With passive: true the browser can scroll on the
+  // compositor thread without waiting for JS, matching VS Code's terminal
+  // feel. The handler still runs for state-routing in the transcript-overlay
+  // case; preventDefault is silently ignored which is fine — the overlay is
+  // its own scroll container and the mount has pointer-events: none while
+  // the overlay is up, so the two scroll surfaces don't fight in practice.
+  mount.addEventListener("wheel", handleTranscriptFallbackWheel, { capture: true, passive: true });
   mount.addEventListener("keydown", handleKeyboardScroll, { capture: true });
   mount.addEventListener("paste", handlePaste, { capture: true });
   mount.addEventListener("dragenter", handleDragEnter);
   mount.addEventListener("dragover", handleDragOver);
   mount.addEventListener("dragleave", handleDragLeave);
   mount.addEventListener("drop", handleDrop);
-  transcriptViewport?.addEventListener("wheel", handleTranscriptFallbackWheel, { capture: true, passive: false });
+  transcriptViewport?.addEventListener("wheel", handleTranscriptFallbackWheel, { capture: true, passive: true });
   transcriptViewport?.addEventListener("keydown", handleKeyboardScroll, { capture: true });
   transcriptViewport?.addEventListener("click", handleTranscriptClick);
   viewport.addEventListener("scroll", handleViewportScroll, { passive: true });
@@ -38969,12 +39231,28 @@ function mountTerminal() {
   state.terminalSelectionDisposable = state.terminal.onSelectionChange?.(() => {
     if (!state.terminal?.hasSelection?.()) {
       scheduleSelectableRefreshFlush(40);
+      // Selection just cleared — kick the output flusher so any output that
+      // queued up while the user was highlighting writes through promptly,
+      // rather than waiting for the next chunk to arrive.
+      state.terminalSelectionDeferStartedAt = 0;
+      if (state.pendingTerminalOutput && !state.terminalOutputFrame) {
+        state.terminalOutputFrame = window.requestAnimationFrame(() => {
+          flushPendingTerminalOutput();
+        });
+      }
     }
   });
   state.terminal.open(mount);
   configureTerminalTextarea(state.terminal.textarea);
   resetTerminalTextarea();
   applyTerminalDisplayProfile(mount);
+  // Canvas renderer (xterm-addon-canvas) is the default. It's ~5-10x faster
+  // than the DOM renderer for scroll and avoids the visibly-unstyled-rows
+  // artifact users see when the DOM renderer recycles row spans during fast
+  // scrolling. loadCanvasRenderer self-tests by sampling a pixel a few
+  // frames in and falls back to the DOM renderer if the canvas painted
+  // blank — the failure mode the prior WebGL attempt hit on some
+  // browser/GPU combos.
   loadCanvasRenderer();
   setupTerminalInteractions(mount);
   renderTerminalTranscriptHistory({ scrollToBottom: true });
@@ -39124,6 +39402,9 @@ function connectToSession(sessionId) {
     const payload = JSON.parse(event.data);
 
     if (payload.type === "snapshot") {
+      // Legacy single-frame snapshot. New servers send snapshot-start/chunk/end
+      // instead so the browser stays responsive while history streams in.
+      state.pendingSnapshot = null;
       setTerminalTranscriptHistory(payload.data || "", { scrollToBottom: true });
       queueTerminalOutput(payload.data || "", { mirrorTranscript: false, scrollToBottom: true });
       updateSession(payload.session);
@@ -39131,7 +39412,64 @@ function connectToSession(sessionId) {
       return;
     }
 
+    if (payload.type === "snapshot-start") {
+      // Start a chunked snapshot replay. Clear transcript history, buffer any
+      // live `output` messages that arrive while the snapshot streams in, and
+      // let each chunk paint on its own animation frame so keystrokes/scroll
+      // events can interleave between chunks instead of waiting for the full
+      // 2 MB blob to JSON.parse + ANSI-parse on the main thread.
+      state.pendingSnapshot = {
+        sessionId,
+        chunkCount: Number(payload.chunkCount) || 0,
+        receivedChunks: 0,
+        deferredOutputs: [],
+      };
+      setTerminalTranscriptHistory("", { scrollToBottom: true });
+      updateSession(payload.session);
+      scheduleRichSessionNarrativeRefresh(sessionId, { immediate: true });
+      if (state.pendingSnapshot.chunkCount === 0) {
+        // Empty session — nothing to replay, but still drain in case a stray
+        // output raced in between snapshot-start and snapshot-end.
+        finalizePendingSnapshot(sessionId);
+      }
+      return;
+    }
+
+    if (payload.type === "snapshot-chunk") {
+      if (!state.pendingSnapshot || state.pendingSnapshot.sessionId !== sessionId) {
+        // Defensive: chunk arrived without a matching start (e.g. switched
+        // sessions mid-stream). Treat as live output so we don't drop bytes.
+        queueTerminalOutput(payload.data || "", { scrollToBottom: true });
+        return;
+      }
+      const data = payload.data || "";
+      // mirrorTranscript:true so the transcript overlay accumulates the full
+      // replay text via appendTerminalTranscriptOutput (which is sliced to
+      // TERMINAL_TRANSCRIPT_RAW_LIMIT). queueTerminalOutput's internal rAF
+      // batching coalesces multiple chunks landing in the same frame into one
+      // xterm.write — which is exactly the behavior we want.
+      queueTerminalOutput(data, { mirrorTranscript: true, scrollToBottom: true });
+      state.pendingSnapshot.receivedChunks += 1;
+      return;
+    }
+
+    if (payload.type === "snapshot-end") {
+      if (state.pendingSnapshot && state.pendingSnapshot.sessionId === sessionId) {
+        finalizePendingSnapshot(sessionId);
+      }
+      return;
+    }
+
     if (payload.type === "output") {
+      // While a snapshot is mid-flight, defer live output so the terminal sees
+      // history first, then new bytes — otherwise live output can interleave
+      // between historical chunks and produce visual glitches as cursor moves
+      // from the live data confuse the still-arriving history's escape codes.
+      if (state.pendingSnapshot && state.pendingSnapshot.sessionId === sessionId) {
+        state.pendingSnapshot.deferredOutputs.push(payload.data || "");
+        scheduleRichSessionNarrativeRefresh(sessionId);
+        return;
+      }
       trackGuidedOnboardingOutputSafe(payload.data || "", sessionId);
       queueTerminalOutput(payload.data || "");
       scheduleRichSessionNarrativeRefresh(sessionId);
