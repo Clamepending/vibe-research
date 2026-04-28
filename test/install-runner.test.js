@@ -861,6 +861,95 @@ test("auto-handshake: records each handshake into the registry's lastHandshake",
   assert.equal(entry.lastHandshake.serverName, "stub-srv");
 });
 
+test("auto-sync: called after successful install when runAutoSync provided", async () => {
+  const { createMcpLaunchRegistry } = await import("../src/mcp-launch-registry.js");
+  const jobStore = createInstallJobStore();
+  const registry = createMcpLaunchRegistry();
+  let calls = 0;
+  const fakeSync = () => { calls += 1; return { claude: { wrote: 1, managed: ["x"] } }; };
+  const building = {
+    id: "auto-sync-ok",
+    install: {
+      plan: {
+        preflight: [{ kind: "command", command: "true" }],
+        verify: [],
+        mcp: [{ kind: "mcp-launch", command: "node" }],
+      },
+    },
+  };
+  const job = startInstallJob({ jobStore, building, mcpRegistry: registry, runAutoSync: fakeSync });
+  const finished = await waitForJob(jobStore, job.id, { timeoutMs: 4000 });
+  assert.equal(finished.status, "ok");
+  assert.equal(calls, 1);
+  assert.ok(finished.result.autoSync);
+  assert.equal(finished.result.autoSync.claude.wrote, 1);
+  // Log entry should reference auto-sync.
+  const syncLog = finished.log.find((entry) => entry.message?.includes("auto-synced"));
+  assert.ok(syncLog, "expected an auto-sync log entry");
+});
+
+test("auto-sync: NOT called when install plan failed", async () => {
+  const { createMcpLaunchRegistry } = await import("../src/mcp-launch-registry.js");
+  const jobStore = createInstallJobStore();
+  const registry = createMcpLaunchRegistry();
+  let calls = 0;
+  const fakeSync = () => { calls += 1; return {}; };
+  const building = {
+    id: "auto-sync-fail",
+    install: {
+      plan: {
+        preflight: [{ kind: "command", command: "false" }],
+        install: [{ kind: "command", command: "false", label: "boom" }],
+        verify: [],
+      },
+    },
+  };
+  const job = startInstallJob({ jobStore, building, mcpRegistry: registry, runAutoSync: fakeSync });
+  await waitForJob(jobStore, job.id, { timeoutMs: 4000 });
+  assert.equal(calls, 0, "auto-sync should not run when install plan failed");
+});
+
+test("auto-sync: throw is caught, install stays ok, error attached to result", async () => {
+  const { createMcpLaunchRegistry } = await import("../src/mcp-launch-registry.js");
+  const jobStore = createInstallJobStore();
+  const registry = createMcpLaunchRegistry();
+  const fakeSync = () => { throw new Error("disk full"); };
+  const building = {
+    id: "auto-sync-throws",
+    install: {
+      plan: {
+        preflight: [{ kind: "command", command: "true" }],
+        verify: [],
+        mcp: [{ kind: "mcp-launch", command: "node" }],
+      },
+    },
+  };
+  const job = startInstallJob({ jobStore, building, mcpRegistry: registry, runAutoSync: fakeSync });
+  const finished = await waitForJob(jobStore, job.id, { timeoutMs: 4000 });
+  assert.equal(finished.status, "ok", "install must not be downgraded by sync failure");
+  assert.match(finished.result.autoSyncError, /disk full/);
+});
+
+test("auto-sync: skipped when runAutoSync is null/undefined", async () => {
+  const { createMcpLaunchRegistry } = await import("../src/mcp-launch-registry.js");
+  const jobStore = createInstallJobStore();
+  const registry = createMcpLaunchRegistry();
+  const building = {
+    id: "auto-sync-skipped",
+    install: {
+      plan: {
+        preflight: [{ kind: "command", command: "true" }],
+        verify: [],
+        mcp: [{ kind: "mcp-launch", command: "node" }],
+      },
+    },
+  };
+  const job = startInstallJob({ jobStore, building, mcpRegistry: registry });
+  const finished = await waitForJob(jobStore, job.id, { timeoutMs: 4000 });
+  assert.equal(finished.status, "ok");
+  assert.equal(finished.result.autoSync, undefined);
+});
+
 test("auto-handshake: handshake throw is caught and recorded as handshake-crash", async () => {
   const { createMcpLaunchRegistry } = await import("../src/mcp-launch-registry.js");
   const jobStore = createInstallJobStore();

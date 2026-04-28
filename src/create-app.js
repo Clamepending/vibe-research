@@ -1454,6 +1454,26 @@ export async function createVibeResearchApp({
     // building before the host agent can pick them up again.
     persistencePath: path.join(stateDir, "mcp-launch-registry.json"),
   });
+
+  // Auto-sync the registry to Claude Code + Codex configs after every
+  // install + uninstall so the user doesn't have to remember to call
+  // POST /api/mcp/sync. Set VIBE_RESEARCH_MCP_AUTO_SYNC=off to disable
+  // (used by tests + airgapped runs). Sync failures are logged but
+  // don't fail the install — the manual /api/mcp/sync route is still
+  // available as a fallback.
+  const autoSyncEnabled = String(process.env.VIBE_RESEARCH_MCP_AUTO_SYNC || "").toLowerCase() !== "off";
+  const runAutoSyncForAgents = autoSyncEnabled
+    ? () => {
+        const out = {};
+        try { out.claude = syncToClaudeCode({ registry: mcpLaunchRegistry }); } catch (err) {
+          out.claudeError = String(err?.message || err);
+        }
+        try { out.codex = syncToCodex({ registry: mcpLaunchRegistry }); } catch (err) {
+          out.codexError = String(err?.message || err);
+        }
+        return out;
+      }
+    : null;
   const mcpLaunchHealthMonitor = createMcpLaunchHealthMonitor({
     registry: mcpLaunchRegistry,
     runHandshake: handshakeMcpLaunch,
@@ -2761,11 +2781,23 @@ export async function createVibeResearchApp({
       // installedPluginIds — handles edge cases where install.plan ran
       // but the user never confirmed the install via the legacy flow.
       const removed = mcpLaunchRegistry.remove(buildingId);
+      // Auto-sync so Claude Code + Codex drop the entry from their
+      // on-disk configs immediately. Best-effort — sync errors are
+      // surfaced but don't fail the uninstall.
+      let autoSync;
+      let autoSyncError;
+      if (runAutoSyncForAgents) {
+        try { autoSync = runAutoSyncForAgents(); } catch (err) {
+          autoSyncError = String(err?.message || err);
+        }
+      }
       response.json({
         buildingId,
         removedFromInstalledPluginIds: previous.includes(buildingId),
         removedFromRegistry: removed,
         installedPluginIds: settingsStore.settings.installedPluginIds,
+        autoSync: autoSync ?? null,
+        ...(autoSyncError ? { autoSyncError } : {}),
       });
     } catch (error) {
       response.status(500).json({ error: error?.message || "uninstall failed" });
@@ -2790,6 +2822,7 @@ export async function createVibeResearchApp({
         settingsStore,
         mcpRegistry: mcpLaunchRegistry,
         runHandshake: handshakeMcpLaunch,
+        runAutoSync: runAutoSyncForAgents,
       });
       response.json({
         jobId: job.id,
@@ -4226,10 +4259,19 @@ export async function createVibeResearchApp({
           ? settingsStore.settings.installedPluginIds
           : [],
       );
+      let removedAny = false;
       for (const buildingId of previousInstalled) {
         if (!currentInstalled.has(buildingId) && mcpLaunchRegistry.has(buildingId)) {
           mcpLaunchRegistry.remove(buildingId);
+          removedAny = true;
         }
+      }
+      // If we just dropped a building, push the change into Claude Code
+      // + Codex configs so they don't keep launching the now-unregistered
+      // server. Best-effort — sync errors are swallowed to keep the
+      // PATCH /api/settings response shape stable.
+      if (removedAny && runAutoSyncForAgents) {
+        try { runAutoSyncForAgents(); } catch {}
       }
 
       response.json({

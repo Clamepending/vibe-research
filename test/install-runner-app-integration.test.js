@@ -32,6 +32,13 @@ async function startApp(options = {}) {
   // logs and the test would have to wait for cleanup.
   const previousScheduleEnv = process.env.VIBE_RESEARCH_MCP_HEALTH_SCHEDULE;
   process.env.VIBE_RESEARCH_MCP_HEALTH_SCHEDULE = "off";
+  // Disable auto-sync to ~/.claude.json + ~/.codex/config.toml during
+  // tests by default — those paths are real user files. The auto-sync
+  // live test below explicitly re-enables this flag inside its block.
+  const previousAutoSyncEnv = process.env.VIBE_RESEARCH_MCP_AUTO_SYNC;
+  if (options.allowAutoSync !== true) {
+    process.env.VIBE_RESEARCH_MCP_AUTO_SYNC = "off";
+  }
   const app = await createVibeResearchApp({
     host: "127.0.0.1",
     port: 0,
@@ -47,11 +54,16 @@ async function startApp(options = {}) {
       }),
     ...options,
   });
-  // Restore the env var so a parallel app constructor isn't affected.
+  // Restore the env vars so a parallel app constructor isn't affected.
   if (previousScheduleEnv === undefined) {
     delete process.env.VIBE_RESEARCH_MCP_HEALTH_SCHEDULE;
   } else {
     process.env.VIBE_RESEARCH_MCP_HEALTH_SCHEDULE = previousScheduleEnv;
+  }
+  if (previousAutoSyncEnv === undefined) {
+    delete process.env.VIBE_RESEARCH_MCP_AUTO_SYNC;
+  } else {
+    process.env.VIBE_RESEARCH_MCP_AUTO_SYNC = previousAutoSyncEnv;
   }
   return {
     app,
@@ -379,6 +391,80 @@ test("/api/state: mcp.lastHealth is null until /health is called, then populated
     assert.equal(state.mcp.lastHealth.generatedAt, health.generatedAt);
   } finally {
     await cleanup();
+  }
+});
+
+test("end-to-end: install with auto-sync writes Claude + Codex configs without a manual sync call", { timeout: 120_000 }, async (t) => {
+  // Sandbox HOME so the auto-sync writes land in a temp dir, not the
+  // developer's real ~/.claude.json. The syncer reads $HOME at write
+  // time via os.homedir().
+  const fakeHome = await tmp("vr-fakehome");
+  const previousHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+
+  const cwdDir = await tmp("vr-autosync-cwd");
+  const stateDir = await tmp("vr-autosync-state");
+  const fsRoot = await tmp("vr-autosync-fsroot");
+
+  // allowAutoSync: true overrides the test default that turns auto-sync off.
+  const { baseUrl, cleanup } = await startApp({ cwd: cwdDir, stateDir, allowAutoSync: true });
+  try {
+    // Set the filesystem root setting so the install plan resolves.
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mcpFilesystemRoots: fsRoot }),
+    });
+
+    const startResp = await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install`, { method: "POST" });
+    const { jobId } = await startResp.json();
+    const deadline = Date.now() + 90_000;
+    let final = null;
+    while (Date.now() < deadline) {
+      const j = await (await fetch(`${baseUrl}/api/buildings/mcp-filesystem/install/jobs/${jobId}`)).json();
+      if (j.status !== "running") { final = j; break; }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    assert.ok(final);
+    assert.equal(final.status, "ok", `install failed: ${JSON.stringify(final.result)}`);
+    // Auto-sync result is on the install job's result.
+    assert.ok(final.result.autoSync, "result.autoSync must be present after install");
+    assert.ok(final.result.autoSync.claude, "auto-sync should have run for claude");
+    assert.ok(final.result.autoSync.codex, "auto-sync should have run for codex");
+
+    // Files should physically exist in the sandboxed home.
+    const fs = await import("node:fs");
+    const claudePath = path.join(fakeHome, ".claude.json");
+    const codexPath = path.join(fakeHome, ".codex", "config.toml");
+    assert.ok(fs.existsSync(claudePath), "~/.claude.json must be written");
+    assert.ok(fs.existsSync(codexPath), "~/.codex/config.toml must be written");
+    const claudeJson = JSON.parse(fs.readFileSync(claudePath, "utf8"));
+    assert.ok(claudeJson.mcpServers["mcp-filesystem"]);
+    assert.equal(claudeJson.mcpServers["mcp-filesystem"]._vibeResearchManaged, true);
+    const codexToml = fs.readFileSync(codexPath, "utf8");
+    assert.match(codexToml, /\[mcp_servers\.mcp-filesystem\]/);
+
+    // Now uninstall — the auto-sync hook on the uninstall route should
+    // drop the entries from both files.
+    const uninstallResp = await fetch(`${baseUrl}/api/buildings/mcp-filesystem/uninstall`, { method: "POST" });
+    assert.equal(uninstallResp.status, 200);
+    const uninstallBody = await uninstallResp.json();
+    assert.ok(uninstallBody.autoSync, "uninstall response must include autoSync result");
+    const claudeAfter = JSON.parse(fs.readFileSync(claudePath, "utf8"));
+    assert.equal(claudeAfter.mcpServers["mcp-filesystem"], undefined,
+      "uninstall must drop the entry from ~/.claude.json");
+    const codexAfter = fs.readFileSync(codexPath, "utf8");
+    assert.equal(/\[mcp_servers\.mcp-filesystem\]/.test(codexAfter), false,
+      "uninstall must drop the section from ~/.codex/config.toml");
+  } finally {
+    await cleanup();
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    await rm(fakeHome, { recursive: true, force: true });
+    await rm(fsRoot, { recursive: true, force: true });
   }
 });
 

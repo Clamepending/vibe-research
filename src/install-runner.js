@@ -486,6 +486,13 @@ export function startInstallJob({
   // result.handshakes to render "installed, but the server isn't
   // responding".
   runHandshake,
+  // Optional auto-sync hook. When supplied, the install job calls this
+  // after the handshake step (regardless of handshake outcome) so the
+  // user's Claude Code + Codex configs immediately see the new
+  // building. Sync errors are caught and logged but do NOT downgrade
+  // install status — that's the same intent as the handshake step:
+  // ancillary verification, not install gating.
+  runAutoSync,
 }) {
   const job = jobStore.create(building.id);
   const controller = new AbortController();
@@ -592,6 +599,24 @@ export function startInstallJob({
         }
         if (handshakes.length > 0) {
           result.handshakes = handshakes;
+        }
+      }
+      // Auto-sync: write the registry to the agent CLIs' on-disk
+      // configs so Claude Code + Codex see the new building without
+      // a manual round-trip. Failure here doesn't fail the install —
+      // a sync error means the agents will pick up the change on the
+      // next manual /api/mcp/sync, but the install itself worked.
+      if (result.status === "ok" && typeof runAutoSync === "function") {
+        try {
+          const syncResult = await runAutoSync();
+          if (syncResult) {
+            result.autoSync = syncResult;
+            const targets = Object.keys(syncResult).join(", ");
+            append({ phase: "system", level: "info", message: `auto-synced agent configs (${targets})` });
+          }
+        } catch (err) {
+          append({ phase: "system", level: "warn", message: `auto-sync failed: ${err?.message || err}` });
+          result.autoSyncError = String(err?.message || err);
         }
       }
       jobStore.update(job.id, {
