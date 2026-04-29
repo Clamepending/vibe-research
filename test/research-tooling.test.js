@@ -926,6 +926,69 @@ test("runDoctor: bad wandb_url shape -> runs_bad_wandb_url warning", async () =>
 });
 
 // ---------------------------------------------------------------------------
+// stale-ACTIVE check — CLAUDE.md says ACTIVE rows older than 7 days should
+// be treated as abandoned and surfaced for cleanup. Doctor warns so the
+// loop's stale-recovery procedure kicks in.
+
+async function activeFixture(tmp, startedDate) {
+  const project = path.join(tmp, "widget-tuning");
+  await copyDir(FIXTURE_PROJECT, project);
+
+  // Add an ACTIVE row + matching active result doc.
+  const readmePath = path.join(project, "README.md");
+  let readme = await readFile(readmePath, "utf8");
+  readme = readme.replace(
+    "## ACTIVE\n\n| move | result doc | branch | agent | started |\n|------|-----------|--------|-------|---------|",
+    `## ACTIVE\n\n| move | result doc | branch | agent | started |\n|------|-----------|--------|-------|---------|\n| v3-candidate | [v3-candidate](results/v3-candidate.md) | [r/v3-candidate](https://github.com/example/widget-tuning/tree/r/v3-candidate) | 0 | ${startedDate} |`,
+  );
+  await writeFile(readmePath, readme);
+  return project;
+}
+
+test("runDoctor: ACTIVE row started >7 days ago -> active_stale_row warning", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-active-stale-"));
+  try {
+    // Pick a date 10 days before today.
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
+      .toISOString().slice(0, 10);
+    const project = await activeFixture(tmp, tenDaysAgo);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("active_stale_row"),
+      `expected active_stale_row, got: ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: ACTIVE row started recently -> no active_stale_row", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-active-fresh-"));
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const project = await activeFixture(tmp, today);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.equal(codes.includes("active_stale_row"), false,
+      `unexpected active_stale_row in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: ACTIVE row with empty/malformed `started` -> no active_stale_row (different bug class)", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-active-malformed-"));
+  try {
+    const project = await activeFixture(tmp, "not-a-date");
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.equal(codes.includes("active_stale_row"), false,
+      "stale-row check should ignore unparseable dates");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // kickoff.json validation — the agent re-reads kickoff.json on every loop
 // entry. If it's missing-when-expected, malformed, or points at a repo
 // that no longer exists, the doctor surfaces it before the agent runs blind.

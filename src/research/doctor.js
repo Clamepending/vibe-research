@@ -181,6 +181,37 @@ async function checkLeaderboard(projectDir, leaderboard, benchmark) {
   return issues;
 }
 
+// CLAUDE.md: "If an agent's ACTIVE row has had no new cycle commit on its
+// r/<slug> branch in the code repo for >7 days, treat it as abandoned by
+// that collaborator." We can't easily inspect the code repo's git log
+// from here without shelling out, but we CAN flag rows whose README-claimed
+// `started` date is >7 days ago — that catches the same staleness pattern
+// at the contract level (the row was claimed but never wrote a cycle
+// commit recent enough to update the README's started field, OR the agent
+// just forgot to clear ACTIVE after resolving).
+const ACTIVE_STALE_DAYS = 7;
+
+function checkActiveStaleness(active, { now = Date.now() } = {}) {
+  const issues = [];
+  for (const row of active) {
+    const where = `ACTIVE row ${row.slug || "unnamed"}`;
+    const started = String(row.started || "").trim();
+    if (!started) continue; // empty `started` is its own minor bug, not surfaced here
+    const t = Date.parse(started);
+    if (!Number.isFinite(t)) continue; // unparseable dates ignored — different bug class
+    const days = (now - t) / (1000 * 60 * 60 * 24);
+    if (days > ACTIVE_STALE_DAYS) {
+      issues.push(makeIssue(
+        "warning",
+        "active_stale_row",
+        where,
+        `started ${days.toFixed(1)} days ago (>${ACTIVE_STALE_DAYS} day threshold); per CLAUDE.md treat as abandoned and clear the ACTIVE row, file an "abandoned" LOG row`,
+      ));
+    }
+  }
+  return issues;
+}
+
 async function checkActive(projectDir, active, benchmark) {
   const issues = [];
   for (const row of active) {
@@ -207,6 +238,7 @@ async function checkActive(projectDir, active, benchmark) {
     }
     issues.push(...checkResultBenchmarkVersion(where, doc, benchmark));
   }
+  issues.push(...checkActiveStaleness(active));
   return issues;
 }
 
