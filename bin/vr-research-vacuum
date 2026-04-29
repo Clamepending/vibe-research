@@ -1,0 +1,202 @@
+#!/usr/bin/env node
+// vr-research-vacuum — tier project binaries to .archive/, manifest-driven.
+//
+// Default: dry-run. Pass --apply to actually move. Pass --restore <path>
+// to inverse a previous tiering. Pass --list to dump the manifest.
+//
+// Usage:
+//   vr-research-vacuum projects/widget-tuning             # dry-run
+//   vr-research-vacuum projects/widget-tuning --apply     # do it
+//   vr-research-vacuum projects/widget-tuning --restore figures/old.png
+//   vr-research-vacuum projects/widget-tuning --list
+
+import path from "node:path";
+import process from "node:process";
+import {
+  planVacuum,
+  applyVacuum,
+  restoreFromArchive,
+  readManifest,
+} from "../src/research/vacuum.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-vacuum — tier project binaries to .archive/
+
+Usage:
+  vr-research-vacuum <project-dir> [options]
+
+Default behaviour: dry-run. Prints what WOULD move; mutates nothing.
+
+Options:
+  --apply                 Actually move the candidates (writes manifest).
+  --restore <relpath>     Move <relpath> back from .archive/ to its original location.
+  --list                  Dump the current manifest (newest-first).
+  --age-days <N>          Tier files older than N days (default 90).
+  --json                  Emit machine-readable summary on stdout.
+  --help, -h              Show this message.
+
+Default policy:
+  - Tier candidates: .png, .jpg, .pt, .ckpt, .npz, .npy, .pkl, .log,
+    .tar, .gz, .zip (and friends — see vacuum.js BINARY_EXTENSIONS)
+  - Pin: all .md / .tsv / .txt / .json / .yaml files
+         everything under benchmark/
+         figures referenced by any "falsified" LOG row's result doc
+         everything in .archive/ already
+  - Age: mtime older than 90 days (configurable with --age-days)
+
+Examples:
+  # See what a quarterly clean-up would move:
+  vr-research-vacuum projects/widget-tuning
+
+  # Actually tier:
+  vr-research-vacuum projects/widget-tuning --apply
+
+  # Pull a specific PNG back when you need it:
+  vr-research-vacuum projects/widget-tuning --restore figures/old-baseline.png
+
+  # See what's already been archived:
+  vr-research-vacuum projects/widget-tuning --list
+`);
+}
+
+function parseArgs(argv) {
+  const opts = {
+    projectDir: "",
+    apply: false,
+    restore: "",
+    list: false,
+    ageDays: 90,
+    json: false,
+    help: false,
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
+    if (arg === "--apply") { opts.apply = true; continue; }
+    if (arg === "--list") { opts.list = true; continue; }
+    if (arg === "--json") { opts.json = true; continue; }
+    if (arg === "--restore") { opts.restore = argv[++i] || ""; continue; }
+    if (arg === "--age-days") {
+      const n = Number(argv[++i] || "");
+      if (!Number.isFinite(n) || n < 0) throw new Error("--age-days expects a non-negative number");
+      opts.ageDays = n;
+      continue;
+    }
+    if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
+    if (!opts.projectDir) { opts.projectDir = arg; continue; }
+    throw new Error(`unexpected positional arg: ${arg}`);
+  }
+  return opts;
+}
+
+function humanBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n)) return String(bytes);
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+async function runList(projectDir, json) {
+  const manifest = await readManifest(projectDir);
+  if (json) {
+    process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
+    return 0;
+  }
+  if (!manifest.rows.length) {
+    process.stdout.write(`manifest at ${manifest.manifestPath}: empty (nothing tiered yet)\n`);
+    return 0;
+  }
+  process.stdout.write(`manifest at ${manifest.manifestPath} (${manifest.rows.length} rows):\n`);
+  for (const row of manifest.rows.slice().reverse()) {
+    process.stdout.write(`  ${row.tiered_at}  ${humanBytes(Number(row.original_size))}  ${row.original_path}\n`);
+  }
+  return 0;
+}
+
+async function runRestore(projectDir, relPath, json) {
+  let result;
+  try { result = await restoreFromArchive(projectDir, relPath); }
+  catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    return 1;
+  }
+  if (json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return 0;
+  }
+  process.stdout.write(`restored ${result.originalPath} (sha256=${result.sha256.slice(0, 12)}...)\n`);
+  return 0;
+}
+
+async function runVacuum(projectDir, opts) {
+  const plan = await planVacuum(projectDir, { ageDays: opts.ageDays });
+  if (opts.json && !opts.apply) {
+    process.stdout.write(`${JSON.stringify({ mode: "dry-run", plan }, null, 2)}\n`);
+    return 0;
+  }
+  if (!opts.apply) {
+    process.stdout.write(`vr-research-vacuum: ${projectDir} (dry-run; pass --apply to act)\n`);
+    process.stdout.write(`  scanned:    ${plan.totalScanned} files\n`);
+    process.stdout.write(`  candidates: ${plan.candidates.length} (${humanBytes(plan.totalCandidateBytes)})\n`);
+    process.stdout.write(`  pinned:     ${plan.pinned.length}\n`);
+    if (plan.candidates.length) {
+      process.stdout.write(`\n  would move:\n`);
+      for (const c of plan.candidates.slice(0, 25)) {
+        process.stdout.write(`    ${humanBytes(c.size).padStart(8)}  ${c.relPath}\n`);
+      }
+      if (plan.candidates.length > 25) {
+        process.stdout.write(`    … and ${plan.candidates.length - 25} more\n`);
+      }
+    }
+    return 0;
+  }
+  // --apply
+  const result = await applyVacuum(projectDir, plan);
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify({ mode: "applied", moved: result.moved, manifestPath: result.manifestPath }, null, 2)}\n`);
+    return 0;
+  }
+  process.stdout.write(`vr-research-vacuum: applied to ${projectDir}\n`);
+  process.stdout.write(`  moved:    ${result.moved.length} files\n`);
+  process.stdout.write(`  manifest: ${result.manifestPath}\n`);
+  return 0;
+}
+
+async function main() {
+  let opts;
+  try { opts = parseArgs(process.argv.slice(2)); }
+  catch (err) {
+    process.stderr.write(`${err.message}\n\n`);
+    printHelp();
+    process.exit(2);
+  }
+  if (opts.help) { printHelp(); process.exit(0); }
+  if (!opts.projectDir) {
+    process.stderr.write(`project-dir positional argument is required\n`);
+    process.exit(2);
+  }
+  if (opts.apply && opts.restore) {
+    process.stderr.write(`--apply and --restore are mutually exclusive\n`);
+    process.exit(2);
+  }
+  if (opts.list && (opts.apply || opts.restore)) {
+    process.stderr.write(`--list is mutually exclusive with --apply / --restore\n`);
+    process.exit(2);
+  }
+
+  const projectDir = path.resolve(opts.projectDir);
+  let exitCode = 0;
+  try {
+    if (opts.list) exitCode = await runList(projectDir, opts.json);
+    else if (opts.restore) exitCode = await runRestore(projectDir, opts.restore, opts.json);
+    else exitCode = await runVacuum(projectDir, opts);
+  } catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    exitCode = 1;
+  }
+  process.exit(exitCode);
+}
+
+main();

@@ -13,6 +13,7 @@
 //      reference. Numbers inside a fenced code block are exempt.
 
 import { readFile, stat } from "node:fs/promises";
+import { resolveArtifactPath } from "./vacuum.js";
 import path from "node:path";
 
 const FOOTNOTE_DEF_RE = /^\[\^([^\]]+)\]:\s*(.*)$/;
@@ -113,13 +114,17 @@ async function checkFigure(projectDir, imagePath, lineNumber, issues) {
     ));
     return;
   }
-  const resolved = path.resolve(projectDir, imagePath);
-  if (!(await pathExists(resolved))) {
+  // Follow vacuum manifest pointers: a figure that's been tiered to
+  // .archive/ is still "present" — paper-lint should not flag it. The
+  // resolveArtifactPath helper checks both the original location and
+  // the archived location.
+  const found = await resolveArtifactPath(projectDir, imagePath);
+  if (!found) {
     issues.push(makeIssue(
       "error",
       "figure_missing",
       lineNumber,
-      `figure file does not exist: ${imagePath}`,
+      `figure file does not exist: ${imagePath} (also checked .archive/)`,
     ));
   }
 }
