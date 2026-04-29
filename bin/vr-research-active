@@ -1,0 +1,147 @@
+#!/usr/bin/env node
+// vr-research-active — manage the ACTIVE table in a project README.
+//
+// CLAUDE.md loop step 3: claim a move by adding a row to ACTIVE.
+// Loop step 9: remove the row after the move resolves.
+//
+// Usage:
+//   vr-research-active <project-dir> add \
+//       --slug v3-deeper-knob \
+//       --result results/v3-deeper-knob.md \
+//       --branch https://github.com/.../tree/r/v3-deeper-knob
+//
+//   vr-research-active <project-dir> remove --slug v3-deeper-knob
+
+import path from "node:path";
+import process from "node:process";
+import { addActiveRow, removeActiveRow } from "../src/research/active-edit.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-active — add or remove rows in a project README's ACTIVE table
+
+Usage:
+  vr-research-active <project-dir> add    --slug <slug> --result <relpath> --branch <url> [options]
+  vr-research-active <project-dir> remove --slug <slug>
+
+Subcommands:
+  add     Insert an ACTIVE row at the top of the table (newest claim).
+  remove  Delete the row whose move slug matches.
+
+Add options:
+  --slug <text>           The move slug (must match its r/<slug> branch).
+  --result <relpath>      Path to the result doc, e.g. results/v3-deeper-knob.md
+  --branch <url>          GitHub URL for the move's r/<slug> branch
+  --agent <id>            Agent id (defaults to "0" — solo project)
+  --started <YYYY-MM-DD>  Start date (defaults to today UTC)
+
+Common:
+  --json                  Emit machine-readable summary on stdout.
+  --help, -h              Show this message.
+
+Examples:
+  # Claim a new move (loop step 3)
+  vr-research-active projects/widget-tuning add \\
+    --slug v3-deeper-knob \\
+    --result results/v3-deeper-knob.md \\
+    --branch https://github.com/example/widget-tuning/tree/r/v3-deeper-knob
+
+  # Resolve & clear (loop step 9)
+  vr-research-active projects/widget-tuning remove --slug v3-deeper-knob
+`);
+}
+
+function parseArgs(argv) {
+  const opts = {
+    projectDir: "",
+    subcommand: "",
+    slug: "",
+    result: "",
+    branch: "",
+    agent: "",
+    started: "",
+    json: false,
+    help: false,
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
+    if (arg === "--json") { opts.json = true; continue; }
+    if (arg === "--slug") { opts.slug = argv[++i] || ""; continue; }
+    if (arg === "--result") { opts.result = argv[++i] || ""; continue; }
+    if (arg === "--branch") { opts.branch = argv[++i] || ""; continue; }
+    if (arg === "--agent") { opts.agent = argv[++i] || ""; continue; }
+    if (arg === "--started") { opts.started = argv[++i] || ""; continue; }
+    if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
+    if (!opts.projectDir) { opts.projectDir = arg; continue; }
+    if (!opts.subcommand) { opts.subcommand = arg; continue; }
+    throw new Error(`unexpected positional arg: ${arg}`);
+  }
+  return opts;
+}
+
+async function main() {
+  let opts;
+  try { opts = parseArgs(process.argv.slice(2)); }
+  catch (err) {
+    process.stderr.write(`${err.message}\n\n`);
+    printHelp();
+    process.exit(2);
+  }
+  if (opts.help) { printHelp(); process.exit(0); }
+  if (!opts.projectDir) {
+    process.stderr.write(`project-dir positional argument is required\n`);
+    process.exit(2);
+  }
+  if (!["add", "remove"].includes(opts.subcommand)) {
+    process.stderr.write(`subcommand must be 'add' or 'remove', got "${opts.subcommand}"\n`);
+    process.exit(2);
+  }
+
+  const readmePath = path.join(path.resolve(opts.projectDir), "README.md");
+  let result;
+  try {
+    if (opts.subcommand === "add") {
+      const errs = [];
+      if (!opts.slug) errs.push("--slug is required");
+      if (!opts.result) errs.push("--result is required");
+      if (!opts.branch) errs.push("--branch is required");
+      if (errs.length) {
+        for (const e of errs) process.stderr.write(`${e}\n`);
+        process.exit(2);
+      }
+      result = await addActiveRow({
+        readmePath,
+        row: {
+          slug: opts.slug,
+          resultPath: opts.result,
+          branchUrl: opts.branch,
+          agent: opts.agent,
+          started: opts.started,
+        },
+      });
+    } else {
+      if (!opts.slug) {
+        process.stderr.write(`--slug is required for 'remove'\n`);
+        process.exit(2);
+      }
+      result = await removeActiveRow({ readmePath, slug: opts.slug });
+    }
+  } catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  }
+
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.exit(0);
+  }
+  if (opts.subcommand === "add") {
+    process.stdout.write(`added ACTIVE row in ${result.readmePath}\n`);
+    process.stdout.write(`  ${result.row.slug} (started ${result.row.started})\n`);
+  } else {
+    process.stdout.write(`removed ACTIVE row "${result.slug}" from ${result.readmePath}\n`);
+  }
+  process.exit(0);
+}
+
+main();
