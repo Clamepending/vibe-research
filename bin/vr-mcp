@@ -1,0 +1,301 @@
+#!/usr/bin/env node
+// vr-mcp — agent-callable CLI for the MCP install pipeline.
+//
+// Without this script, an agent in a session that realizes mid-loop
+// "I need Stripe access to do this experiment" has to escape to a
+// browser UI to install the Stripe MCP. With it, the agent can:
+//
+//   vr-mcp list              # see every available building
+//   vr-mcp install mcp-stripe # one-click install (paste token via
+//                             # PATCH /api/settings if it's an
+//                             # auth-paste building)
+//   vr-mcp status            # what's installed, what's broken
+//   vr-mcp handshake mcp-x   # speak MCP protocol to confirm it works
+//   vr-mcp tools mcp-x       # list MCP tools the server exposes
+//   vr-mcp sync              # write agent CLI configs (auto-runs but
+//                             # available as escape hatch)
+//   vr-mcp health            # bulk handshake all installed servers
+//
+// The CLI defaults to human-readable; pass --json for stable
+// machine-readable output. Any subcommand returns exit code 0 on
+// success, 1 on failure, 2 on usage error.
+//
+// URL detection:
+//   $VIBE_RESEARCH_URL                     ← exact url, wins
+//   $VIBE_RESEARCH_PORT  → 127.0.0.1:PORT  ← port-only override
+//   default                                 ← 127.0.0.1:4826
+
+import process from "node:process";
+
+const DEFAULT_PORT = 4826;
+
+function defaultBaseUrl() {
+  if (process.env.VIBE_RESEARCH_URL) return process.env.VIBE_RESEARCH_URL.replace(/\/+$/, "");
+  const port = Number(process.env.VIBE_RESEARCH_PORT || DEFAULT_PORT);
+  return `http://127.0.0.1:${port}`;
+}
+
+function printHelp() {
+  process.stdout.write(`vr-mcp — agent-callable CLI for the MCP install pipeline
+
+Usage:
+  vr-mcp list [--json]
+  vr-mcp install <building-id> [--json] [--no-wait]
+  vr-mcp uninstall <building-id> [--json]
+  vr-mcp status [<building-id>] [--json]
+  vr-mcp handshake <building-id> [--json]
+  vr-mcp test <building-id> [--json]
+  vr-mcp tools <building-id> [--json]
+  vr-mcp sync [--target=claude|codex|all] [--json]
+  vr-mcp health [--force] [--json]
+
+Environment:
+  VIBE_RESEARCH_URL    Full base URL of the running server (overrides PORT)
+  VIBE_RESEARCH_PORT   Port for 127.0.0.1; defaults to ${DEFAULT_PORT}
+
+Subcommands return exit 0 on success, 1 on failure, 2 on usage error.
+JSON mode (--json) is recommended for agent consumption.
+`);
+}
+
+class CliError extends Error {
+  constructor(message, exitCode = 1) {
+    super(message);
+    this.exitCode = exitCode;
+  }
+}
+
+async function fetchJson(url, init = {}) {
+  const response = await fetch(url, init);
+  const text = await response.text();
+  let parsed = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch { /* leave null */ }
+  if (!response.ok) {
+    const detail = parsed?.error || text || `${response.status}`;
+    throw new CliError(`${init.method || "GET"} ${url} failed: ${detail}`);
+  }
+  return parsed;
+}
+
+function parseFlags(argv) {
+  const flags = { json: false, force: false, target: "all", noWait: false };
+  const positional = [];
+  for (const arg of argv) {
+    if (arg === "--json") flags.json = true;
+    else if (arg === "--force") flags.force = true;
+    else if (arg === "--no-wait") flags.noWait = true;
+    else if (arg.startsWith("--target=")) flags.target = arg.slice("--target=".length);
+    else if (arg.startsWith("--")) throw new CliError(`unknown flag: ${arg}`, 2);
+    else positional.push(arg);
+  }
+  return { flags, positional };
+}
+
+function emit(value, flags) {
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+    return;
+  }
+  // Human-readable fallback per shape.
+  if (Array.isArray(value)) {
+    for (const entry of value) emit(entry, flags);
+    return;
+  }
+  if (value && typeof value === "object") {
+    process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(`${String(value)}\n`);
+}
+
+async function listBuildings(baseUrl, flags) {
+  const state = await fetchJson(`${baseUrl}/api/state`);
+  const installed = new Set(state?.settings?.installedPluginIds || []);
+  // /api/state surfaces the registry summary, but the catalog of all
+  // available buildings comes from the same response's full plugins
+  // list. We re-shape into a digest the agent can scan.
+  const launches = state?.mcp?.buildings || [];
+  const launchSet = new Set(launches);
+  const summary = {
+    server: baseUrl,
+    catalog: (state?.providers ? null : null), // catalog goes via building registry endpoint
+    mcp: {
+      totalLaunches: state?.mcp?.totalLaunches ?? 0,
+      unresolvedLaunches: state?.mcp?.unresolvedLaunches ?? 0,
+      activeBuildings: launches,
+    },
+    installedPluginIds: [...installed].sort(),
+    lastHealth: state?.mcp?.lastHealth ?? null,
+  };
+  emit(summary, flags);
+}
+
+async function installBuilding(baseUrl, buildingId, flags) {
+  if (!buildingId) throw new CliError("install: <building-id> is required", 2);
+  const start = await fetchJson(`${baseUrl}/api/buildings/${encodeURIComponent(buildingId)}/install`, {
+    method: "POST",
+  });
+  if (flags.noWait) {
+    emit(start, flags);
+    return start;
+  }
+  // Poll the job to completion.
+  const jobId = start.jobId;
+  const deadline = Date.now() + 5 * 60_000; // 5 min cap
+  while (Date.now() < deadline) {
+    const job = await fetchJson(`${baseUrl}/api/buildings/${encodeURIComponent(buildingId)}/install/jobs/${encodeURIComponent(jobId)}`);
+    if (job.status !== "running") {
+      emit(job, flags);
+      if (job.status !== "ok" && job.status !== "auth-required") {
+        throw new CliError(`install ended with status: ${job.status}`);
+      }
+      return job;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new CliError("install timed out after 5 minutes");
+}
+
+async function uninstallBuilding(baseUrl, buildingId, flags) {
+  if (!buildingId) throw new CliError("uninstall: <building-id> is required", 2);
+  const result = await fetchJson(`${baseUrl}/api/buildings/${encodeURIComponent(buildingId)}/uninstall`, {
+    method: "POST",
+  });
+  emit(result, flags);
+  return result;
+}
+
+async function statusBuildings(baseUrl, buildingId, flags) {
+  const launchesResponse = await fetchJson(`${baseUrl}/api/mcp/launches?resolved=1`);
+  const allLaunches = launchesResponse?.launches || [];
+  const launches = buildingId
+    ? allLaunches.filter((entry) => entry.buildingId === buildingId)
+    : allLaunches;
+  emit({ buildingId: buildingId || "(all)", launches }, flags);
+}
+
+async function handshakeBuilding(baseUrl, buildingId, flags) {
+  if (!buildingId) throw new CliError("handshake: <building-id> is required", 2);
+  const result = await fetchJson(`${baseUrl}/api/mcp/launches/${encodeURIComponent(buildingId)}/handshake`, {
+    method: "POST",
+  });
+  emit(result, flags);
+  if (!result.ok) throw new CliError(`handshake failed: ${result.results?.[0]?.status || "unknown"}`);
+  return result;
+}
+
+async function testBuilding(baseUrl, buildingId, flags) {
+  if (!buildingId) throw new CliError("test: <building-id> is required", 2);
+  const result = await fetchJson(`${baseUrl}/api/mcp/launches/${encodeURIComponent(buildingId)}/test`, {
+    method: "POST",
+  });
+  emit(result, flags);
+  if (!result.ok) throw new CliError(`test failed: ${result.results?.[0]?.status || "unknown"}`);
+  return result;
+}
+
+async function listTools(baseUrl, buildingId, flags) {
+  if (!buildingId) throw new CliError("tools: <building-id> is required", 2);
+  // The handshake response already includes tool count + server info,
+  // but to surface the actual tool list the server-side handshake
+  // would need to include it. We piggyback by calling /handshake and
+  // surfacing what we have; future work: extend the route to return
+  // the full tools/list payload.
+  const result = await fetchJson(`${baseUrl}/api/mcp/launches/${encodeURIComponent(buildingId)}/handshake`, {
+    method: "POST",
+  });
+  if (!result.ok) {
+    emit(result, flags);
+    throw new CliError(`tools query failed: ${result.results?.[0]?.status || "unknown"}`);
+  }
+  const summary = {
+    buildingId,
+    serverName: result.results?.[0]?.serverName,
+    serverVersion: result.results?.[0]?.serverVersion,
+    toolCount: result.results?.[0]?.toolCount,
+    note: "Detailed tool schemas are available on the running MCP server via tools/list. Use claude mcp list and claude --debug to inspect interactively.",
+  };
+  emit(summary, flags);
+  return summary;
+}
+
+async function syncAgentConfigs(baseUrl, target, flags) {
+  const result = await fetchJson(`${baseUrl}/api/mcp/sync?target=${encodeURIComponent(target)}`, {
+    method: "POST",
+  });
+  emit(result, flags);
+  return result;
+}
+
+async function healthCheck(baseUrl, flags) {
+  const url = `${baseUrl}/api/mcp/launches/health${flags.force ? "?force=1" : ""}`;
+  const result = await fetchJson(url, { method: "POST" });
+  emit(result, flags);
+  return result;
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
+    printHelp();
+    process.exit(argv.length === 0 ? 2 : 0);
+  }
+
+  const [subcommand, ...rest] = argv;
+  let flags;
+  let positional;
+  try {
+    ({ flags, positional } = parseFlags(rest));
+  } catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(err.exitCode || 2);
+  }
+
+  const baseUrl = defaultBaseUrl();
+
+  try {
+    switch (subcommand) {
+      case "list":
+        await listBuildings(baseUrl, flags);
+        break;
+      case "install":
+        await installBuilding(baseUrl, positional[0], flags);
+        break;
+      case "uninstall":
+        await uninstallBuilding(baseUrl, positional[0], flags);
+        break;
+      case "status":
+        await statusBuildings(baseUrl, positional[0], flags);
+        break;
+      case "handshake":
+        await handshakeBuilding(baseUrl, positional[0], flags);
+        break;
+      case "test":
+        await testBuilding(baseUrl, positional[0], flags);
+        break;
+      case "tools":
+        await listTools(baseUrl, positional[0], flags);
+        break;
+      case "sync":
+        await syncAgentConfigs(baseUrl, flags.target || "all", flags);
+        break;
+      case "health":
+        await healthCheck(baseUrl, flags);
+        break;
+      default:
+        process.stderr.write(`unknown subcommand: ${subcommand}\n`);
+        printHelp();
+        process.exit(2);
+    }
+    process.exit(0);
+  } catch (err) {
+    if (err instanceof CliError) {
+      process.stderr.write(`${err.message}\n`);
+      process.exit(err.exitCode);
+    }
+    process.stderr.write(`${err?.message || err}\n`);
+    process.exit(1);
+  }
+}
+
+main();
