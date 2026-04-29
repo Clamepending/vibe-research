@@ -36,6 +36,30 @@ function asArray(value) {
   return [value];
 }
 
+// Build a single-line failure reason that includes the tail of stderr (or
+// stdout when stderr is empty) so the UI's "install failed" message tells
+// the user WHY it failed. Without this, every install error reads "install
+// step X failed" with no actionable signal — the user has to dig into the
+// job log to find the actual error. We trim aggressively to keep the chip
+// readable; the full tails are still in the log entries.
+function formatStepFailureReason(step, result) {
+  const label = step.label || step.command || "command";
+  const head = `install step "${label}" failed`;
+  const reasonHints = [];
+  if (result.reason) reasonHints.push(result.reason);
+  if (Number.isInteger(result.exitCode)) reasonHints.push(`exit=${result.exitCode}`);
+  const stderr = String(result.stderr || "").trim();
+  const stdout = String(result.stdout || "").trim();
+  // Prefer stderr when present; fall back to stdout (some pip errors print
+  // to stdout). Cap at 240 chars so the UI chip isn't a wall of text.
+  const tail = (stderr || stdout).split("\n").filter((line) => line.trim()).slice(-3).join(" | ");
+  const trimmedTail = tail.length > 240 ? `...${tail.slice(-240)}` : tail;
+  const parts = [head];
+  if (reasonHints.length) parts.push(`(${reasonHints.join(", ")})`);
+  if (trimmedTail) parts.push(`: ${trimmedTail}`);
+  return parts.join(" ");
+}
+
 export function createInstallJobStore() {
   const jobs = new Map();
   const MAX_JOBS = 64;
@@ -100,12 +124,40 @@ export function createInstallJobStore() {
   };
 }
 
-async function runShellCommand(step, { signal } = {}) {
+// Resolve a guaranteed-to-exist local bin dir for venv-installed tools.
+// vr-pip-install-tool symlinks Python CLIs (modal, etc.) into here; we
+// PREPEND it to PATH for every install-runner shell command so subsequent
+// preflight/verify steps in the same install plan can find newly-installed
+// binaries even when the user hasn't yet edited their shell profile.
+function resolveVibeResearchLocalBin(env = process.env) {
+  const home = env.VIBE_RESEARCH_HOME || (env.HOME ? `${env.HOME}/.vibe-research` : null);
+  return home ? `${home}/bin` : null;
+}
+
+function buildSpawnEnv(extraEnv) {
+  const merged = { ...process.env, ...(extraEnv || {}) };
+  const localBin = resolveVibeResearchLocalBin(merged);
+  if (localBin) {
+    const path = String(merged.PATH || "");
+    // Idempotent: don't double-prepend if it's already first.
+    if (!path.split(":").includes(localBin)) {
+      merged.PATH = path ? `${localBin}:${path}` : localBin;
+    }
+  }
+  return merged;
+}
+
+async function runShellCommand(step, { signal, env: extraEnv } = {}) {
   const timeoutMs = (step.timeoutSec || DEFAULT_COMMAND_TIMEOUT_SEC) * 1000;
   return await new Promise((resolve) => {
     const child = spawn(step.command, {
       shell: step.shell !== false,
-      env: { ...process.env },
+      // Spread process.env first so user shell config wins, then layer the
+      // install-runner-supplied env (VIBE_RESEARCH_APP_DIR etc.) on top so
+      // manifest commands can reliably reach scripts shipped under bin/.
+      // Also prepend ~/.vibe-research/bin to PATH so venv-installed CLIs
+      // are visible to subsequent steps in the same plan.
+      env: buildSpawnEnv(extraEnv),
     });
 
     let stdout = "";
@@ -259,6 +311,11 @@ export async function executeInstallPlan(plan, options = {}) {
     fetchImpl,
     mcpRegistry = null,
     buildingId = null,
+    // Extra env merged into every shell-step spawn. We use this to inject
+    // VIBE_RESEARCH_APP_DIR so manifest commands can locate scripts under
+    // <appDir>/bin/ (e.g. vr-pip-install-tool) regardless of the user's
+    // PATH. Also useful for tests that want to inject HOME, etc.
+    spawnEnv = null,
   } = options;
 
   // Secret-mask set: every value in here is replaced with [redacted] in
@@ -292,7 +349,7 @@ export async function executeInstallPlan(plan, options = {}) {
   let preflightAllOk = true;
   for (const step of plan.preflight || []) {
     appendLog({ phase: "preflight", level: "info", step: step.label || step.command, message: "running" });
-    const result = await runShellCommand(step, { signal });
+    const result = await runShellCommand(step, { signal, env: spawnEnv });
     appendLog({
       phase: "preflight",
       level: result.ok ? "info" : "warn",
@@ -309,7 +366,7 @@ export async function executeInstallPlan(plan, options = {}) {
     for (const step of plan.install || []) {
       appendLog({ phase: "install", level: "info", step: step.label || step.command, message: "running" });
       if (step.kind === "command") {
-        const result = await runShellCommand(step, { signal });
+        const result = await runShellCommand(step, { signal, env: spawnEnv });
         appendLog({
           phase: "install",
           level: result.ok ? "info" : "error",
@@ -319,7 +376,15 @@ export async function executeInstallPlan(plan, options = {}) {
           stderrTail: result.stderr?.slice(-400),
         });
         if (!result.ok) {
-          return { status: "failed", reason: `install step "${step.label || step.command}" failed`, capturedSettings };
+          return {
+            status: "failed",
+            // Include the tail of stderr in the reason so the UI shows the
+            // actual failure (PEP 668, missing dep, network error) instead
+            // of just "step X failed". The log entry above carries the
+            // full tails too — this is the at-a-glance summary.
+            reason: formatStepFailureReason(step, result),
+            capturedSettings,
+          };
         }
       } else if (step.kind === "http") {
         const result = await runHttpStep(step, { signal, fetchImpl });
@@ -354,7 +419,7 @@ export async function executeInstallPlan(plan, options = {}) {
     if (!plan.verify?.length) return { ok: true, reason: "no-verify" };
     for (const step of plan.verify) {
       appendLog({ phase: "verify", level: "info", step: step.label || step.command, message: "running" });
-      const result = await runShellCommand(step, { signal });
+      const result = await runShellCommand(step, { signal, env: spawnEnv });
       appendLog({
         phase: "verify",
         level: result.ok ? "info" : "warn",
@@ -493,6 +558,12 @@ export function startInstallJob({
   // install status — that's the same intent as the handshake step:
   // ancillary verification, not install gating.
   runAutoSync,
+  // Absolute path to the app root (where bin/, scripts/, package.json live).
+  // Injected as VIBE_RESEARCH_APP_DIR into every shell-step env so manifest
+  // commands can call shipped scripts via stable paths like
+  // `bash "$VIBE_RESEARCH_APP_DIR/bin/vr-pip-install-tool" modal` without
+  // assuming any particular install layout on disk.
+  appDir = null,
 }) {
   const job = jobStore.create(building.id);
   const controller = new AbortController();
@@ -517,6 +588,7 @@ export function startInstallJob({
         fetchImpl,
         mcpRegistry,
         buildingId: building.id,
+        spawnEnv: appDir ? { VIBE_RESEARCH_APP_DIR: appDir } : null,
       });
       // Record the install outcome on the registry so /api/mcp/launches
       // can show "installed 2 days ago, status ok" inline. We do this
@@ -632,6 +704,12 @@ export function startInstallJob({
 
   return job;
 }
+
+export const __internal = {
+  buildSpawnEnv,
+  formatStepFailureReason,
+  resolveVibeResearchLocalBin,
+};
 
 // Tiny helper for tests so they don't have to actually wait.
 export async function waitForJob(jobStore, jobId, { timeoutMs = 5000, pollMs = 25 } = {}) {

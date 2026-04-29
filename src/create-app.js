@@ -2824,6 +2824,7 @@ export async function createVibeResearchApp({
         mcpRegistry: mcpLaunchRegistry,
         runHandshake: handshakeMcpLaunch,
         runAutoSync: runAutoSyncForAgents,
+        appDir: appRootDir,
       });
       response.json({
         jobId: job.id,
