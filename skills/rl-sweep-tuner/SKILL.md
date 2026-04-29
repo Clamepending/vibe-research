@@ -89,7 +89,7 @@ Default per-row timeout is 30 minutes. For long cloud runs, pass `--timeout-sec 
 - `vr-rl-sweep run <name> [--sweep-name <slug>] --launcher '<shell template>'` — walk planned rows, spawn each one's launcher, capture the metric, update the row in-place.
 - `vr-rl-tuner` — bootstrap a project from a target repo (writes README + paper + kickoff.json + dirs). Used once at project start.
 - `vr-research-init <name>` — generic project bootstrap if you split off a sub-project.
-- `vr-research-doctor projects/<name>` — validate the project's bookkeeping is consistent (links resolve, leaderboard isn't lying about commits, etc.). Run this before pushing the Library.
+- `vr-research-doctor projects/<name>` — validate the project's bookkeeping is consistent (links resolve, leaderboard isn't lying about commits, etc.). Also walks `runs.tsv` and `runs/<slug>.tsv` (stale `running` rows, config-JSON parse errors, missing required columns, `running` rows with no matching ACTIVE README claim, malformed `wandb_url`) and `kickoff.json` (parseable, has `goal` + `repo`, repo path exists on disk). Run this before pushing the Library.
 - `vr-research-admit projects/<name>/results/<slug>.md` — test admission to the leaderboard.
 - `vr-research-lint-paper projects/<name>/paper.md` — catches contract violations (locked sections edited without a pivot row, footnote IDs colliding, etc.).
 - `vr-mcp install <building-id>` — install MCP servers for tools you discover you need (e.g. `mcp-aws-kb-retrieval` if the user's repo references an AWS Bedrock KB; `mcp-postgres` if the experiment data lives in Postgres). Don't ask the user; install + use.

@@ -782,6 +782,327 @@ test("formatVerdict: includes benchmark line when project has bench", async () =
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// runs.tsv validation — sweep-runner artifact integrity from the doctor's
+// perspective. The doctor walks projects/<name>/runs.tsv and
+// projects/<name>/runs/<slug>.tsv so a stale "running" row, a malformed
+// config JSON, or a runs.tsv with missing columns surfaces up to the loop
+// rather than silently corrupting the leaderboard.
+
+const RUNS_HEADER = [
+  "started_at", "group", "name", "commit", "hypothesis",
+  "mean_return", "std_return", "wandb_url", "status", "config",
+].join("\t");
+
+function runsRow({ started_at = "", group = "g", name = "g-cell-seed0", commit = "abc1234", hypothesis = "h", mean_return = "", std_return = "", wandb_url = "", status = "planned", config = "{}" } = {}) {
+  return [started_at, group, name, commit, hypothesis, mean_return, std_return, wandb_url, status, config].join("\t");
+}
+
+test("runDoctor: clean runs.tsv (status=done) produces no new issues", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-runs-clean-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    const tsv = `${RUNS_HEADER}\n${runsRow({
+      started_at: new Date().toISOString(),
+      status: "done",
+      mean_return: "0.81",
+      wandb_url: "https://wandb.ai/me/proj/runs/abc123",
+    })}\n`;
+    await writeFile(path.join(project, "runs.tsv"), tsv);
+    const report = await runDoctor(project);
+    const newCodes = report.issues.map((i) => i.code).filter((c) => c.startsWith("runs_"));
+    assert.deepEqual(newCodes, [], `expected no runs_* issues, got: ${newCodes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: stale 'running' row + no ACTIVE row -> two warnings", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-runs-stale-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    // 48h ago = stale.
+    const staleIso = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const tsv = `${RUNS_HEADER}\n${runsRow({
+      started_at: staleIso,
+      status: "running",
+    })}\n`;
+    await writeFile(path.join(project, "runs.tsv"), tsv);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("runs_stale_running"),
+      `expected runs_stale_running in ${codes.join(",")}`);
+    assert.ok(codes.includes("runs_running_without_active"),
+      `expected runs_running_without_active in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: bad JSON in config column -> runs_config_unparseable error", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-runs-cfg-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    const tsv = `${RUNS_HEADER}\n${runsRow({
+      status: "done",
+      mean_return: "0.5",
+      config: "{not json",
+    })}\n`;
+    await writeFile(path.join(project, "runs.tsv"), tsv);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("runs_config_unparseable"),
+      `expected runs_config_unparseable in ${codes.join(",")}`);
+    assert.ok(report.summary.error >= 1);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: runs.tsv missing required columns -> runs_missing_columns error", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-runs-cols-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    // Drop status + config.
+    const reducedHeader = ["started_at", "group", "name", "commit", "hypothesis", "mean_return", "std_return", "wandb_url"].join("\t");
+    const reducedRow = ["2026-04-28T00:00:00Z", "g", "g-cell-seed0", "abc", "h", "", "", ""].join("\t");
+    const tsv = `${reducedHeader}\n${reducedRow}\n`;
+    await writeFile(path.join(project, "runs.tsv"), tsv);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("runs_missing_columns"),
+      `expected runs_missing_columns in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: walks runs/<slug>.tsv subdirectory too", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-runs-sub-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    await mkdir(path.join(project, "runs"), { recursive: true });
+    const staleIso = new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString();
+    const tsv = `${RUNS_HEADER}\n${runsRow({
+      started_at: staleIso,
+      status: "running",
+      name: "ablate-foo-cell-seed0",
+    })}\n`;
+    await writeFile(path.join(project, "runs", "ablate-foo.tsv"), tsv);
+    const report = await runDoctor(project);
+    const stale = report.issues.find((i) => i.code === "runs_stale_running");
+    assert.ok(stale, "expected runs_stale_running issue");
+    assert.match(stale.where, /runs\/ablate-foo\.tsv/,
+      `expected 'where' to mention runs/ablate-foo.tsv, got: ${stale.where}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: bad wandb_url shape -> runs_bad_wandb_url warning", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-runs-wb-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    const tsv = `${RUNS_HEADER}\n${runsRow({
+      started_at: new Date().toISOString(),
+      status: "done",
+      mean_return: "0.5",
+      wandb_url: "https://example.com/not-wandb/run/123",
+    })}\n`;
+    await writeFile(path.join(project, "runs.tsv"), tsv);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("runs_bad_wandb_url"),
+      `expected runs_bad_wandb_url in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// stale-ACTIVE check — CLAUDE.md says ACTIVE rows older than 7 days should
+// be treated as abandoned and surfaced for cleanup. Doctor warns so the
+// loop's stale-recovery procedure kicks in.
+
+async function activeFixture(tmp, startedDate) {
+  const project = path.join(tmp, "widget-tuning");
+  await copyDir(FIXTURE_PROJECT, project);
+
+  // Add an ACTIVE row + matching active result doc.
+  const readmePath = path.join(project, "README.md");
+  let readme = await readFile(readmePath, "utf8");
+  readme = readme.replace(
+    "## ACTIVE\n\n| move | result doc | branch | agent | started |\n|------|-----------|--------|-------|---------|",
+    `## ACTIVE\n\n| move | result doc | branch | agent | started |\n|------|-----------|--------|-------|---------|\n| v3-candidate | [v3-candidate](results/v3-candidate.md) | [r/v3-candidate](https://github.com/example/widget-tuning/tree/r/v3-candidate) | 0 | ${startedDate} |`,
+  );
+  await writeFile(readmePath, readme);
+  return project;
+}
+
+test("runDoctor: ACTIVE row started >7 days ago -> active_stale_row warning", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-active-stale-"));
+  try {
+    // Pick a date 10 days before today.
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
+      .toISOString().slice(0, 10);
+    const project = await activeFixture(tmp, tenDaysAgo);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("active_stale_row"),
+      `expected active_stale_row, got: ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: ACTIVE row started recently -> no active_stale_row", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-active-fresh-"));
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const project = await activeFixture(tmp, today);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.equal(codes.includes("active_stale_row"), false,
+      `unexpected active_stale_row in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: ACTIVE row with empty/malformed `started` -> no active_stale_row (different bug class)", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-active-malformed-"));
+  try {
+    const project = await activeFixture(tmp, "not-a-date");
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.equal(codes.includes("active_stale_row"), false,
+      "stale-row check should ignore unparseable dates");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// kickoff.json validation — the agent re-reads kickoff.json on every loop
+// entry. If it's missing-when-expected, malformed, or points at a repo
+// that no longer exists, the doctor surfaces it before the agent runs blind.
+
+async function installSkillStub(projectDir) {
+  const skillDir = path.join(projectDir, ".claude", "skills", "rl-sweep-tuner");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(path.join(skillDir, "SKILL.md"), "stub\n");
+}
+
+test("runDoctor: no kickoff.json + no skill = no kickoff issues", async () => {
+  // The vanilla fixture has no kickoff.json and no skill installed —
+  // shouldn't be flagged. Acts as a regression check.
+  const report = await runDoctor(FIXTURE_PROJECT);
+  const codes = report.issues.map((i) => i.code).filter((c) => c.startsWith("kickoff_"));
+  assert.deepEqual(codes, []);
+});
+
+test("runDoctor: skill installed but kickoff.json missing -> kickoff_missing warning", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-kickoff-noJson-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    await installSkillStub(project);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("kickoff_missing"),
+      `expected kickoff_missing, got: ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: kickoff.json with invalid JSON -> kickoff_unparseable error", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-kickoff-bad-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    await writeFile(path.join(project, "kickoff.json"), "{not json");
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("kickoff_unparseable"),
+      `expected kickoff_unparseable, got: ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: kickoff.json missing goal -> kickoff_missing_goal error", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-kickoff-noGoal-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    await writeFile(path.join(project, "kickoff.json"),
+      JSON.stringify({ repo: tmp, library: "/x", projectDir: project }));
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("kickoff_missing_goal"),
+      `expected kickoff_missing_goal, got: ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: kickoff.json missing repo -> kickoff_missing_repo error", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-kickoff-noRepo-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    await writeFile(path.join(project, "kickoff.json"),
+      JSON.stringify({ goal: "x", library: "/x" }));
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("kickoff_missing_repo"),
+      `expected kickoff_missing_repo, got: ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: kickoff.json repo path doesn't exist -> kickoff_repo_missing warning", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-kickoff-noRepoPath-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    await writeFile(path.join(project, "kickoff.json"),
+      JSON.stringify({ goal: "x", repo: "/nonexistent/path/here-please" }));
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("kickoff_repo_missing"),
+      `expected kickoff_repo_missing, got: ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: valid kickoff.json with existing repo path -> no kickoff_* issues", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-kickoff-ok-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    // Use the project dir itself as a stand-in for an "existing repo".
+    await writeFile(path.join(project, "kickoff.json"),
+      JSON.stringify({ goal: "find best LR", repo: project, library: tmp }));
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code).filter((c) => c.startsWith("kickoff_"));
+    assert.deepEqual(codes, [], `expected no kickoff_* issues, got: ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+
 test("lintPaper: flags non-slug-prefixed footnote IDs and missing definitions", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-lint-fn-"));
   try {

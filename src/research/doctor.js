@@ -14,10 +14,11 @@
 // Each issue carries a severity (`error` | `warning` | `info`) and a one-line
 // human-readable message anchored to a section + row when applicable.
 
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { parseProjectReadme } from "./project-readme.js";
 import { parseResultDoc } from "./result-doc.js";
+import { parseRunsTsv } from "./sweep-runner.js";
 import {
   loadBenchmark,
   validateBenchmark,
@@ -180,6 +181,37 @@ async function checkLeaderboard(projectDir, leaderboard, benchmark) {
   return issues;
 }
 
+// CLAUDE.md: "If an agent's ACTIVE row has had no new cycle commit on its
+// r/<slug> branch in the code repo for >7 days, treat it as abandoned by
+// that collaborator." We can't easily inspect the code repo's git log
+// from here without shelling out, but we CAN flag rows whose README-claimed
+// `started` date is >7 days ago — that catches the same staleness pattern
+// at the contract level (the row was claimed but never wrote a cycle
+// commit recent enough to update the README's started field, OR the agent
+// just forgot to clear ACTIVE after resolving).
+const ACTIVE_STALE_DAYS = 7;
+
+function checkActiveStaleness(active, { now = Date.now() } = {}) {
+  const issues = [];
+  for (const row of active) {
+    const where = `ACTIVE row ${row.slug || "unnamed"}`;
+    const started = String(row.started || "").trim();
+    if (!started) continue; // empty `started` is its own minor bug, not surfaced here
+    const t = Date.parse(started);
+    if (!Number.isFinite(t)) continue; // unparseable dates ignored — different bug class
+    const days = (now - t) / (1000 * 60 * 60 * 24);
+    if (days > ACTIVE_STALE_DAYS) {
+      issues.push(makeIssue(
+        "warning",
+        "active_stale_row",
+        where,
+        `started ${days.toFixed(1)} days ago (>${ACTIVE_STALE_DAYS} day threshold); per CLAUDE.md treat as abandoned and clear the ACTIVE row, file an "abandoned" LOG row`,
+      ));
+    }
+  }
+  return issues;
+}
+
 async function checkActive(projectDir, active, benchmark) {
   const issues = [];
   for (const row of active) {
@@ -206,6 +238,7 @@ async function checkActive(projectDir, active, benchmark) {
     }
     issues.push(...checkResultBenchmarkVersion(where, doc, benchmark));
   }
+  issues.push(...checkActiveStaleness(active));
   return issues;
 }
 
@@ -341,6 +374,185 @@ function checkRankingCriterion(criterion) {
   return [];
 }
 
+// runs.tsv lives at the top of a project (the first move's sweep) and at
+// projects/<name>/runs/<slug>.tsv (follow-up moves' sweeps). Both shapes
+// are validated identically.
+const STALE_RUNNING_HOURS = 24;
+const RUNS_REQUIRED_COLUMNS = ["status", "started_at", "name", "config"];
+
+async function findRunsTsvFiles(projectDir) {
+  const found = [];
+  const top = path.join(projectDir, "runs.tsv");
+  if (await pathExists(top)) found.push(top);
+  const runsDir = path.join(projectDir, "runs");
+  if (await pathExists(runsDir)) {
+    let entries = [];
+    try { entries = await readdir(runsDir); } catch { entries = []; }
+    for (const entry of entries) {
+      if (entry.endsWith(".tsv")) found.push(path.join(runsDir, entry));
+    }
+  }
+  return found;
+}
+
+async function checkRunsTsv(projectDir, active) {
+  const issues = [];
+  const files = await findRunsTsvFiles(projectDir);
+  if (!files.length) return issues;
+
+  const hasActive = active.length > 0;
+  let anyRunning = false;
+
+  for (const file of files) {
+    const where = `runs.tsv (${path.relative(projectDir, file) || "runs.tsv"})`;
+    let text;
+    try { text = await readFile(file, "utf8"); }
+    catch (err) {
+      issues.push(makeIssue("warning", "runs_unreadable", where, `could not read: ${err.message}`));
+      continue;
+    }
+    const { headers, rows } = parseRunsTsv(text);
+    if (!headers.length) {
+      issues.push(makeIssue("warning", "runs_empty", where, "TSV has no header row"));
+      continue;
+    }
+    const missing = RUNS_REQUIRED_COLUMNS.filter((c) => !headers.includes(c));
+    if (missing.length) {
+      issues.push(makeIssue(
+        "error",
+        "runs_missing_columns",
+        where,
+        `missing required columns: ${missing.join(", ")}`,
+      ));
+    }
+
+    for (const row of rows) {
+      const status = String(row.status || "").trim();
+      const name = String(row.name || "").trim() || "(unnamed)";
+      const rowWhere = `${where} row "${name}"`;
+
+      if (status === "running") {
+        anyRunning = true;
+        const startedAt = String(row.started_at || "").trim();
+        if (startedAt) {
+          const t = Date.parse(startedAt);
+          if (Number.isFinite(t)) {
+            const hoursSince = (Date.now() - t) / (1000 * 60 * 60);
+            if (hoursSince > STALE_RUNNING_HOURS) {
+              issues.push(makeIssue(
+                "warning",
+                "runs_stale_running",
+                rowWhere,
+                `status is "running" but started_at was ${hoursSince.toFixed(1)}h ago — orphaned process? mark failed/skipped or rerun`,
+              ));
+            }
+          }
+        }
+      }
+
+      // The runner writes config as JSON; an unparseable cell means the
+      // launcher will get garbage and silently fail.
+      const config = row.config;
+      if (typeof config === "string" && config.length > 0) {
+        try { JSON.parse(config); }
+        catch {
+          issues.push(makeIssue(
+            "error",
+            "runs_config_unparseable",
+            rowWhere,
+            `config column is not valid JSON: ${config.slice(0, 80)}${config.length > 80 ? "..." : ""}`,
+          ));
+        }
+      }
+
+      const wandb = String(row.wandb_url || "").trim();
+      if (wandb && !/wandb\.ai/.test(wandb)) {
+        issues.push(makeIssue(
+          "warning",
+          "runs_bad_wandb_url",
+          rowWhere,
+          `wandb_url does not look like a wandb.ai URL: ${wandb}`,
+        ));
+      }
+    }
+  }
+
+  // Cross-check with README ACTIVE: if a sweep has rows that are
+  // currently running (not just stale) but the README has no ACTIVE row,
+  // collaborators on a shared project can't see the move is in flight.
+  if (anyRunning && !hasActive) {
+    issues.push(makeIssue(
+      "warning",
+      "runs_running_without_active",
+      "ACTIVE",
+      "runs.tsv has at least one row with status \"running\" but README ACTIVE is empty — claim the move in README so collaborators see the lock",
+    ));
+  }
+
+  return issues;
+}
+
+// kickoff.json carries the human-supplied goal + repo + budget for a
+// project bootstrapped via vr-rl-tuner. The agent re-reads it on every
+// loop entry, so a corrupt or missing kickoff means the loop runs blind.
+// Doctor only flags a kickoff as required when the rl-sweep-tuner skill
+// is installed under .claude/skills/ — a regular vr-research-init
+// project doesn't write kickoff.json and shouldn't be expected to.
+async function checkKickoffJson(projectDir) {
+  const issues = [];
+  const kickoffPath = path.join(projectDir, "kickoff.json");
+  const skillPath = path.join(projectDir, ".claude", "skills", "rl-sweep-tuner", "SKILL.md");
+
+  const [kickoffExists, skillExists] = await Promise.all([
+    pathExists(kickoffPath),
+    pathExists(skillPath),
+  ]);
+
+  // Project not bootstrapped via vr-rl-tuner: nothing to check.
+  if (!kickoffExists && !skillExists) return issues;
+
+  if (skillExists && !kickoffExists) {
+    issues.push(makeIssue(
+      "warning",
+      "kickoff_missing",
+      "kickoff.json",
+      "rl-sweep-tuner skill is installed but kickoff.json is missing — the agent has no goal/repo on entry",
+    ));
+    return issues;
+  }
+
+  let raw;
+  try { raw = await readFile(kickoffPath, "utf8"); }
+  catch (err) {
+    issues.push(makeIssue("error", "kickoff_unreadable", "kickoff.json", `cannot read: ${err.message}`));
+    return issues;
+  }
+
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (err) {
+    issues.push(makeIssue("error", "kickoff_unparseable", "kickoff.json", `invalid JSON: ${err.message}`));
+    return issues;
+  }
+
+  const goalOk = typeof parsed.goal === "string" && parsed.goal.trim().length > 0;
+  if (!goalOk) {
+    issues.push(makeIssue("error", "kickoff_missing_goal", "kickoff.json", "missing or empty required field: goal"));
+  }
+  const repoOk = typeof parsed.repo === "string" && parsed.repo.trim().length > 0;
+  if (!repoOk) {
+    issues.push(makeIssue("error", "kickoff_missing_repo", "kickoff.json", "missing or empty required field: repo"));
+  } else if (!(await pathExists(parsed.repo))) {
+    issues.push(makeIssue(
+      "warning",
+      "kickoff_repo_missing",
+      "kickoff.json",
+      `repo path does not exist on disk: ${parsed.repo} — was the machine moved or the repo deleted?`,
+    ));
+  }
+  return issues;
+}
+
 export async function runDoctor(projectDir, { readmeText } = {}) {
   const readmePath = path.join(projectDir, "README.md");
   let text = readmeText;
@@ -364,6 +576,8 @@ export async function runDoctor(projectDir, { readmeText } = {}) {
   issues.push(...checkQueue(parsed.queue));
   issues.push(...await checkInsights(projectDir, parsed.insights));
   issues.push(...await checkLog(projectDir, parsed.log));
+  issues.push(...await checkRunsTsv(projectDir, parsed.active));
+  issues.push(...await checkKickoffJson(projectDir));
 
   return {
     project: parsed,
