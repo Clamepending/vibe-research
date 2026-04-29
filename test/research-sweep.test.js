@@ -203,7 +203,9 @@ test("renderRunsTsv: tabs and newlines inside cells get escaped", () => {
 test("vr-rl-sweep --help: exits 0", async () => {
   const result = await runCli(["--help"]);
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /vr-rl-sweep init/);
+  assert.match(result.stdout, /vr-rl-sweep <subcommand>/);
+  assert.match(result.stdout, /init <name>/);
+  assert.match(result.stdout, /run <name>/);
 });
 
 test("vr-rl-sweep no args: exits 2", async () => {
