@@ -1,0 +1,131 @@
+#!/usr/bin/env node
+// vr-research-log — append a LOG row to a project README.
+//
+// CLAUDE.md loop step 9: "append a LOG row whose primary tag is `resolved`,
+// `falsified`, or `abandoned`, compounded with `+admitted` if this result
+// was inserted into the LEADERBOARD or `+evicted` if rank 6 dropped."
+//
+// The agent calls this once per move resolution instead of hand-editing
+// the LOG table. Inserts at the top of the table (newest-first, per the
+// contract).
+//
+// Usage:
+//   vr-research-log <project-dir> --event resolved+admitted \
+//       --slug v3-deeper-knob --summary "knob extension paid off" \
+//       --link results/v3-deeper-knob.md
+//
+//   vr-research-log <project-dir> --event falsified --slug v4-noisy \
+//       --summary "noise rule blocked admission"
+
+import path from "node:path";
+import process from "node:process";
+import { appendLogRow } from "../src/research/log-append.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-log — append a LOG row to a project README
+
+Usage:
+  vr-research-log <project-dir> --event <evt> --slug <slug> --summary <text> [options]
+
+Required:
+  --event <text>      Primary tag (resolved / falsified / abandoned / evicted /
+                      pivot / pivot-rejected / goal-change / criterion-change /
+                      review / insight / budget-cap / terminate); may compound
+                      with +admitted or +evicted (e.g. "resolved+admitted").
+  --slug <text>       The move slug or ref the row is about.
+  --summary <text>    One-line summary.
+
+Optional:
+  --link <text>       Link target (relative path or URL). Defaults to empty.
+  --date <YYYY-MM-DD> Defaults to today (UTC).
+  --json              Emit machine-readable summary on stdout.
+  --help, -h          Show this message.
+
+Examples:
+  vr-research-log projects/widget-tuning \\
+    --event resolved+admitted --slug v3-deeper-knob \\
+    --summary "knob extension lifted wibble 0.84 → 0.91" \\
+    --link results/v3-deeper-knob.md
+
+  vr-research-log projects/widget-tuning \\
+    --event falsified --slug v5-aug-baseline \\
+    --summary "augmentation hypothesis missed by 3σ" \\
+    --link results/v5-aug-baseline.md
+`);
+}
+
+function parseArgs(argv) {
+  const opts = {
+    projectDir: "",
+    event: "",
+    slug: "",
+    summary: "",
+    link: "",
+    date: "",
+    json: false,
+    help: false,
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
+    if (arg === "--json") { opts.json = true; continue; }
+    if (arg === "--event") { opts.event = argv[++i] || ""; continue; }
+    if (arg === "--slug") { opts.slug = argv[++i] || ""; continue; }
+    if (arg === "--summary") { opts.summary = argv[++i] || ""; continue; }
+    if (arg === "--link") { opts.link = argv[++i] || ""; continue; }
+    if (arg === "--date") { opts.date = argv[++i] || ""; continue; }
+    if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
+    if (!opts.projectDir) { opts.projectDir = arg; continue; }
+    throw new Error(`unexpected positional arg: ${arg}`);
+  }
+  return opts;
+}
+
+async function main() {
+  let opts;
+  try { opts = parseArgs(process.argv.slice(2)); }
+  catch (err) {
+    process.stderr.write(`${err.message}\n\n`);
+    printHelp();
+    process.exit(2);
+  }
+  if (opts.help) { printHelp(); process.exit(0); }
+  const errs = [];
+  if (!opts.projectDir) errs.push("project-dir positional argument is required");
+  if (!opts.event) errs.push("--event is required");
+  if (!opts.slug) errs.push("--slug is required");
+  if (!opts.summary) errs.push("--summary is required");
+  if (errs.length) {
+    for (const e of errs) process.stderr.write(`${e}\n`);
+    process.exit(2);
+  }
+
+  const projectDir = path.resolve(opts.projectDir);
+  const readmePath = path.join(projectDir, "README.md");
+  let result;
+  try {
+    result = await appendLogRow({
+      readmePath,
+      row: {
+        date: opts.date,
+        event: opts.event,
+        slug: opts.slug,
+        summary: opts.summary,
+        link: opts.link,
+      },
+    });
+  } catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  }
+
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.exit(0);
+  }
+  process.stdout.write(`appended LOG row to ${result.readmePath}\n`);
+  process.stdout.write(`  ${result.row.date} | ${result.row.event} | ${result.row.slug}\n`);
+  process.exit(0);
+}
+
+main();
