@@ -34,14 +34,18 @@ import {
   planSweep,
   renderRunsTsv,
 } from "../src/research/sweep.js";
+import { runPlannedRows } from "../src/research/sweep-runner.js";
 
 function printHelp() {
-  process.stdout.write(`vr-rl-sweep init <name> [options]
+  process.stdout.write(`vr-rl-sweep <subcommand> [options]
 
-Plan a sweep and write projects/<name>/runs.tsv with one row per
-(cell, seed). Bootstraps the project too (README + paper + dirs).
+Subcommands:
+  init <name>     Plan a sweep and write projects/<name>/runs.tsv with one
+                  row per (cell, seed). Bootstraps the project too.
+  run <name>      Walk planned rows in projects/<name>/runs.tsv, spawn each
+                  one's launcher, capture metric, update the row in-place.
 
-Options:
+Init options:
   --base <pairs>           Comma-separated base config: key=value,...
   --sweep <key=spec>       Sweep dimension. Repeatable. Spec forms:
                              key=val
@@ -54,9 +58,21 @@ Options:
   --library <path>         Library root (defaults to cwd).
   --commit <sha>           Commit SHA to record (defaults to git HEAD of cwd).
   --force                  Overwrite an existing project dir.
-  --json                   Emit JSON summary on stdout.
 
-Run vr-rl-sweep with --help for this message.
+Run options:
+  --library <path>         Library root (defaults to cwd).
+  --launcher <template>    Shell command template; \${key} is substituted
+                           from the row's resolved config. Default infers
+                           "python train.py --<key>=<value> --seed=<N>".
+  --metric <regex>         Capture-group-1 of the first match in stdout
+                           is parsed as mean_return. Default matches
+                           "final_return: 1.23" or "mean_return=1.23".
+  --max-rows <N>           Stop after launching N rows (useful for dry runs).
+  --timeout-sec <N>        Per-row hard kill (default 1800).
+  --cwd <path>             Working dir for the launcher (default cwd).
+
+Common:
+  --json                   Emit machine-readable summary on stdout.
 `);
 }
 
@@ -73,6 +89,11 @@ function parseArgs(argv) {
     force: false,
     json: false,
     help: false,
+    launcher: "",
+    metric: "",
+    maxRows: undefined,
+    timeoutSec: undefined,
+    runCwd: "",
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -85,6 +106,11 @@ function parseArgs(argv) {
     if (arg === "--hypothesis") { options.hypothesis = argv[++i] || ""; continue; }
     if (arg === "--library") { options.library = argv[++i] || ""; continue; }
     if (arg === "--commit") { options.commit = argv[++i] || ""; continue; }
+    if (arg === "--launcher") { options.launcher = argv[++i] || ""; continue; }
+    if (arg === "--metric") { options.metric = argv[++i] || ""; continue; }
+    if (arg === "--max-rows") { options.maxRows = Number(argv[++i] || "0"); continue; }
+    if (arg === "--timeout-sec") { options.timeoutSec = Number(argv[++i] || "0"); continue; }
+    if (arg === "--cwd") { options.runCwd = argv[++i] || ""; continue; }
     if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
     if (!options.subcommand) { options.subcommand = arg; continue; }
     if (!options.name) { options.name = arg; continue; }
@@ -178,6 +204,35 @@ async function runInit(options) {
   return summary;
 }
 
+async function runRun(options) {
+  if (!options.name) throw new Error("project name is required");
+  const library = path.resolve(options.library);
+  const projectDir = path.join(library, "projects", options.name);
+  const runsTsvPath = path.join(projectDir, "runs.tsv");
+
+  let metricPattern;
+  if (options.metric) {
+    try { metricPattern = new RegExp(options.metric); }
+    catch (err) { throw new Error(`invalid --metric regex: ${err.message}`); }
+  }
+
+  const result = await runPlannedRows({
+    runsTsvPath,
+    launcherTemplate: options.launcher || null,
+    metricPattern,
+    timeoutSec: options.timeoutSec,
+    maxRows: options.maxRows,
+    cwd: options.runCwd ? path.resolve(options.runCwd) : undefined,
+  });
+  return {
+    runsTsv: runsTsvPath,
+    ran: result.ran,
+    ok: result.ok,
+    failed: result.failed,
+    skipped: result.skipped,
+  };
+}
+
 async function main() {
   let options;
   try {
@@ -191,7 +246,7 @@ async function main() {
     printHelp();
     process.exit(options.help ? 0 : 2);
   }
-  if (options.subcommand !== "init") {
+  if (options.subcommand !== "init" && options.subcommand !== "run") {
     process.stderr.write(`unknown subcommand: ${options.subcommand}\n`);
     printHelp();
     process.exit(2);
@@ -199,7 +254,7 @@ async function main() {
 
   let summary;
   try {
-    summary = await runInit(options);
+    summary = options.subcommand === "init" ? await runInit(options) : await runRun(options);
   } catch (err) {
     process.stderr.write(`${err.message}\n`);
     process.exit(1);
@@ -207,14 +262,17 @@ async function main() {
 
   if (options.json) {
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
-  } else {
+  } else if (options.subcommand === "init") {
     process.stdout.write(`planned ${summary.totalRows} rows (${summary.cells} cells × ${summary.seeds} seeds)\n`);
     process.stdout.write(`projects:    ${summary.projectDir}\n`);
     process.stdout.write(`runs.tsv:    ${summary.runsTsv}\n`);
     process.stdout.write(`commit:      ${summary.commit || "(no git)"}\n`);
     process.stdout.write(`hypothesis:  ${summary.hypothesis || "(none)"}\n`);
+  } else {
+    process.stdout.write(`ran ${summary.ran} rows: ok=${summary.ok}, failed=${summary.failed}, skipped=${summary.skipped}\n`);
+    process.stdout.write(`runs.tsv:    ${summary.runsTsv}\n`);
   }
-  process.exit(0);
+  process.exit(summary.failed && summary.failed > 0 ? 1 : 0);
 }
 
 main();
