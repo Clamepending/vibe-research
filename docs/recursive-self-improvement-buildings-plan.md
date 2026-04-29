@@ -360,6 +360,55 @@ CLAUDE.md edits encoding the highest-leverage critique items as prompt rules, pe
 - **Google Drive end-to-end UX verification** needs a browser session.
 - **More MCP servers** as they land in npm: e.g. Atlassian MCP, Apify MCP, Twilio MCP, Supabase MCP, HuggingFace MCP, Pinecone / Qdrant / Chroma MCP. Drop into the same pattern (preflight `npx` + verify `npm view` + auth-paste + mcp-launch + settings-store entry + integration-test row).
 
+### 2026-04-28 — autonomous-tuner skill + sweep tooling (this stretch)
+
+User direction: *"get this whole system ready for recursive self improvement"* and later *"the coding agent should be the tuner with the proper tooling and environment."*
+
+**Final shape (after one wrong-shape iteration):**
+
+- **The user's existing Claude Code session IS the tuner.** Not a spawned sub-agent. (Earlier iterations had `vr-rl-tuner` spawn a separate `claude` process with `--append-system-prompt` + `--allowedTools` baked in. User pushed back; correct.)
+- **`skills/rl-sweep-tuner/SKILL.md`** is the playbook the existing agent loads (via `/rl-sweep-tuner` or natural-language match against the skill's description).
+- **`bin/vr-rl-tuner`** is a thin one-shot bootstrap: writes `projects/<name>/{README, paper, kickoff.json, dirs}` AND copies the skill into `<projectDir>/.claude/skills/rl-sweep-tuner/SKILL.md` so a Claude Code session opened in that dir auto-discovers it.
+
+**Tooling the skill calls:**
+
+- `vr-research-init <name>` — bootstrap a project (the contract's full README/paper/dirs)
+- `vr-rl-sweep init <project> [--sweep-name <slug>] --base ... --sweep ... --seeds N` — plan a sweep into `runs.tsv` (top-level for first move, `runs/<slug>.tsv` for follow-up moves under the same project)
+- `vr-rl-sweep run <project> [--sweep-name <slug>] --launcher '<shell template>'` — walk planned rows, spawn each via the launcher template (`${key}` substitution from the row's resolved config), capture metric + wandb URL from stdout, update the row in-place (atomic-rename writes between rows)
+- `vr-research-admit / vr-research-doctor / vr-research-lint-paper` — leaderboard admission + bookkeeping validation
+- `vr-mcp install <building-id>` — install MCP servers on demand
+- Modal / RunPod buildings — `--launcher 'modal run ...'` or `--launcher 'runpodctl exec ...'` (no special runner flag needed; the runner already shells out)
+
+**Real-agent verification (3 separate runs, real `claude` CLI against a sandboxed HOME with toy `train.sh`):**
+
+1. **First-move test**: agent loaded the skill, planned a 3-LR sweep, executed via `vr-rl-sweep run`, captured the toy parabola's peak at lr=1e-3 (98 vs 68 at neighbors).
+2. **Multi-move test**: primed with the prior sweep's results + empty queue. Agent autonomously picked **Replicate** from the decision-discipline order (Ablate → Replicate → Sensitivity → Architecture → Stop), cited the contract verbatim ("a one-seed result is a debugging signal, not an insight"), ran 3×3 cells, queued sensitivity-narrow as the next move, updated the leaderboard.
+3. **Skill-handover test** (after the sub-agent → skill reframe): vanilla `claude --print` (no `--append-system-prompt`, no env var) loaded the auto-discovered skill, ran the loop end-to-end. Confirms the user's existing coding agent IS the tuner.
+
+**Contract gaps the verification surfaced + closed:**
+
+- Spawned agents had no `--allowedTools` so vr-rl-sweep was rejected 8 times → `vr-rl-tuner` baked in `Bash(*)`. Then immediately retired the spawn entirely after the user pointed out the shape was wrong.
+- `vr-rl-sweep init` always bootstrapped a fresh project, so follow-up moves landed as sibling projects → added `--sweep-name <slug>` for in-project sub-sweeps.
+- `wandb_url` column existed but was never populated → runner now extracts the wandb URL from launcher stdout (with project-URL fallback + trailing-punctuation strip).
+
+### Status as of this batch (autonomous tuner)
+
+**Shipped (research-side):**
+
+- `bin/vr-research-init`, `bin/vr-rl-tuner`, `bin/vr-rl-sweep` (init + run subcommands), `bin/vr-mcp` — agent-callable surface for the autonomous tuner.
+- `skills/rl-sweep-tuner/SKILL.md` — playbook the existing coding agent loads.
+- `src/research/init.js` (createProject + paper-template fill), `src/research/sweep.js` (planSweep + parseSweepEntry with bare/list/range/logspace forms), `src/research/sweep-runner.js` (runPlannedRows + extractMetric + extractWandbUrl + atomic-rename writes + per-cell std aggregation).
+- 86 research-side tests across init / sweep / runner / tuner / end-to-end. Plus the install-pipeline + MCP-catalog tests from the earlier batch (well over 600 tests across the full project).
+- Real-agent verification at 3 distinct points proving the loop closes.
+
+**Still queued (autonomous tuner):**
+
+- **Multi-move with no upper bound** — verifications all bounded the agent to one move ("don't start a follow-up"). A real test would let the agent generate + execute 3-5 moves on its own and confirm it stops at the plateau per the discipline order.
+- **Real RL workload** — toy `train.sh` is a parabola in log10(lr). A real PPO/SAC training script would surface launcher-template gaps + timeout tuning + actual cloud spend questions.
+- **Modal end-to-end with a real cloud GPU** — the `--launcher 'modal run ...'` pattern is documented in the skill but not tested with real Modal credentials.
+- **Symlink instead of copy** for the skill-into-project install so updates to the canonical skill propagate without re-bootstrap.
+- **Wandb result-pull**: runner extracts the URL today; doesn't yet pull final summary metrics from `wandb.api.runs(group=...).summary` to back-fill `mean_return` for cells whose launcher prints to wandb but not stdout.
+
 ### Resume instructions for the next session
 
 1. Read this doc top to bottom.
@@ -369,4 +418,5 @@ CLAUDE.md edits encoding the highest-leverage critique items as prompt rules, pe
 5. For Google Drive: the verification needs a browser. Run an in-app session, click `Enable Drive access`, and confirm the agent can list files via `/api/google/drive/files`. Update this doc.
 6. **To add another MCP server**: probe `npm view <package> version` first; if it resolves, copy a sibling manifest (e.g. `mcp-tavily`), wire the settings-store entry + env-var fallback, add a row to the live integration-test array in `test/install-runner-mcp-buildings.test.js`, run that test, commit. ~10 minutes per building once the pattern is internalized.
 7. Then: pick from the broader backlog (Replicate, HuggingFace Hub, Vast.ai, Lambda Labs, Fly.io, R2/B2, Pinecone, Qdrant, Chroma, Apify, Twilio, Atlassian, Supabase, …) and re-enter the same loop: install + auth + smoke check + manifest + verification block.
+8. **For the autonomous tuner**: the next high-value test is letting an agent run unbounded across 3-5 moves on a real (not toy) training script, with cloud execution via Modal. Before doing it, set a clear budget cap in the agent's prompt + verify the kickoff.json budget enforcement triggers Agent Inbox approval at the right threshold.
 
