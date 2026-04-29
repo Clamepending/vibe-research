@@ -1,0 +1,220 @@
+#!/usr/bin/env node
+// vr-rl-sweep — plan an RL hyperparameter / architecture / data-mixture
+// sweep in the Vibe Research project shape, with the friend-of-the-house
+// Google-Doc-row format as the on-disk artifact.
+//
+// V1 ships PLAN ONLY. Execution + wandb integration land in a follow-up.
+// The plan output is good enough on Day One: open runs.tsv in a
+// spreadsheet, paste into Google Docs, do whatever you do.
+//
+// Usage:
+//   vr-rl-sweep init lr-bs-grid \
+//     --base lr=1e-3,batch=256,frames=4 \
+//     --sweep lr=[1e-4,1e-3,1e-2] --sweep batch=[256,512] \
+//     --seeds 3 \
+//     --hypothesis "lr/batch interaction"
+//
+// What it does:
+//   1. Calls vr-research-init (or its module form) to bootstrap
+//      projects/<name>/ with README + paper.md + results/ + figures/.
+//   2. Resolves the Cartesian product of sweep dimensions × seeds.
+//   3. Writes projects/<name>/runs.tsv with one row per (cell, seed)
+//      in the friend's familiar format:
+//         started_at, group, name, commit, hypothesis,
+//         mean_return, std_return, wandb_url, status, config
+
+import path from "node:path";
+import process from "node:process";
+import { execSync } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+
+import { createProject } from "../src/research/init.js";
+import {
+  parseSweepEntry,
+  planSweep,
+  renderRunsTsv,
+} from "../src/research/sweep.js";
+
+function printHelp() {
+  process.stdout.write(`vr-rl-sweep init <name> [options]
+
+Plan a sweep and write projects/<name>/runs.tsv with one row per
+(cell, seed). Bootstraps the project too (README + paper + dirs).
+
+Options:
+  --base <pairs>           Comma-separated base config: key=value,...
+  --sweep <key=spec>       Sweep dimension. Repeatable. Spec forms:
+                             key=val
+                             key=[v1,v2,v3]
+                             key=v1,v2,v3
+                             key=range(a,b,step)        (numeric range)
+                             key=logspace(a,b,n)        (n log-spaced points)
+  --seeds <n>              Number of seeds per cell (default 1).
+  --hypothesis <text>      One-line pre-launch hypothesis.
+  --library <path>         Library root (defaults to cwd).
+  --commit <sha>           Commit SHA to record (defaults to git HEAD of cwd).
+  --force                  Overwrite an existing project dir.
+  --json                   Emit JSON summary on stdout.
+
+Run vr-rl-sweep with --help for this message.
+`);
+}
+
+function parseArgs(argv) {
+  const options = {
+    subcommand: "",
+    name: "",
+    base: "",
+    sweepSpecs: [],
+    seeds: 1,
+    hypothesis: "",
+    library: process.cwd(),
+    commit: "",
+    force: false,
+    json: false,
+    help: false,
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") { options.help = true; continue; }
+    if (arg === "--force") { options.force = true; continue; }
+    if (arg === "--json") { options.json = true; continue; }
+    if (arg === "--base") { options.base = argv[++i] || ""; continue; }
+    if (arg === "--sweep") { options.sweepSpecs.push(argv[++i] || ""); continue; }
+    if (arg === "--seeds") { options.seeds = Number(argv[++i] || "1"); continue; }
+    if (arg === "--hypothesis") { options.hypothesis = argv[++i] || ""; continue; }
+    if (arg === "--library") { options.library = argv[++i] || ""; continue; }
+    if (arg === "--commit") { options.commit = argv[++i] || ""; continue; }
+    if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
+    if (!options.subcommand) { options.subcommand = arg; continue; }
+    if (!options.name) { options.name = arg; continue; }
+    throw new Error(`unexpected positional arg: ${arg}`);
+  }
+  return options;
+}
+
+function parseBaseConfig(text) {
+  const out = {};
+  if (!text) return out;
+  for (const part of text.split(",")) {
+    const [k, ...rest] = part.split("=");
+    if (!k || rest.length === 0) {
+      throw new Error(`--base entry must be key=value; got "${part}"`);
+    }
+    out[k.trim()] = rest.join("=").trim();
+  }
+  return out;
+}
+
+function resolveSweep(specs) {
+  const out = {};
+  for (const spec of specs) {
+    const { key, values } = parseSweepEntry(spec);
+    if (Object.prototype.hasOwnProperty.call(out, key)) {
+      throw new Error(`duplicate --sweep key: ${key}`);
+    }
+    out[key] = values;
+  }
+  return out;
+}
+
+function resolveCommit(explicit, library) {
+  if (explicit) return explicit;
+  try {
+    return execSync("git -C " + JSON.stringify(library) + " rev-parse HEAD", {
+      stdio: ["ignore", "pipe", "ignore"],
+    }).toString().trim();
+  } catch {
+    return "";
+  }
+}
+
+async function runInit(options) {
+  if (!options.name) throw new Error("project name is required");
+  const library = path.resolve(options.library);
+  const projectsDir = path.join(library, "projects");
+
+  const baseConfig = parseBaseConfig(options.base);
+  const sweepMap = resolveSweep(options.sweepSpecs);
+  const commit = resolveCommit(options.commit, library);
+
+  // Bootstrap the project dir (README + paper + results/ + figures/).
+  const initResult = await createProject({
+    projectsDir,
+    name: options.name,
+    goal: options.hypothesis || "",
+    successCriteria: [],
+    ranking: { kind: "quantitative", metric: "mean_return", direction: "higher" },
+    queueRows: [],
+    force: options.force,
+  });
+
+  // Build the sweep plan + write runs.tsv.
+  const plan = planSweep({
+    name: options.name,
+    base: baseConfig,
+    sweep: sweepMap,
+    seeds: options.seeds,
+    hypothesis: options.hypothesis,
+    commit,
+    now: () => new Date().toISOString(),
+  });
+  const tsvPath = path.join(initResult.projectDir, "runs.tsv");
+  await writeFile(tsvPath, renderRunsTsv(plan.rows), "utf8");
+
+  const summary = {
+    projectDir: initResult.projectDir,
+    runsTsv: tsvPath,
+    cells: plan.rows.length / Math.max(1, options.seeds),
+    seeds: options.seeds,
+    totalRows: plan.rows.length,
+    commit,
+    hypothesis: options.hypothesis,
+    sweepDimensions: Object.fromEntries(
+      Object.entries(sweepMap).map(([k, v]) => [k, v.length]),
+    ),
+    wrote: [...initResult.wrote, tsvPath],
+  };
+  return summary;
+}
+
+async function main() {
+  let options;
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    process.stderr.write(`${err.message}\n\n`);
+    printHelp();
+    process.exit(2);
+  }
+  if (options.help || !options.subcommand) {
+    printHelp();
+    process.exit(options.help ? 0 : 2);
+  }
+  if (options.subcommand !== "init") {
+    process.stderr.write(`unknown subcommand: ${options.subcommand}\n`);
+    printHelp();
+    process.exit(2);
+  }
+
+  let summary;
+  try {
+    summary = await runInit(options);
+  } catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  }
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
+  } else {
+    process.stdout.write(`planned ${summary.totalRows} rows (${summary.cells} cells × ${summary.seeds} seeds)\n`);
+    process.stdout.write(`projects:    ${summary.projectDir}\n`);
+    process.stdout.write(`runs.tsv:    ${summary.runsTsv}\n`);
+    process.stdout.write(`commit:      ${summary.commit || "(no git)"}\n`);
+    process.stdout.write(`hypothesis:  ${summary.hypothesis || "(none)"}\n`);
+  }
+  process.exit(0);
+}
+
+main();
