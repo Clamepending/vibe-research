@@ -1,0 +1,167 @@
+#!/usr/bin/env node
+// vr-research-init <project-name>
+//
+// Bootstrap a new research project. Creates projects/<name>/{README.md,
+// paper.md, results/, figures/} per the contract in CLAUDE.md.
+//
+// Usage:
+//   vr-research-init my-experiment
+//   vr-research-init my-exp --goal "test if X" --ranking quantitative:accuracy:higher
+//   vr-research-init my-exp --goal "..." --success "n>=3 seeds, beats baseline by 2σ"
+//   vr-research-init my-exp --queue "baseline-sweep | main | start by replicating baseline"
+//   vr-research-init my-exp --force
+//
+// Run from the Library root (where projects/ lives) or pass --library.
+
+import path from "node:path";
+import process from "node:process";
+import { createProject, DEFAULT_PROJECT_NAME_PATTERN } from "../src/research/init.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-init <project-name>
+
+Bootstrap a new research project under projects/<name>/.
+
+Usage:
+  vr-research-init <project-name> [options]
+
+Options:
+  --library <path>         Path to the Library root (defaults to cwd)
+  --goal <text>            One-paragraph project goal (fills GOAL section)
+  --code-repo <url>        GitHub URL of the project's code repo
+  --success <text>         Bullet for SUCCESS CRITERIA (repeatable)
+  --ranking <spec>         Ranking criterion. One of:
+                             quantitative:<metric>[:higher|lower]
+                             qualitative:<dimension>
+                             mix:<metric>[:higher|lower]:<dimension>
+                           Default: qualitative:initial-question
+  --queue <row>            Seed QUEUE row in the form "move | starting-point | why".
+                           Repeatable. Up to 5 rows recommended.
+  --force                  Overwrite an existing project dir
+  --json                   Emit machine-readable JSON
+`);
+}
+
+function parseRanking(spec) {
+  if (!spec) return { kind: "qualitative", dimension: "initial-question" };
+  const [kindRaw, ...rest] = spec.split(":");
+  const kind = String(kindRaw || "").toLowerCase();
+  if (kind === "quantitative") {
+    const [metric, direction = "higher"] = rest;
+    return { kind, metric: metric || "metric", direction };
+  }
+  if (kind === "qualitative") {
+    const [dimension = "initial-question"] = rest;
+    return { kind, dimension };
+  }
+  if (kind === "mix") {
+    const [metric = "metric", direction = "higher", dimension = "initial-question"] = rest;
+    return { kind, metric, direction, dimension };
+  }
+  throw new Error(`unknown ranking kind: ${kindRaw}; expected quantitative|qualitative|mix`);
+}
+
+function parseQueueRow(spec) {
+  const parts = String(spec || "").split("|").map((part) => part.trim());
+  if (parts.length === 0 || !parts[0]) {
+    throw new Error(`invalid --queue row: "${spec}" (expected "move | starting-point | why")`);
+  }
+  return { move: parts[0], startingPoint: parts[1] || "main", why: parts[2] || "" };
+}
+
+function parseArgs(argv) {
+  const options = {
+    name: "",
+    library: process.cwd(),
+    goal: "",
+    codeRepo: "",
+    success: [],
+    rankingSpec: "",
+    queue: [],
+    force: false,
+    json: false,
+    help: false,
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") { options.help = true; continue; }
+    if (arg === "--force") { options.force = true; continue; }
+    if (arg === "--json") { options.json = true; continue; }
+    if (arg === "--library") { options.library = argv[++i] || ""; continue; }
+    if (arg === "--goal") { options.goal = argv[++i] || ""; continue; }
+    if (arg === "--code-repo") { options.codeRepo = argv[++i] || ""; continue; }
+    if (arg === "--success") { options.success.push(argv[++i] || ""); continue; }
+    if (arg === "--ranking") { options.rankingSpec = argv[++i] || ""; continue; }
+    if (arg === "--queue") { options.queue.push(argv[++i] || ""); continue; }
+    if (arg.startsWith("--")) {
+      throw new Error(`unknown flag: ${arg}`);
+    }
+    if (!options.name) { options.name = arg; continue; }
+    throw new Error(`unexpected positional arg: ${arg}`);
+  }
+  return options;
+}
+
+async function main() {
+  let options;
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    process.stderr.write(`${err.message}\n\n`);
+    printHelp();
+    process.exit(2);
+  }
+  if (options.help) {
+    printHelp();
+    process.exit(0);
+  }
+  if (!options.name) {
+    process.stderr.write("project-name is required\n\n");
+    printHelp();
+    process.exit(2);
+  }
+  if (!DEFAULT_PROJECT_NAME_PATTERN.test(options.name)) {
+    process.stderr.write(`project-name must match ${DEFAULT_PROJECT_NAME_PATTERN}; got "${options.name}"\n`);
+    process.exit(2);
+  }
+
+  let ranking;
+  let queueRows;
+  try {
+    ranking = parseRanking(options.rankingSpec);
+    queueRows = options.queue.filter(Boolean).map(parseQueueRow);
+  } catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(2);
+  }
+
+  const projectsDir = path.resolve(options.library, "projects");
+  let result;
+  try {
+    result = await createProject({
+      projectsDir,
+      name: options.name,
+      goal: options.goal,
+      codeRepoUrl: options.codeRepo,
+      successCriteria: options.success.filter(Boolean),
+      ranking,
+      queueRows,
+      force: options.force,
+    });
+  } catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  }
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } else {
+    process.stdout.write(`created ${result.projectDir}\n`);
+    for (const filePath of result.wrote) {
+      process.stdout.write(`  ${filePath}\n`);
+    }
+  }
+  process.exit(0);
+}
+
+main();
