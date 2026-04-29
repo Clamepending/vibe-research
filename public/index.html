@@ -166,6 +166,7 @@
             <span>Starting UI runtime…</span>
           </div>
           <div class="boot-fallback-actions">
+            <button type="button" data-boot-retry>Retry</button>
             <button type="button" data-boot-reload>Reload page</button>
             <a href="/">Open root</a>
           </div>
@@ -263,6 +264,28 @@
 
         fallback?.querySelector("[data-boot-reload]")?.addEventListener("click", () => {
           window.location.reload();
+        });
+
+        // Retry button: if main.js exposed a retry hook (it does once the
+        // bundle is loaded), re-run bootstrapApp without dropping the page.
+        // Falls back to a hard reload if no hook is wired.
+        fallback?.querySelector("[data-boot-retry]")?.addEventListener("click", () => {
+          if (typeof window.__vibeResearchRetryBoot === "function") {
+            // Reset the fallback to the loading state so the user sees
+            // progress instead of leaving the error UI up while the retry
+            // is in flight.
+            fallback.setAttribute("data-state", "loading");
+            const title = fallback.querySelector("h1");
+            const copy = fallback.querySelector("p");
+            const status = fallback.querySelector(".boot-fallback-status span:last-of-type");
+            if (title) title.textContent = "Retrying…";
+            if (copy) copy.textContent = "Re-running bootstrap. If this fails again, the server is likely unreachable.";
+            if (status) status.textContent = "Retrying…";
+            resolved = false;
+            window.__vibeResearchRetryBoot();
+          } else {
+            window.location.reload();
+          }
         });
       })();
     </script>

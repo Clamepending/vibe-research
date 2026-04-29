@@ -150,3 +150,76 @@ test("src/client/main.js dispatches vibe-research:bundle-loaded immediately at t
   assert.ok(fnIdx > 0 && callIdx > fnIdx, "expected markBundleLoaded() call after definition");
   assert.ok(callIdx < bootstrapIdx, "expected markBundleLoaded() to be called before bootstrapApp definition runs");
 });
+
+test("/api/state is bounded even when listNamedPorts and buildinghub both hang", async () => {
+  // Defense-in-depth: even with multiple slow async dependencies, /api/state
+  // should never block past the boot fallback budget.
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-boot-multi-hang-"));
+  let app;
+  try {
+    const started = await startApp({
+      cwd: tmp,
+      buildingHubServiceFactory: makeHangingBuildingHubServiceFactory(8_000),
+      listPorts: async () => {
+        // Simulate a hung lsof / port-probe step.
+        await new Promise((resolve) => {
+          const t = setTimeout(resolve, 8_000);
+          if (typeof t.unref === "function") t.unref();
+        });
+        return [];
+      },
+    });
+    app = started.app;
+    const t0 = Date.now();
+    const res = await fetch(`${started.baseUrl}/api/state`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.status, 200);
+    // Both timeouts run in PARALLEL (not sequentially), so the wall is
+    // max(2s, 1.5s) = 2s + small overhead, NOT 2s + 1.5s = 3.5s. This
+    // assertion guards the parallelization — if someone re-introduces a
+    // sequential `await` chain, it'll fail loudly.
+    assert.ok(elapsed < 2_800, `expected /api/state to return in <2.8s (parallel timeouts), got ${elapsed}ms`);
+  } finally {
+    if (app) await app.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("fetchJson has a default timeout that aborts hung requests", async () => {
+  // Source-level assertion: fetchJson must wire AbortController + setTimeout
+  // for the default 15s timeout. Without this, a stuck network never gets
+  // surfaced — bootstrapApp hangs forever and the user sees a stale spinner.
+  const main = await readFile(path.join(HERE, "..", "src", "client", "main.js"), "utf8");
+  // Find the fetchJson body and confirm timeout wiring is present.
+  const fetchJsonStart = main.indexOf("async function fetchJson(url, options = {})");
+  assert.ok(fetchJsonStart > 0, "fetchJson definition not found");
+  const fetchJsonBlock = main.slice(fetchJsonStart, fetchJsonStart + 4000);
+  assert.match(fetchJsonBlock, /AbortController/);
+  assert.match(fetchJsonBlock, /15_000/, "default timeout must be 15s");
+  assert.match(fetchJsonBlock, /controller\.abort/);
+});
+
+test("public/index.html exposes a Retry button + wires __vibeResearchRetryBoot", async () => {
+  const html = await readFile(PUBLIC_INDEX, "utf8");
+  // Retry button visible to the user
+  assert.match(html, /data-boot-retry/);
+  // Click handler invokes the retry hook from main.js
+  assert.match(html, /__vibeResearchRetryBoot/);
+  // Stage-1 watchdog still differentiates bundle-load failure from in-flight boot
+  assert.match(html, /BUNDLE_LOAD_TIMEOUT_MS\s*=\s*4000/);
+  assert.match(html, /APP_BOOT_TIMEOUT_MS\s*=\s*20000/);
+});
+
+test("src/client/main.js exposes __vibeResearchRetryBoot for in-place retry", async () => {
+  const main = await readFile(path.join(HERE, "..", "src", "client", "main.js"), "utf8");
+  // Both the global hook and the bootstrap function must be present.
+  assert.match(main, /window\.__vibeResearchRetryBoot\s*=/);
+  assert.match(main, /function runBootstrap\(\)/);
+  // The hook resets appBootReported so a successful retry re-fires the
+  // boot-ready signal and dismisses the fallback.
+  const retryIdx = main.indexOf("window.__vibeResearchRetryBoot =");
+  const retryBlock = main.slice(retryIdx, retryIdx + 800);
+  assert.match(retryBlock, /appBootReported\s*=\s*false/);
+});

@@ -3054,27 +3054,56 @@ export async function createVibeResearchApp({
     // rejection leaves the response hanging and the user sees a blank page.
     // Catch and emit a 500 with the message so the UI can show something.
     try {
-      // Bound how long this request blocks on the BuildingHub refresh. The
-      // refresh fetches a remote catalog with an 8s timeout; on a slow or
-      // unreachable buildinghub host we used to block /api/state for the full
-      // 8s, which beats the client's 4s boot-fallback timeout and leaves the
-      // user staring at "the interface did not finish loading" while the page
-      // is in fact still loading correctly. Race the refresh against a 2s
-      // budget; on miss, serve whatever's cached and let the refresh keep
-      // running so the next /api/state call sees fresh data.
-      const STATE_BUILDINGHUB_REFRESH_TIMEOUT_MS = 2_000;
+      // /api/state is the page-load critical path. Every async operation
+      // here is bounded with a short race timeout so a single slow
+      // dependency (remote buildinghub, hung lsof, slow tailscale CLI)
+      // can never cause the response to exceed the client's boot fallback.
+      // On miss, we serve whatever's cached and let the operation continue
+      // in the background so the next /api/state picks up fresh data.
+      const raceWithTimeout = (promise, timeoutMs, fallback, label) => {
+        let timeoutHandle;
+        const timeoutPromise = new Promise((resolve) => {
+          timeoutHandle = setTimeout(() => {
+            console.warn(`[vibe-research] /api/state ${label} exceeded ${timeoutMs}ms; serving fallback`);
+            resolve(fallback);
+          }, timeoutMs);
+        });
+        return Promise.race([
+          promise.then((value) => {
+            clearTimeout(timeoutHandle);
+            return value;
+          }, (error) => {
+            clearTimeout(timeoutHandle);
+            console.warn(`[vibe-research] /api/state ${label} failed:`, error?.message || error);
+            return fallback;
+          }),
+          timeoutPromise,
+        ]);
+      };
+
+      // Run every async dependency in PARALLEL with its own race timeout.
+      // The previous sequential await chain (buildinghub → agent-guides →
+      // ports) summed to a worst case of ~5s, which was right at the
+      // boot-fallback budget. Parallelizing puts the wall at the SLOWEST
+      // single race (2s for buildinghub) instead of the sum.
+      //
+      // None of these have data dependencies on each other for the response:
+      //  - syncBuildingAgentGuides() reads buildingHubService.listBuildings()
+      //    which is cached state, NOT something the in-flight refresh has to
+      //    update first. If refresh is mid-flight, agent guides see the
+      //    pre-refresh catalog — fine; the next /api/state picks up the
+      //    fresh data on both sides.
+      //  - listNamedPorts shells out to lsof; independent.
+      //  - agentPromptStore.getState() reads in-memory state; fast.
       const refreshPromise = buildingHubService.refresh();
-      // Swallow rejections from the deferred refresh — the response will be
-      // sent regardless, and a logged error here would just be noise on every
-      // intermittent buildinghub blip.
-      refreshPromise.catch((error) => {
-        console.warn("[vibe-research] buildinghub refresh failed (background):", error?.message || error);
-      });
-      await Promise.race([
-        refreshPromise,
-        new Promise((resolve) => setTimeout(resolve, STATE_BUILDINGHUB_REFRESH_TIMEOUT_MS)),
+      refreshPromise.catch(() => { /* swallowed; logged inside raceWithTimeout */ });
+      const [, , agentPromptState, namedPorts] = await Promise.all([
+        raceWithTimeout(refreshPromise, 2_000, undefined, "buildinghub refresh"),
+        raceWithTimeout(syncBuildingAgentGuides(), 1_500, null, "agent-guide sync"),
+        raceWithTimeout(agentPromptStore.getState(), 500, {}, "agentPromptStore.getState"),
+        raceWithTimeout(listNamedPorts(), 1_500, [], "listNamedPorts"),
       ]);
-      await syncBuildingAgentGuides();
+
       // Compact summary of the MCP-launch registry so the UI can show
       // "N MCP servers wired up, K still need a token" without an extra
       // round-trip. Detail lives at GET /api/mcp/launches.
@@ -3087,7 +3116,7 @@ export async function createVibeResearchApp({
       const lastHealth = mcpLaunchHealthMonitor.lastResult();
       response.json({
         appName: "Vibe Research",
-        agentPrompt: await agentPromptStore.getState(),
+        agentPrompt: agentPromptState,
         agentTown: agentTownStore.getState(),
         buildingHub: {
           buildings: buildingHubService.listBuildings(),
@@ -3104,7 +3133,13 @@ export async function createVibeResearchApp({
         stateDir,
         urls,
         preferredUrl,
-        ports: await listNamedPorts(),
+        // listNamedPorts shells out to lsof, runs per-port probes (each up
+        // to 800ms), and reads tailscale serve status. On a busy host or a
+        // slow tailscale CLI, the parallelized total can creep past the
+        // boot-fallback budget. Bounded above (1.5s) — if the wall fires,
+        // an empty ports list this tick is fine; the dashboard polls
+        // /api/state every 3s and will pick up the real list next tick.
+        ports: namedPorts,
         mcp: {
           totalLaunches: mcpLaunches.length,
           unresolvedLaunches: mcpLaunches.filter((entry) => entry.unresolved).length,

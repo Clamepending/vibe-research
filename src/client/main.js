@@ -6174,16 +6174,52 @@ function queueTerminalOutput(chunk, { mirrorTranscript = true, scrollToBottom = 
 }
 
 async function fetchJson(url, options = {}) {
-  const { headers = {}, ...fetchOptions } = options;
-  const response = await fetch(url, {
-    ...fetchOptions,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Vibe-Research-API": "1",
-      ...headers,
-    },
-    referrerPolicy: fetchOptions.referrerPolicy || "no-referrer",
-  });
+  const { headers = {}, timeoutMs, signal: callerSignal, ...fetchOptions } = options;
+  // Default timeout: 15s. /api/state and other boot-critical calls are
+  // bounded server-side; this guards against the network dropping
+  // mid-request, leaving the page stuck on the loading spinner forever.
+  // Callers can opt out with timeoutMs = 0 / null.
+  const effectiveTimeoutMs =
+    timeoutMs === undefined ? 15_000 : Number(timeoutMs) > 0 ? Number(timeoutMs) : 0;
+  let timeoutHandle;
+  let combinedSignal = callerSignal;
+  if (effectiveTimeoutMs > 0 && typeof AbortController === "function") {
+    const controller = new AbortController();
+    timeoutHandle = window.setTimeout(() => controller.abort(new Error(`Request timed out after ${effectiveTimeoutMs}ms`)), effectiveTimeoutMs);
+    if (callerSignal) {
+      // Forward caller cancellation so we don't have to wait for the timeout.
+      const onCallerAbort = () => controller.abort(callerSignal.reason);
+      if (callerSignal.aborted) onCallerAbort();
+      else callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+    }
+    combinedSignal = controller.signal;
+  }
+  let response;
+  try {
+    response = await fetch(url, {
+      ...fetchOptions,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Vibe-Research-API": "1",
+        ...headers,
+      },
+      referrerPolicy: fetchOptions.referrerPolicy || "no-referrer",
+      signal: combinedSignal,
+    });
+  } catch (error) {
+    if (timeoutHandle !== undefined) window.clearTimeout(timeoutHandle);
+    // Surface a clearer message for the boot-path so the user understands
+    // this is a network/server reach issue, not a client bug.
+    if (error?.name === "AbortError") {
+      const wrapped = new Error(`Request to ${url} aborted (likely timed out after ${effectiveTimeoutMs}ms)`);
+      wrapped.cause = error;
+      wrapped.aborted = true;
+      throw wrapped;
+    }
+    throw error;
+  } finally {
+    if (timeoutHandle !== undefined) window.clearTimeout(timeoutHandle);
+  }
 
   const isJson = response.headers.get("content-type")?.includes("application/json");
   const payload = isJson ? await response.json() : null;
@@ -41167,8 +41203,23 @@ async function bootstrapAgentPointer() {
   }
 }
 
-bootstrapApp().catch((error) => {
-  console.error("[vibe-research] app boot failed", error);
-  markAppBootFailed(error);
-});
+// Wire bootstrap with a retry hook — when boot fails (e.g. /api/state timed
+// out, network blip, server restart mid-load), the boot-fallback's "Retry"
+// button can re-run bootstrap without a full page reload. A hard reload
+// re-fetches the bundle and re-runs every other dependency; a retry just
+// re-runs bootstrapApp and is cheaper.
+function runBootstrap() {
+  return bootstrapApp().catch((error) => {
+    console.error("[vibe-research] app boot failed", error);
+    markAppBootFailed(error);
+  });
+}
+window.__vibeResearchRetryBoot = () => {
+  // Reset the boot-reported flag so the next successful render fires
+  // markAppBootReady again and dismisses the fallback.
+  appBootReported = false;
+  document.documentElement.dataset.appBoot = "loading";
+  return runBootstrap();
+};
+void runBootstrap();
 void bootstrapAgentPointer();
