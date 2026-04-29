@@ -167,7 +167,16 @@ test("vr-rl-tuner --json: returns machine-readable summary with spawn command", 
     assert.ok(body.projectDir);
     assert.ok(body.kickoff);
     assert.equal(body.repo, repo);
-    assert.deepEqual(body.spawnCommand.argv, ["claude"]);
+    // argv now bakes in the --allowedTools the autonomous tuner needs +
+    // exposes the user's repo via --add-dir so the agent can read it.
+    assert.equal(body.spawnCommand.argv[0], "claude");
+    assert.ok(body.spawnCommand.argv.includes("--allowedTools"),
+      "spawn argv should pre-allow tools or the first vr-rl-sweep call gets rejected");
+    assert.ok(body.spawnCommand.argv.includes("Bash(*)"),
+      "Bash(*) is required so the agent can run vr-rl-sweep / vr-research-* / git / its training scripts");
+    assert.ok(body.spawnCommand.argv.includes("--add-dir"));
+    assert.ok(body.spawnCommand.argv.includes(repo),
+      "--add-dir should expose the user's repo to the spawned agent");
     assert.equal(body.spawnCommand.cwd, body.projectDir);
     assert.equal(body.spawnCommand.env.VIBE_RESEARCH_PROJECT_REPO, repo);
     assert.match(body.spawnCommand.env.VIBE_RESEARCH_AGENT_PROMPT_PATH, /rl-sweep-tuner\.md$/);

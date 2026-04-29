@@ -179,7 +179,23 @@ async function main() {
     VIBE_RESEARCH_PROJECT_REPO: repo,
   };
   const cmd = opts.provider; // claude or codex; bin/claude + bin/codex live alongside this script
-  const argsForAgent = [];
+  // Pre-allow the tools the autonomous tuner needs. Without this the
+  // first time the agent tries to run `vr-rl-sweep init`, Claude Code's
+  // permission system stops the loop dead with "this command requires
+  // approval" — which defeats the whole point of an autonomous handoff.
+  // Discovered via the real-agent verification that produced an
+  // 8-attempts-blocked transcript.
+  //
+  // Bash(*) covers vr-rl-sweep, vr-research-init/admit/doctor/lint,
+  // vr-mcp, the user's training script (bash train.sh), git for
+  // committing to the project + code repos, and ad-hoc shell
+  // exploration. The agent runs inside an isolated project dir; the
+  // budget guard in kickoff.json + Agent Inbox approvals on cloud
+  // spend are what bound destructive actions.
+  const argsForAgent = [
+    "--allowedTools", "Bash(*)", "Read", "Write", "Edit", "Glob", "Grep",
+    "--add-dir", repo,
+  ];
   const cwd = initResult.projectDir;
 
   const summary = {
@@ -219,7 +235,7 @@ async function main() {
   process.stdout.write(`    VIBE_RESEARCH_AGENT_PROMPT_PATH=${opts.occupation} \\\n`);
   process.stdout.write(`    VIBE_RESEARCH_PROJECT_DIR=${initResult.projectDir} \\\n`);
   process.stdout.write(`    VIBE_RESEARCH_PROJECT_REPO=${repo} \\\n`);
-  process.stdout.write(`    ${cmd}\n\n`);
+  process.stdout.write(`    ${cmd} ${argsForAgent.map((a) => /\s/.test(a) ? `'${a}'` : a).join(" ")}\n\n`);
   process.stdout.write(`Or re-run with --exec to launch it now.\n`);
   process.exit(0);
 }
