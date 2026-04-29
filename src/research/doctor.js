@@ -15,10 +15,12 @@
 // human-readable message anchored to a section + row when applicable.
 
 import { readFile, readdir, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { parseProjectReadme } from "./project-readme.js";
 import { parseResultDoc } from "./result-doc.js";
 import { parseRunsTsv } from "./sweep-runner.js";
+import { readManifest, archivedPath } from "./vacuum.js";
 import {
   loadBenchmark,
   validateBenchmark,
@@ -608,6 +610,83 @@ async function checkOrphanResultDocs(projectDir, parsed) {
   return issues;
 }
 
+// Verify the vacuum manifest is internally consistent. The vacuum
+// command writes one row per tiered file with its sha256 + size; this
+// check catches drift between manifest claims and what's actually on
+// disk in .archive/. Without it, the integrity guarantee is only
+// "hashed once at tiering time"; with it, every doctor run reverifies.
+//
+// Errors (loud, since these mean reproducibility is broken):
+//   vacuum_manifest_archive_missing — manifest claims a path; nothing there
+//   vacuum_manifest_sha_mismatch    — file present but SHA doesn't match
+//
+// Warnings (recoverable):
+//   vacuum_manifest_size_mismatch   — size disagrees but SHA still matches
+//                                     (shouldn't be possible; defensive)
+//   vacuum_manifest_unparseable_row — manifest row is missing required cols
+//
+// Only runs if the manifest exists; vanilla projects without a vacuum
+// run pay zero cost.
+async function checkVacuumManifest(projectDir, { hashFn = sha256OfFile } = {}) {
+  const issues = [];
+  const manifest = await readManifest(projectDir);
+  if (!manifest.rows.length) return issues;
+  for (const row of manifest.rows) {
+    const where = `vacuum manifest row ${row.original_path || "(no path)"}`;
+    if (!row.original_path || !row.sha256) {
+      issues.push(makeIssue(
+        "warning",
+        "vacuum_manifest_unparseable_row",
+        where,
+        `manifest row missing original_path or sha256: ${JSON.stringify(row)}`,
+      ));
+      continue;
+    }
+    const archived = archivedPath(projectDir, row.original_path);
+    if (!(await pathExists(archived))) {
+      issues.push(makeIssue(
+        "error",
+        "vacuum_manifest_archive_missing",
+        where,
+        `manifest claims ${archived} but file is missing — restore from a backup or remove the manifest row`,
+      ));
+      continue;
+    }
+    const declared = String(row.sha256);
+    const actual = await hashFn(archived);
+    if (actual !== declared) {
+      issues.push(makeIssue(
+        "error",
+        "vacuum_manifest_sha_mismatch",
+        where,
+        `archived file SHA (${actual.slice(0, 12)}…) does not match manifest (${declared.slice(0, 12)}…) — file was tampered with or corrupted`,
+      ));
+      continue;
+    }
+    const declaredSize = Number(row.original_size);
+    if (Number.isFinite(declaredSize) && declaredSize >= 0) {
+      let actualSize = -1;
+      try { actualSize = (await stat(archived)).size; } catch {}
+      if (actualSize >= 0 && actualSize !== declaredSize) {
+        issues.push(makeIssue(
+          "warning",
+          "vacuum_manifest_size_mismatch",
+          where,
+          `archived file size (${actualSize}) disagrees with manifest (${declaredSize}) but SHA matches — defensive flag`,
+        ));
+      }
+    }
+  }
+  return issues;
+}
+
+async function sha256OfFile(absPath) {
+  const buf = await readFile(absPath);
+  const h = createHash("sha256");
+  h.update(buf);
+  return h.digest("hex");
+}
+
 export async function runDoctor(projectDir, { readmeText } = {}) {
   const readmePath = path.join(projectDir, "README.md");
   let text = readmeText;
@@ -634,6 +713,7 @@ export async function runDoctor(projectDir, { readmeText } = {}) {
   issues.push(...await checkRunsTsv(projectDir, parsed.active));
   issues.push(...await checkKickoffJson(projectDir));
   issues.push(...await checkOrphanResultDocs(projectDir, parsed));
+  issues.push(...await checkVacuumManifest(projectDir));
 
   return {
     project: parsed,

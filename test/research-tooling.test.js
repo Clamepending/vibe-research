@@ -935,6 +935,81 @@ test("runDoctor: bad wandb_url shape -> runs_bad_wandb_url warning", async () =>
 });
 
 // ---------------------------------------------------------------------------
+// vacuum manifest verification — doctor catches drift between the manifest
+// and what's actually in .archive/. Without this, vacuum's SHA claim is
+// only valid at tiering time.
+
+async function tierFigureFor(project) {
+  // Helper: write a binary, age it, vacuum --apply.
+  const { planVacuum, applyVacuum } = await import("../src/research/vacuum.js");
+  const { mkdirSync, writeFileSync, utimesSync } = await import("node:fs");
+  const figuresDir = path.join(project, "figures");
+  mkdirSync(figuresDir, { recursive: true });
+  const file = path.join(figuresDir, "drift-test.png");
+  writeFileSync(file, Buffer.from("original content"));
+  const t = (Date.now() - 200 * 24 * 60 * 60 * 1000) / 1000;
+  utimesSync(file, t, t);
+  const plan = await planVacuum(project, { ageDays: 90 });
+  await applyVacuum(project, plan);
+  return file;
+}
+
+test("runDoctor: clean manifest produces no vacuum_manifest_* issues", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-vac-clean-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    await tierFigureFor(project);
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code).filter((c) => c.startsWith("vacuum_manifest_"));
+    assert.deepEqual(codes, []);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: archived file deleted -> vacuum_manifest_archive_missing error", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-vac-missing-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    await tierFigureFor(project);
+    // Manually delete the archived file to simulate drift.
+    await rm(path.join(project, ".archive", "figures", "drift-test.png"), { force: true });
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("vacuum_manifest_archive_missing"),
+      `expected vacuum_manifest_archive_missing, got: ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: archived file modified -> vacuum_manifest_sha_mismatch error", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-vac-sha-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    await tierFigureFor(project);
+    // Modify the archived file (changes SHA, may or may not change size).
+    const archivedFile = path.join(project, ".archive", "figures", "drift-test.png");
+    await writeFile(archivedFile, "tampered content");
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code);
+    assert.ok(codes.includes("vacuum_manifest_sha_mismatch"),
+      `expected vacuum_manifest_sha_mismatch, got: ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: project with no manifest pays zero cost (no issues fired)", async () => {
+  const report = await runDoctor(FIXTURE_PROJECT);
+  const codes = report.issues.map((i) => i.code).filter((c) => c.startsWith("vacuum_manifest_"));
+  assert.deepEqual(codes, []);
+});
+
+// ---------------------------------------------------------------------------
 // orphan result-doc check — result docs that exist on disk but aren't
 // referenced by any README section. Catches the bug class "agent
 // finished a move but forgot to update LEADERBOARD/LOG."
