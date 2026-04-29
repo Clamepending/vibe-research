@@ -1577,6 +1577,16 @@ const CORE_BUILDING_MANIFESTS = [
     category: "Vibe Research",
     description: "Preview web apps from discovered ports without leaving the current session.",
     icon: AppWindow,
+    install: {
+      // System building: always available without an explicit install step.
+      // Promotes the sidebar "ports" section back into the default UI so
+      // every detected listening port is one click away (preview tab,
+      // direct LAN URL, Tailscale Serve URL, or /proxy/<port>/ fallback —
+      // whichever is reachable). Each port's `preferredUrl` is decided
+      // server-side by decoratePortForAccess() so the click target is
+      // always the best-available URL for the viewer's network.
+      system: true,
+    },
     status: "built in",
     source: "vibe-research",
     visual: {

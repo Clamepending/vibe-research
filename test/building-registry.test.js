@@ -121,6 +121,16 @@ test("building registry exposes core building manifests", () => {
   assert.match(system.description, /GPU utilization/i);
   assert.ok(system.agentGuide.commands.some((command) => command.command.includes("/api/system")));
 
+  // Localhost Apps must be a system building so the sidebar "ports" section
+  // shows up by default — without `install.system`, isPluginInstalled() returns
+  // false until the user manually opts in, which (a) breaks the historical UX
+  // where ports were always one click away in the sidebar and (b) hides the
+  // most-useful surface for previewing local dev servers across Tailscale.
+  const localhostApps = BUILDING_CATALOG.find((building) => building.id === "localhost-apps");
+  assert.equal(localhostApps.install.system, true, "localhost-apps must be a default system building");
+  assert.equal(localhostApps.status, "built in");
+  assert.equal(localhostApps.source, "vibe-research");
+
   const tailscale = BUILDING_CATALOG.find((building) => building.id === "tailscale");
   assert.equal(tailscale.install.system, true);
   assert.equal(tailscale.category, "Networking");
