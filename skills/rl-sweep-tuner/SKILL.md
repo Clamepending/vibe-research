@@ -73,6 +73,16 @@ When the queue is empty and you're generating new moves, prioritize in this orde
 4. **Architecture only after data + reward + LR are settled.** Architecture changes are expensive and the gains often dissolve once you re-tune the optimizer.
 5. **Stop hammering when the leaderboard's gap from rank-1 to rank-5 is < 1σ** — you've converged and further sweeps are noise mining. Refresh the abstract, write a Limitations bullet about what you didn't try, and tell the user you're at a plateau via a `terminate` LOG row.
 
+## Cloud execution
+
+The runner shells out per row, so anything that runs as a shell command works. For local GPUs, the launcher is just `python train.py ...` or `bash train.sh ...`. For cloud:
+
+- **Modal**: `--launcher 'modal run ${repo}/sweep_app.py --lr=${lr} --seed=${seed}'`. The user's repo needs a small Modal entrypoint (one `@app.function(gpu="A10G")` decorator over their existing training function); install it via `vr-mcp install mcp-modal` if missing. Get human approval via Agent Inbox before any cloud spend over the budget.
+- **RunPod**: `--launcher 'runpodctl exec --pod-id ${RUNPOD_POD_ID} -- bash /workspace/repo/train.sh --lr=${lr} --seed=${seed}'`. Requires a running pod the user has provisioned; do not auto-provision.
+- **Wandb capture**: the runner already extracts the wandb run URL from each launcher's stdout into the `wandb_url` column — no extra work needed if the launcher's training script calls `wandb.init(...)` and prints the standard `View run at https://wandb.ai/...` line.
+
+Default per-row timeout is 30 minutes. For long cloud runs, pass `--timeout-sec 14400` (4 hours) on `vr-rl-sweep run` and write a one-line note in `paper.md`'s "Since last update" so the human sees what's expected.
+
 ## Tools you have
 
 - `vr-rl-sweep init <name> [--sweep-name <slug>] --base <kvs> --sweep <key=spec> --seeds N --hypothesis <text>` — plan a sweep into runs.tsv (or runs/<slug>.tsv inside an existing project). You read this back row-by-row and execute each.

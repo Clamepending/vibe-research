@@ -32,6 +32,20 @@ import path from "node:path";
 
 const DEFAULT_TIMEOUT_SEC = 30 * 60;
 const DEFAULT_METRIC_PATTERN = /(?:final_return|mean_return)\s*[:=]\s*([+-]?[0-9]*\.?[0-9]+(?:[eE][+-]?\d+)?)/;
+// Match the standard wandb run URL the wandb client prints to stdout
+// during init, plus a few common surrounding-emoji decorations and the
+// JSON-payload form a custom client might emit. Capture group 0 = full
+// match (we use the whole match as the url, no group needed).
+//
+//   wandb: 🚀 View run at https://wandb.ai/<entity>/<project>/runs/<id>
+//   wandb: View project at https://wandb.ai/<entity>/<project>
+//   wandb_url: https://wandb.ai/...
+//   "url": "https://wandb.ai/..."
+//
+// The runner stores the FIRST run URL it sees per row (project URLs are
+// less specific and skipped if a run URL is also present).
+const WANDB_RUN_URL_PATTERN = /https?:\/\/(?:[\w.-]+\.)?wandb\.ai\/[^\s"'<>)]+\/runs\/[A-Za-z0-9_-]+/;
+const WANDB_ANY_URL_PATTERN = /https?:\/\/(?:[\w.-]+\.)?wandb\.ai\/[^\s"'<>)]+/;
 
 // ---- TSV parser / serializer ----
 
@@ -117,6 +131,27 @@ export function extractMetric(stdout, pattern = DEFAULT_METRIC_PATTERN) {
   if (!match) return null;
   const value = Number(match[1]);
   return Number.isFinite(value) ? value : null;
+}
+
+// Best-effort wandb URL extraction. Prefer a /runs/<id> URL (specific to
+// the actual run); fall back to any wandb.ai URL (project-level link).
+// Returns "" if no wandb URL was printed — the field stays empty in
+// runs.tsv so a downstream agent can tell "didn't run wandb" from
+// "ran but URL missing".
+export function extractWandbUrl(stdout) {
+  if (typeof stdout !== "string" || !stdout) return "";
+  const runMatch = WANDB_RUN_URL_PATTERN.exec(stdout);
+  if (runMatch) return stripTrailingPunctuation(runMatch[0]);
+  const anyMatch = WANDB_ANY_URL_PATTERN.exec(stdout);
+  if (anyMatch) return stripTrailingPunctuation(anyMatch[0]);
+  return "";
+}
+
+function stripTrailingPunctuation(url) {
+  // wandb often prints URLs followed by punctuation in console messages
+  // ("View run at <url>."). Trim trailing dots / commas / closing
+  // brackets so we don't pollute the wandb_url cell.
+  return url.replace(/[.,;:!?)\]>]+$/, "");
 }
 
 // ---- spawn helper (dependency-injectable for tests) ----
@@ -210,6 +245,8 @@ export async function runPlannedRows({
       timeoutMs,
     });
     const metric = extractMetric(result.stdout, metricPattern);
+    const wandbUrl = extractWandbUrl(result.stdout);
+    if (wandbUrl) row.wandb_url = wandbUrl;
     if (result.exitCode === 0 && metric !== null) {
       row.status = "done";
       row.mean_return = String(metric);

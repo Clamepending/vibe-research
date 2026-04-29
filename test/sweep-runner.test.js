@@ -15,6 +15,7 @@ import {
   serializeRunsTsv,
   expandLauncher,
   extractMetric,
+  extractWandbUrl,
   runPlannedRows,
   __internal,
 } from "../src/research/sweep-runner.js";
@@ -96,6 +97,82 @@ test("extractMetric: returns null on no match", () => {
 
 test("extractMetric: custom regex", () => {
   assert.equal(extractMetric("score=42.5 elsewhere", /score=([0-9.]+)/), 42.5);
+});
+
+// ---- extractWandbUrl ----
+
+test("extractWandbUrl: standard wandb 'View run at <url>' line", () => {
+  const stdout = "wandb: 🚀 View run at https://wandb.ai/alice/proj-x/runs/abc123";
+  assert.equal(extractWandbUrl(stdout), "https://wandb.ai/alice/proj-x/runs/abc123");
+});
+
+test("extractWandbUrl: prefers /runs/<id> URL when both run + project URLs present", () => {
+  const stdout = [
+    "wandb: View project at https://wandb.ai/alice/proj-x",
+    "wandb: View run at https://wandb.ai/alice/proj-x/runs/abc123",
+  ].join("\n");
+  assert.equal(extractWandbUrl(stdout), "https://wandb.ai/alice/proj-x/runs/abc123");
+});
+
+test("extractWandbUrl: falls back to project URL when no run URL", () => {
+  const stdout = "Synced 3 W&B file(s) https://wandb.ai/alice/proj-x";
+  assert.equal(extractWandbUrl(stdout), "https://wandb.ai/alice/proj-x");
+});
+
+test("extractWandbUrl: strips trailing punctuation", () => {
+  const stdout = "View run at https://wandb.ai/alice/proj-x/runs/abc123.";
+  assert.equal(extractWandbUrl(stdout), "https://wandb.ai/alice/proj-x/runs/abc123");
+});
+
+test("extractWandbUrl: returns empty string when no wandb URL present", () => {
+  assert.equal(extractWandbUrl("nothing wandb here"), "");
+  assert.equal(extractWandbUrl(""), "");
+  assert.equal(extractWandbUrl(null), "");
+});
+
+test("extractWandbUrl: handles JSON-quoted URL forms", () => {
+  const stdout = '{"wandb":"https://wandb.ai/alice/proj/runs/xyz"}';
+  assert.equal(extractWandbUrl(stdout), "https://wandb.ai/alice/proj/runs/xyz");
+});
+
+test("runPlannedRows: fills wandb_url when launcher prints a wandb URL", async () => {
+  const dir = tmp("runner-wandb");
+  const tsv = join(dir, "runs.tsv");
+  writeFileSync(tsv, plannedTsv(1), "utf8");
+  try {
+    const result = await runPlannedRows({
+      runsTsvPath: tsv,
+      spawnImpl: async () => ({
+        exitCode: 0,
+        stdout: "starting...\nwandb: 🚀 View run at https://wandb.ai/me/sweep/runs/jq8x\nfinal_return: 12.5\n",
+        stderr: "",
+        timedOut: false,
+      }),
+    });
+    assert.equal(result.ok, 1);
+    const after = parseRunsTsv(readFileSync(tsv, "utf8"));
+    assert.equal(after.rows[0].wandb_url, "https://wandb.ai/me/sweep/runs/jq8x");
+    assert.equal(after.rows[0].mean_return, "12.5");
+    assert.equal(after.rows[0].status, "done");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runPlannedRows: leaves wandb_url empty when no URL in stdout", async () => {
+  const dir = tmp("runner-no-wandb");
+  const tsv = join(dir, "runs.tsv");
+  writeFileSync(tsv, plannedTsv(1), "utf8");
+  try {
+    await runPlannedRows({
+      runsTsvPath: tsv,
+      spawnImpl: async () => ({ exitCode: 0, stdout: "final_return: 1.0\n", stderr: "", timedOut: false }),
+    });
+    const after = parseRunsTsv(readFileSync(tsv, "utf8"));
+    assert.equal(after.rows[0].wandb_url, "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ---- runPlannedRows: stubbed spawn ----
