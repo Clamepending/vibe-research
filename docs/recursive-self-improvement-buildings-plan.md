@@ -437,6 +437,45 @@ After the autonomous-tuner skill landed, the next gap was bookkeeping integrity.
 - Wandb result-pull from `wandb.api.runs(group=...).summary`.
 - Symlink instead of copy for skill-into-project install.
 
+### 2026-04-29 (later) — README admin commands + Library GC
+
+After the doctor + summary stretch, the framing question was *"can the agent see the next gap, or do the next thing?"*. The answer turned out to be both. Two follow-ups landed.
+
+#### "Can't see" follow-ups
+
+- **`result_doc_orphan`** (PR #67): doctor walks `projects/<name>/results/*.md` and flags any doc whose slug isn't referenced in LEADERBOARD/ACTIVE/LOG. Catches the bug class "agent finished a move but forgot to apply the README updates." Includes a sibling check `result_doc_active_unclaimed` for STATUS:active docs missing an ACTIVE row. Test fixture (`widget-tuning`) updated to a complete-project state so the orphan check is unambiguous.
+
+#### "Can't do" follow-ups (README admin commands)
+
+The agent's loop step 3 (claim) and step 9 (release + log) are mechanical README edits. Hand-editing markdown burns ~7-10 surgical edits per move; these commands replace them with one shell call each:
+
+- **`vr-research-log <project> --event ... --slug ... --summary ... [--link ...]`** (PR #69): appends a LOG row at the top of the table (newest-first). Refuses pipe/newline that would break the table; defaults `--date` to today UTC. Atomic-rename writes.
+- **`vr-research-active <project> add/remove --slug ...`** (PR #70): manage the ACTIVE table at claim/release. `add` rejects duplicate slugs; both subcommands only touch the ACTIVE table. Result column rendered as `[<slug>](<resultPath>)`, branch as `[r/<slug>](<branchUrl>)`.
+
+Pattern is now templatable. **`vr-research-leaderboard`** + **`vr-research-queue`** would complete the family — same string-surgery + atomic-write recipe. Skipped for now since they're more complex (LEADERBOARD has rank shifts + rank-6 → LOG; QUEUE has ADD/REMOVE/REPRIORITIZE verbs); will land if the user's loop friction warrants.
+
+#### Library garbage collection (the synthesis pair)
+
+User's framing: "save space, only keep important info, but don't forget what we tried or break reproducibility or block synthesis." Discussed via three personas (senior SWE / ML prof / grad student), arrived at a manifest-driven local archive. Then shipped both halves:
+
+- **`vr-research-vacuum <project>`** (PR #71): tier old binaries (`.png` / `.pt` / `.ckpt` / `.npz` / `.pkl` / `.log` etc., mtime ≥90 days) to `<project>/.archive/<original-relpath>`. Manifest at `.archive/manifest.tsv` carries `original_path | sha256 | original_size | tier_destination | tiered_at | reason`. Dry-run by default; `--apply` acts, `--restore <relpath>` inverses, `--list` dumps. **Pinned**: all `.md` / `.tsv` / `.csv` / `.json` / `.yaml` / `.txt` / `.toml`, everything under `benchmark/`, everything under `.archive/`, dotfiles, and **figures cited by any LOG row whose event includes `falsified`** — the negative-result invariant per the ML prof. paper-lint follows manifest pointers via `resolveArtifactPath()` so a tiered figure is not a `figure_missing` error.
+- **Doctor verifies the manifest** (PR #73): every `vr-research-doctor` run reverifies that each tiered file exists at its `tier_destination` AND its SHA-256 matches the manifest. Drift detection — a tampered/deleted archive file surfaces as `vacuum_manifest_archive_missing` (error) or `vacuum_manifest_sha_mismatch` (error) instead of being silent until the next restore. Zero cost when no manifest exists.
+
+Cumulative integrity story: SHA at tiering time + SHA reverify on every doctor run + `--restore` round-trip preserved by manifest.
+
+#### Status as of this batch
+
+- **Total PRs this stretch (since #63 plan-doc record)**: 5 in this batch (#67, #69, #70, #71, #73). Across the full session: 8 PRs.
+- **Doctor checks**: 12+ classes — README, leaderboard, active, queue, insights, log, runs.tsv, kickoff.json, stale-ACTIVE, orphan result docs, vacuum manifest. Bidirectional now (README → docs and docs → README).
+- **Admin commands**: `vr-research-log`, `vr-research-active`, `vr-research-vacuum` complete the most-used surface. `vr-research-leaderboard` + `vr-research-queue` queued.
+- **Tests**: ~50 new across the 5 PRs (4 orphan + 15 log + 16 active + 22 vacuum + 4 vacuum-verify). Total research-side: ~223 passing. Pre-existing `getProjectDetail.figures` flake on main unchanged.
+
+#### Still queued
+
+- `vr-research-leaderboard` / `vr-research-queue` admin commands (pattern established; ~1 hour each).
+- S3/R2 cold remote for `.archive/` (current v1 keeps everything local; remote is follow-up if disk pressure forces it).
+- Real RL workload + cloud GPU end-to-end (needs user input + budget; unchanged from prior batch).
+
 ### Resume instructions for the next session
 
 1. Read this doc top to bottom.
@@ -448,4 +487,6 @@ After the autonomous-tuner skill landed, the next gap was bookkeeping integrity.
 7. Then: pick from the broader backlog (Replicate, HuggingFace Hub, Vast.ai, Lambda Labs, Fly.io, R2/B2, Pinecone, Qdrant, Chroma, Apify, Twilio, Atlassian, Supabase, …) and re-enter the same loop: install + auth + smoke check + manifest + verification block.
 8. **For the autonomous tuner**: the next high-value test is letting an agent run unbounded across 3-5 moves on a real (not toy) training script, with cloud execution via Modal. Before doing it, set a clear budget cap in the agent's prompt + verify the kickoff.json budget enforcement triggers Agent Inbox approval at the right threshold.
 9. **Doctor + summary** are now the agent's eyes on its own state. Before any new sweep tooling, ask: "is the next gap the agent can't see, or the next thing the agent can't do?" — the answer should drive whether to extend doctor or extend `vr-rl-sweep`.
+10. **Library GC**: `vr-research-vacuum` is local-only by design. If `.archive/` itself gets too big, the next move is an S3/R2 cold remote — `tier_destination` in the manifest already accommodates a remote URL, so the wire-up is "swap rename for upload + write the URL" plus a doctor check that follows remote pointers. Don't add this until disk pressure forces it.
+11. **README admin family is half-done.** `vr-research-log` + `vr-research-active` shipped. `vr-research-leaderboard` (rank shifts + rank-6 → LOG) and `vr-research-queue` (ADD/REMOVE/REPRIORITIZE verbs) are the natural next pair. Same string-surgery + atomic-write recipe as PRs #69/#70; ~1 hour each. Land them when the agent's hand-edit-markdown friction at loop step 9 becomes the bottleneck.
 
