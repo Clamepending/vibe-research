@@ -206,6 +206,7 @@ test("vr-rl-sweep --help: exits 0", async () => {
   assert.match(result.stdout, /vr-rl-sweep <subcommand>/);
   assert.match(result.stdout, /init <name>/);
   assert.match(result.stdout, /run <name>/);
+  assert.match(result.stdout, /summary <name>/);
 });
 
 test("vr-rl-sweep no args: exits 2", async () => {
@@ -351,6 +352,199 @@ test("vr-rl-sweep run --sweep-name: reads runs/<slug>.tsv only", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- bin/vr-rl-sweep summary ----
+
+const SUMMARY_TSV_HEADER = [
+  "started_at", "group", "name", "commit", "hypothesis",
+  "mean_return", "std_return", "wandb_url", "status", "config",
+].join("\t");
+
+function summaryTsvRow({
+  started_at = "2026-04-29T00:00:00Z",
+  group = "ablate-lr",
+  name = "ablate-lr-lr1e-3-seed0",
+  commit = "abc1234",
+  hypothesis = "lower lr improves return",
+  mean_return = "",
+  std_return = "",
+  wandb_url = "",
+  status = "planned",
+  config = "{}",
+} = {}) {
+  return [started_at, group, name, commit, hypothesis, mean_return, std_return, wandb_url, status, config].join("\t");
+}
+
+function writeSummaryFixture(dir, projectName, { rows, sweepName } = {}) {
+  const projectDir = join(dir, "projects", projectName);
+  let tsvPath;
+  if (sweepName) {
+    mkdirSync(join(projectDir, "runs"), { recursive: true });
+    tsvPath = join(projectDir, "runs", `${sweepName}.tsv`);
+  } else {
+    mkdirSync(projectDir, { recursive: true });
+    tsvPath = join(projectDir, "runs.tsv");
+  }
+  const body = [SUMMARY_TSV_HEADER, ...rows.map(summaryTsvRow)].join("\n") + "\n";
+  writeFileSync(tsvPath, body, "utf8");
+  return tsvPath;
+}
+
+test("vr-rl-sweep summary: aggregates per-cell mean/std and ranks higher-is-better", async () => {
+  const dir = tmp("vr-rl-sweep-summary");
+  try {
+    // Two cells, three seeds each, all done. Cell A is better.
+    writeSummaryFixture(dir, "ppo", {
+      rows: [
+        { name: "ppo-lrA-seed0", status: "done", mean_return: "0.80" },
+        { name: "ppo-lrA-seed1", status: "done", mean_return: "0.82" },
+        { name: "ppo-lrA-seed2", status: "done", mean_return: "0.81" },
+        { name: "ppo-lrB-seed0", status: "done", mean_return: "0.70" },
+        { name: "ppo-lrB-seed1", status: "done", mean_return: "0.69" },
+        { name: "ppo-lrB-seed2", status: "done", mean_return: "0.71" },
+      ],
+    });
+    const result = await runCli(["summary", "ppo", "--library", dir, "--json"]);
+    assert.equal(result.status, 0, `expected 0, got ${result.status}: ${result.stderr}`);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.totalRows, 6);
+    assert.equal(body.statusCounts.done, 6);
+    assert.equal(body.cellCount, 2);
+    assert.equal(body.topCells[0].name, "ppo-lrA");
+    assert.ok(Math.abs(body.topCells[0].mean_return - 0.81) < 0.001,
+      `top mean ≈ 0.81; got ${body.topCells[0].mean_return}`);
+    assert.ok(body.topCells[0].std_return > 0);
+    assert.equal(body.topCells[0].seeds, 3);
+    assert.equal(body.topCells[1].name, "ppo-lrB");
+    assert.equal(body.direction, "higher");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vr-rl-sweep summary: --direction-lower flips ranking", async () => {
+  const dir = tmp("vr-rl-sweep-summary-low");
+  try {
+    writeSummaryFixture(dir, "ppo", {
+      rows: [
+        { name: "ppo-lrA-seed0", status: "done", mean_return: "0.80" },
+        { name: "ppo-lrB-seed0", status: "done", mean_return: "0.50" },
+      ],
+    });
+    const result = await runCli(["summary", "ppo", "--library", dir, "--direction-lower", "--json"]);
+    assert.equal(result.status, 0);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.direction, "lower");
+    assert.equal(body.topCells[0].name, "ppo-lrB");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vr-rl-sweep summary: counts mixed statuses (done/failed/running/planned)", async () => {
+  const dir = tmp("vr-rl-sweep-summary-mixed");
+  try {
+    writeSummaryFixture(dir, "mixed", {
+      rows: [
+        { name: "mixed-a-seed0", status: "done", mean_return: "0.5" },
+        { name: "mixed-a-seed1", status: "failed" },
+        { name: "mixed-b-seed0", status: "running", started_at: new Date().toISOString() },
+        { name: "mixed-c-seed0", status: "planned" },
+      ],
+    });
+    const result = await runCli(["summary", "mixed", "--library", dir, "--json"]);
+    assert.equal(result.status, 0);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.totalRows, 4);
+    assert.equal(body.statusCounts.done, 1);
+    assert.equal(body.statusCounts.failed, 1);
+    assert.equal(body.statusCounts.running, 1);
+    assert.equal(body.statusCounts.planned, 1);
+    assert.equal(body.cellCount, 3);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vr-rl-sweep summary: --sweep-name reads runs/<slug>.tsv", async () => {
+  const dir = tmp("vr-rl-sweep-summary-named");
+  try {
+    writeSummaryFixture(dir, "parent", {
+      sweepName: "ablate-foo",
+      rows: [
+        { name: "ablate-foo-aA-seed0", status: "done", mean_return: "0.9" },
+      ],
+    });
+    const result = await runCli([
+      "summary", "parent", "--library", dir, "--sweep-name", "ablate-foo", "--json",
+    ]);
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.sweep, "ablate-foo");
+    assert.match(body.runsTsv, /runs\/ablate-foo\.tsv$/);
+    assert.equal(body.cellCount, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vr-rl-sweep summary: --top limits topCells output", async () => {
+  const dir = tmp("vr-rl-sweep-summary-top");
+  try {
+    writeSummaryFixture(dir, "many", {
+      rows: [
+        { name: "many-a-seed0", status: "done", mean_return: "0.9" },
+        { name: "many-b-seed0", status: "done", mean_return: "0.8" },
+        { name: "many-c-seed0", status: "done", mean_return: "0.7" },
+        { name: "many-d-seed0", status: "done", mean_return: "0.6" },
+        { name: "many-e-seed0", status: "done", mean_return: "0.5" },
+        { name: "many-f-seed0", status: "done", mean_return: "0.4" },
+      ],
+    });
+    const result = await runCli(["summary", "many", "--library", dir, "--top", "2", "--json"]);
+    assert.equal(result.status, 0);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.topCells.length, 2);
+    assert.equal(body.allCells.length, 6);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vr-rl-sweep summary: missing runs.tsv exits 1 with clear error", async () => {
+  const dir = tmp("vr-rl-sweep-summary-missing");
+  try {
+    mkdirSync(join(dir, "projects", "ghost"), { recursive: true });
+    const result = await runCli(["summary", "ghost", "--library", dir]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /runs\.tsv not found/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vr-rl-sweep summary (text mode): prints top cells with mean/std formatted", async () => {
+  const dir = tmp("vr-rl-sweep-summary-text");
+  try {
+    writeSummaryFixture(dir, "ppo", {
+      rows: [
+        { name: "ppo-lrA-seed0", status: "done", mean_return: "0.80", wandb_url: "https://wandb.ai/me/proj/runs/abc" },
+        { name: "ppo-lrA-seed1", status: "done", mean_return: "0.82" },
+      ],
+    });
+    const result = await runCli(["summary", "ppo", "--library", dir]);
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+    assert.match(result.stdout, /project: ppo/);
+    assert.match(result.stdout, /status:.*2 total/);
+    assert.match(result.stdout, /top cells/);
+    assert.match(result.stdout, /ppo-lrA/);
+    assert.match(result.stdout, /https:\/\/wandb\.ai/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ----
 
 test("vr-rl-sweep init: existing project without --force / --sweep-name exits 1", async () => {
   const dir = tmp("vr-rl-sweep-collide");

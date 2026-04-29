@@ -34,7 +34,8 @@ import {
   planSweep,
   renderRunsTsv,
 } from "../src/research/sweep.js";
-import { runPlannedRows } from "../src/research/sweep-runner.js";
+import { runPlannedRows, parseRunsTsv } from "../src/research/sweep-runner.js";
+import { readFile } from "node:fs/promises";
 
 function printHelp() {
   process.stdout.write(`vr-rl-sweep <subcommand> [options]
@@ -52,6 +53,11 @@ Subcommands:
                   launcher, capture metric, update the row in-place.
                   Reads projects/<name>/runs/<slug>.tsv when --sweep-name
                   <slug> is given, else projects/<name>/runs.tsv.
+  summary <name>  Read the runs.tsv (or runs/<slug>.tsv with
+                  --sweep-name) and print: status counts, per-cell
+                  mean ± std across seeds, and the top-N cells. Useful
+                  for the agent to check sweep state without parsing
+                  the TSV by hand. --json prints full structured data.
 
 Init options:
   --base <pairs>           Comma-separated base config: key=value,...
@@ -85,6 +91,14 @@ Run options:
   --timeout-sec <N>        Per-row hard kill (default 1800).
   --cwd <path>             Working dir for the launcher (default cwd).
 
+Summary options:
+  --library <path>         Library root (defaults to cwd).
+  --sweep-name <slug>      Read projects/<name>/runs/<slug>.tsv instead
+                           of the top-level runs.tsv.
+  --top <n>                Show the top N cells (default 5).
+  --direction-lower        Sort cells by ascending mean_return (use when
+                           the project's metric is "lower is better").
+
 Common:
   --json                   Emit machine-readable summary on stdout.
 `);
@@ -109,6 +123,8 @@ function parseArgs(argv) {
     timeoutSec: undefined,
     runCwd: "",
     sweepName: "",
+    top: undefined,
+    directionLower: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -127,6 +143,8 @@ function parseArgs(argv) {
     if (arg === "--timeout-sec") { options.timeoutSec = Number(argv[++i] || "0"); continue; }
     if (arg === "--cwd") { options.runCwd = argv[++i] || ""; continue; }
     if (arg === "--sweep-name") { options.sweepName = argv[++i] || ""; continue; }
+    if (arg === "--top") { options.top = Number(argv[++i] || "5"); continue; }
+    if (arg === "--direction-lower") { options.directionLower = true; continue; }
     if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
     if (!options.subcommand) { options.subcommand = arg; continue; }
     if (!options.name) { options.name = arg; continue; }
@@ -274,6 +292,126 @@ async function runRun(options) {
   };
 }
 
+// Aggregate runs.tsv into per-cell stats. A "cell" is a row's name with
+// the trailing `-seedN` suffix stripped — i.e. one row per (config, seed)
+// collapses into one cell summarised across seeds.
+function aggregateCells(rows, { directionHigher = true } = {}) {
+  const groups = new Map();
+  for (const row of rows) {
+    const cellName = String(row.name || "").replace(/-seed\d+$/, "");
+    if (!groups.has(cellName)) groups.set(cellName, []);
+    groups.get(cellName).push(row);
+  }
+  const cells = [];
+  for (const [name, members] of groups.entries()) {
+    if (!name) continue;
+    const numerics = members
+      .map((r) => Number(r.mean_return))
+      .filter((v) => Number.isFinite(v));
+    const seeds = numerics.length;
+    let mean = null;
+    let std = null;
+    if (seeds >= 1) {
+      mean = numerics.reduce((a, b) => a + b, 0) / seeds;
+      if (seeds >= 2) {
+        const variance = numerics.reduce((a, b) => a + (b - mean) ** 2, 0) / seeds;
+        std = Math.sqrt(variance);
+      }
+    }
+    const wandbUrl = members.map((r) => r.wandb_url).find((u) => u && u.length > 0) || "";
+    const hypothesis = members.map((r) => r.hypothesis).find((h) => h && h.length > 0) || "";
+    cells.push({
+      name,
+      seeds,
+      mean_return: mean,
+      std_return: std,
+      wandb_url: wandbUrl,
+      hypothesis,
+      statuses: members.reduce((acc, m) => {
+        const s = String(m.status || "").trim() || "planned";
+        acc[s] = (acc[s] || 0) + 1;
+        return acc;
+      }, {}),
+    });
+  }
+  cells.sort((a, b) => {
+    if (a.mean_return === null && b.mean_return === null) return 0;
+    if (a.mean_return === null) return 1;
+    if (b.mean_return === null) return -1;
+    return directionHigher ? b.mean_return - a.mean_return : a.mean_return - b.mean_return;
+  });
+  return cells;
+}
+
+function tallyStatuses(rows) {
+  const counts = {};
+  for (const row of rows) {
+    const s = String(row.status || "").trim() || "planned";
+    counts[s] = (counts[s] || 0) + 1;
+  }
+  return counts;
+}
+
+async function runSummary(options) {
+  if (!options.name) throw new Error("project name is required");
+  const library = path.resolve(options.library);
+  const projectDir = path.join(library, "projects", options.name);
+  const runsTsvPath = options.sweepName
+    ? path.join(projectDir, "runs", `${options.sweepName}.tsv`)
+    : path.join(projectDir, "runs.tsv");
+
+  let text;
+  try { text = await readFile(runsTsvPath, "utf8"); }
+  catch (err) {
+    if (err.code === "ENOENT") throw new Error(`runs.tsv not found at ${runsTsvPath}`);
+    throw err;
+  }
+  const { headers, rows } = parseRunsTsv(text);
+  if (!headers.length) throw new Error(`runs.tsv at ${runsTsvPath} is empty / has no header`);
+
+  const directionHigher = options.directionLower !== true;
+  const statusCounts = tallyStatuses(rows);
+  const cells = aggregateCells(rows, { directionHigher });
+  const topN = Number.isFinite(options.top) && options.top > 0 ? options.top : 5;
+
+  return {
+    project: options.name,
+    sweep: options.sweepName || null,
+    runsTsv: runsTsvPath,
+    totalRows: rows.length,
+    statusCounts,
+    cellCount: cells.length,
+    topCells: cells.slice(0, topN),
+    allCells: cells,
+    direction: directionHigher ? "higher" : "lower",
+  };
+}
+
+function formatSummaryText(s) {
+  const lines = [];
+  const sweepLabel = s.sweep ? `sweep: ${s.sweep}` : "(top-level)";
+  lines.push(`project: ${s.project}, ${sweepLabel}`);
+  lines.push(`runs.tsv: ${s.runsTsv}`);
+  const statusBits = Object.entries(s.statusCounts)
+    .map(([k, v]) => `${v} ${k}`)
+    .join(", ");
+  lines.push(`status: ${s.totalRows} total — ${statusBits || "(empty)"}`);
+  lines.push(`cells: ${s.cellCount}, direction: ${s.direction} is better`);
+  if (s.topCells.length) {
+    lines.push("");
+    lines.push("top cells (by mean_return):");
+    lines.push("  rank | cell                                    | n |  mean    | std    | wandb");
+    s.topCells.forEach((c, i) => {
+      const mean = c.mean_return === null ? "  -   " : c.mean_return.toFixed(4).padStart(7);
+      const std = c.std_return === null ? "  -   " : c.std_return.toFixed(4).padStart(6);
+      const url = c.wandb_url ? c.wandb_url.slice(0, 60) : "";
+      const cellName = c.name.padEnd(40).slice(0, 40);
+      lines.push(`  ${String(i + 1).padStart(4)} | ${cellName} | ${String(c.seeds).padStart(1)} | ${mean} | ${std} | ${url}`);
+    });
+  }
+  return lines.join("\n");
+}
+
 async function main() {
   let options;
   try {
@@ -287,7 +425,7 @@ async function main() {
     printHelp();
     process.exit(options.help ? 0 : 2);
   }
-  if (options.subcommand !== "init" && options.subcommand !== "run") {
+  if (!["init", "run", "summary"].includes(options.subcommand)) {
     process.stderr.write(`unknown subcommand: ${options.subcommand}\n`);
     printHelp();
     process.exit(2);
@@ -295,7 +433,9 @@ async function main() {
 
   let summary;
   try {
-    summary = options.subcommand === "init" ? await runInit(options) : await runRun(options);
+    if (options.subcommand === "init") summary = await runInit(options);
+    else if (options.subcommand === "run") summary = await runRun(options);
+    else summary = await runSummary(options);
   } catch (err) {
     process.stderr.write(`${err.message}\n`);
     process.exit(1);
@@ -309,9 +449,11 @@ async function main() {
     process.stdout.write(`runs.tsv:    ${summary.runsTsv}\n`);
     process.stdout.write(`commit:      ${summary.commit || "(no git)"}\n`);
     process.stdout.write(`hypothesis:  ${summary.hypothesis || "(none)"}\n`);
-  } else {
+  } else if (options.subcommand === "run") {
     process.stdout.write(`ran ${summary.ran} rows: ok=${summary.ok}, failed=${summary.failed}, skipped=${summary.skipped}\n`);
     process.stdout.write(`runs.tsv:    ${summary.runsTsv}\n`);
+  } else {
+    process.stdout.write(`${formatSummaryText(summary)}\n`);
   }
   process.exit(summary.failed && summary.failed > 0 ? 1 : 0);
 }
