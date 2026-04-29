@@ -823,6 +823,15 @@ test("runDoctor: stale 'running' row + no ACTIVE row -> two warnings", async () 
   try {
     const project = path.join(tmp, "widget-tuning");
     await copyDir(FIXTURE_PROJECT, project);
+    // Clear the fixture's ACTIVE row so the runs_running_without_active
+    // warning has nothing to match against.
+    const readmePath = path.join(project, "README.md");
+    let readme = await readFile(readmePath, "utf8");
+    readme = readme.replace(
+      /(\n## ACTIVE\n\n\| move \| result doc \| branch \| agent \| started \|\n\|------\|-----------\|--------\|-------\|---------\|)\n\| v3-candidate \|[^\n]+\|\n/,
+      "$1\n",
+    );
+    await writeFile(readmePath, readme);
     // 48h ago = stale.
     const staleIso = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
     const tsv = `${RUNS_HEADER}\n${runsRow({
@@ -920,6 +929,92 @@ test("runDoctor: bad wandb_url shape -> runs_bad_wandb_url warning", async () =>
     const codes = report.issues.map((i) => i.code);
     assert.ok(codes.includes("runs_bad_wandb_url"),
       `expected runs_bad_wandb_url in ${codes.join(",")}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// orphan result-doc check — result docs that exist on disk but aren't
+// referenced by any README section. Catches the bug class "agent
+// finished a move but forgot to update LEADERBOARD/LOG."
+
+test("runDoctor: STATUS:resolved result doc with no LEADERBOARD/LOG entry -> result_doc_orphan warning", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-orphan-resolved-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    // Drop the v4-noisy LOG row so the v4-noisy doc becomes orphaned.
+    const readmePath = path.join(project, "README.md");
+    let readme = await readFile(readmePath, "utf8");
+    readme = readme.replace(/\n\| 2026-04-28 \| resolved \| v4-noisy \|[^\n]+\|/, "");
+    await writeFile(readmePath, readme);
+    const report = await runDoctor(project);
+    const orphan = report.issues.find((i) => i.code === "result_doc_orphan");
+    assert.ok(orphan, `expected result_doc_orphan in ${report.issues.map((i) => i.code).join(",")}`);
+    assert.match(orphan.where, /v4-noisy/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: STATUS:active result doc with no ACTIVE row -> result_doc_active_unclaimed warning", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-active-unclaimed-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    // Drop the v3-candidate ACTIVE row so the active v3-candidate doc orphans.
+    const readmePath = path.join(project, "README.md");
+    let readme = await readFile(readmePath, "utf8");
+    readme = readme.replace(/\n\| v3-candidate \|[^\n]+\|/, "");
+    await writeFile(readmePath, readme);
+    const report = await runDoctor(project);
+    const orphan = report.issues.find((i) => i.code === "result_doc_active_unclaimed");
+    assert.ok(orphan, `expected result_doc_active_unclaimed in ${report.issues.map((i) => i.code).join(",")}`);
+    assert.match(orphan.where, /v3-candidate/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: STATUS:resolved doc whose slug is in LEADERBOARD only (no LOG row) -> no orphan", async () => {
+  // The fixture has v2-tuned in LEADERBOARD AND LOG. Remove the LOG row
+  // and confirm that LEADERBOARD presence alone is sufficient.
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-orphan-leaderboard-only-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    const readmePath = path.join(project, "README.md");
+    let readme = await readFile(readmePath, "utf8");
+    readme = readme.replace(/\n\| 2026-04-28 \| resolved\+admitted \| v2-tuned \|[^\n]+\|/, "");
+    await writeFile(readmePath, readme);
+    const report = await runDoctor(project);
+    const orphans = report.issues.filter((i) =>
+      i.code === "result_doc_orphan" && i.where.includes("v2-tuned")
+    );
+    assert.equal(orphans.length, 0, "v2-tuned should not be flagged — leaderboard reference is sufficient");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor: result doc with empty/missing STATUS -> no orphan flag (different bug class)", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-doctor-orphan-noStatus-"));
+  try {
+    const project = path.join(tmp, "widget-tuning");
+    await copyDir(FIXTURE_PROJECT, project);
+    // Write a brand new result doc with no STATUS section, no README ref.
+    await writeFile(path.join(project, "results", "ghost.md"), "# ghost\n\nno status here.\n");
+    const report = await runDoctor(project);
+    const codes = report.issues.map((i) => i.code).filter((c) =>
+      (c === "result_doc_orphan" || c === "result_doc_active_unclaimed")
+    );
+    // Either codes empty (preferred) or doesn't include ghost — verify ghost specifically isn't flagged.
+    const ghostFlagged = report.issues.some((i) =>
+      (i.code === "result_doc_orphan" || i.code === "result_doc_active_unclaimed")
+      && i.where.includes("ghost")
+    );
+    assert.equal(ghostFlagged, false, "missing STATUS is a separate bug class — should not orphan");
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

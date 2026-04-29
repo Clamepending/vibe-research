@@ -32,7 +32,7 @@ test("listProjects: discovers projects under library/projects/ with summary fiel
   assert.equal(widget.criterionKind, "quantitative");
   assert.equal(widget.leaderboardSize, 2);
   assert.equal(widget.queueSize, 1);
-  assert.equal(widget.activeCount, 0);
+  assert.equal(widget.activeCount, 1); // v3-candidate is in flight
   assert.equal(widget.hasBenchmark, false);
 
   const prose = projects.find((p) => p.name === "prose-style");

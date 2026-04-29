@@ -553,6 +553,61 @@ async function checkKickoffJson(projectDir) {
   return issues;
 }
 
+// Walk projects/<name>/results/*.md and confirm each result-doc's slug
+// is referenced by SOME README section (LEADERBOARD, ACTIVE, or LOG).
+// A result doc that exists on disk but isn't mentioned in the README is
+// an orphan: the agent finished a move but forgot to apply the README
+// updates. Caught now instead of being discovered weeks later when the
+// leaderboard is silently missing rows.
+async function checkOrphanResultDocs(projectDir, parsed) {
+  const issues = [];
+  const resultsDir = path.join(projectDir, "results");
+  if (!(await pathExists(resultsDir))) return issues;
+
+  let entries = [];
+  try { entries = await readdir(resultsDir); } catch { return issues; }
+  const referencedSlugs = new Set();
+  for (const row of parsed.leaderboard) if (row.slug) referencedSlugs.add(row.slug);
+  for (const row of parsed.active) if (row.slug) referencedSlugs.add(row.slug);
+  for (const row of parsed.log) if (row.slug) referencedSlugs.add(row.slug);
+
+  for (const entry of entries) {
+    if (!entry.endsWith(".md")) continue;
+    const slug = entry.replace(/\.md$/, "");
+    if (referencedSlugs.has(slug)) continue;
+
+    // Read the doc to know whether it's still in-flight (active) — an
+    // active doc with no ACTIVE row is a different bug class
+    // (active_missing_result_path catches the inverse already; this
+    // direction is "doc exists but README has no claim").
+    let doc;
+    try {
+      const text = await readFile(path.join(resultsDir, entry), "utf8");
+      doc = parseResultDoc(text);
+    } catch { continue; }
+
+    const status = String(doc?.status || "").trim().toLowerCase();
+    const where = `results/${entry}`;
+    if (status === "active") {
+      issues.push(makeIssue(
+        "warning",
+        "result_doc_active_unclaimed",
+        where,
+        `result doc has STATUS:active but no ACTIVE row in README — claim the move so collaborators see it`,
+      ));
+    } else if (status === "resolved" || status === "abandoned") {
+      issues.push(makeIssue(
+        "warning",
+        "result_doc_orphan",
+        where,
+        `STATUS:${status} but slug "${slug}" is not in LEADERBOARD/ACTIVE/LOG — README never recorded this move's outcome`,
+      ));
+    }
+    // STATUS missing/unknown: leave alone — separate bug class.
+  }
+  return issues;
+}
+
 export async function runDoctor(projectDir, { readmeText } = {}) {
   const readmePath = path.join(projectDir, "README.md");
   let text = readmeText;
@@ -578,6 +633,7 @@ export async function runDoctor(projectDir, { readmeText } = {}) {
   issues.push(...await checkLog(projectDir, parsed.log));
   issues.push(...await checkRunsTsv(projectDir, parsed.active));
   issues.push(...await checkKickoffJson(projectDir));
+  issues.push(...await checkOrphanResultDocs(projectDir, parsed));
 
   return {
     project: parsed,

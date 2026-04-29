@@ -32,6 +32,7 @@ Find the configuration of the widget that maximises the wibble score.
 
 | move | result doc | branch | agent | started |
 |------|-----------|--------|-------|---------|
+| v3-candidate | [v3-candidate](results/v3-candidate.md) | [r/v3-candidate](https://github.com/example/widget-tuning/tree/r/v3-candidate) | 0 | TODAY |
 
 ## QUEUE
 
@@ -44,4 +45,5 @@ Find the configuration of the widget that maximises the wibble score.
 | date | event | slug or ref | one-line summary | link |
 |------|-------|-------------|-------------------|------|
 | 2026-04-28 | resolved+admitted | v2-tuned | wibble jumped 0.72 → 0.84 with deeper knob | [v2-tuned.md](results/v2-tuned.md) |
+| 2026-04-28 | resolved | v4-noisy | resolved but no noise frontmatter so admission blocked | [v4-noisy.md](results/v4-noisy.md) |
 | 2026-04-27 | resolved+admitted | v1-baseline | baseline measured at 0.72 wibble | [v1-baseline.md](results/v1-baseline.md) |
