@@ -1,0 +1,227 @@
+#!/usr/bin/env node
+// vr-rl-tuner — hand a research repo over to an autonomous Vibe Research
+// agent that runs the HP/architecture/data-mixture sweeps for the human.
+//
+// This is the "vibe research takes over your experiments" entry point. The
+// human runs it once with a goal + budget; the agent then owns the loop:
+// plans sweeps, runs them, updates the leaderboard, decides what to try
+// next, writes the paper. The human reviews paper.md + leaderboard later.
+//
+// Usage:
+//   vr-rl-tuner --repo /path/to/grad-student-repo \
+//               --goal "find best LR/batch combo for PPO on Atari" \
+//               --budget "20 GPU-hours" \
+//               --library /path/to/lab-library
+//
+// Exit modes:
+//   default              Print the spawn command (so the human can review,
+//                        copy it into a fresh shell, watch it run).
+//   --exec               execvp `claude` directly with the right env so
+//                        the conversation starts immediately.
+//
+// Side effects on success:
+//   <library>/projects/<derived-name>/README.md       (via vr-research-init)
+//   <library>/projects/<derived-name>/paper.md
+//   <library>/projects/<derived-name>/kickoff.json    (this script)
+//   <library>/projects/<derived-name>/results/  + figures/
+
+import path from "node:path";
+import process from "node:process";
+import { mkdir, writeFile, stat } from "node:fs/promises";
+import { spawn } from "node:child_process";
+
+import { createProject, DEFAULT_PROJECT_NAME_PATTERN } from "../src/research/init.js";
+
+const DEFAULT_OCCUPATION_PATH = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "templates", "rl-sweep-tuner.md");
+
+function printHelp() {
+  process.stdout.write(`vr-rl-tuner — hand a repo over to an autonomous Vibe Research agent
+
+Usage:
+  vr-rl-tuner --repo <path> --goal <text> [options]
+
+Required:
+  --repo <path>            Absolute path to the project's code repo
+  --goal <text>            One-paragraph what the agent should optimize for
+
+Optional:
+  --library <path>         Library root (default: cwd)
+  --name <slug>            Project slug under projects/ (default: derived from --repo)
+  --budget <text>          Free-form budget statement (e.g. "20 GPU-hours, $50")
+  --base <pairs>           Comma-separated base config the sweeps anchor on:
+                           e.g. "lr=1e-3,batch=256,frames=4"
+  --occupation <path>      Override the default rl-sweep-tuner.md prompt
+  --provider <claude|codex>
+                           Which agent CLI to launch (default: claude)
+  --exec                   Actually exec the agent CLI (otherwise just print
+                           the command to run)
+  --json                   Emit machine-readable summary on stdout
+  --force                  Overwrite an existing project dir
+  --help, -h               Show this message
+`);
+}
+
+function parseArgs(argv) {
+  const opts = {
+    repo: "",
+    goal: "",
+    library: process.cwd(),
+    name: "",
+    budget: "",
+    base: "",
+    occupation: DEFAULT_OCCUPATION_PATH,
+    provider: "claude",
+    exec: false,
+    json: false,
+    force: false,
+    help: false,
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
+    if (arg === "--exec") { opts.exec = true; continue; }
+    if (arg === "--json") { opts.json = true; continue; }
+    if (arg === "--force") { opts.force = true; continue; }
+    if (arg === "--repo") { opts.repo = argv[++i] || ""; continue; }
+    if (arg === "--goal") { opts.goal = argv[++i] || ""; continue; }
+    if (arg === "--library") { opts.library = argv[++i] || ""; continue; }
+    if (arg === "--name") { opts.name = argv[++i] || ""; continue; }
+    if (arg === "--budget") { opts.budget = argv[++i] || ""; continue; }
+    if (arg === "--base") { opts.base = argv[++i] || ""; continue; }
+    if (arg === "--occupation") { opts.occupation = argv[++i] || ""; continue; }
+    if (arg === "--provider") { opts.provider = argv[++i] || ""; continue; }
+    if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
+    throw new Error(`unexpected positional arg: ${arg}`);
+  }
+  return opts;
+}
+
+function deriveProjectName(repoPath) {
+  const base = path.basename(path.resolve(repoPath));
+  const slug = base.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return slug || "rl-sweep";
+}
+
+async function pathExists(p) {
+  try { await stat(p); return true; } catch { return false; }
+}
+
+async function main() {
+  let opts;
+  try { opts = parseArgs(process.argv.slice(2)); }
+  catch (err) {
+    process.stderr.write(`${err.message}\n\n`);
+    printHelp();
+    process.exit(2);
+  }
+  if (opts.help) { printHelp(); process.exit(0); }
+
+  const errors = [];
+  if (!opts.repo) errors.push("--repo is required");
+  if (!opts.goal) errors.push("--goal is required");
+  const repo = opts.repo ? path.resolve(opts.repo) : "";
+  if (repo && !(await pathExists(repo))) errors.push(`--repo path not found: ${repo}`);
+  if (!(await pathExists(opts.occupation))) errors.push(`--occupation path not found: ${opts.occupation}`);
+  if (!["claude", "codex"].includes(opts.provider)) errors.push(`--provider must be claude|codex; got "${opts.provider}"`);
+  if (errors.length) {
+    for (const e of errors) process.stderr.write(`${e}\n`);
+    process.exit(2);
+  }
+
+  const library = path.resolve(opts.library);
+  const projectsDir = path.join(library, "projects");
+  const projectName = opts.name || deriveProjectName(repo);
+  if (!DEFAULT_PROJECT_NAME_PATTERN.test(projectName)) {
+    process.stderr.write(`derived project name "${projectName}" must match ${DEFAULT_PROJECT_NAME_PATTERN}; pass --name explicitly\n`);
+    process.exit(2);
+  }
+
+  // 1) Bootstrap the project under projects/<name>/ (README, paper, dirs).
+  let initResult;
+  try {
+    initResult = await createProject({
+      projectsDir,
+      name: projectName,
+      goal: opts.goal,
+      successCriteria: opts.budget ? [`stay within budget: ${opts.budget}`] : [],
+      ranking: { kind: "quantitative", metric: "mean_return", direction: "higher" },
+      queueRows: [],
+      force: opts.force,
+    });
+  } catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  }
+
+  // 2) Write kickoff.json so the spawned agent has all the human-supplied
+  //    context in one place, separate from the long-form README.
+  const kickoff = {
+    repo,
+    goal: opts.goal,
+    budget: opts.budget,
+    base: opts.base,
+    library,
+    projectDir: initResult.projectDir,
+    occupationPath: opts.occupation,
+    spawnedAt: new Date().toISOString(),
+    spawnedBy: "vr-rl-tuner",
+  };
+  const kickoffPath = path.join(initResult.projectDir, "kickoff.json");
+  await writeFile(kickoffPath, `${JSON.stringify(kickoff, null, 2)}\n`, "utf8");
+
+  // 3) Build the spawn command. We export VIBE_RESEARCH_AGENT_PROMPT_PATH
+  //    so the existing bin/claude wrapper picks up our occupation prompt
+  //    and concatenates it to its existing GUIDANCE.
+  const env = {
+    ...process.env,
+    VIBE_RESEARCH_AGENT_PROMPT_PATH: opts.occupation,
+    VIBE_RESEARCH_PROJECT_DIR: initResult.projectDir,
+    VIBE_RESEARCH_PROJECT_REPO: repo,
+  };
+  const cmd = opts.provider; // claude or codex; bin/claude + bin/codex live alongside this script
+  const argsForAgent = [];
+  const cwd = initResult.projectDir;
+
+  const summary = {
+    projectDir: initResult.projectDir,
+    kickoff: kickoffPath,
+    occupation: opts.occupation,
+    repo,
+    spawnCommand: {
+      argv: [cmd, ...argsForAgent],
+      cwd,
+      env: {
+        VIBE_RESEARCH_AGENT_PROMPT_PATH: opts.occupation,
+        VIBE_RESEARCH_PROJECT_DIR: initResult.projectDir,
+        VIBE_RESEARCH_PROJECT_REPO: repo,
+      },
+    },
+  };
+
+  if (opts.exec) {
+    // Replace this process with the agent CLI so signals (SIGINT) flow
+    // straight through and the user's terminal becomes the agent's.
+    const child = spawn(cmd, argsForAgent, { cwd, env, stdio: "inherit" });
+    child.on("exit", (code) => process.exit(code ?? 0));
+    return;
+  }
+
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
+    process.exit(0);
+  }
+
+  process.stdout.write(`bootstrapped ${initResult.projectDir}\n`);
+  process.stdout.write(`kickoff:    ${kickoffPath}\n`);
+  process.stdout.write(`occupation: ${opts.occupation}\n`);
+  process.stdout.write(`\nTo hand the project to the autonomous agent, run:\n\n`);
+  process.stdout.write(`  cd ${cwd} && \\\n`);
+  process.stdout.write(`    VIBE_RESEARCH_AGENT_PROMPT_PATH=${opts.occupation} \\\n`);
+  process.stdout.write(`    VIBE_RESEARCH_PROJECT_DIR=${initResult.projectDir} \\\n`);
+  process.stdout.write(`    VIBE_RESEARCH_PROJECT_REPO=${repo} \\\n`);
+  process.stdout.write(`    ${cmd}\n\n`);
+  process.stdout.write(`Or re-run with --exec to launch it now.\n`);
+  process.exit(0);
+}
+
+main();
