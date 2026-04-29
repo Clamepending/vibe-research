@@ -1,41 +1,36 @@
 #!/usr/bin/env node
-// vr-rl-tuner — hand a research repo over to an autonomous Vibe Research
-// agent that runs the HP/architecture/data-mixture sweeps for the human.
+// vr-rl-tuner — bootstrap a Vibe Research project that an existing
+// coding agent (Claude Code, Codex, etc.) can take over via the
+// rl-sweep-tuner skill.
 //
-// This is the "vibe research takes over your experiments" entry point. The
-// human runs it once with a goal + budget; the agent then owns the loop:
-// plans sweeps, runs them, updates the leaderboard, decides what to try
-// next, writes the paper. The human reviews paper.md + leaderboard later.
+// This used to spawn a separate agent. That was the wrong shape: the
+// coding agent that's already running in the user's session IS the
+// tuner — it just needs the right project + context loaded. So this
+// command only:
+//
+//   1. Bootstraps projects/<name>/ via createProject() (README + paper
+//      + results/ + figures/).
+//   2. Writes projects/<name>/kickoff.json with the goal + budget +
+//      target repo path so the coding agent has all the human-supplied
+//      context in one place.
+//   3. Prints a one-liner the user can hand to their coding agent
+//      ("/rl-sweep-tuner" + project name) so it loads the skill and
+//      starts the loop.
 //
 // Usage:
 //   vr-rl-tuner --repo /path/to/grad-student-repo \
 //               --goal "find best LR/batch combo for PPO on Atari" \
-//               --budget "20 GPU-hours" \
+//               --budget "20 GPU-hours, $50" \
 //               --library /path/to/lab-library
-//
-// Exit modes:
-//   default              Print the spawn command (so the human can review,
-//                        copy it into a fresh shell, watch it run).
-//   --exec               execvp `claude` directly with the right env so
-//                        the conversation starts immediately.
-//
-// Side effects on success:
-//   <library>/projects/<derived-name>/README.md       (via vr-research-init)
-//   <library>/projects/<derived-name>/paper.md
-//   <library>/projects/<derived-name>/kickoff.json    (this script)
-//   <library>/projects/<derived-name>/results/  + figures/
 
 import path from "node:path";
 import process from "node:process";
-import { mkdir, writeFile, stat } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { writeFile, stat } from "node:fs/promises";
 
 import { createProject, DEFAULT_PROJECT_NAME_PATTERN } from "../src/research/init.js";
 
-const DEFAULT_OCCUPATION_PATH = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "templates", "rl-sweep-tuner.md");
-
 function printHelp() {
-  process.stdout.write(`vr-rl-tuner — hand a repo over to an autonomous Vibe Research agent
+  process.stdout.write(`vr-rl-tuner — bootstrap a tuning project for the coding agent
 
 Usage:
   vr-rl-tuner --repo <path> --goal <text> [options]
@@ -48,16 +43,18 @@ Optional:
   --library <path>         Library root (default: cwd)
   --name <slug>            Project slug under projects/ (default: derived from --repo)
   --budget <text>          Free-form budget statement (e.g. "20 GPU-hours, $50")
-  --base <pairs>           Comma-separated base config the sweeps anchor on:
-                           e.g. "lr=1e-3,batch=256,frames=4"
-  --occupation <path>      Override the default rl-sweep-tuner.md prompt
-  --provider <claude|codex>
-                           Which agent CLI to launch (default: claude)
-  --exec                   Actually exec the agent CLI (otherwise just print
-                           the command to run)
+  --base <pairs>           Comma-separated base config the sweeps anchor on
   --json                   Emit machine-readable summary on stdout
   --force                  Overwrite an existing project dir
   --help, -h               Show this message
+
+After this command finishes, tell your existing coding agent:
+
+  Use the rl-sweep-tuner skill to take over projects/<name>.
+
+The agent will load skills/rl-sweep-tuner/SKILL.md, read kickoff.json,
+plan + run the first move, and update the leaderboard / paper /
+runs.tsv autonomously across moves.
 `);
 }
 
@@ -69,9 +66,6 @@ function parseArgs(argv) {
     name: "",
     budget: "",
     base: "",
-    occupation: DEFAULT_OCCUPATION_PATH,
-    provider: "claude",
-    exec: false,
     json: false,
     force: false,
     help: false,
@@ -79,7 +73,6 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
-    if (arg === "--exec") { opts.exec = true; continue; }
     if (arg === "--json") { opts.json = true; continue; }
     if (arg === "--force") { opts.force = true; continue; }
     if (arg === "--repo") { opts.repo = argv[++i] || ""; continue; }
@@ -88,8 +81,6 @@ function parseArgs(argv) {
     if (arg === "--name") { opts.name = argv[++i] || ""; continue; }
     if (arg === "--budget") { opts.budget = argv[++i] || ""; continue; }
     if (arg === "--base") { opts.base = argv[++i] || ""; continue; }
-    if (arg === "--occupation") { opts.occupation = argv[++i] || ""; continue; }
-    if (arg === "--provider") { opts.provider = argv[++i] || ""; continue; }
     if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
     throw new Error(`unexpected positional arg: ${arg}`);
   }
@@ -121,8 +112,6 @@ async function main() {
   if (!opts.goal) errors.push("--goal is required");
   const repo = opts.repo ? path.resolve(opts.repo) : "";
   if (repo && !(await pathExists(repo))) errors.push(`--repo path not found: ${repo}`);
-  if (!(await pathExists(opts.occupation))) errors.push(`--occupation path not found: ${opts.occupation}`);
-  if (!["claude", "codex"].includes(opts.provider)) errors.push(`--provider must be claude|codex; got "${opts.provider}"`);
   if (errors.length) {
     for (const e of errors) process.stderr.write(`${e}\n`);
     process.exit(2);
@@ -136,7 +125,6 @@ async function main() {
     process.exit(2);
   }
 
-  // 1) Bootstrap the project under projects/<name>/ (README, paper, dirs).
   let initResult;
   try {
     initResult = await createProject({
@@ -153,8 +141,6 @@ async function main() {
     process.exit(1);
   }
 
-  // 2) Write kickoff.json so the spawned agent has all the human-supplied
-  //    context in one place, separate from the long-form README.
   const kickoff = {
     repo,
     goal: opts.goal,
@@ -162,65 +148,19 @@ async function main() {
     base: opts.base,
     library,
     projectDir: initResult.projectDir,
-    occupationPath: opts.occupation,
     spawnedAt: new Date().toISOString(),
     spawnedBy: "vr-rl-tuner",
   };
   const kickoffPath = path.join(initResult.projectDir, "kickoff.json");
   await writeFile(kickoffPath, `${JSON.stringify(kickoff, null, 2)}\n`, "utf8");
 
-  // 3) Build the spawn command. We export VIBE_RESEARCH_AGENT_PROMPT_PATH
-  //    so the existing bin/claude wrapper picks up our occupation prompt
-  //    and concatenates it to its existing GUIDANCE.
-  const env = {
-    ...process.env,
-    VIBE_RESEARCH_AGENT_PROMPT_PATH: opts.occupation,
-    VIBE_RESEARCH_PROJECT_DIR: initResult.projectDir,
-    VIBE_RESEARCH_PROJECT_REPO: repo,
-  };
-  const cmd = opts.provider; // claude or codex; bin/claude + bin/codex live alongside this script
-  // Pre-allow the tools the autonomous tuner needs. Without this the
-  // first time the agent tries to run `vr-rl-sweep init`, Claude Code's
-  // permission system stops the loop dead with "this command requires
-  // approval" — which defeats the whole point of an autonomous handoff.
-  // Discovered via the real-agent verification that produced an
-  // 8-attempts-blocked transcript.
-  //
-  // Bash(*) covers vr-rl-sweep, vr-research-init/admit/doctor/lint,
-  // vr-mcp, the user's training script (bash train.sh), git for
-  // committing to the project + code repos, and ad-hoc shell
-  // exploration. The agent runs inside an isolated project dir; the
-  // budget guard in kickoff.json + Agent Inbox approvals on cloud
-  // spend are what bound destructive actions.
-  const argsForAgent = [
-    "--allowedTools", "Bash(*)", "Read", "Write", "Edit", "Glob", "Grep",
-    "--add-dir", repo,
-  ];
-  const cwd = initResult.projectDir;
-
   const summary = {
     projectDir: initResult.projectDir,
     kickoff: kickoffPath,
-    occupation: opts.occupation,
     repo,
-    spawnCommand: {
-      argv: [cmd, ...argsForAgent],
-      cwd,
-      env: {
-        VIBE_RESEARCH_AGENT_PROMPT_PATH: opts.occupation,
-        VIBE_RESEARCH_PROJECT_DIR: initResult.projectDir,
-        VIBE_RESEARCH_PROJECT_REPO: repo,
-      },
-    },
+    nextStep: `Tell your coding agent: "Use the rl-sweep-tuner skill to take over ${initResult.projectDir}."`,
+    wrote: [...initResult.wrote, kickoffPath],
   };
-
-  if (opts.exec) {
-    // Replace this process with the agent CLI so signals (SIGINT) flow
-    // straight through and the user's terminal becomes the agent's.
-    const child = spawn(cmd, argsForAgent, { cwd, env, stdio: "inherit" });
-    child.on("exit", (code) => process.exit(code ?? 0));
-    return;
-  }
 
   if (opts.json) {
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
@@ -229,14 +169,10 @@ async function main() {
 
   process.stdout.write(`bootstrapped ${initResult.projectDir}\n`);
   process.stdout.write(`kickoff:    ${kickoffPath}\n`);
-  process.stdout.write(`occupation: ${opts.occupation}\n`);
-  process.stdout.write(`\nTo hand the project to the autonomous agent, run:\n\n`);
-  process.stdout.write(`  cd ${cwd} && \\\n`);
-  process.stdout.write(`    VIBE_RESEARCH_AGENT_PROMPT_PATH=${opts.occupation} \\\n`);
-  process.stdout.write(`    VIBE_RESEARCH_PROJECT_DIR=${initResult.projectDir} \\\n`);
-  process.stdout.write(`    VIBE_RESEARCH_PROJECT_REPO=${repo} \\\n`);
-  process.stdout.write(`    ${cmd} ${argsForAgent.map((a) => /\s/.test(a) ? `'${a}'` : a).join(" ")}\n\n`);
-  process.stdout.write(`Or re-run with --exec to launch it now.\n`);
+  process.stdout.write(`\nNext step: tell your coding agent to take over.\n\n`);
+  process.stdout.write(`  Use the rl-sweep-tuner skill to take over ${initResult.projectDir}.\n\n`);
+  process.stdout.write(`The agent will load skills/rl-sweep-tuner/SKILL.md, read kickoff.json,\n`);
+  process.stdout.write(`plan + run moves, and update the leaderboard / paper / runs.tsv autonomously.\n`);
   process.exit(0);
 }
 

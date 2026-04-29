@@ -1,6 +1,16 @@
-// Tests for the rl-sweep-tuner occupation template + bin/vr-rl-tuner
-// helper. Both are static / orchestrational — no real agent spawn here;
-// the spawn is just a printed command (or a process exec under --exec).
+// Tests for the rl-sweep-tuner skill + bin/vr-rl-tuner bootstrap helper.
+//
+// Conceptual reframe vs the previous version: the autonomous tuner is the
+// USER's existing coding agent (Claude Code) loading the skill, NOT a
+// separately spawned sub-agent. So:
+//
+//   - The skill at skills/rl-sweep-tuner/SKILL.md is the playbook the
+//     existing coding agent loads on demand. Tested for the contract
+//     it must declare.
+//   - bin/vr-rl-tuner is now a thin bootstrap CLI: it writes the
+//     project + kickoff.json so the coding agent has a target to take
+//     over. No agent spawning, no allowedTools wiring, no occupation
+//     argv generation — those are the existing session's concern.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -11,7 +21,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 
 const VR_RL_TUNER = path.resolve("bin/vr-rl-tuner");
-const TEMPLATE_PATH = path.resolve("templates/rl-sweep-tuner.md");
+const SKILL_PATH = path.resolve("skills/rl-sweep-tuner/SKILL.md");
 
 function tmp(prefix) { return mkdtempSync(join(tmpdir(), `${prefix}-`)); }
 
@@ -38,29 +48,32 @@ function runCli(args, { cwd, env = {}, timeoutMs = 15_000 } = {}) {
   });
 }
 
-// ---- occupation template ----
+// ---- skill ----
 
-test("rl-sweep-tuner.md exists and contains the occupation contract", () => {
-  assert.ok(existsSync(TEMPLATE_PATH), "template must exist");
-  const text = readFileSync(TEMPLATE_PATH, "utf8");
-  // Must declare the agent owns the loop (key reframe vs ml-intern).
-  assert.match(text, /You own this loop/);
+test("rl-sweep-tuner skill: lives at the conventional path with proper frontmatter", () => {
+  assert.ok(existsSync(SKILL_PATH), "skill must exist at skills/rl-sweep-tuner/SKILL.md");
+  const text = readFileSync(SKILL_PATH, "utf8");
+  // YAML frontmatter so Claude Code's skill loader picks it up.
+  assert.match(text, /^---\nname:\s*"?rl-sweep-tuner"?\s*\ndescription:\s*"[^"]+"\s*\n---/m);
+});
+
+test("rl-sweep-tuner skill: declares the autonomous-loop contract", () => {
+  const text = readFileSync(SKILL_PATH, "utf8");
+  // The agent OWNS the loop. This is the key reframe vs ml-intern-template.
+  assert.match(text, /You own the loop/);
   // Must reference the existing tools the agent uses.
   assert.match(text, /vr-rl-sweep init/);
+  assert.match(text, /vr-rl-sweep run/);
   assert.match(text, /vr-research-init/);
   assert.match(text, /vr-research-admit/);
   assert.match(text, /vr-research-doctor/);
   // Must enforce the 3-seed + 2σ noise rule.
   assert.match(text, /n ≥ 3 seeds/);
   assert.match(text, /2 × std/);
-  // Must mention budget guard + Agent Inbox approval.
-  assert.match(text, /budget/i);
-  assert.match(text, /Agent Inbox/);
 });
 
-test("rl-sweep-tuner.md gives explicit decision-discipline order", () => {
-  const text = readFileSync(TEMPLATE_PATH, "utf8");
-  // The order matters; check the headings appear in this sequence.
+test("rl-sweep-tuner skill: gives explicit decision-discipline order", () => {
+  const text = readFileSync(SKILL_PATH, "utf8");
   const ablate = text.indexOf("Ablate");
   const replicate = text.indexOf("Replicate");
   const sensitivity = text.indexOf("Sensitivity");
@@ -73,12 +86,19 @@ test("rl-sweep-tuner.md gives explicit decision-discipline order", () => {
   assert.ok(stop > architecture, "Stop hammering last");
 });
 
-// ---- bin/vr-rl-tuner ----
+test("rl-sweep-tuner skill: tells the agent to use --sweep-name on follow-up moves", () => {
+  const text = readFileSync(SKILL_PATH, "utf8");
+  assert.match(text, /--sweep-name/);
+  assert.match(text, /follow-up moves/i);
+});
 
-test("vr-rl-tuner --help: exits 0 + prints usage", async () => {
+// ---- bin/vr-rl-tuner (now bootstrap-only, no spawn) ----
+
+test("vr-rl-tuner --help: exits 0 + tells user to ask their agent to take over", async () => {
   const result = await runCli(["--help"]);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /vr-rl-tuner/);
+  assert.match(result.stdout, /rl-sweep-tuner skill/);
 });
 
 test("vr-rl-tuner: missing --repo / --goal exits 2", async () => {
@@ -96,22 +116,9 @@ test("vr-rl-tuner: --repo path that doesn't exist exits 2", async () => {
   assert.match(r.stderr, /--repo path not found/);
 });
 
-test("vr-rl-tuner: --provider must be claude or codex", async () => {
-  const repo = tmp("vr-tuner-repo");
-  try {
-    const r = await runCli(["--repo", repo, "--goal", "x", "--provider", "made-up"]);
-    assert.equal(r.status, 2);
-    assert.match(r.stderr, /--provider must be claude\|codex/);
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
-});
-
-test("vr-rl-tuner: bootstraps project + writes kickoff.json + prints spawn command", async () => {
+test("vr-rl-tuner: bootstraps project + writes kickoff.json + prints next-step hint", async () => {
   const lib = tmp("vr-tuner-lib");
   const repo = tmp("vr-tuner-repo");
-  // The vr-research-init backend looks for templates/paper-template.md
-  // alongside the library; ship a stub.
   mkdirSync(join(lib, "templates"));
   writeFileSync(join(lib, "templates", "paper-template.md"), "# <Project title>\n", "utf8");
   try {
@@ -122,22 +129,27 @@ test("vr-rl-tuner: bootstraps project + writes kickoff.json + prints spawn comma
       "--library", lib,
     ]);
     assert.equal(result.status, 0, `expected 0, got ${result.status}: ${result.stderr}`);
-    // The repo's basename is something like "vr-tuner-repo-<rand>"; the
-    // derived project slug should match that.
     assert.match(result.stdout, /bootstrapped /);
     assert.match(result.stdout, /kickoff: /);
-    assert.match(result.stdout, /To hand the project to the autonomous agent, run:/);
-    assert.match(result.stdout, /VIBE_RESEARCH_AGENT_PROMPT_PATH=/);
+    // Crucially: the help/output now points the user at their EXISTING
+    // coding agent, not at a spawn command.
+    assert.match(result.stdout, /tell your coding agent/i);
+    assert.match(result.stdout, /rl-sweep-tuner skill/);
+    // Should NOT print any spawn command or env-var dump.
+    assert.equal(/VIBE_RESEARCH_AGENT_PROMPT_PATH/.test(result.stdout), false,
+      "removed: no agent spawning anymore");
+    assert.equal(/--allowedTools/.test(result.stdout), false,
+      "removed: no spawn argv anymore");
 
     // The kickoff.json should physically exist + contain the goal.
-    const projects = readFileSync;  // just to keep imports tidy
     const projectDir = result.stdout.match(/bootstrapped (\S+)/)[1];
-    const kickoffText = readFileSync(join(projectDir, "kickoff.json"), "utf8");
-    const kickoff = JSON.parse(kickoffText);
+    const kickoff = JSON.parse(readFileSync(join(projectDir, "kickoff.json"), "utf8"));
     assert.equal(kickoff.repo, repo);
     assert.equal(kickoff.goal, "find best LR/batch combo for PPO on Atari");
     assert.equal(kickoff.budget, "20 GPU-hours, $50");
     assert.ok(kickoff.spawnedAt);
+    // No occupationPath field anymore — that was tied to the spawn.
+    assert.equal(kickoff.occupationPath, undefined);
 
     // README + paper bootstrapped.
     assert.ok(existsSync(join(projectDir, "README.md")));
@@ -150,7 +162,7 @@ test("vr-rl-tuner: bootstraps project + writes kickoff.json + prints spawn comma
   }
 });
 
-test("vr-rl-tuner --json: returns machine-readable summary with spawn command", async () => {
+test("vr-rl-tuner --json: returns machine-readable summary with nextStep hint", async () => {
   const lib = tmp("vr-tuner-json-lib");
   const repo = tmp("vr-tuner-json-repo");
   mkdirSync(join(lib, "templates"));
@@ -167,19 +179,9 @@ test("vr-rl-tuner --json: returns machine-readable summary with spawn command", 
     assert.ok(body.projectDir);
     assert.ok(body.kickoff);
     assert.equal(body.repo, repo);
-    // argv now bakes in the --allowedTools the autonomous tuner needs +
-    // exposes the user's repo via --add-dir so the agent can read it.
-    assert.equal(body.spawnCommand.argv[0], "claude");
-    assert.ok(body.spawnCommand.argv.includes("--allowedTools"),
-      "spawn argv should pre-allow tools or the first vr-rl-sweep call gets rejected");
-    assert.ok(body.spawnCommand.argv.includes("Bash(*)"),
-      "Bash(*) is required so the agent can run vr-rl-sweep / vr-research-* / git / its training scripts");
-    assert.ok(body.spawnCommand.argv.includes("--add-dir"));
-    assert.ok(body.spawnCommand.argv.includes(repo),
-      "--add-dir should expose the user's repo to the spawned agent");
-    assert.equal(body.spawnCommand.cwd, body.projectDir);
-    assert.equal(body.spawnCommand.env.VIBE_RESEARCH_PROJECT_REPO, repo);
-    assert.match(body.spawnCommand.env.VIBE_RESEARCH_AGENT_PROMPT_PATH, /rl-sweep-tuner\.md$/);
+    assert.match(body.nextStep, /rl-sweep-tuner skill/);
+    // No spawnCommand field anymore.
+    assert.equal(body.spawnCommand, undefined);
   } finally {
     rmSync(lib, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
@@ -213,7 +215,6 @@ test("vr-rl-tuner: existing project without --force exits 1", async () => {
   const repo = tmp("vr-tuner-exist-repo");
   mkdirSync(join(lib, "templates"));
   writeFileSync(join(lib, "templates", "paper-template.md"), "# <Project title>\n", "utf8");
-  // Pre-create the project dir so vr-research-init refuses without --force.
   const slugBase = path.basename(repo).toLowerCase().replace(/[^a-z0-9]+/g, "-");
   mkdirSync(join(lib, "projects", slugBase), { recursive: true });
   try {
