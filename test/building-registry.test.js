@@ -163,7 +163,18 @@ test("building registry exposes core building manifests", () => {
   assert.equal(modal.visual.shape, "lab");
   assert.equal(modal.status, "one-click install");
   assert.ok(modal.install?.plan, "modal must declare a one-click install plan");
-  assert.equal(modal.install.plan.preflight[0].command, "command -v modal");
+  // Preflight must accept either a system-PATH `modal` (homebrew, pipx,
+  // pip --user on non-PEP-668 hosts) OR the binary the vr-pip-install-tool
+  // venv strategy symlinks into ~/.vibe-research/bin/. Without the second
+  // arm, agents on Ubuntu 24.04 / Debian 12 / Fedora 40 hosts that hit the
+  // venv strategy would never pass preflight even though Modal is installed.
+  assert.match(modal.install.plan.preflight[0].command, /command -v modal/);
+  assert.match(modal.install.plan.preflight[0].command, /\.vibe-research[^"]*\/bin\/modal/);
+  // Install command goes through vr-pip-install-tool so PEP 668 hosts get
+  // the venv path automatically. A regression that puts plain
+  // `pip install --user` back here would re-break Ubuntu 24.04 hosts.
+  assert.match(modal.install.plan.install[0].command, /vr-pip-install-tool/);
+  assert.match(modal.install.plan.install[0].command, /modal/);
   assert.equal(modal.install.plan.auth.kind, "auth-browser-cli");
   assert.match(modal.access.detail, /MODAL_TOKEN_ID/i);
   assert.match(modal.access.detail, /cloud costs stay in the agent runtime/i);

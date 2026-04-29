@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# vr-pip-install-tool — robust install of a Python CLI tool.
+#
+# Why this exists: `pip install --user <pkg>` fails on PEP 668 systems
+# (Ubuntu 24.04+, Debian 12+, Fedora 40+) with `error:
+# externally-managed-environment`, which broke the one-click install flow
+# for any building that ships a Python CLI (Modal, etc.). This script tries
+# a chain of strategies until one works and prints which it picked, so the
+# install log shows exactly what was done.
+#
+# Strategies, in order:
+#   1. pipx — preferred when available; manages an isolated venv per tool.
+#   2. Managed venv at $VIBE_RESEARCH_HOME/python-tools/<package>, with a
+#      stable symlink at $VIBE_RESEARCH_HOME/bin/<bin-name>. Works even on
+#      PEP 668 systems and isolates the tool from the system Python.
+#   3. `pip install --user --break-system-packages` — last-resort. Honest
+#      about the override; only runs if venv is also unavailable.
+#
+# Usage:
+#   vr-pip-install-tool <package> [<bin-name>]
+#
+# Examples:
+#   vr-pip-install-tool modal
+#   vr-pip-install-tool litellm-proxy litellm
+#
+# Environment overrides:
+#   VIBE_RESEARCH_HOME       — defaults to ~/.vibe-research
+#   PYTHON                   — defaults to python3
+#   VR_PIP_TOOL_FORCE_PIPX=1 — fail if pipx isn't available (don't fall back)
+#   VR_PIP_TOOL_FORCE_VENV=1 — skip pipx and force the managed-venv path
+#   VR_PIP_TOOL_DRY_RUN=1    — print which strategy would run; don't execute
+
+set -euo pipefail
+
+PACKAGE="${1:-}"
+if [ -z "$PACKAGE" ]; then
+  echo "[vr-pip-install-tool] error: package name required" >&2
+  echo "usage: vr-pip-install-tool <package> [<bin-name>]" >&2
+  exit 2
+fi
+BIN_NAME="${2:-$PACKAGE}"
+PYTHON="${PYTHON:-python3}"
+VIBE_HOME="${VIBE_RESEARCH_HOME:-$HOME/.vibe-research}"
+PY_TOOLS_DIR="$VIBE_HOME/python-tools"
+PY_TOOL_DIR="$PY_TOOLS_DIR/$PACKAGE"
+LOCAL_BIN_DIR="$VIBE_HOME/bin"
+DRY="${VR_PIP_TOOL_DRY_RUN:-0}"
+
+log() { printf '[vr-pip-install-tool] %s\n' "$*"; }
+err() { printf '[vr-pip-install-tool] %s\n' "$*" >&2; }
+
+want_pipx="${VR_PIP_TOOL_FORCE_PIPX:-0}"
+want_venv="${VR_PIP_TOOL_FORCE_VENV:-0}"
+
+# ---- Strategy 1: pipx ------------------------------------------------------
+if [ "$want_venv" != "1" ] && command -v pipx >/dev/null 2>&1; then
+  log "strategy=pipx package=$PACKAGE bin=$BIN_NAME"
+  if [ "$DRY" = "1" ]; then exit 0; fi
+  # --force re-installs the same package cleanly, replacing any prior install.
+  pipx install --force "$PACKAGE"
+  log "done (pipx). Verify: command -v $BIN_NAME"
+  exit 0
+fi
+if [ "$want_pipx" = "1" ]; then
+  err "VR_PIP_TOOL_FORCE_PIPX=1 but pipx is not installed"
+  exit 1
+fi
+
+# ---- Strategy 2: managed venv ----------------------------------------------
+if "$PYTHON" -c "import venv" >/dev/null 2>&1; then
+  log "strategy=venv package=$PACKAGE bin=$BIN_NAME venv=$PY_TOOL_DIR"
+  if [ "$DRY" = "1" ]; then exit 0; fi
+  mkdir -p "$PY_TOOLS_DIR" "$LOCAL_BIN_DIR"
+  if [ ! -d "$PY_TOOL_DIR" ] || [ ! -x "$PY_TOOL_DIR/bin/python" ]; then
+    "$PYTHON" -m venv "$PY_TOOL_DIR"
+  fi
+  # Quiet pip upgrade — its noise drowns useful output. Then install the
+  # actual package and let pip print its progress.
+  "$PY_TOOL_DIR/bin/pip" install --upgrade --quiet pip
+  "$PY_TOOL_DIR/bin/pip" install --upgrade "$PACKAGE"
+
+  if [ -x "$PY_TOOL_DIR/bin/$BIN_NAME" ]; then
+    ln -sf "$PY_TOOL_DIR/bin/$BIN_NAME" "$LOCAL_BIN_DIR/$BIN_NAME"
+    log "linked $LOCAL_BIN_DIR/$BIN_NAME -> $PY_TOOL_DIR/bin/$BIN_NAME"
+  else
+    err "warning: '$BIN_NAME' not found in $PY_TOOL_DIR/bin/ after install"
+    err "available binaries:"
+    ls -1 "$PY_TOOL_DIR/bin/" >&2 || true
+    err "you can either (a) symlink the right one to $LOCAL_BIN_DIR/ manually, or"
+    err "                (b) re-run with the correct bin name: vr-pip-install-tool $PACKAGE <correct-bin>"
+    exit 1
+  fi
+
+  case ":$PATH:" in
+    *":$LOCAL_BIN_DIR:"*) ;;
+    *)
+      err "note: $LOCAL_BIN_DIR is not on PATH"
+      err "add this line to your shell profile (~/.bashrc, ~/.zshrc) so agents see the new binary:"
+      err "  export PATH=\"$LOCAL_BIN_DIR:\$PATH\""
+      ;;
+  esac
+  log "done (venv). Verify: $LOCAL_BIN_DIR/$BIN_NAME --help"
+  exit 0
+fi
+
+# ---- Strategy 3: --break-system-packages (last resort) ---------------------
+log "strategy=break-system-packages package=$PACKAGE (no pipx, no venv module)"
+if [ "$DRY" = "1" ]; then exit 0; fi
+"$PYTHON" -m pip install --user --break-system-packages --upgrade "$PACKAGE"
+log "done (--break-system-packages). Note: this writes to the system Python user-site;"
+log "if a future OS update breaks the install, re-run this command to repair."

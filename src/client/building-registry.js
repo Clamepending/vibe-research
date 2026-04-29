@@ -387,12 +387,26 @@ const CORE_BUILDING_MANIFESTS = [
       storedFallback: false,
       plan: {
         preflight: [
-          { kind: "command", command: "command -v modal", label: "Detect Modal CLI" },
+          {
+            kind: "command",
+            // Detect Modal whether it's on the user's PATH (pip --user install,
+            // pipx, system package) OR in the vr-managed venv created by
+            // vr-pip-install-tool (~/.vibe-research/bin/modal).
+            command: "command -v modal || [ -x \"${VIBE_RESEARCH_HOME:-$HOME/.vibe-research}/bin/modal\" ]",
+            label: "Detect Modal CLI",
+          },
         ],
         install: [
           {
             kind: "command",
-            command: "python3 -m pip install --user --upgrade modal",
+            // vr-pip-install-tool tries pipx → managed venv → --break-system-packages
+            // in order. Plain `pip install --user` blew up on PEP 668 hosts
+            // (Ubuntu 24.04+ / Debian 12+ / Fedora 40+) with
+            // "error: externally-managed-environment", which is the
+            // failure mode we hit on cthulhu1. The script picks the right
+            // strategy automatically and prints which one it used so the
+            // install log is debuggable.
+            command: "bash \"$VIBE_RESEARCH_APP_DIR/bin/vr-pip-install-tool\" modal",
             label: "Install Modal Python package",
             timeoutSec: 300,
           },
