@@ -268,11 +268,16 @@ export function extractRichSessionImageRefs(text, { includeMarkdown = false, max
   };
 
   // Pull paths out of markdown image syntax explicitly when the caller asks
-  // for it. Used for user-message entries (which don't render markdown via
-  // the knowledge-base renderer) and for tool entries that paste in an
-  // attachment reference.
+  // for it. CommonMark allows two forms; the angle-bracket form is what
+  // carries paths that contain whitespace.
   if (includeMarkdown) {
-    for (const match of source.matchAll(/!\[[^\]]*\]\(<?([^)<>\s]+)(?:\s+"[^"]*")?>?\)/gu)) {
+    for (const match of source.matchAll(/!\[[^\]]*\]\(<([^>]+)>(?:\s+"[^"]*")?\)/gu)) {
+      pushIfImage(match[1].trim());
+      if (out.length >= maxRefs) {
+        return out;
+      }
+    }
+    for (const match of source.matchAll(/!\[[^\]]*\]\(([^)<>\s]+)(?:\s+"[^"]*")?\)/gu)) {
       pushIfImage(match[1]);
       if (out.length >= maxRefs) {
         return out;
@@ -282,17 +287,41 @@ export function extractRichSessionImageRefs(text, { includeMarkdown = false, max
 
   // Strip markdown image syntax before scanning for plain paths so we don't
   // double-extract a path that already appeared inside ![](...) above.
-  const sanitized = source.replace(/!\[[^\]]*\]\([^)]+\)/gu, "");
+  const sanitized = source
+    .replace(/!\[[^\]]*\]\(<[^>]*>(?:\s+"[^"]*")?\)/gu, "")
+    .replace(/!\[[^\]]*\]\([^)]+\)/gu, "");
 
   // Skip text inside ` `-delimited inline code: every plot script's grep
   // -rn output ends up here, and embedding all of it bloats the feed.
   const codeStripped = sanitized.replace(/`[^`]*`/g, "");
 
-  const re = /(\/(?:[\w.@~+-]+(?:\s\w[\w.@~+-]*)*\/)+[\w.@~+-]+\.[A-Za-z0-9]{2,8}|(?:[\w.@~+-]+\/)+[\w.@~+-]+\.[A-Za-z0-9]{2,8})/gu;
-  for (const match of codeStripped.matchAll(re)) {
-    pushIfImage(match[1]);
-    if (out.length >= maxRefs) {
-      break;
+  // Bracketed forms — angle brackets and double-quotes — explicitly let the
+  // user emit a path with spaces / parens / unicode. Single-quoted is NOT
+  // accepted because contractions ("Mark's notes") false-positive.
+  for (const match of codeStripped.matchAll(/<([^<>\n]+\.[A-Za-z0-9]{2,8})>/gu)) {
+    pushIfImage(match[1].trim());
+    if (out.length >= maxRefs) break;
+  }
+  for (const match of codeStripped.matchAll(/"([^"\n]+\.[A-Za-z0-9]{2,8})"/gu)) {
+    pushIfImage(match[1].trim());
+    if (out.length >= maxRefs) break;
+  }
+
+  // Bare prose extraction. \p{L}\p{N} is Unicode-aware so paths like
+  // figures/résultat.png or figures/實驗.png extract. Spaces and parens are
+  // intentionally excluded — they false-positive too hard in prose. Users
+  // who need paths-with-spaces use one of the bracketed forms above.
+  if (out.length < maxRefs) {
+    const PATH_CHAR = "[\\p{L}\\p{N}_.@~+-]";
+    const re = new RegExp(
+      `(\\/(?:${PATH_CHAR}+\\/)+${PATH_CHAR}+\\.[A-Za-z0-9]{2,8}|(?:${PATH_CHAR}+\\/)+${PATH_CHAR}+\\.[A-Za-z0-9]{2,8})`,
+      "gu",
+    );
+    for (const match of codeStripped.matchAll(re)) {
+      pushIfImage(match[1]);
+      if (out.length >= maxRefs) {
+        break;
+      }
     }
   }
 

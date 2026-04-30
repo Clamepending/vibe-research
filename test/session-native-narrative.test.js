@@ -708,6 +708,47 @@ test("Claude narrative attaches slashAction on an auth_failed assistant error", 
   assert.deepEqual(errorEntry.slashAction, { command: "/login", label: "Sign in" });
 });
 
+test("Claude narrative extracts imageRefs from FULL text BEFORE truncation: a path mentioned in the tail of a >12K assistant message still appears", () => {
+  // MAX_TEXT_LENGTH = 12_000. A 14K-char message with the image path
+  // mentioned at the end would lose the path if extraction ran on the
+  // truncated text. The shaper must extract first, then truncate the
+  // visible text, and imageRefs must ride along on the entry.
+  const padding = "x".repeat(14_000);
+  const messageText = `Working on the analysis...\n${padding}\nFinally, saved figures/loss-curve.png for review.`;
+  const text = JSON.stringify({
+    timestamp: "2026-04-29T12:00:00.000Z",
+    type: "assistant",
+    message: { content: [{ type: "text", text: messageText }] },
+  });
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude" });
+  const assistant = narrative.entries.find((e) => e.kind === "assistant");
+  assert.ok(assistant);
+  // imageRefs survive the truncation pass.
+  assert.deepEqual(assistant.imageRefs, ["figures/loss-curve.png"]);
+  // Text was truncated but the image strip still renders correctly because
+  // the renderer reads imageRefs, not the cropped text.
+  assert.ok(assistant.text.length <= 12_000, "text truncated to MAX_TEXT_LENGTH");
+});
+
+test("Claude narrative extracts slashAction from FULL error text BEFORE truncation", () => {
+  // Same invariant for slashAction: a long error message with the
+  // /login trigger at the tail must still produce the inline button.
+  const longTail = "y".repeat(14_000);
+  const errorText = `An error happened.\n${longTail}\nPlease run /login to refresh.`;
+  const text = JSON.stringify({
+    timestamp: "2026-04-29T12:00:00.000Z",
+    type: "assistant",
+    error: errorText,
+    message: { content: [] },
+  });
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude" });
+  const errorEntry = narrative.entries.find((e) => e.kind === "status" && e.label === "Error");
+  assert.ok(errorEntry);
+  assert.deepEqual(errorEntry.slashAction, { command: "/login", label: "Sign in" });
+});
+
 test("Claude narrative attaches imageRefs only when user message used the explicit attachment markdown", () => {
   const timestamp = "2026-04-29T12:00:00.000Z";
   const text = [

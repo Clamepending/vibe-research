@@ -41,6 +41,20 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+// Strip OSC envelopes (the BEL/ST-terminated control sequences) from a
+// string while leaving SGR ANSI codes and bare characters intact. The
+// renderer turns SGR into <span> wrappers for colours; OSC has no
+// semantic value to today's renderer (it carries terminal titles and
+// hyperlinks). Without this pass, modern tools (gh, npm, git ≥ 2.32)
+// that emit OSC-8 hyperlinks would leak raw escape bytes into the
+// rendered chat. The strip happens here in the validator so producers
+// don't need to remember it — every entry on the wire is render-safe.
+const OSC_ENVELOPE_RE = /\][^]*(?:|\\)/gu;
+function stripOscEnvelopes(value) {
+  // OSC-8 wire shape: ESC ] params ; url BEL ... ESC ] ; ; BEL (or ESC\)
+  return String(value ?? "").replace(OSC_ENVELOPE_RE, "");
+}
+
 function isStringArray(value) {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
@@ -74,7 +88,7 @@ export function normaliseNarrativeEntry(rawEntry) {
 
   const id = ensureString(rawEntry.id, "id", { required: true });
   const label = ensureString(rawEntry.label, "label");
-  const text = typeof rawEntry.text === "string" ? rawEntry.text : "";
+  const text = stripOscEnvelopes(typeof rawEntry.text === "string" ? rawEntry.text : "");
   const timestamp = ensureString(rawEntry.timestamp, "timestamp");
   const seq = Number.isFinite(rawEntry.seq) ? Number(rawEntry.seq) : 0;
   const status = ensureString(rawEntry.status, "status");
@@ -155,9 +169,11 @@ export function normaliseNarrativeEntry(rawEntry) {
     });
   }
 
-  // Free-form preview text shown under tool entries.
+  // Free-form preview text shown under tool entries. Same OSC strip as
+  // entry.text — Bash output frequently carries OSC-8 hyperlinks (gh,
+  // npm) and they'd leak as raw bytes without it.
   if (rawEntry.outputPreview !== undefined && rawEntry.outputPreview !== null) {
-    out.outputPreview = ensureString(rawEntry.outputPreview, "outputPreview");
+    out.outputPreview = stripOscEnvelopes(ensureString(rawEntry.outputPreview, "outputPreview"));
   } else {
     out.outputPreview = "";
   }

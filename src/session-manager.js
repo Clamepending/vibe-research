@@ -638,7 +638,14 @@ function mergeNarrativeEntries(localEntries = [], providerEntries = [], maxEntri
   for (const entry of combined) {
     const { __origin: _origin, __index: _index, ...cleanEntry } = entry;
     const key = buildNarrativeEntryDedupKey(cleanEntry);
-    if (!cleanEntry.text || !key || key === previousKey) {
+    // Empty-text entries are usually noise EXCEPT for the OpenCode-style
+    // thinking placeholder: a kind:"assistant" entry whose text is "" IS
+    // the thinking spinner. Renderer keys off `text.trim() === ""` so we
+    // need to let it through. Same goes for explicit thinking entries.
+    const isPlaceholder = !cleanEntry.text
+      && cleanEntry.kind === "assistant"
+      && (cleanEntry.meta === "pending" || cleanEntry.meta === "streaming" || cleanEntry.thinking === true);
+    if ((!cleanEntry.text && !isPlaceholder) || !key || key === previousKey) {
       continue;
     }
 

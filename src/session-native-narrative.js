@@ -82,6 +82,14 @@ function makeEntryId(prefix, index, suffix = "") {
   return suffix ? `${prefix}-${index}-${suffix}` : `${prefix}-${index}`;
 }
 
+// Strip ONLY OSC envelopes (the BEL/ST-terminated control sequences) and
+// leave SGR and bare characters intact. Used at the wire-format boundary
+// in dedupePush so OSC-8 hyperlinks (gh / npm / git ≥ 2.32) don't leak as
+// raw escape bytes into the rendered chat.
+function stripOscFromText(value) {
+  return String(value ?? "").replace(/\][^]*(?:|\\)/gu, "");
+}
+
 // Pure ANSI-strip used by the slash-action / image-ref extractors. Lives here
 // because session-native-narrative.js is the wire-format owner; the client's
 // rich-session-helpers.js has its own copy to avoid an import cycle (the
@@ -131,7 +139,18 @@ export function extractImageRefsFromText(text, { includeMarkdown = false, maxRef
   };
 
   if (includeMarkdown) {
-    for (const match of source.matchAll(/!\[[^\]]*\]\(<?([^)<>\s]+)(?:\s+"[^"]*")?>?\)/gu)) {
+    // CommonMark allows two markdown-image forms:
+    //   ![alt](path)              — path may not contain whitespace, (, ), <, >
+    //   ![alt](<path with spaces>) — angle-bracketed; anything except > is fine
+    // Match the angle-bracket form first so paths-with-spaces aren't truncated
+    // by the simpler form's whitespace exclusion.
+    for (const match of source.matchAll(/!\[[^\]]*\]\(<([^>]+)>(?:\s+"[^"]*")?\)/gu)) {
+      pushIfImage(match[1].trim());
+      if (out.length >= maxRefs) {
+        return out;
+      }
+    }
+    for (const match of source.matchAll(/!\[[^\]]*\]\(([^)<>\s]+)(?:\s+"[^"]*")?\)/gu)) {
       pushIfImage(match[1]);
       if (out.length >= maxRefs) {
         return out;
@@ -139,14 +158,44 @@ export function extractImageRefsFromText(text, { includeMarkdown = false, maxRef
     }
   }
 
-  const sanitized = source.replace(/!\[[^\]]*\]\([^)]+\)/gu, "");
+  // Strip any markdown image macros that DID match above so we don't
+  // double-extract the same path via the prose regex.
+  const sanitized = source
+    .replace(/!\[[^\]]*\]\(<[^>]*>(?:\s+"[^"]*")?\)/gu, "")
+    .replace(/!\[[^\]]*\]\([^)]+\)/gu, "");
   const codeStripped = sanitized.replace(/`[^`]*`/g, "");
 
-  const re = /(\/(?:[\w.@~+-]+(?:\s\w[\w.@~+-]*)*\/)+[\w.@~+-]+\.[A-Za-z0-9]{2,8}|(?:[\w.@~+-]+\/)+[\w.@~+-]+\.[A-Za-z0-9]{2,8})/gu;
-  for (const match of codeStripped.matchAll(re)) {
-    pushIfImage(match[1]);
-    if (out.length >= maxRefs) {
-      break;
+  // Bracketed path forms produce paths with spaces / parens / unicode that
+  // the basic prose regex below cannot match. Run them first so a path like
+  // `<figures/run (seed=0).png>` or `"figures/run (seed=0).png"` extracts
+  // intact without conflicting with prose context. Single-quote is NOT
+  // accepted because contractions ("Mark's notes") would false-positive.
+  for (const match of codeStripped.matchAll(/<([^<>\n]+\.[A-Za-z0-9]{2,8})>/gu)) {
+    pushIfImage(match[1].trim());
+    if (out.length >= maxRefs) break;
+  }
+  for (const match of codeStripped.matchAll(/"([^"\n]+\.[A-Za-z0-9]{2,8})"/gu)) {
+    pushIfImage(match[1].trim());
+    if (out.length >= maxRefs) break;
+  }
+
+  // Bare prose extraction. \p{L}\p{N} is Unicode-aware (so paths like
+  // figures/résultat.png or figures/實驗.png extract). The character class
+  // intentionally excludes spaces and parens — those false-positive too
+  // hard in prose ("the (figures/x.png)" vs "(figures/x.png) is the
+  // image"). Users who need paths-with-spaces wrap them with <…> or "…"
+  // (the bracketed forms above) or use markdown image syntax.
+  if (out.length < maxRefs) {
+    const PATH_CHAR = "[\\p{L}\\p{N}_.@~+-]";
+    const re = new RegExp(
+      `(\\/(?:${PATH_CHAR}+\\/)+${PATH_CHAR}+\\.[A-Za-z0-9]{2,8}|(?:${PATH_CHAR}+\\/)+${PATH_CHAR}+\\.[A-Za-z0-9]{2,8})`,
+      "gu",
+    );
+    for (const match of codeStripped.matchAll(re)) {
+      pushIfImage(match[1]);
+      if (out.length >= maxRefs) {
+        break;
+      }
     }
   }
 
@@ -181,7 +230,14 @@ function dedupePush(entries, nextEntry, maxEntries = DEFAULT_MAX_ENTRIES) {
     return;
   }
 
-  const normalizedText = truncateText(nextEntry.text);
+  // Strip OSC envelopes (titles, hyperlinks) BEFORE truncation so the wire
+  // format never carries terminal-only metadata into the renderer. Modern
+  // tools (gh, npm, git ≥ 2.32) emit OSC-8 hyperlinks inline; without this
+  // strip the visible text would contain ESC]8;;url BEL ... ESC]8;; BEL
+  // around every clickable link the agent emits. SGR (the ESC[<params>m
+  // subset) is preserved so colours survive into the chat.
+  const cleanedText = stripOscFromText(nextEntry.text);
+  const normalizedText = truncateText(cleanedText);
   if (!normalizedText) {
     return;
   }

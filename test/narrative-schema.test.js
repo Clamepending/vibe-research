@@ -21,6 +21,16 @@ test("normaliseNarrativeEntry: requires id and a known kind", () => {
   assert.throws(() => normaliseNarrativeEntry({ kind: "user" }), /id is required/);
 });
 
+test("normaliseNarrativeEntry: strips OSC-8 hyperlinks from text and outputPreview", () => {
+  const ESC = String.fromCharCode(0x1b), BEL = String.fromCharCode(0x07);
+  const wrapped = `Saved ${ESC}]8;;file:///abs/figures/x.png${BEL}figures/x.png${ESC}]8;;${BEL}`;
+  const out = normaliseNarrativeEntry({
+    id: "a1", kind: "assistant", text: wrapped, outputPreview: wrapped,
+  });
+  assert.equal(out.text, "Saved figures/x.png", "OSC envelope removed from text");
+  assert.equal(out.outputPreview, "Saved figures/x.png", "OSC envelope removed from outputPreview");
+});
+
 test("normaliseNarrativeEntry: keeps the canonical core fields and drops unknown fields", () => {
   const out = normaliseNarrativeEntry({
     id: "u1",

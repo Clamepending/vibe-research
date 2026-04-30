@@ -359,6 +359,164 @@ test("ansi: image extractor cleans coloured paths so the tile gets the bare path
 });
 
 // ============================================================================
+// OSC-8 hyperlink stripping
+// ============================================================================
+//
+// OSC-8 is the "make terminal text clickable" escape Modern terminals use
+// (gh, npm, git ≥ 2.32, etc.). Wire shape:
+//   ESC ] 8 ; params ; url ST | BEL
+//   <visible-text>
+//   ESC ] 8 ; ; ST | BEL
+// where ST is ESC \ (two bytes) and BEL is single byte 0x07.
+// The shaper must strip the OSC envelopes but preserve the visible text;
+// otherwise the chat surfaces raw bytes around every clickable link an
+// agent emits.
+
+const BEL = String.fromCharCode(0x07);
+
+test("OSC-8: BEL-terminated hyperlink is stripped, visible text survives", () => {
+  const wrapped = `${ESC}]8;;file:///tmp/figures/x.png${BEL}figures/x.png${ESC}]8;;${BEL}`;
+  assert.equal(stripAnsi(wrapped), "figures/x.png");
+});
+
+test("OSC-8: ST-terminated (ESC\\) hyperlink is stripped, visible text survives", () => {
+  const wrapped = `${ESC}]8;;https://example.com${ESC}\\Click here${ESC}]8;;${ESC}\\`;
+  assert.equal(stripAnsi(wrapped), "Click here");
+});
+
+test("OSC-8: image-ref extractor finds paths inside hyperlinked output", () => {
+  // Bash on a modern terminal: `saved <hyperlink>figures/run.png</hyperlink>`.
+  const wrapped = `saved ${ESC}]8;;file:///abs/figures/run.png${BEL}figures/run.png${ESC}]8;;${BEL}`;
+  assert.deepEqual(extractRichSessionImageRefs(wrapped), ["figures/run.png"]);
+});
+
+test("OSC-8: slash-action extractor recognises /login through a hyperlink wrapper", () => {
+  const wrapped = `${ESC}]8;;auth-doc${BEL}Please run /login${ESC}]8;;${BEL} to retry.`;
+  assert.deepEqual(extractRichSessionSlashAction(wrapped), { command: "/login", label: "Sign in" });
+});
+
+test("OSC-8: empty-params hyperlink (just url) still strips cleanly", () => {
+  // OSC-8 can have no params section: ESC]8;;url BEL.
+  const wrapped = `${ESC}]8;;https://x.test${BEL}link${ESC}]8;;${BEL}`;
+  assert.equal(stripAnsi(wrapped), "link");
+});
+
+test("OSC-8: multiple hyperlinks on the same line all strip", () => {
+  const wrapped = `see ${ESC}]8;;u1${BEL}figures/a.png${ESC}]8;;${BEL} and ${ESC}]8;;u2${BEL}figures/b.png${ESC}]8;;${BEL}`;
+  assert.equal(stripAnsi(wrapped), "see figures/a.png and figures/b.png");
+  assert.deepEqual(
+    extractRichSessionImageRefs(wrapped),
+    ["figures/a.png", "figures/b.png"],
+  );
+});
+
+test("OSC-8 + SGR: a coloured + hyperlinked path still extracts", () => {
+  // gh / npm on a terminal that supports both: green + clickable.
+  const wrapped = `saved ${ESC}[32m${ESC}]8;;file:///abs/figures/x.png${BEL}figures/x.png${ESC}]8;;${BEL}${ESC}[0m`;
+  assert.deepEqual(extractRichSessionImageRefs(wrapped), ["figures/x.png"]);
+});
+
+// ============================================================================
+// Path forms with spaces, parens, unicode
+// ============================================================================
+//
+// Research workflows produce filenames like `loss (lr=1e-4).png` and
+// `figures/run (seed=0).png`. Non-English projects produce
+// `figures/résultat.png` or `figures/實驗.png`. Bare prose extraction
+// can't disambiguate spaces in paths from spaces in prose, so the user
+// (or the agent) wraps with <…> or "…" to mark the boundary explicitly.
+// Markdown's angle-bracket image syntax `![](< path with spaces >)` works
+// through the includeMarkdown path.
+
+test("paths with spaces: bare prose does NOT extract a path with spaces", () => {
+  // Intentional limitation — spaces in prose are too ambiguous.
+  // Users wrap with <…> or "…" to mark the boundary.
+  assert.deepEqual(extractRichSessionImageRefs("see figures/run final.png"), []);
+});
+
+test("paths with spaces: angle-bracketed form extracts", () => {
+  assert.deepEqual(
+    extractRichSessionImageRefs("saved <figures/run (seed=0).png> for review"),
+    ["figures/run (seed=0).png"],
+  );
+});
+
+test("paths with spaces: double-quoted form extracts", () => {
+  assert.deepEqual(
+    extractRichSessionImageRefs(`saved "figures/loss (lr=1e-4).png" for review`),
+    ["figures/loss (lr=1e-4).png"],
+  );
+});
+
+test("paths with spaces: single-quoted does NOT extract (contractions would false-positive)", () => {
+  assert.deepEqual(
+    extractRichSessionImageRefs(`see 'figures/x.png'`),
+    // The bare-prose regex still catches the inner figures/x.png, which is
+    // the right answer — it's the angle-bracket / double-quote ENRICHMENT
+    // that's gated, not a hard veto on the path.
+    ["figures/x.png"],
+  );
+});
+
+test("paths with spaces: markdown angle-bracket form extracts", () => {
+  assert.deepEqual(
+    extractRichSessionImageRefs(
+      "![dropped image: cat](<figures/cat (final).png>)",
+      { includeMarkdown: true },
+    ),
+    ["figures/cat (final).png"],
+  );
+});
+
+test("paths with unicode: extracts NFC-composed names", () => {
+  assert.deepEqual(
+    extractRichSessionImageRefs("saved figures/résultat.png for the paper"),
+    ["figures/résultat.png"],
+  );
+});
+
+test("paths with unicode: extracts CJK names", () => {
+  assert.deepEqual(
+    extractRichSessionImageRefs("見て figures/實驗.png ね"),
+    ["figures/實驗.png"],
+  );
+});
+
+test("paths with unicode: extracts mixed unicode + ASCII", () => {
+  assert.deepEqual(
+    extractRichSessionImageRefs("see figures/run-2026-04-30 (seed 0).png".replace("see figures/run-2026-04-30 (seed 0).png", `see <figures/run-2026-04-30 (seed 0).png>`)),
+    ["figures/run-2026-04-30 (seed 0).png"],
+  );
+});
+
+test("paths with parens: bare prose does not extract (parens are sentence punctuation)", () => {
+  // "see (figures/x.png)" should match figures/x.png — the trailing ) is
+  // already trimmed by trimTrailingPunct, but the leading ( shouldn't
+  // cause a match. The bare regex doesn't include ( so it stops there.
+  assert.deepEqual(
+    extractRichSessionImageRefs("see (figures/x.png) for the figure"),
+    ["figures/x.png"],
+  );
+});
+
+test("paths with parens: angle-bracket form extracts a path with parens intact", () => {
+  assert.deepEqual(
+    extractRichSessionImageRefs("see <figures/run (seed=0).png>"),
+    ["figures/run (seed=0).png"],
+  );
+});
+
+test("paths with parens: bracketed form via markdown angle-bracket extracts", () => {
+  assert.deepEqual(
+    extractRichSessionImageRefs(
+      "![](<figures/loss (lr=1e-4).png>)",
+      { includeMarkdown: true },
+    ),
+    ["figures/loss (lr=1e-4).png"],
+  );
+});
+
+// ============================================================================
 // resolveRichSessionSlashAction / resolveRichSessionImageRefs — schema-only
 // resolvers used by the renderer. After the schema rollout, every producer
 // emits structured fields directly, so the resolvers are now thin readers
