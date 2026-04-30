@@ -1,0 +1,129 @@
+#!/usr/bin/env node
+// Audit one move result and recommend the next human-steerable action.
+
+import path from "node:path";
+import process from "node:process";
+import { judgeMove, formatJudgeReport } from "../src/research/judge.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-judge
+
+Audit a Vibe Research move result and recommend the next action:
+continue, rerun, synthesize, brainstorm, or steer. The judge does not mutate
+project state; it can optionally create an Agent Inbox review card.
+
+Usage:
+  vr-research-judge <project-dir> --slug <move-slug>
+  vr-research-judge <project-dir> --result results/<slug>.md --json
+  vr-research-judge <project-dir> --slug <move-slug> --ask-human
+
+Options:
+  --slug <slug>             Move/result slug.
+  --result <path>           Result doc path, relative to project-dir or absolute.
+  --allow-cross-version     Allow benchmark_version comparison across versions.
+  --no-paper                Skip paper.md linting.
+  --ask-human               Create an Agent Inbox review card.
+  --wait-human              Wait for the Agent Inbox card to resolve.
+  --timeout-ms <ms>         Wait timeout when --wait-human is set.
+  --api <url>               Overrides VIBE_RESEARCH_AGENT_TOWN_API.
+  --json                    Print the full structured report.
+  --help, -h                Show this help.
+`);
+}
+
+function requireValue(args, index, flag) {
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value.`);
+  }
+  return value;
+}
+
+function parseArgs(args) {
+  const options = {
+    allowCrossVersion: false,
+    api: "",
+    askHuman: false,
+    checkPaper: true,
+    help: false,
+    json: false,
+    projectDir: "",
+    resultPath: "",
+    slug: "",
+    timeoutMs: "",
+    waitHuman: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--allow-cross-version") {
+      options.allowCrossVersion = true;
+    } else if (arg === "--no-paper") {
+      options.checkPaper = false;
+    } else if (arg === "--ask-human") {
+      options.askHuman = true;
+    } else if (arg === "--wait-human") {
+      options.askHuman = true;
+      options.waitHuman = true;
+    } else if (arg === "--api") {
+      options.api = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--result") {
+      options.resultPath = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--slug") {
+      options.slug = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--timeout-ms") {
+      options.timeoutMs = requireValue(args, index, arg);
+      index += 1;
+    } else if (!arg.startsWith("--") && !options.projectDir) {
+      options.projectDir = arg;
+    } else {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    printHelp();
+    return;
+  }
+  if (!options.projectDir) {
+    throw new Error("project-dir is required.");
+  }
+  if (!options.slug && !options.resultPath) {
+    throw new Error("--slug or --result is required.");
+  }
+
+  const report = await judgeMove({
+    projectDir: path.resolve(options.projectDir),
+    slug: options.slug,
+    resultPath: options.resultPath,
+    allowCrossVersion: options.allowCrossVersion,
+    checkPaper: options.checkPaper,
+    askHuman: options.askHuman,
+    waitHuman: options.waitHuman,
+    agentTownApi: options.api,
+    timeoutMs: options.timeoutMs,
+  });
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    process.stdout.write(`${formatJudgeReport(report)}\n`);
+  }
+}
+
+void main().catch((error) => {
+  process.stderr.write(`[vr-research-judge] error: ${error.message}\n`);
+  process.exit(1);
+});

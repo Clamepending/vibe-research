@@ -22,6 +22,7 @@
     "vr-research-brief": "./bin/vr-research-brief",
     "vr-research-doctor": "./bin/vr-research-doctor",
     "vr-research-init": "./bin/vr-research-init",
+    "vr-research-judge": "./bin/vr-research-judge",
     "vr-research-lint-paper": "./bin/vr-research-lint-paper",
     "vr-research-log": "./bin/vr-research-log",
     "vr-research-queue": "./bin/vr-research-queue",
@@ -44,6 +45,7 @@
     "rv-videomemory": "./bin/rv-videomemory",
     "rv-playwright": "./bin/rv-playwright",
     "rv-research-brief": "./bin/vr-research-brief",
+    "rv-research-judge": "./bin/vr-research-judge",
     "rv-research-resolve": "./bin/vr-research-resolve",
     "rv-research-runner": "./bin/vr-research-runner",
     "playwright-cli": "./bin/playwright-cli"

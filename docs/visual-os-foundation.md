@@ -103,7 +103,13 @@ vr-research-runner projects/demo finish \
   --apply
 ```
 
-Cycle review cards use `continue`, `rerun`, `synthesize`, `brainstorm`, and `steer` choices so the human can redirect the hillclimb from Agent Inbox.
+The judge pass audits the result after cycles or finish, then opens the same fast steering surface:
+
+```sh
+vr-research-judge projects/demo --slug dropout-rerun --ask-human
+```
+
+It reads the result doc, doctor, admit, paper lint, and benchmark context, then recommends `continue`, `rerun`, `synthesize`, `brainstorm`, or `steer`. Cycle and judge review cards use those same choices so the human can redirect the hillclimb from Agent Inbox without reading a long transcript.
 
 Agent canvases are intentionally current, not archival. Agents should keep their result docs and Library notes as the durable record, then point the canvas at the most useful visual artifact right now:
 

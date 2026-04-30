@@ -145,18 +145,22 @@ Success criteria:
 
 Goal: after every move, a judge creates one crisp review card and recommends continue, rerun, synthesize, or brainstorm.
 
+Current implementation:
+
+- `vr-research-judge <project-dir> --slug <slug>` audits a move without mutating project state.
+- It reads the result doc, doctor, admit, lint-paper, and benchmark context where available.
+- It emits a structured recommendation and can open an Agent Inbox card with `--ask-human`.
+
 Build:
 
-- `vr-research-judge <project-dir> --slug <slug>`
-- Reads result doc, artifacts, doctor, admit, lint-paper, benchmark outputs.
-- Produces a structured verdict:
+- Deepen the structured verdict:
   - claim audit;
   - evaluator strength;
   - missing provenance;
   - noise/rerun recommendation;
   - paper/insight suggestion;
   - next move candidates.
-- Opens one Agent Inbox card with evidence links.
+- Add artifact sniffing for logs, figures, screenshots, and live monitor URLs.
 
 Success criteria:
 
@@ -268,14 +272,13 @@ Track these metrics across dogfood projects:
 
 ## Near-Term Build Queue
 
-1. `vr-research-judge`: automated audit plus Agent Inbox review card.
-2. Runner `finish` paper/canvas hooks.
-3. Budget debit and budget-cap approval gate.
-4. `vr-research-orchestrator tick`: phase-aware planner/reviewer.
-5. Topology metadata in result docs plus doctor validation.
-6. Program database view over results, artifacts, insights, and evaluator strength.
-7. Worker pool with concurrency caps and stale-worker recovery.
-8. `agent-org-design` dogfood project to evaluate prompt/topology changes.
+1. Runner `finish` paper/canvas hooks.
+2. Budget debit and budget-cap approval gate.
+3. `vr-research-orchestrator tick`: phase-aware planner/reviewer.
+4. Topology metadata in result docs plus doctor validation.
+5. Program database view over results, artifacts, insights, and evaluator strength.
+6. Worker pool with concurrency caps and stale-worker recovery.
+7. `agent-org-design` dogfood project to evaluate prompt/topology changes.
 
 ## Open Questions To Refine
 
