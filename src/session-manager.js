@@ -622,12 +622,39 @@ function mergeNarrativeEntries(localEntries = [], providerEntries = [], maxEntri
     ...providerEntries.map((entry, index) => ({ ...entry, __origin: "provider", __index: index })),
   ]
     .sort((left, right) => {
-      // Prefer session-wide insertion sequence numbers (OpenCode pattern):
-      // wall-clock timestamps from Claude's stream events bleed across turns
-      // and aren't a reliable sort key. We fall back to timestamp/origin/index
-      // for legacy entries that don't carry a seq.
-      const leftSeq = Number.isFinite(Number(left.seq)) ? Number(left.seq) : null;
-      const rightSeq = Number.isFinite(Number(right.seq)) ? Number(right.seq) : null;
+      // Sort by wall-clock timestamp first. ClaudeStreamSession caches
+      // first-observation time per entry id (see _entryStamps), and the
+      // JSONL transcript that drives rehydration is itself ordered by
+      // Claude's emit time — both produce monotonic timestamps in
+      // practice. Persisted nativeNarrativeEntries also carry the original
+      // wall-clock from when they were pushed.
+      //
+      // Why not seq-first: across a server restart we mix three buckets:
+      //   - persisted status pills (seq stripped on restore)
+      //   - JSONL-rehydrated entries (synthetic seq=0 from
+      //     normaliseNarrativeEntry's default, real seq is unknown)
+      //   - fresh post-restart pills + new live stream entries (real seq)
+      // A seq-first comparator puts every "fresh" or "synthetic-zero"
+      // entry before everything that has lost its seq, and the chat
+      // history scrambles into a non-chronological order. Timestamps
+      // survive the restart cleanly, so they're the safe primary key.
+      //
+      // Seq still acts as the tiebreaker for entries that share a
+      // timestamp (the common within-turn case where text + tool_use
+      // blocks all carry the same Claude payload timestamp).
+      const leftTime = parseSessionTimestamp(left.timestamp, 0);
+      const rightTime = parseSessionTimestamp(right.timestamp, 0);
+      if (leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+
+      // Real seq numbers from allocateSeq() start at 1; seq=0 is the
+      // sentinel that normaliseNarrativeEntry stamps when no seq was
+      // supplied. Treat the sentinel as "no seq" so a synthetic-zero
+      // never outranks a real entry that genuinely has seq>=1.
+      const isRealSeq = (value) => Number.isFinite(Number(value)) && Number(value) > 0;
+      const leftSeq = isRealSeq(left.seq) ? Number(left.seq) : null;
+      const rightSeq = isRealSeq(right.seq) ? Number(right.seq) : null;
       if (leftSeq != null && rightSeq != null && leftSeq !== rightSeq) {
         return leftSeq - rightSeq;
       }
@@ -636,13 +663,6 @@ function mergeNarrativeEntries(localEntries = [], providerEntries = [], maxEntri
       }
       if (leftSeq == null && rightSeq != null) {
         return 1;
-      }
-
-      const leftTime = parseSessionTimestamp(left.timestamp, 0);
-      const rightTime = parseSessionTimestamp(right.timestamp, 0);
-
-      if (leftTime !== rightTime) {
-        return leftTime - rightTime;
       }
 
       if (left.__origin !== right.__origin) {

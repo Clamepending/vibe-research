@@ -140,6 +140,99 @@ test("multi-client: a client that joins mid-stream gets a seeded init plus futur
 });
 
 // ---------------------------------------------------------------------------
+// Resume rehydration: chronological order across the restart boundary
+// ---------------------------------------------------------------------------
+
+test("resume rehydration: rehydrated JSONL entries interleave chronologically with persisted status pills (not all dumped to top or bottom)", async () => {
+  // Failure mode this pins: after a server restart, the merger used to put
+  // every entry that had a "real" seq (the freshly-pushed Resumed pill) and
+  // every entry that had a synthetic seq=0 (rehydrated assistant from JSONL)
+  // ahead of the persisted status pills (whose seq was stripped on restore).
+  // The chat then read backwards: the rehydrated reply appeared BEFORE the
+  // "Starting…" pill and the user message. Sort must be by wall-clock first.
+  await withManager(async (manager) => {
+    const session = makeStreamSession(manager, { id: "stream-resume-order" });
+
+    // Persisted from before the restart — pushNativeNarrativeEntry assigns a
+    // real seq, but the persistence layer strips it on restore. Simulate the
+    // post-restore state by clearing seq.
+    manager.pushNativeNarrativeEntry(session, {
+      kind: "status",
+      label: "Starting",
+      text: "Starting Claude Code in /tmp/repo.",
+      timestamp: "2026-04-30T16:53:05.722Z",
+      meta: "launch",
+    });
+    manager.pushNativeNarrativeEntry(session, {
+      kind: "status",
+      label: "Stream",
+      text: "Stream mode active for Claude Code.",
+      timestamp: "2026-04-30T16:53:05.723Z",
+      meta: "stream-mode",
+    });
+    manager.pushNativeNarrativeEntry(session, {
+      kind: "user",
+      label: "You",
+      text: "Reply with one word: pong",
+      timestamp: "2026-04-30T16:55:23.113Z",
+    });
+    for (const entry of session.nativeNarrativeEntries) {
+      delete entry.seq;
+    }
+    session.entrySeqCounter = 0;
+
+    // Rehydrated from JSONL — no seq (normaliseNarrativeEntry would stamp 0,
+    // but the merger must still place these by their original timestamp).
+    session.streamEntries = [
+      {
+        id: "claude-assistant-msg_X-0",
+        kind: "assistant",
+        label: "Claude Code",
+        text: "pong",
+        timestamp: "2026-04-30T16:55:24.513Z",
+      },
+    ];
+
+    // Fresh post-restart pill — gets a real allocated seq.
+    manager.pushNativeNarrativeEntry(session, {
+      kind: "status",
+      label: "Stream",
+      text: "Resumed Claude Code session — conversation history loaded from the prior JSONL transcript.",
+      timestamp: "2026-04-30T17:41:41.944Z",
+      meta: "stream-mode",
+    });
+
+    const narrative = await manager.getSessionNarrative(session.id);
+    const order = narrative.entries.map((entry) => entry.label);
+
+    // Chronological order: Starting (16:53) -> Stream (16:53) -> user (16:55:23)
+    // -> assistant pong (16:55:24) -> Resumed Stream (17:41).
+    assert.deepEqual(
+      order,
+      ["Starting", "Stream", "You", "Claude Code", "Stream"],
+      `entries must be chronological by timestamp, got ${JSON.stringify(order)}`,
+    );
+  });
+});
+
+test("resume rehydration: live stream entries with same timestamp keep their seq order (within-turn tiebreaker)", async () => {
+  // Same-timestamp entries from a single Claude message (text + tool_use that
+  // share the Claude-side timestamp) must stay in seq order so the renderer
+  // doesn't shuffle a tool_use card above its narrating text.
+  await withManager(async (manager) => {
+    const session = makeStreamSession(manager, { id: "stream-tiebreak" });
+    const sharedTs = "2026-04-30T18:00:00.000Z";
+    session.streamEntries = [
+      { id: "tool-1", kind: "tool", label: "Read", text: "/x", seq: 11, timestamp: sharedTs, status: "running" },
+      { id: "asst-1", kind: "assistant", label: "Claude Code", text: "Let me check.", seq: 10, timestamp: sharedTs },
+    ];
+    const narrative = await manager.getSessionNarrative(session.id);
+    const order = narrative.entries.map((entry) => entry.id);
+    assert.deepEqual(order, ["asst-1", "tool-1"], "lower seq comes first when timestamps tie");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Reconnect / seq-gap recovery
 // ---------------------------------------------------------------------------
 
