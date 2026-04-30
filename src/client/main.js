@@ -76,6 +76,8 @@ import {
   RICH_SESSION_SLASH_COMMANDS,
   extractRichSessionImageRefs,
   extractRichSessionSlashAction,
+  resolveRichSessionImageRefs,
+  resolveRichSessionSlashAction,
   getRichSessionImageUrl as getRichSessionImageUrlPure,
   renderAnsiToHtml,
   stripAnsi,
@@ -2391,6 +2393,14 @@ const state = {
   nativeSessionNarrativeLoading: {},
   nativeSessionNarrativeRequestCounter: 0,
   nativeSessionNarrativeTimers: {},
+  // Per-session circular log of stream-protocol events the native UI is
+  // parsing. Keys are sessionIds. Each value is an array of { source, type,
+  // ts, payload } records, capped at STREAM_LOG_LIMIT entries. Populated by
+  // the WebSocket message handler and the narrative HTTP fetch — both wire-
+  // format inputs the native renderer reads from. The "Stream JSON" surface
+  // mode pretty-prints this buffer.
+  nativeSessionStreamLog: {},
+  nativeSessionStreamLogRenderFrame: null,
   richSessionComposerDrafts: {},
   richSessionInputBuffers: {},
   richSessionRecentInputs: {},
@@ -5028,13 +5038,107 @@ function getRichSessionActiveMonitors(session) {
 function getShellSurfaceMode(session = getActiveSession()) {
   if (isStreamSessionUiSession(session)) {
     // Stream-mode sessions don't have a real PTY surface, so the rich-session
-    // view is the only thing to show. Force native and ignore any stale
-    // "terminal" preference from before the session was created.
-    return "native";
+    // view (and the stream-JSON inspector) are the only valid surfaces.
+    // The terminal toggle is suppressed elsewhere; pin to whichever of
+    // native / stream-json the user last selected.
+    return state.shellSurfaceMode === "stream-json" ? "stream-json" : "native";
   }
-  return isRichSessionSurfaceSupported(session)
-    ? (state.shellSurfaceMode === "native" ? "native" : "terminal")
-    : "terminal";
+  if (!isRichSessionSurfaceSupported(session)) {
+    return "terminal";
+  }
+  if (state.shellSurfaceMode === "native") return "native";
+  if (state.shellSurfaceMode === "stream-json") return "stream-json";
+  return "terminal";
+}
+
+// Stream-log buffer. Captures every wire-format event the native UI parses —
+// websocket session frames, narrative HTTP payloads, output chunks. The
+// "Stream JSON" surface mode renders this buffer, so the user can verify the
+// native UI is reading the same data the terminal sees.
+const STREAM_LOG_LIMIT = 256;
+
+function appendNativeSessionStreamLog(sessionId, record) {
+  const id = String(sessionId || "").trim();
+  if (!id || !record || typeof record !== "object") {
+    return;
+  }
+  const log = state.nativeSessionStreamLog[id] || [];
+  log.push({
+    source: String(record.source || "ws"),
+    type: String(record.type || "event"),
+    ts: typeof record.ts === "number" ? record.ts : Date.now(),
+    payload: record.payload === undefined ? null : record.payload,
+  });
+  if (log.length > STREAM_LOG_LIMIT) {
+    log.splice(0, log.length - STREAM_LOG_LIMIT);
+  }
+  state.nativeSessionStreamLog[id] = log;
+  // Only re-render the JSON viewer if it's the active surface for this
+  // session; otherwise the buffer accumulates silently and refreshes when
+  // the user toggles to it.
+  const activeSession = getActiveSession();
+  if (activeSession?.id === id && getShellSurfaceMode(activeSession) === "stream-json") {
+    scheduleRichSessionStreamLogRender();
+  }
+}
+
+function getNativeSessionStreamLog(sessionId) {
+  return state.nativeSessionStreamLog[String(sessionId || "").trim()] || [];
+}
+
+function clearNativeSessionStreamLog(sessionId) {
+  delete state.nativeSessionStreamLog[String(sessionId || "").trim()];
+}
+
+function scheduleRichSessionStreamLogRender() {
+  if (state.nativeSessionStreamLogRenderFrame) {
+    return;
+  }
+  state.nativeSessionStreamLogRenderFrame = window.requestAnimationFrame(() => {
+    state.nativeSessionStreamLogRenderFrame = null;
+    renderRichSessionStreamLogHtml();
+  });
+}
+
+function formatStreamLogValue(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function renderRichSessionStreamLogHtml() {
+  const container = document.querySelector("#rich-session-stream-log");
+  if (!(container instanceof HTMLElement)) {
+    return;
+  }
+  const activeSession = getActiveSession();
+  const records = activeSession ? getNativeSessionStreamLog(activeSession.id) : [];
+  if (!records.length) {
+    container.innerHTML = `
+      <div class="rich-session-stream-log-empty">
+        Stream JSON viewer is empty. Send a message in <strong>Native</strong> mode and the events flowing into the renderer will appear here.
+      </div>
+    `;
+    return;
+  }
+  // Render newest-first so the user sees the latest event without scrolling.
+  // Each record is a separate <pre> so the browser can lazy-paint.
+  const fragment = records.slice().reverse().map((record) => {
+    const ts = new Date(record.ts).toISOString().replace("T", " ").replace("Z", "");
+    return `
+      <article class="rich-session-stream-log-entry" data-stream-source="${escapeHtml(record.source)}">
+        <header class="rich-session-stream-log-meta">
+          <span class="rich-session-stream-log-ts">${escapeHtml(ts)}</span>
+          <span class="rich-session-stream-log-source">${escapeHtml(record.source)}</span>
+          <span class="rich-session-stream-log-type">${escapeHtml(record.type)}</span>
+        </header>
+        <pre class="rich-session-stream-log-body">${escapeHtml(formatStreamLogValue(record.payload))}</pre>
+      </article>
+    `;
+  }).join("");
+  container.innerHTML = fragment;
 }
 
 function isRichSessionSurfaceActive(session = getActiveSession()) {
@@ -5180,6 +5284,12 @@ async function fetchRichSessionNarrative(sessionId) {
     delete state.nativeSessionNarrativeLoading[normalizedSessionId];
     delete state.nativeSessionNarrativeErrors[normalizedSessionId];
     state.nativeSessionNarratives[normalizedSessionId] = payload.narrative || null;
+    appendNativeSessionStreamLog(normalizedSessionId, {
+      source: "http",
+      type: "narrative",
+      ts: Date.now(),
+      payload: payload.narrative || null,
+    });
     if (normalizedSessionId === String(state.activeSessionId || "")) {
       refreshRichSessionSurfaceUi();
     }
@@ -5237,6 +5347,10 @@ function getRichSessionEntryLabel(entry) {
     return entry.label;
   }
 
+  if (entry?.kind === "plan") {
+    return "Proposed plan";
+  }
+
   if (entry?.kind === "tool") {
     return "Tool";
   }
@@ -5253,6 +5367,9 @@ function getRichSessionEntryLabel(entry) {
 }
 
 function getRichSessionEntryIcon(kind) {
+  if (kind === "plan") {
+    return Waypoints;
+  }
   if (kind === "tool") {
     return Wrench;
   }
@@ -5420,9 +5537,12 @@ function renderRichSessionImageStrip(refs, { caption = "" } = {}) {
   `;
 }
 
-function renderRichSessionAssistantBody(text) {
+function renderRichSessionAssistantBody(text, entry = null) {
   const normalized = String(text || "");
-  const imageRefs = extractRichSessionImageRefs(normalized);
+  // Prefer the server-emitted `entry.imageRefs` field so the renderer is a
+  // pure function of the wire payload. Fall back to the regex extractor for
+  // legacy entries that pre-date the field.
+  const imageRefs = resolveRichSessionImageRefs(entry || { text: normalized });
   const imageStripHtml = renderRichSessionImageStrip(imageRefs);
 
   if (!isRichSessionMarkdownContent(normalized)) {
@@ -5441,14 +5561,17 @@ function renderRichSessionAssistantBody(text) {
 }
 
 function renderRichSessionEntry(entry, index) {
-  const kind = ["assistant", "user", "tool", "status", "system"].includes(entry?.kind) ? entry.kind : "assistant";
+  const kind = ["assistant", "user", "tool", "status", "system", "plan"].includes(entry?.kind) ? entry.kind : "assistant";
   const label = getRichSessionEntryLabel(entry);
   const text = String(entry?.text || "");
   // OpenCode pattern: an assistant entry with no text yet IS the thinking
   // indicator. The same DOM node mutates into the streaming reply when the
   // first delta lands, so there is no separate spinner to clear.
   const isAssistantPending = kind === "assistant" && !text.trim();
-  const isThinking = isAssistantPending || isRichSessionThinkingEntry(entry);
+  // Prefer the structured `entry.thinking` flag — set by the server-side
+  // shaper for true reasoning content. Fall back to the kind/label heuristic
+  // for legacy entries.
+  const isThinking = isAssistantPending || entry?.thinking === true || isRichSessionThinkingEntry(entry);
   const icon = renderIcon(getRichSessionEntryIcon(kind), { className: "rich-session-entry-icon" });
   const body = renderRichSessionInlineHtml(text);
   const metaParts = [entry?.meta || "", formatRichSessionTimestamp(entry?.timestamp)].filter(Boolean);
@@ -5456,10 +5579,17 @@ function renderRichSessionEntry(entry, index) {
   const outputPreview = entry?.outputPreview
     ? `<pre class="rich-session-entry-pre is-output">${renderRichSessionInlineHtml(entry.outputPreview)}</pre>`
     : "";
+  // MCP-flavored tool entries pick up a badge so users can tell which MCP
+  // server is being driven. The structured `entry.mcp = {server, tool}`
+  // field is set by the server shaper for any `mcp__<server>__<tool>` call.
+  const mcpBadgeHtml = entry?.mcp && typeof entry.mcp === "object"
+    ? `<span class="rich-session-mcp-badge" title="${escapeHtml(`MCP server · ${entry.mcp.server}`)}">MCP · ${escapeHtml(String(entry.mcp.server || "server"))}</span>`
+    : "";
   const entryClassName = [
     "rich-session-entry",
     `is-${escapeHtml(kind)}`,
     entry?.status ? `is-${escapeHtml(entry.status)}` : "",
+    entry?.mcp ? "is-mcp" : "",
     isThinking ? "is-thinking" : "",
     isAssistantPending ? "is-pending" : "",
   ].filter(Boolean).join(" ");
@@ -5471,6 +5601,7 @@ function renderRichSessionEntry(entry, index) {
           : `<span class="rich-session-entry-kicker-icon">${icon}</span>`
       }
       <span class="rich-session-entry-kicker-label">${escapeHtml(label)}</span>
+      ${mcpBadgeHtml}
       ${meta ? `<span class="rich-session-entry-meta">${escapeHtml(meta)}</span>` : ""}
     </div>
   `;
@@ -5491,8 +5622,35 @@ function renderRichSessionEntry(entry, index) {
     }
     return `
       <article class="${entryClassName}" data-rich-session-entry="${index}">
-        ${renderRichSessionAssistantBody(text)}
+        ${renderRichSessionAssistantBody(text, entry)}
         ${meta ? `<div class="rich-session-entry-tail">${escapeHtml(meta)}</div>` : ""}
+      </article>
+    `;
+  }
+
+  // ExitPlanMode arrives as `entry.kind === "plan"` with the proposed plan
+  // in `entry.text`. Render it as a dedicated card with two affordances:
+  // accept (continue with this plan) and reject (let the user respond).
+  // Both the structured plan kind AND the legacy tool-call shape with label
+  // "ExitPlanMode" are handled, so the card shows up for sessions that
+  // pre-date the structured wire format too.
+  if (kind === "plan" || (kind === "tool" && entry?.label === "ExitPlanMode")) {
+    const planText = kind === "plan" ? text : (entry?.text || "");
+    const planHtml = isRichSessionMarkdownContent(planText)
+      ? `<div class="rich-session-plan-body knowledge-base-markdown">${renderKnowledgeBaseMarkdown(planText, "")}</div>`
+      : `<pre class="rich-session-plan-body is-plain">${escapeHtml(planText)}</pre>`;
+    return `
+      <article class="${entryClassName} rich-session-plan-card" data-rich-session-entry="${index}">
+        <div class="rich-session-entry-kicker">
+          <span class="rich-session-entry-kicker-icon">${renderIcon(Waypoints, { className: "rich-session-entry-icon" })}</span>
+          <span class="rich-session-entry-kicker-label">Proposed plan</span>
+          ${meta ? `<span class="rich-session-entry-meta">${escapeHtml(meta)}</span>` : ""}
+        </div>
+        ${planHtml}
+        <div class="rich-session-entry-actions">
+          <button class="primary-button rich-session-plan-accept" type="button" data-rich-session-plan-accept>Approve plan</button>
+          <button class="ghost-button rich-session-plan-reject" type="button" data-rich-session-plan-reject>Push back</button>
+        </div>
       </article>
     `;
   }
@@ -5506,12 +5664,12 @@ function renderRichSessionEntry(entry, index) {
     && entry.todos.length
     && (entry.label === "TodoWrite" || entry.label === "TaskUpdate");
 
-  // Detect a status entry whose body asks the user to run a CLI slash command
-  // (e.g. "Please run /login · API Error: 401 ..."). Render an inline action
-  // button next to the text so the user can run the command with one click
-  // instead of switching to the terminal tab and typing it.
-  const slashAction = kind === "status" || kind === "system"
-    ? extractRichSessionSlashAction(text)
+  // Status entries can ask the user to run a slash command (e.g. /login on
+  // an auth_failed). The server shaper now emits `entry.slashAction` as a
+  // structured field; the client uses that and only falls back to the regex
+  // extractor for legacy entries that pre-date the field.
+  const slashAction = (kind === "status" || kind === "system")
+    ? resolveRichSessionSlashAction(entry)
     : null;
   const slashActionHtml = slashAction
     ? `<div class="rich-session-entry-actions">
@@ -5523,34 +5681,33 @@ function renderRichSessionEntry(entry, index) {
       </div>`
     : "";
 
-  // Tool entries get an inline image strip when the tool was clearly about
-  // an image: a Write/Edit/Read whose `text` (the input summary) names an
-  // image path, OR a Bash whose output preview mentions one. Keeping the
-  // detection scoped to image-producing tools means a `Bash(grep -r '.png'
-  // src/)` doesn't dump every match into the feed.
+  // Tool entries get an inline image strip when the entry carries one.
+  // Server-side shaper emits `entry.imageRefs` for any tool whose input or
+  // output paths name an image. As a guard against accidentally tile-spamming
+  // grep-like tools, we still gate by a label allowlist; a bare image-ref on
+  // a Bash entry without "saved/wrote/figure/screenshot" prose stays text.
   const toolImageRefs = kind === "tool"
     ? (() => {
-        const label = String(entry?.label || "");
-        const looksImageProducing = /^(?:Write|Edit|MultiEdit|Read|NotebookEdit|Open|View)$/i.test(label)
-          || (label === "Bash" && /\b(?:saved\s+to|wrote|figure\s+at|image\s+at|plot\s+at|screenshot)\b/iu.test(`${text} ${entry?.outputPreview || ""}`));
+        const labelStr = String(entry?.label || "");
+        const looksImageProducing = /^(?:Write|Edit|MultiEdit|Read|NotebookEdit|Open|View)$/i.test(labelStr)
+          || (labelStr === "Bash" && /\b(?:saved\s+to|wrote|figure\s+at|image\s+at|plot\s+at|screenshot)\b/iu.test(`${text} ${entry?.outputPreview || ""}`));
         if (!looksImageProducing) {
           return [];
         }
-        const combined = `${text}\n${entry?.outputPreview || ""}`;
-        return extractRichSessionImageRefs(combined, { includeMarkdown: true });
+        return resolveRichSessionImageRefs(entry, { includeMarkdown: true });
       })()
     : [];
   const toolImageStripHtml = renderRichSessionImageStrip(toolImageRefs);
 
   // User-message entries get an image strip when the message contains the
   // attachment markdown the composer produces ("![dropped image: foo.png]
-  // (/abs/path/...)"). Restrict to that explicit syntax so paths the user
-  // merely *mentioned* in prose ("look at figures/x.png") don't auto-embed
-  // on a user bubble — only what they actually attached should appear as
-  // a tile.
+  // (/abs/path/...)"). The shaper already filters to that explicit syntax
+  // before stamping `imageRefs`; for legacy entries we still re-filter.
   const userImageRefs = kind === "user"
-    ? extractRichSessionImageRefs(text, { includeMarkdown: true })
-        .filter((value) => new RegExp(`!\\[[^\\]]*\\]\\(<?${value.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}>?\\)`).test(text))
+    ? (Array.isArray(entry?.imageRefs) && entry.imageRefs.length
+        ? entry.imageRefs.slice(0, 4)
+        : extractRichSessionImageRefs(text, { includeMarkdown: true })
+            .filter((value) => new RegExp(`!\\[[^\\]]*\\]\\(<?${value.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}>?\\)`).test(text)))
     : [];
   const userImageStripHtml = renderRichSessionImageStrip(userImageRefs);
 
@@ -5673,6 +5830,27 @@ function moveRichSessionSlashMenuSelection(direction) {
 // "non-interactive" commands ("/clear") still print prompts the user has
 // to confirm, and the next command someone adds is most likely interactive
 // too. Terminal mode is the safe default for CLI control surfaces.
+function sendRichSessionPlanResponse({ approve = true, trigger = null } = {}) {
+  const activeSession = getActiveSession();
+  if (!activeSession) {
+    return false;
+  }
+  const message = approve
+    ? "Yes — please proceed with this plan."
+    : "Push back: ";
+  const sent = sendTerminalInput(`${message}\r`, { queueIfDisconnected: true });
+  if (!sent) {
+    if (trigger instanceof HTMLButtonElement) {
+      trigger.removeAttribute("disabled");
+      trigger.classList.remove("is-sending");
+    }
+    window.alert("That session is not connected yet.");
+    return false;
+  }
+  scheduleRichSessionNarrativeRefresh(activeSession.id, { immediate: true });
+  return true;
+}
+
 function sendRichSessionSlashCommand(command, { trigger = null, switchToTerminal = true } = {}) {
   const value = String(command || "").trim();
   if (!value || !value.startsWith("/")) {
@@ -5966,13 +6144,17 @@ function renderRichSessionSurface(activeSession) {
 
   const canSend = Boolean(activeSession && activeSession.status !== "exited");
   const draft = getRichSessionComposerDraft(activeSession?.id);
-  const richActive = isRichSessionSurfaceActive(activeSession);
+  const surfaceMode = getShellSurfaceMode(activeSession);
+  const richActive = surfaceMode === "native";
+  const streamLogActive = surfaceMode === "stream-json";
+  const surfaceActive = richActive || streamLogActive;
   const isWorking = Boolean(activeSession?.streamWorking);
   const providerLabel = activeSession?.providerLabel || "Agent";
   const activeMonitors = getRichSessionActiveMonitors(activeSession);
   return `
-    <div class="rich-session-surface ${richActive ? "is-active" : ""}" id="rich-session-surface" aria-hidden="${richActive ? "false" : "true"}">
-      <div class="rich-session-feed" id="rich-session-feed">${renderRichSessionFeedHtml(activeSession)}</div>
+    <div class="rich-session-surface ${surfaceActive ? "is-active" : ""} ${streamLogActive ? "is-stream-log" : ""}" id="rich-session-surface" aria-hidden="${surfaceActive ? "false" : "true"}" data-rich-session-surface-mode="${escapeHtml(surfaceMode)}">
+      <div class="rich-session-feed ${richActive ? "" : "is-hidden"}" id="rich-session-feed" aria-hidden="${richActive ? "false" : "true"}">${renderRichSessionFeedHtml(activeSession)}</div>
+      <div class="rich-session-stream-log ${streamLogActive ? "" : "is-hidden"}" id="rich-session-stream-log" aria-hidden="${streamLogActive ? "false" : "true"}"></div>
       <div class="rich-session-working ${isWorking ? "is-active" : ""}" id="rich-session-working" aria-live="polite" aria-hidden="${isWorking ? "false" : "true"}">
         <span class="rich-session-thinking-spinner" aria-hidden="true"></span>
         <span>${escapeHtml(`${providerLabel} is working…`)}</span>
@@ -6017,6 +6199,7 @@ function refreshShellSurfaceToggleUi(activeSession = getActiveSession()) {
   const toggle = document.querySelector("#shell-surface-toggle");
   const richButton = document.querySelector("#toggle-shell-surface-native");
   const terminalButton = document.querySelector("#toggle-shell-surface-terminal");
+  const streamJsonButton = document.querySelector("#toggle-shell-surface-stream-json");
 
   toggle?.classList.toggle("is-hidden", !supported);
 
@@ -6031,19 +6214,29 @@ function refreshShellSurfaceToggleUi(activeSession = getActiveSession()) {
     terminalButton.setAttribute("aria-selected", !supported || mode === "terminal" ? "true" : "false");
     terminalButton.disabled = false;
   }
+
+  if (streamJsonButton instanceof HTMLButtonElement) {
+    streamJsonButton.classList.toggle("is-active", supported && mode === "stream-json");
+    streamJsonButton.setAttribute("aria-selected", supported && mode === "stream-json" ? "true" : "false");
+    streamJsonButton.disabled = !supported;
+  }
 }
 
 function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
   const activeSession = getActiveSession();
-  const richActive = isRichSessionSurfaceActive(activeSession);
+  const surfaceMode = getShellSurfaceMode(activeSession);
+  const richActive = surfaceMode === "native";
+  const streamLogActive = surfaceMode === "stream-json";
+  const surfaceActive = richActive || streamLogActive;
   const stack = document.querySelector(".terminal-stack");
   const surface = document.querySelector("#rich-session-surface");
   const feed = getRichSessionFeedViewport();
+  const streamLogPane = document.querySelector("#rich-session-stream-log");
   const input = document.querySelector("#rich-session-input");
   const sendButton = document.querySelector("#rich-session-send");
   const canSend = Boolean(activeSession && activeSession.status !== "exited");
 
-  stack?.classList.toggle("is-rich-surface", richActive);
+  stack?.classList.toggle("is-rich-surface", surfaceActive);
   refreshShellSurfaceToggleUi(activeSession);
 
   if (
@@ -6071,15 +6264,29 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
   const previousBottomOffset =
     feed instanceof HTMLElement ? Math.max(0, feed.scrollHeight - feed.clientHeight - feed.scrollTop) : 0;
 
-  surface.classList.toggle("is-active", richActive);
-  surface.setAttribute("aria-hidden", richActive ? "false" : "true");
+  surface.classList.toggle("is-active", surfaceActive);
+  surface.classList.toggle("is-stream-log", streamLogActive);
+  surface.setAttribute("aria-hidden", surfaceActive ? "false" : "true");
+  surface.setAttribute("data-rich-session-surface-mode", surfaceMode);
 
   if (feed instanceof HTMLElement) {
-    feed.innerHTML = renderRichSessionFeedHtml(activeSession);
-    if (shouldStickToBottom) {
-      feed.scrollTop = feed.scrollHeight;
-    } else {
-      feed.scrollTop = Math.max(0, feed.scrollHeight - feed.clientHeight - previousBottomOffset);
+    feed.classList.toggle("is-hidden", !richActive);
+    feed.setAttribute("aria-hidden", richActive ? "false" : "true");
+    if (richActive) {
+      feed.innerHTML = renderRichSessionFeedHtml(activeSession);
+      if (shouldStickToBottom) {
+        feed.scrollTop = feed.scrollHeight;
+      } else {
+        feed.scrollTop = Math.max(0, feed.scrollHeight - feed.clientHeight - previousBottomOffset);
+      }
+    }
+  }
+
+  if (streamLogPane instanceof HTMLElement) {
+    streamLogPane.classList.toggle("is-hidden", !streamLogActive);
+    streamLogPane.setAttribute("aria-hidden", streamLogActive ? "false" : "true");
+    if (streamLogActive) {
+      renderRichSessionStreamLogHtml();
     }
   }
 
@@ -6138,27 +6345,33 @@ function scheduleRichSessionSurfaceRender({ scrollToBottom = false } = {}) {
 }
 
 function setShellSurfaceMode(mode) {
-  const nextMode = mode === "terminal" ? "terminal" : "native";
-  if (nextMode === "native" && !isRichSessionSurfaceSupported()) {
+  const requested = mode === "terminal" ? "terminal" : mode === "stream-json" ? "stream-json" : "native";
+  if (requested !== "terminal" && !isRichSessionSurfaceSupported()) {
     return;
   }
 
-  if (state.shellSurfaceMode === nextMode) {
+  if (state.shellSurfaceMode === requested) {
     refreshRichSessionSurfaceUi();
     return;
   }
 
-  state.shellSurfaceMode = nextMode;
-  if (nextMode === "native") {
+  state.shellSurfaceMode = requested;
+  if (requested === "native" || requested === "stream-json") {
     hideTerminalTranscriptOverlay();
-    scheduleRichSessionNarrativeRefresh(state.activeSessionId, { immediate: true });
+    if (requested === "native") {
+      scheduleRichSessionNarrativeRefresh(state.activeSessionId, { immediate: true });
+    } else {
+      // Stream-JSON viewer reads from the in-memory stream log; no fetch
+      // needed, but we want a paint pass so the empty-state copy renders.
+      scheduleRichSessionStreamLogRender();
+    }
   }
-  refreshRichSessionSurfaceUi({ scrollToBottom: nextMode === "native" });
+  refreshRichSessionSurfaceUi({ scrollToBottom: requested !== "terminal" });
 
   if (!isCoarsePointerDevice()) {
-    if (nextMode === "native") {
+    if (requested === "native") {
       focusRichSessionComposer();
-    } else {
+    } else if (requested === "terminal") {
       state.terminal?.focus();
     }
   }
@@ -6168,16 +6381,17 @@ function renderShellSurfaceToggle(activeSession) {
   if (!isRichSessionSurfaceSupported(activeSession)) {
     return "";
   }
-  if (isStreamSessionUiSession(activeSession)) {
-    // Stream-mode sessions have no PTY, so there's nothing to toggle to.
-    return "";
-  }
 
   const mode = getShellSurfaceMode(activeSession);
+  const streamOnly = isStreamSessionUiSession(activeSession);
+  // Stream-mode sessions have no PTY, so the Terminal button hides — but the
+  // Stream JSON button still belongs (it's how the user verifies the native
+  // UI is reading the same data the streaming pipeline produced).
   return `
     <div class="shell-surface-toggle" id="shell-surface-toggle" role="tablist" aria-label="Session surface">
       <button class="ghost-button toolbar-control shell-surface-button ${mode === "native" ? "is-active" : ""}" type="button" id="toggle-shell-surface-native" role="tab" aria-selected="${mode === "native" ? "true" : "false"}">Native</button>
-      <button class="ghost-button toolbar-control shell-surface-button ${mode === "terminal" ? "is-active" : ""}" type="button" id="toggle-shell-surface-terminal" role="tab" aria-selected="${mode === "terminal" ? "true" : "false"}">Terminal</button>
+      ${streamOnly ? "" : `<button class="ghost-button toolbar-control shell-surface-button ${mode === "terminal" ? "is-active" : ""}" type="button" id="toggle-shell-surface-terminal" role="tab" aria-selected="${mode === "terminal" ? "true" : "false"}">Terminal</button>`}
+      <button class="ghost-button toolbar-control shell-surface-button ${mode === "stream-json" ? "is-active" : ""}" type="button" id="toggle-shell-surface-stream-json" role="tab" aria-selected="${mode === "stream-json" ? "true" : "false"}" title="Pretty-printed wire-format events the native UI is parsing">Stream JSON</button>
     </div>
   `;
 }
@@ -39850,6 +40064,9 @@ function bindShellEvents() {
   document.querySelector("#toggle-shell-surface-terminal")?.addEventListener("click", () => {
     setShellSurfaceMode("terminal");
   });
+  document.querySelector("#toggle-shell-surface-stream-json")?.addEventListener("click", () => {
+    setShellSurfaceMode("stream-json");
+  });
   document.querySelector("#rich-session-feed")?.addEventListener("scroll", () => {
     syncTerminalScrollState();
   }, { passive: true });
@@ -39872,6 +40089,35 @@ function bindShellEvents() {
       const command = slashAction.getAttribute("data-rich-session-slash-command") || "";
       if (command) {
         sendRichSessionSlashCommand(command, { trigger: slashAction });
+      }
+      return;
+    }
+
+    // Plan-mode card buttons. Approve sends a literal "approve" message back
+    // through the rich-session composer so the agent's ExitPlanMode tool
+    // result resolves with consent. Push back focuses the composer and pre-
+    // fills it with a leading "Push back: " template the user can edit. Both
+    // run through sendRichSessionMessage to reuse the existing send pipeline
+    // (works for stream-mode sessions too, where there is no PTY to drive).
+    const planAccept = target?.closest("[data-rich-session-plan-accept]");
+    if (planAccept instanceof HTMLButtonElement) {
+      event.preventDefault();
+      planAccept.setAttribute("disabled", "disabled");
+      planAccept.classList.add("is-sending");
+      sendRichSessionPlanResponse({ approve: true, trigger: planAccept });
+      return;
+    }
+    const planReject = target?.closest("[data-rich-session-plan-reject]");
+    if (planReject instanceof HTMLButtonElement) {
+      event.preventDefault();
+      const input = document.querySelector("#rich-session-input");
+      if (input instanceof HTMLTextAreaElement) {
+        if (!input.value.trim()) {
+          input.value = "Push back: ";
+        }
+        focusRichSessionComposer();
+        const end = input.value.length;
+        try { input.setSelectionRange(end, end); } catch { /* selection may be unsupported */ }
       }
       return;
     }
@@ -41140,6 +41386,19 @@ function connectToSession(sessionId) {
     }
 
     const payload = JSON.parse(event.data);
+
+    // Capture every wire-format event into the per-session stream log so the
+    // Stream JSON viewer surfaces exactly what the native UI is parsing.
+    // We elide PTY snapshot chunks because they are huge (~2 MB) and not
+    // useful as JSON — the user can see them rendered in Terminal mode.
+    if (payload?.type !== "snapshot-chunk" && payload?.type !== "snapshot") {
+      appendNativeSessionStreamLog(sessionId, {
+        source: "ws",
+        type: payload?.type || "message",
+        ts: Date.now(),
+        payload,
+      });
+    }
 
     if (payload.type === "snapshot") {
       // Legacy single-frame snapshot. New servers send snapshot-start/chunk/end

@@ -11,6 +11,23 @@ const MAX_INLINE_LENGTH = 320;
 const MAX_FILE_CACHE_ENTRIES = 48;
 const fileCache = new Map();
 
+// Slash-action triggers — kept here (server side) so the wire format carries
+// `entry.slashAction = {command, label}` and the client doesn't have to re-run
+// the regex pass at render time. The client still ships a fallback list for
+// legacy entries that came in before the field was added; once those age out
+// of the buffer this is the sole source of truth.
+const SLASH_ACTION_RULES = [
+  { command: "/login", label: "Sign in", patterns: [/please\s+run\s+\/login/iu, /authentication[_\s]?(?:failed|error)/iu, /invalid\s+authentication\s+credentials/iu] },
+  { command: "/logout", label: "Sign out", patterns: [/please\s+run\s+\/logout/iu] },
+  { command: "/clear", label: "Clear context", patterns: [/please\s+run\s+\/clear/iu] },
+  { command: "/compact", label: "Compact context", patterns: [/please\s+run\s+\/compact/iu] },
+  { command: "/model", label: "Pick a model", patterns: [/please\s+run\s+\/model/iu] },
+  { command: "/help", label: "Help", patterns: [/please\s+run\s+\/help/iu] },
+  { command: "/resume", label: "Resume", patterns: [/please\s+run\s+\/resume/iu] },
+];
+
+const INLINE_IMAGE_EXTENSIONS_RE = /\.(?:png|jpe?g|gif|webp|bmp)\b/iu;
+
 function normalizeText(value) {
   return String(value ?? "")
     .replace(/\r\n/g, "\n")
@@ -62,6 +79,100 @@ function parseTimestamp(value) {
 
 function makeEntryId(prefix, index, suffix = "") {
   return suffix ? `${prefix}-${index}-${suffix}` : `${prefix}-${index}`;
+}
+
+// Pure ANSI-strip used by the slash-action / image-ref extractors. Lives here
+// because session-native-narrative.js is the wire-format owner; the client's
+// rich-session-helpers.js has its own copy to avoid an import cycle (the
+// helpers module is bundled into the browser, this module is server-only).
+function stripAnsiSequences(value) {
+  return String(value ?? "")
+    .replace(/\][^]*(?:|\\)/gu, "")
+    .replace(/\[[0-9;?]*[ -/]*[@-~]/gu, "");
+}
+
+export function extractSlashActionFromText(text) {
+  const value = stripAnsiSequences(String(text || ""));
+  if (!value) {
+    return null;
+  }
+  for (const rule of SLASH_ACTION_RULES) {
+    if (rule.patterns.some((pattern) => pattern.test(value))) {
+      return { command: rule.command, label: rule.label };
+    }
+  }
+  return null;
+}
+
+export function extractImageRefsFromText(text, { includeMarkdown = false, maxRefs = 4 } = {}) {
+  const seen = new Set();
+  const out = [];
+  const source = stripAnsiSequences(String(text ?? ""));
+  if (!source) {
+    return out;
+  }
+
+  const trimTrailingPunct = (raw) => {
+    let trimmed = String(raw || "");
+    while (trimmed.length && /[.,;:!?)\]]/u.test(trimmed[trimmed.length - 1])) {
+      trimmed = trimmed.slice(0, -1);
+    }
+    return trimmed;
+  };
+
+  const pushIfImage = (raw) => {
+    const trimmed = trimTrailingPunct(raw);
+    if (!trimmed) return;
+    if (!INLINE_IMAGE_EXTENSIONS_RE.test(trimmed)) return;
+    if (seen.has(trimmed)) return;
+    seen.add(trimmed);
+    out.push(trimmed);
+  };
+
+  if (includeMarkdown) {
+    for (const match of source.matchAll(/!\[[^\]]*\]\(<?([^)<>\s]+)(?:\s+"[^"]*")?>?\)/gu)) {
+      pushIfImage(match[1]);
+      if (out.length >= maxRefs) {
+        return out;
+      }
+    }
+  }
+
+  const sanitized = source.replace(/!\[[^\]]*\]\([^)]+\)/gu, "");
+  const codeStripped = sanitized.replace(/`[^`]*`/g, "");
+
+  const re = /(\/(?:[\w.@~+-]+(?:\s\w[\w.@~+-]*)*\/)+[\w.@~+-]+\.[A-Za-z0-9]{2,8}|(?:[\w.@~+-]+\/)+[\w.@~+-]+\.[A-Za-z0-9]{2,8})/gu;
+  for (const match of codeStripped.matchAll(re)) {
+    pushIfImage(match[1]);
+    if (out.length >= maxRefs) {
+      break;
+    }
+  }
+
+  return out;
+}
+
+// Detect MCP tool calls (`mcp__<server>__<tool>`) and return a {server, tool}
+// pair the renderer can badge. Returns null for non-MCP tools.
+export function parseMcpToolName(name) {
+  const match = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/u.exec(String(name || ""));
+  if (!match) {
+    return null;
+  }
+  return { server: match[1], tool: match[2] };
+}
+
+// Detect Claude's ExitPlanMode tool_use, which carries the proposed plan in
+// `input.plan`. The renderer surfaces this as a dedicated plan card.
+export function extractPlanFromToolUse(toolUse) {
+  if (!toolUse || typeof toolUse !== "object") {
+    return "";
+  }
+  if (String(toolUse.name || "").trim() !== "ExitPlanMode") {
+    return "";
+  }
+  const plan = toolUse.input?.plan;
+  return typeof plan === "string" ? normalizeText(plan) : "";
 }
 
 function dedupePush(entries, nextEntry, maxEntries = DEFAULT_MAX_ENTRIES) {
@@ -513,13 +624,23 @@ function buildCodexNarrativeFromText(text, session = {}, { maxEntries = DEFAULT_
       }
 
       if (eventPayload.type === "agent_message" && typeof eventPayload.message === "string") {
-        dedupePush(entries, {
+        const isCommentary = eventPayload.phase === "commentary";
+        const agentEntry = {
           id: makeEntryId("codex-agent-message", entries.length + 1),
-          kind: eventPayload.phase === "commentary" ? "status" : "assistant",
-          label: eventPayload.phase === "commentary" ? "Activity" : session.providerLabel || "Assistant",
+          kind: isCommentary ? "status" : "assistant",
+          label: isCommentary ? "Activity" : session.providerLabel || "Assistant",
           text: eventPayload.message,
           timestamp: updatedAt,
-        }, maxEntries);
+        };
+        const imageRefs = extractImageRefsFromText(eventPayload.message);
+        if (imageRefs.length) {
+          agentEntry.imageRefs = imageRefs;
+        }
+        const slashAction = isCommentary ? extractSlashActionFromText(eventPayload.message) : null;
+        if (slashAction) {
+          agentEntry.slashAction = slashAction;
+        }
+        dedupePush(entries, agentEntry, maxEntries);
         continue;
       }
     }
@@ -658,13 +779,18 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
 
     if (payload.type === "assistant") {
       if (payload.error && typeof payload.error === "string") {
-        dedupePush(entries, {
+        const errorEntry = {
           id: makeEntryId("claude-error", entries.length + 1),
           kind: "status",
           label: "Error",
           text: payload.error,
           timestamp: updatedAt,
-        }, maxEntries);
+        };
+        const slashAction = extractSlashActionFromText(payload.error);
+        if (slashAction) {
+          errorEntry.slashAction = slashAction;
+        }
+        dedupePush(entries, errorEntry, maxEntries);
       }
 
       const content = Array.isArray(payload.message?.content) ? payload.message.content : [];
@@ -684,17 +810,23 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
           label: "Thinking",
           text: thinkingText,
           timestamp: updatedAt,
+          thinking: true,
         }, maxEntries);
       }
 
       if (assistantText) {
-        dedupePush(entries, {
+        const assistantEntry = {
           id: makeEntryId("claude-assistant", entries.length + 1),
           kind: "assistant",
           label: session.providerLabel || "Assistant",
           text: assistantText,
           timestamp: updatedAt,
-        }, maxEntries);
+        };
+        const imageRefs = extractImageRefsFromText(assistantText);
+        if (imageRefs.length) {
+          assistantEntry.imageRefs = imageRefs;
+        }
+        dedupePush(entries, assistantEntry, maxEntries);
       }
 
       for (const item of content) {
@@ -702,16 +834,39 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
           continue;
         }
 
+        // ExitPlanMode is the dedicated plan-mode tool. Surface it as a
+        // first-class `plan` entry so the client can render a plan card
+        // instead of a generic tool row.
+        const planText = extractPlanFromToolUse(item);
+        if (planText) {
+          const planEntry = {
+            id: makeEntryId("claude-plan", entries.length + 1, item.id || ""),
+            kind: "plan",
+            label: "Plan",
+            text: planText,
+            timestamp: updatedAt,
+            status: "pending",
+            meta: "plan-mode",
+          };
+          toolEntries.set(String(item.id || planEntry.id), planEntry);
+          dedupePush(entries, planEntry, maxEntries);
+          continue;
+        }
+
+        const mcp = parseMcpToolName(item.name);
         const toolEntry = {
           id: makeEntryId("claude-tool", entries.length + 1, item.id || ""),
           kind: "tool",
-          label: item.name || "Tool",
+          label: mcp ? `${mcp.server}.${mcp.tool}` : (item.name || "Tool"),
           text: summarizeClaudeToolInput(item),
           timestamp: updatedAt,
           status: "running",
           meta: "running",
           outputPreview: "",
         };
+        if (mcp) {
+          toolEntry.mcp = mcp;
+        }
 
         // Carry the structured todo list along on TodoWrite entries so the
         // renderer can show a real checklist instead of the one-line summary.
@@ -720,6 +875,14 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
           toolEntry.todos = todoPayload;
           toolEntry.status = "done";
           toolEntry.meta = "completed";
+        }
+
+        // Tools whose input names a path (Read/Write/Edit etc.) often refer
+        // to images — annotate the entry so the renderer can pull a tile
+        // strip without scanning text again. Only attach refs we found.
+        const inputImageRefs = extractImageRefsFromText(toolEntry.text, { includeMarkdown: true });
+        if (inputImageRefs.length) {
+          toolEntry.imageRefs = inputImageRefs;
         }
 
         toolEntries.set(String(item.id || toolEntry.id), toolEntry);
@@ -738,13 +901,22 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
           continue;
         }
 
-        dedupePush(entries, {
+        const userEntry = {
           id: makeEntryId("claude-user", entries.length + 1),
           kind: classified.kind,
           label: classified.kind === "status" ? "Kickoff" : "You",
           text: classified.text,
           timestamp: updatedAt,
-        }, maxEntries);
+        };
+        // Only surface user-attached images via explicit markdown syntax —
+        // the composer pastes `![dropped image: foo.png](/abs/path)` for real
+        // attachments. Plain prose mentions of an image stay as text.
+        const userImageRefs = extractImageRefsFromText(classified.text, { includeMarkdown: true })
+          .filter((value) => new RegExp(`!\\[[^\\]]*\\]\\(<?${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}>?\\)`).test(classified.text));
+        if (userImageRefs.length) {
+          userEntry.imageRefs = userImageRefs;
+        }
+        dedupePush(entries, userEntry, maxEntries);
         continue;
       }
 
@@ -766,10 +938,15 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
         const index = entries.findIndex((entry) => entry.id === toolEntry.id);
         if (index >= 0) {
           const nextEntry = markToolResult(entries[index], outputText);
+          // Re-scan the combined input + output for image paths so the
+          // renderer can show a tile strip whichever side the path lives in
+          // (e.g. `Bash` whose stdout names the saved figure).
+          const combinedRefs = extractImageRefsFromText(`${nextEntry.text || ""}\n${nextEntry.outputPreview || ""}`, { includeMarkdown: true });
           entries[index] = {
             ...nextEntry,
             status: item.is_error ? "error" : nextEntry.status,
             meta: item.is_error ? "error" : nextEntry.meta,
+            ...(combinedRefs.length ? { imageRefs: combinedRefs } : {}),
           };
         }
       }

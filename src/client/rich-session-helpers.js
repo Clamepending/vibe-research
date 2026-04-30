@@ -148,6 +148,12 @@ export const RICH_SESSION_SLASH_COMMANDS = [
   { command: "/resume", label: "Resume", hint: "Resume a previous Claude session", aliases: [/please\s+run\s+\/resume/iu] },
 ];
 
+// Server-side narrative shaper now emits `entry.slashAction = {command,label}`
+// directly. This regex-based extractor is kept as a fallback for legacy
+// entries (sessions that started before the structured field was wired up,
+// or projected/transcript-backed sessions whose entry path doesn't have the
+// shaper enriching them). New rendering code paths should prefer
+// `entry.slashAction` and only fall back to this when missing.
 export function extractRichSessionSlashAction(text) {
   // Strip ANSI before matching so colour-coded errors (red "Please run
   // /login") still trigger the inline action button.
@@ -163,6 +169,35 @@ export function extractRichSessionSlashAction(text) {
   }
 
   return null;
+}
+
+// Resolves a slash action for an entry, preferring the structured field over
+// the regex fallback. Returns null when neither yields one.
+export function resolveRichSessionSlashAction(entry) {
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+  if (entry.slashAction && typeof entry.slashAction.command === "string") {
+    return {
+      command: entry.slashAction.command,
+      label: entry.slashAction.label || entry.slashAction.command,
+    };
+  }
+  return extractRichSessionSlashAction(entry.text || "");
+}
+
+// Resolves the image refs for an entry, preferring the structured field over
+// the regex fallback. The fallback only fires for entries that pre-date the
+// structured field — once those age out of the buffer the helper is dead
+// code that we'll delete in a follow-up.
+export function resolveRichSessionImageRefs(entry, options = {}) {
+  if (!entry || typeof entry !== "object") {
+    return [];
+  }
+  if (Array.isArray(entry.imageRefs) && entry.imageRefs.length) {
+    return entry.imageRefs.slice(0, options.maxRefs || 4);
+  }
+  return extractRichSessionImageRefs(String(entry.text || ""), options);
 }
 
 // Pulls every plausible image path out of a CLI / assistant text block.

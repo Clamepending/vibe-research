@@ -6,6 +6,8 @@ import {
   extractRichSessionSlashAction,
   getRichSessionImageUrl,
   renderAnsiToHtml,
+  resolveRichSessionImageRefs,
+  resolveRichSessionSlashAction,
   stripAnsi,
 } from "../src/client/rich-session-helpers.js";
 
@@ -354,4 +356,37 @@ test("ansi: image extractor cleans coloured paths so the tile gets the bare path
   // Bash plot scripts often emit `saved [32mfigures/x.png[0m`.
   const refs = extractRichSessionImageRefs(`saved ${ESC}[32mfigures/x.png${ESC}[0m`);
   assert.deepEqual(refs, ["figures/x.png"]);
+});
+
+// ============================================================================
+// resolveRichSessionSlashAction / resolveRichSessionImageRefs — these favour
+// the structured field on the entry over the regex extractor. Once all
+// in-flight entries pre-date the structured field, the extractors become
+// dead code; until then the resolvers are the unified source of truth the
+// renderer reads.
+// ============================================================================
+
+test("resolver: prefers structured slashAction field when present", () => {
+  const entry = { kind: "status", text: "unrelated body", slashAction: { command: "/login", label: "Sign in" } };
+  assert.deepEqual(resolveRichSessionSlashAction(entry), { command: "/login", label: "Sign in" });
+});
+
+test("resolver: falls back to regex extractor when slashAction missing", () => {
+  const entry = { kind: "status", text: "Authentication failed: please reauthenticate" };
+  assert.deepEqual(resolveRichSessionSlashAction(entry), { command: "/login", label: "Sign in" });
+});
+
+test("resolver: returns null when neither structured field nor regex matches", () => {
+  assert.equal(resolveRichSessionSlashAction({ kind: "status", text: "all good" }), null);
+  assert.equal(resolveRichSessionSlashAction(null), null);
+});
+
+test("resolver: prefers structured imageRefs field when present", () => {
+  const entry = { kind: "tool", text: "see foo", imageRefs: ["figures/a.png", "figures/b.png"] };
+  assert.deepEqual(resolveRichSessionImageRefs(entry), ["figures/a.png", "figures/b.png"]);
+});
+
+test("resolver: falls back to regex extractor when imageRefs missing", () => {
+  const entry = { kind: "tool", text: "saved to figures/x.png" };
+  assert.deepEqual(resolveRichSessionImageRefs(entry), ["figures/x.png"]);
 });

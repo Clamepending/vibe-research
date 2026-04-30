@@ -6,6 +6,10 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import {
   buildClaudeNarrativeFromText,
   buildCodexNarrativeFromText,
+  extractImageRefsFromText,
+  extractPlanFromToolUse,
+  extractSlashActionFromText,
+  parseMcpToolName,
 } from "../src/session-native-narrative.js";
 import { SessionManager } from "../src/session-manager.js";
 
@@ -546,4 +550,184 @@ test("Session manager native narrative resolves Codex transcripts with large ses
   } finally {
     await cleanupManager(harness);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Structured wire-format fields. These tests pin the contract the client
+// renderer relies on: every entry is self-describing — image refs, slash
+// actions, plan-mode payloads, and MCP server identity all ride along on
+// the entry object, no regex over the prose at render time.
+// ---------------------------------------------------------------------------
+
+test("extractSlashActionFromText recognises the canonical /login auth-failed phrase even when ANSI-coloured", () => {
+  // Red-coloured "Please run /login" — the renderer used to regex on the cooked
+  // text; the wire-format field now handles ANSI strip server-side so the client
+  // just reads `entry.slashAction`.
+  const ansiPainted = "[31mPlease run /login[0m to retry the request.";
+  assert.deepEqual(extractSlashActionFromText(ansiPainted), { command: "/login", label: "Sign in" });
+  assert.deepEqual(
+    extractSlashActionFromText("Authentication failed: token expired"),
+    { command: "/login", label: "Sign in" },
+  );
+  assert.equal(extractSlashActionFromText("just regular prose"), null);
+});
+
+test("extractImageRefsFromText pulls workspace-relative and absolute paths but skips bare basenames", () => {
+  const text = "saved to figures/run-12.png and /Users/mark/runs/loss.jpg — but ignore foo.png mention";
+  assert.deepEqual(
+    extractImageRefsFromText(text),
+    ["figures/run-12.png", "/Users/mark/runs/loss.jpg"],
+  );
+});
+
+test("extractImageRefsFromText respects markdown image syntax when includeMarkdown is set", () => {
+  const text = "![dropped image: cat](/abs/cat.png) See attachment ./figures/run.jpg.";
+  const refs = extractImageRefsFromText(text, { includeMarkdown: true });
+  assert.ok(refs.includes("/abs/cat.png"), "absolute markdown path should appear");
+  assert.ok(refs.some((r) => r.endsWith("figures/run.jpg")), "relative path should appear");
+});
+
+test("parseMcpToolName splits mcp__server__tool names while ignoring native tool names", () => {
+  assert.deepEqual(parseMcpToolName("mcp__filesystem__read_file"), { server: "filesystem", tool: "read_file" });
+  assert.deepEqual(parseMcpToolName("mcp__github__create_pull_request"), { server: "github", tool: "create_pull_request" });
+  assert.equal(parseMcpToolName("Bash"), null);
+  assert.equal(parseMcpToolName("Read"), null);
+  assert.equal(parseMcpToolName(""), null);
+});
+
+test("extractPlanFromToolUse pulls the plan body from an ExitPlanMode tool_use", () => {
+  const toolUse = {
+    type: "tool_use",
+    name: "ExitPlanMode",
+    id: "plan_1",
+    input: { plan: "1. Read the file\n2. Apply the patch\n3. Run tests" },
+  };
+  assert.equal(extractPlanFromToolUse(toolUse), "1. Read the file\n2. Apply the patch\n3. Run tests");
+  assert.equal(extractPlanFromToolUse({ name: "Bash", input: { plan: "x" } }), "");
+  assert.equal(extractPlanFromToolUse({ name: "ExitPlanMode", input: {} }), "");
+  assert.equal(extractPlanFromToolUse(null), "");
+});
+
+test("Claude narrative emits a `plan` entry for ExitPlanMode tool_use with the plan body", () => {
+  const timestamp = "2026-04-29T12:00:00.000Z";
+  const text = [
+    JSON.stringify({
+      timestamp,
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "plan_a", name: "ExitPlanMode", input: { plan: "Step 1.\nStep 2.\nStep 3." } },
+        ],
+      },
+    }),
+  ].join("\n");
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude Code" });
+  const planEntry = narrative.entries.find((e) => e.kind === "plan");
+  assert.ok(planEntry, "expected a `plan` entry");
+  assert.equal(planEntry.text, "Step 1.\nStep 2.\nStep 3.");
+  assert.equal(planEntry.label, "Plan");
+});
+
+test("Claude narrative tags MCP tool calls with structured server/tool metadata", () => {
+  const timestamp = "2026-04-29T12:00:00.000Z";
+  const text = [
+    JSON.stringify({
+      timestamp,
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "mcp_a", name: "mcp__filesystem__read_file", input: { path: "/tmp/x" } },
+        ],
+      },
+    }),
+  ].join("\n");
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude Code" });
+  const toolEntry = narrative.entries.find((e) => e.kind === "tool");
+  assert.ok(toolEntry, "expected a tool entry for the MCP call");
+  assert.deepEqual(toolEntry.mcp, { server: "filesystem", tool: "read_file" });
+  // Label should be human-readable: server.tool, not the raw mcp__ prefix.
+  assert.equal(toolEntry.label, "filesystem.read_file");
+});
+
+test("Claude narrative attaches imageRefs to tool entries that name an image path", () => {
+  const timestamp = "2026-04-29T12:00:00.000Z";
+  const text = [
+    JSON.stringify({
+      timestamp,
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "read_a", name: "Read", input: { path: "figures/loss-curve.png" } },
+        ],
+      },
+    }),
+  ].join("\n");
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude Code" });
+  const toolEntry = narrative.entries.find((e) => e.kind === "tool");
+  assert.ok(toolEntry, "expected a tool entry");
+  assert.deepEqual(toolEntry.imageRefs, ["figures/loss-curve.png"]);
+});
+
+test("Claude narrative attaches imageRefs to assistant messages that mention a saved figure", () => {
+  const timestamp = "2026-04-29T12:00:00.000Z";
+  const text = [
+    JSON.stringify({
+      timestamp,
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "Saved the loss curve to figures/loss-curve.png so you can inspect it." },
+        ],
+      },
+    }),
+  ].join("\n");
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude Code" });
+  const assistantEntry = narrative.entries.find((e) => e.kind === "assistant");
+  assert.ok(assistantEntry, "expected an assistant entry");
+  assert.deepEqual(assistantEntry.imageRefs, ["figures/loss-curve.png"]);
+});
+
+test("Claude narrative attaches slashAction on an auth_failed assistant error", () => {
+  const timestamp = "2026-04-29T12:00:00.000Z";
+  const text = [
+    JSON.stringify({
+      timestamp,
+      type: "assistant",
+      error: "Authentication failed. Please run /login to refresh your credentials.",
+      message: { content: [] },
+    }),
+  ].join("\n");
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude Code" });
+  const errorEntry = narrative.entries.find((e) => e.kind === "status" && e.label === "Error");
+  assert.ok(errorEntry, "expected an Error status entry");
+  assert.deepEqual(errorEntry.slashAction, { command: "/login", label: "Sign in" });
+});
+
+test("Claude narrative attaches imageRefs only when user message used the explicit attachment markdown", () => {
+  const timestamp = "2026-04-29T12:00:00.000Z";
+  const text = [
+    JSON.stringify({
+      timestamp,
+      type: "user",
+      message: { content: "![dropped image: cat](/abs/cat.png) what's in this picture?" },
+    }),
+    JSON.stringify({
+      timestamp,
+      type: "user",
+      message: { content: "look at figures/loss.png in passing" },
+    }),
+  ].join("\n");
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude Code" });
+  const userEntries = narrative.entries.filter((e) => e.kind === "user");
+  assert.equal(userEntries.length, 2);
+  // Explicit markdown attachment yields a tile.
+  assert.deepEqual(userEntries[0].imageRefs, ["/abs/cat.png"]);
+  // Plain prose mention does NOT — would auto-embed unrelated images.
+  assert.equal(userEntries[1].imageRefs, undefined);
 });
