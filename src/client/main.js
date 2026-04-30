@@ -5584,6 +5584,53 @@ function isRichSessionThinkingEntry(entry) {
   return /^thinking$/iu.test(label) || /(?:^|\s)is thinking(?:\.\.\.)?$/iu.test(text);
 }
 
+// Derives the "what is the agent doing right now" label that the bottom
+// activity strip shows. Walks the narrative newest-first looking for a
+// signal that beats the default "thinking" — a running tool, or a
+// streaming assistant reply with non-empty text. Returns null when the
+// session is idle (streamWorking is false).
+//
+// Why a derived strip instead of an in-feed spinner: an empty-text
+// assistant entry was rendering as "Claude Code is thinking…" inline,
+// and any glitch that left more than one of those entries in the feed
+// (a stream merge edge case, a slow client refresh, a partial swap
+// race) painted a stack of redundant spinners. Pulling the indicator
+// out of the feed entirely makes "what's happening now" a single
+// authoritative cell, and lets the chat be a clean record of what
+// actually happened.
+function deriveRichSessionActivity(session) {
+  if (!session?.streamWorking) {
+    return null;
+  }
+  const providerLabel = String(session.providerLabel || "Agent").trim() || "Agent";
+  const narrative = getRichSessionNarrative(session.id);
+  const entries = Array.isArray(narrative?.entries) ? narrative.entries : [];
+
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry || typeof entry !== "object") continue;
+
+    if (entry.kind === "tool" && (entry.status === "running" || entry.meta === "running")) {
+      const toolName = String(entry.label || entry?.mcp?.tool || "tool").trim() || "tool";
+      return { kind: "tool", label: `Running ${toolName}…`, providerLabel };
+    }
+
+    // A streaming assistant entry — text-deltas have started landing for
+    // the current turn but the message hasn't finalised. The empty-text
+    // pending placeholder is excluded here; it's the default "thinking"
+    // case below.
+    if (entry.kind === "assistant" && entry.meta === "streaming" && String(entry.text || "").trim()) {
+      return { kind: "replying", label: `${providerLabel} is replying…`, providerLabel };
+    }
+
+    // Stop walking once we hit a user turn — older finalised entries
+    // shouldn't influence the "what's happening now" indicator.
+    if (entry.kind === "user") break;
+  }
+
+  return { kind: "thinking", label: `${providerLabel} is thinking…`, providerLabel };
+}
+
 function isRichSessionMarkdownContent(text) {
   const normalized = String(text || "").replace(/\r\n/g, "\n");
   if (!normalized.trim()) {
@@ -5767,6 +5814,16 @@ function renderRichSessionEntry(entry, index) {
   // indicator. The same DOM node mutates into the streaming reply when the
   // first delta lands, so there is no separate spinner to clear.
   const isAssistantPending = kind === "assistant" && !text.trim();
+  // Pending placeholders never render inline — the bottom activity strip
+  // (deriveRichSessionActivity) shows the single authoritative
+  // "thinking…" / "running tool…" / "replying…" indicator. Letting them
+  // render here historically caused stacked-spinner duplicates whenever
+  // the live stream's transient placeholder merge raced with a
+  // finalisation. The feed is a record of what happened; the strip is
+  // what's happening now.
+  if (isAssistantPending) {
+    return "";
+  }
   // Prefer the structured `entry.thinking` flag — set by the server-side
   // shaper for true reasoning content. Fall back to the kind/label heuristic
   // for legacy entries.
@@ -5807,19 +5864,8 @@ function renderRichSessionEntry(entry, index) {
   `;
 
   if (kind === "assistant") {
-    if (isAssistantPending) {
-      // Pending placeholder. Show the spinner kicker AND an explicit
-      // "<provider> is thinking..." line so the user sees the loading
-      // state clearly even when polling lag swallows the empty kicker
-      // alone. The entry mutates into the streamed reply on first delta.
-      const providerLabel = (entry?.label || label || "Assistant").trim();
-      return `
-        <article class="${entryClassName}" data-rich-session-entry="${index}" data-entry-id="${escapeHtml(entry?.id || "")}">
-          ${kickerHtml}
-          <div class="rich-session-entry-copy is-pending-copy">${escapeHtml(`${providerLabel} is thinking…`)}</div>
-        </article>
-      `;
-    }
+    // (Pending placeholders were short-circuited at the top of this
+    // function — see the early `return ""` above.)
     // Truncation footer for very long entries — set by the server-side
     // shaper when the wire-format cap (12K chars) clipped the visible
     // text. The full reply is still in the provider's transcript file;
@@ -6659,28 +6705,23 @@ function renderRichSessionSurface(activeSession) {
   const richActive = surfaceMode === "native";
   const streamLogActive = surfaceMode === "stream-json";
   const surfaceActive = richActive || streamLogActive;
-  // Suppress the bottom "is working…" pill when a pending-assistant
-  // placeholder entry is rendered in the feed — the entry's own
-  // spinner already says "Claude Code is thinking…" and showing both
-  // produces the redundant "double thinking indicator" the user flagged.
-  // Once the assistant's first text-delta lands the placeholder
-  // mutates into streaming text and the bottom pill takes over as the
-  // long-tail "still working on this turn" signal.
-  const hasPendingAssistantEntry = (() => {
-    const narrative = getRichSessionNarrative(activeSession?.id);
-    const entries = Array.isArray(narrative?.entries) ? narrative.entries : [];
-    return entries.some((entry) => entry?.kind === "assistant" && !String(entry?.text || "").trim());
-  })();
-  const isWorking = Boolean(activeSession?.streamWorking) && !hasPendingAssistantEntry;
-  const providerLabel = activeSession?.providerLabel || "Agent";
+  // Single authoritative "what's the agent doing right now" indicator.
+  // Pending placeholders are no longer rendered inline (see
+  // renderRichSessionEntry's early return), so the strip is always
+  // shown when streamWorking is true — its label reflects whichever of
+  // tool / replying / thinking the narrative tail signals.
+  const activity = deriveRichSessionActivity(activeSession);
+  const isWorking = activity !== null;
+  const activityLabel = activity?.label || `${activeSession?.providerLabel || "Agent"} is working…`;
+  const activityKindClass = activity?.kind ? `is-activity-${activity.kind}` : "";
   const activeMonitors = getRichSessionActiveMonitors(activeSession);
   return `
     <div class="rich-session-surface ${surfaceActive ? "is-active" : ""} ${streamLogActive ? "is-stream-log" : ""}" id="rich-session-surface" aria-hidden="${surfaceActive ? "false" : "true"}" data-rich-session-surface-mode="${escapeHtml(surfaceMode)}">
       <div class="rich-session-feed ${richActive ? "" : "is-hidden"}" id="rich-session-feed" aria-hidden="${richActive ? "false" : "true"}">${renderRichSessionFeedHtml(activeSession)}</div>
       <div class="rich-session-stream-log ${streamLogActive ? "" : "is-hidden"}" id="rich-session-stream-log" aria-hidden="${streamLogActive ? "false" : "true"}"></div>
-      <div class="rich-session-working ${isWorking ? "is-active" : ""}" id="rich-session-working" aria-live="polite" aria-hidden="${isWorking ? "false" : "true"}">
+      <div class="rich-session-working ${isWorking ? "is-active" : ""} ${activityKindClass}" id="rich-session-working" aria-live="polite" aria-hidden="${isWorking ? "false" : "true"}">
         <span class="rich-session-thinking-spinner" aria-hidden="true"></span>
-        <span>${escapeHtml(`${providerLabel} is working…`)}</span>
+        <span class="rich-session-working-label">${escapeHtml(activityLabel)}</span>
       </div>
       <div class="rich-session-monitors ${activeMonitors.length ? "is-active" : ""}" id="rich-session-monitors" aria-hidden="${activeMonitors.length ? "false" : "true"}">
         ${activeMonitors.map((m) => `<span class="rich-session-monitor-pill" title="${escapeHtml(m.tooltip)}"><span class="rich-session-monitor-dot" aria-hidden="true"></span>${escapeHtml(m.label)}</span>`).join("")}
@@ -6917,22 +6958,25 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
     attachmentMount.classList.toggle("is-empty", !attachments.length);
   }
 
-  // Update the persistent "agent is working" indicator without rebuilding it.
-  // Suppress when a pending-assistant placeholder entry is in the feed —
-  // see renderRichSessionSurface for the rationale.
+  // Update the persistent activity indicator without rebuilding it.
+  // The strip's label reflects whichever of tool / replying / thinking
+  // the narrative tail currently signals (see deriveRichSessionActivity).
   const workingIndicator = document.querySelector("#rich-session-working");
   if (workingIndicator instanceof HTMLElement) {
-    const narrative = getRichSessionNarrative(activeSession?.id);
-    const entries = Array.isArray(narrative?.entries) ? narrative.entries : [];
-    const hasPendingAssistantEntry = entries.some(
-      (entry) => entry?.kind === "assistant" && !String(entry?.text || "").trim(),
-    );
-    const isWorking = Boolean(activeSession?.streamWorking) && !hasPendingAssistantEntry;
+    const activity = deriveRichSessionActivity(activeSession);
+    const isWorking = activity !== null;
     workingIndicator.classList.toggle("is-active", isWorking);
     workingIndicator.setAttribute("aria-hidden", isWorking ? "false" : "true");
-    const label = workingIndicator.querySelector("span:last-of-type");
+    // Reset all activity-kind classes, then apply the current one.
+    for (const cls of Array.from(workingIndicator.classList)) {
+      if (cls.startsWith("is-activity-")) workingIndicator.classList.remove(cls);
+    }
+    if (activity?.kind) {
+      workingIndicator.classList.add(`is-activity-${activity.kind}`);
+    }
+    const label = workingIndicator.querySelector(".rich-session-working-label");
     if (label instanceof HTMLElement) {
-      label.textContent = `${activeSession?.providerLabel || "Agent"} is working…`;
+      label.textContent = activity?.label || `${activeSession?.providerLabel || "Agent"} is working…`;
     }
   }
 
