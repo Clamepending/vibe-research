@@ -275,6 +275,67 @@ test("runCycle can wait on the Agent Inbox review card", async () => {
   }
 });
 
+test("runCycle can launch a reviewer agent session for a review card", async () => {
+  const dir = makeProject("vr-runner-review-agent");
+  const calls = [];
+  try {
+    await claimNextMove({ projectDir: dir });
+    const fetchImpl = async (url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push({ url, body });
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          if (url.endsWith("/api/sessions")) {
+            return { session: { id: "review-session-1", providerId: body.providerId, name: body.name } };
+          }
+          if (url.endsWith("/wait")) {
+            return {
+              predicate: body.predicate,
+              predicateParams: body.predicateParams,
+              satisfied: true,
+            };
+          }
+          return { actionItem: { id: body.id, title: body.title } };
+        },
+      };
+    };
+
+    const result = await runCycle({
+      projectDir: dir,
+      slug: "first-move",
+      command: "node -e \"console.log('score=0.77')\"",
+      metricRegex: "score=([0-9.]+)",
+      waitHuman: true,
+      humanTimeoutMs: 1234,
+      agentTownApi: "http://agent-town.test/api/agent-town",
+      agentReviewProvider: "codex",
+      agentReviewName: "Canary reviewer",
+      fetchImpl,
+      timeoutMs: 5_000,
+    });
+
+    assert.equal(result.agentReviewSession.id, "review-session-1");
+    assert.equal(result.review.id, "research-cycle-first-move-1");
+    assert.equal(result.reviewWait.satisfied, true);
+    assert.equal(calls.length, 3);
+    assert.equal(calls[0].url, "http://agent-town.test/api/sessions");
+    assert.equal(calls[0].body.providerId, "codex");
+    assert.equal(calls[0].body.name, "Canary reviewer");
+    assert.match(calls[0].body.initialPrompt, /Action item id: research-cycle-first-move-1/);
+    assert.match(calls[0].body.initialPrompt, /Result doc:/);
+    assert.match(calls[0].body.initialPrompt, /Cycle log:/);
+    assert.equal(calls[1].url, "http://agent-town.test/api/agent-town/action-items");
+    assert.equal(calls[1].body.sourceSessionId, "review-session-1");
+    assert.equal(calls[1].body.sourceAgentId, "codex");
+    assert.match(calls[1].body.target.id, /first-move:cycle-1/);
+    assert.equal(calls[2].body.predicate, "action_item_resolved");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runCycle can pin a live monitor URL to Agent Canvas", async () => {
   const dir = makeProject("vr-runner-monitor");
   const calls = [];
@@ -519,6 +580,7 @@ test("vr-research-runner CLI help and run command work", async () => {
   assert.match(help.stdout, /vr-research-runner/);
   assert.match(help.stdout, /--wait-human/);
   assert.match(help.stdout, /--monitor-url/);
+  assert.match(help.stdout, /--agent-review-provider/);
   assert.match(help.stdout, /--allow-budget-cap/);
   assert.match(help.stdout, /--update-paper/);
   assert.match(help.stdout, /--cost-compute/);
