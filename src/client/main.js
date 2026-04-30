@@ -14534,6 +14534,16 @@ function renderSessionCards() {
     .map((group) => {
       const expanded = state.sessionProjectExpanded.has(group.key);
       const active = group.sessions.some((session) => session.id === state.activeSessionId);
+      // Fallback session id for the "open repo graph" button on the
+      // session-project header. The graph view prefers an active session
+      // for the project's cwd; if none is active in this project, the
+      // group's first session is the next best identity to anchor to.
+      // Was added in 2e549ed referencing an undeclared `graphSessionId`,
+      // which threw a ReferenceError on every sidebar render and surfaced
+      // as a "graphSessionId is not defined" alert popup.
+      const graphSessionId = group.sessions.find((session) => session.id === state.activeSessionId)?.id
+        || group.sessions[0]?.id
+        || "";
       const paperNotePath = getProjectPaperNotePathForCwd(group.cwd);
       const paperButtonHtml = paperNotePath
         ? `
