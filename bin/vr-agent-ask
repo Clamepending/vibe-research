@@ -1,0 +1,409 @@
+#!/usr/bin/env node
+
+import path from "node:path";
+import process from "node:process";
+import { readFile } from "node:fs/promises";
+
+function printHelp() {
+  process.stdout.write(`vr-agent-ask
+
+Create a fast human-review card in Agent Inbox, optionally wait for a choice.
+
+Usage:
+  vr-agent-ask --title TEXT --detail TEXT [options]
+  vr-agent-ask --resolve ID --resolution approved [--note TEXT] [--json]
+
+Review-card options:
+  --kind <kind>             action | approval | review | setup (default: review)
+  --priority <priority>     low | normal | high | urgent (default: normal)
+  --id <id>                 Stable action item id; generated if omitted.
+  --title <text>            Short card title.
+  --detail <text>           One-sentence context.
+  --recommendation <text>   The agent's proposed next action.
+  --consequence <text>      What approval/rejection changes.
+  --evidence <spec>         Repeatable. LABEL=URL, LABEL=path:FILE, URL, or FILE.
+  --choice <choice>         Repeatable. approve, reject, steer, pause, resume, complete, dismiss.
+  --choices <csv>           Comma-separated choices.
+  --capability <id>         Repeatable capability tag.
+  --href <url>              Main open link for the card.
+  --cta <text>              Main open-link button label.
+  --source <text>           Source label (default: agent).
+  --session-id <id>         Defaults to VIBE_RESEARCH_SESSION_ID.
+  --agent-id <id>           Optional source agent id.
+  --target-type <type>      Target object type (file, session, task, etc.).
+  --target-id <id>          Target object id/path.
+  --target-label <text>     Target label.
+  --target-href <url>       Target link.
+  --wait                    Wait until the card is resolved.
+  --wait-for <predicate>    Predicate to wait for (default: action_item_resolved).
+  --timeout-ms <ms>         Wait timeout, capped by the server.
+
+Common:
+  --api <url>               Overrides VIBE_RESEARCH_AGENT_TOWN_API.
+  --json                    Print API responses as JSON.
+  --help, -h                Show this help.
+
+Examples:
+  vr-agent-ask --kind review --priority high \\
+    --title "Admit result?" \\
+    --detail "The move is within noise of rank 1." \\
+    --recommendation "Do not admit; add a rerun." \\
+    --evidence "result=projects/demo/results/v2.md" \\
+    --choices approve,reject,steer --wait
+
+  vr-agent-ask --resolve review-move --resolution approved --note "Ship it."
+`);
+}
+
+function requireValue(args, index, flag) {
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value.`);
+  }
+  return value;
+}
+
+function pushCsv(target, value) {
+  String(value || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .forEach((entry) => target.push(entry));
+}
+
+function parseArgs(args) {
+  const options = {
+    agentId: "",
+    api: "",
+    capabilityIds: [],
+    choices: [],
+    consequence: "",
+    cta: "",
+    detail: "",
+    evidence: [],
+    help: false,
+    href: "",
+    id: "",
+    json: false,
+    kind: "review",
+    note: "",
+    priority: "normal",
+    recommendation: "",
+    resolution: "",
+    resolveId: "",
+    sessionId: "",
+    source: "agent",
+    target: {},
+    timeoutMs: "",
+    title: "",
+    wait: false,
+    waitFor: "action_item_resolved",
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--wait") {
+      options.wait = true;
+    } else if (arg === "--api") {
+      options.api = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--agent-id") {
+      options.agentId = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--capability") {
+      options.capabilityIds.push(requireValue(args, index, arg));
+      index += 1;
+    } else if (arg === "--capabilities") {
+      pushCsv(options.capabilityIds, requireValue(args, index, arg));
+      index += 1;
+    } else if (arg === "--choice") {
+      options.choices.push(requireValue(args, index, arg));
+      index += 1;
+    } else if (arg === "--choices") {
+      pushCsv(options.choices, requireValue(args, index, arg));
+      index += 1;
+    } else if (arg === "--consequence" || arg === "--impact") {
+      options.consequence = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--cta") {
+      options.cta = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--detail") {
+      options.detail = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--evidence") {
+      options.evidence.push(requireValue(args, index, arg));
+      index += 1;
+    } else if (arg === "--href") {
+      options.href = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--id") {
+      options.id = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--kind") {
+      options.kind = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--note" || arg === "--resolution-note") {
+      options.note = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--priority") {
+      options.priority = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--recommendation" || arg === "--recommend") {
+      options.recommendation = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--resolution") {
+      options.resolution = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--resolve") {
+      options.resolveId = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--session-id") {
+      options.sessionId = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--source") {
+      options.source = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--target-type") {
+      options.target.type = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--target-id") {
+      options.target.id = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--target-label") {
+      options.target.label = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--target-href") {
+      options.target.href = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--timeout-ms") {
+      options.timeoutMs = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--title") {
+      options.title = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--wait-for") {
+      options.waitFor = requireValue(args, index, arg);
+      options.wait = true;
+      index += 1;
+    } else {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+async function readServerInfo(rootDir) {
+  const filePath = path.join(rootDir, "server.json");
+  const raw = await readFile(filePath, "utf8");
+  return JSON.parse(raw);
+}
+
+async function resolveAgentTownApi(options = {}) {
+  const directApi = String(
+    options.api ||
+      process.env.VIBE_RESEARCH_AGENT_TOWN_API ||
+      process.env.REMOTE_VIBES_AGENT_TOWN_API ||
+      "",
+  ).trim();
+  if (directApi) {
+    return directApi.replace(/\/+$/, "");
+  }
+
+  const rootDir = String(process.env.VIBE_RESEARCH_ROOT || process.env.REMOTE_VIBES_ROOT || "").trim();
+  if (!rootDir) {
+    throw new Error("VIBE_RESEARCH_AGENT_TOWN_API or VIBE_RESEARCH_ROOT is required.");
+  }
+
+  const serverInfo = await readServerInfo(rootDir);
+  const baseUrl = String(serverInfo?.helperBaseUrl || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("Vibe Research server metadata does not include helperBaseUrl.");
+  }
+
+  return `${baseUrl}/api/agent-town`;
+}
+
+async function fetchJsonOrThrow(url, options) {
+  const response = await fetch(url, options);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error || `${response.status} ${response.statusText}`.trim());
+  }
+  return payload;
+}
+
+function inferEvidence(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  let label = "";
+  let target = raw;
+  const equalsIndex = raw.indexOf("=");
+  if (equalsIndex > 0) {
+    label = raw.slice(0, equalsIndex).trim();
+    target = raw.slice(equalsIndex + 1).trim();
+  }
+
+  if (/^path:/i.test(target)) {
+    return {
+      label: label || path.basename(target.slice(5)) || "evidence",
+      path: target.slice(5),
+      kind: "file",
+    };
+  }
+
+  if (/^https?:\/\//i.test(target) || target.startsWith("?") || target.startsWith("#")) {
+    return {
+      label: label || target,
+      href: target,
+      kind: "reference",
+    };
+  }
+
+  return {
+    label: label || path.basename(target) || target,
+    path: target,
+    kind: "file",
+  };
+}
+
+function statusForResolution(resolution) {
+  const normalized = String(resolution || "").trim().toLowerCase();
+  if (["approved", "completed", "resumed", "steered"].includes(normalized)) {
+    return "completed";
+  }
+  if (["dismissed", "paused", "rejected", "timeout"].includes(normalized)) {
+    return "dismissed";
+  }
+  return "";
+}
+
+function buildCreateBody(options) {
+  if (!options.title) {
+    throw new Error("--title is required.");
+  }
+
+  const sessionId = String(
+    options.sessionId ||
+      process.env.VIBE_RESEARCH_SESSION_ID ||
+      process.env.REMOTE_VIBES_SESSION_ID ||
+      "",
+  ).trim();
+  const target = Object.values(options.target).some((value) => String(value || "").trim())
+    ? options.target
+    : null;
+
+  return {
+    id: options.id,
+    kind: options.kind,
+    priority: options.priority,
+    title: options.title,
+    detail: options.detail,
+    recommendation: options.recommendation,
+    consequence: options.consequence,
+    href: options.href,
+    cta: options.cta,
+    source: options.source,
+    sourceAgentId: options.agentId,
+    sourceSessionId: sessionId,
+    target,
+    capabilityIds: options.capabilityIds,
+    choices: options.choices.length ? options.choices : ["approve", "reject", "steer"],
+    evidence: options.evidence.map(inferEvidence).filter(Boolean),
+  };
+}
+
+async function createActionItem(api, options) {
+  const body = buildCreateBody(options);
+  return fetchJsonOrThrow(`${api}/action-items`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function resolveActionItem(api, options) {
+  if (!options.resolveId) {
+    throw new Error("--resolve requires an action item id.");
+  }
+  if (!options.resolution) {
+    throw new Error("--resolution is required with --resolve.");
+  }
+
+  const status = statusForResolution(options.resolution);
+  const body = {
+    resolution: options.resolution,
+    resolutionNote: options.note,
+    ...(status ? { status } : {}),
+  };
+  return fetchJsonOrThrow(`${api}/action-items/${encodeURIComponent(options.resolveId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function waitForActionItem(api, actionItem, options) {
+  const actionItemId = actionItem?.id || options.id || "";
+  const body = {
+    predicate: options.waitFor || "action_item_resolved",
+    predicateParams: { actionItemId },
+    timeoutMs: options.timeoutMs,
+  };
+  return fetchJsonOrThrow(`${api}/wait`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    printHelp();
+    return;
+  }
+
+  const api = await resolveAgentTownApi(options);
+  if (options.resolveId) {
+    const payload = await resolveActionItem(api, options);
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    } else {
+      const item = payload.actionItem || {};
+      process.stdout.write(`resolved ${item.id || options.resolveId}: ${item.resolution || options.resolution || item.status}\n`);
+    }
+    return;
+  }
+
+  const created = await createActionItem(api, options);
+  let waitResult = null;
+  if (options.wait) {
+    waitResult = await waitForActionItem(api, created.actionItem, options);
+  }
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({ ...created, wait: waitResult }, null, 2)}\n`);
+    return;
+  }
+
+  const item = created.actionItem || {};
+  process.stdout.write(`asked ${item.id}: ${item.title}\n`);
+  if (options.wait) {
+    const resultLabel = waitResult?.satisfied
+      ? `resolved (${item.id})`
+      : `wait timed out (${options.waitFor})`;
+    process.stdout.write(`${resultLabel}\n`);
+  }
+}
+
+void main().catch((error) => {
+  process.stderr.write(`vr-agent-ask: ${error.message}\n`);
+  process.exit(1);
+});

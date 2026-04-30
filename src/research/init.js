@@ -205,8 +205,9 @@ export async function seedWandbProject({
   ].join("\n");
 
   return new Promise((resolve) => {
-    // Closing stdin makes wandb fail fast on a non-interactive shell instead
-    // of blocking on a login prompt.
+    // WANDB_SILENT silences progress chatter; closing stdin makes wandb
+    // detect a non-interactive shell and fail fast instead of prompting
+    // for a login.
     const child = spawn(pythonBin, ["-c", py], {
       stdio: ["ignore", "ignore", "pipe"],
       env: { ...process.env, WANDB_SILENT: "true" },

@@ -43,12 +43,38 @@ Action items are intentionally small:
     "label": "Draft message"
   },
   "capabilityIds": ["sends-messages"],
-  "predicate": "action_item_completed",
-  "predicateParams": {
-    "actionItemId": "approve-outbound-message"
-  }
+  "recommendation": "Approve after checking the recipient and tone.",
+  "consequence": "Approval lets the agent send the message; rejection stops it.",
+  "evidence": [
+    { "label": "draft", "path": "comms/drafts/message.md", "kind": "file" }
+  ],
+  "choices": ["approve", "reject", "steer"]
 }
 ```
+
+The ergonomic CLI is:
+
+```sh
+vr-agent-ask --kind review --title "Admit result?" --detail "The move is within noise of rank 1." --recommendation "Do not admit; add a rerun." --evidence "result=projects/demo/results/v2.md" --choices approve,reject,steer --wait
+```
+
+Agents can wait on `action_item_resolved`, `action_item_approved`, `action_item_rejected`, or `action_item_steered` instead of asking the human to report what they clicked.
+
+Research briefs are the bridge between human brainstorming and experiment mode:
+
+```sh
+vr-research-brief projects/demo create \
+  --slug dropout-mechanism \
+  --question "Is the plateau capacity or regularization?" \
+  --theory "Validation loss diverges after epoch 8." \
+  --grounding "Prior result v2 suggests augmentation is not the limiter." \
+  --move "dropout-rerun | main | test dropout=0.2 with 3 seeds | regularization reduces variance" \
+  --recommend dropout-rerun \
+  --return-trigger "3 seeds remain within noise" \
+  --ask-human
+```
+
+Briefs live in `projects/<name>/briefs/<slug>.md`; phase state lives in `projects/<name>/.vibe-research/research-state.json`. Once a brief is approved, `vr-research-brief projects/demo compile --slug dropout-mechanism` turns the recommended candidate into a `QUEUE` row and moves the project phase to `experiment`. Brief review cards created with `--ask-human` also carry compile metadata, so Agent Inbox can offer a one-click `approve & queue` path.
 
 Agent canvases are intentionally current, not archival. Agents should keep their result docs and Library notes as the durable record, then point the canvas at the most useful visual artifact right now:
 

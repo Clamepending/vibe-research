@@ -1,0 +1,420 @@
+#!/usr/bin/env node
+// vr-research-brief - bridge brainstorm/research into concrete moves.
+
+import path from "node:path";
+import process from "node:process";
+import { readFile } from "node:fs/promises";
+import {
+  compileBriefToQueue,
+  createResearchBrief,
+  parseCandidateMoveSpec,
+  readResearchBrief,
+  readResearchState,
+  updateResearchState,
+  VALID_RESEARCH_PHASES,
+} from "../src/research/brief.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-brief - manage brainstorm -> experiment phase bridges
+
+Usage:
+  vr-research-brief <project-dir> create --slug <slug> --question <text> [options]
+  vr-research-brief <project-dir> compile --slug <slug> [--all | --only <slug>] [--position N]
+  vr-research-brief <project-dir> phase [--phase <phase>] [--brief <slug>] [--summary <text>]
+  vr-research-brief <project-dir> show --slug <slug>
+
+Create options:
+  --title <text>             Brief title (defaults to slug).
+  --theory <text>            Current working theory.
+  --grounding <text>         Repeatable literature/prior-result note.
+  --move <spec>              Repeatable: "slug | starting-point | why | hypothesis".
+  --recommend <slug>         Recommended first move.
+  --rejected <text>          Repeatable rejected move/reason.
+  --budget <text>            Budget line or paragraph.
+  --return-trigger <text>    Repeatable trigger that sends us back to brainstorm.
+  --from <path>              Include raw brainstorm/source notes from a file.
+  --phase <phase>            Defaults to move-design.
+  --force                    Overwrite an existing brief.
+  --ask-human                Create an Agent Inbox review card for the brief.
+  --wait                    With --ask-human, wait until the review card resolves.
+  --compile-on-approve       With --wait, compile the recommended move if approved.
+
+Compile options:
+  --all                      Compile all candidate moves.
+  --only <slug>              Repeatable specific candidate move to compile.
+  --position <N>             1-based QUEUE insertion position.
+  --dry-run                  Show rows without editing README.md.
+
+Phase options:
+  --phase <phase>            ${Array.from(VALID_RESEARCH_PHASES).join(" | ")}
+  --brief <slug>             Associate phase transition with a brief.
+  --summary <text>           One-line phase transition reason.
+
+Common:
+  --brief-path <path>        Use a specific brief markdown path.
+  --api <url>                Agent Town API override for --ask-human.
+  --json                    Print machine-readable output.
+  --help, -h                Show this message.
+
+Example:
+  vr-research-brief projects/widget create \\
+    --slug dropout-mechanism \\
+    --question "Is the plateau capacity or regularization?" \\
+    --theory "Validation loss diverges only after epoch 8." \\
+    --grounding "Prior result v2 suggests augmentation is not the limiter." \\
+    --move "dropout-rerun | main | test dropout=0.2 with 3 seeds | regularization reduces variance" \\
+    --recommend dropout-rerun \\
+    --return-trigger "3 seeds remain within noise" \\
+    --ask-human
+`);
+}
+
+function requireValue(args, index, flag) {
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value.`);
+  }
+  return value;
+}
+
+function parseArgs(argv) {
+  const opts = {
+    all: false,
+    api: "",
+    askHuman: false,
+    briefPath: "",
+    budget: "",
+    compileOnApprove: false,
+    dryRun: false,
+    force: false,
+    grounding: [],
+    help: false,
+    json: false,
+    moveSpecs: [],
+    only: [],
+    phase: "",
+    position: "",
+    projectDir: "",
+    question: "",
+    recommend: "",
+    rejected: [],
+    returnTriggers: [],
+    slug: "",
+    sourcePath: "",
+    subcommand: "",
+    summary: "",
+    theory: "",
+    title: "",
+    wait: false,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
+    if (arg === "--all") { opts.all = true; continue; }
+    if (arg === "--ask-human") { opts.askHuman = true; continue; }
+    if (arg === "--compile-on-approve") { opts.compileOnApprove = true; opts.wait = true; continue; }
+    if (arg === "--dry-run") { opts.dryRun = true; continue; }
+    if (arg === "--force") { opts.force = true; continue; }
+    if (arg === "--json") { opts.json = true; continue; }
+    if (arg === "--wait") { opts.wait = true; continue; }
+    if (arg === "--api") { opts.api = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--brief" || arg === "--slug") { opts.slug = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--brief-path") { opts.briefPath = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--budget") { opts.budget = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--from") { opts.sourcePath = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--grounding") { opts.grounding.push(requireValue(argv, index, arg)); index += 1; continue; }
+    if (arg === "--move") { opts.moveSpecs.push(requireValue(argv, index, arg)); index += 1; continue; }
+    if (arg === "--only") { opts.only.push(requireValue(argv, index, arg)); index += 1; continue; }
+    if (arg === "--phase") { opts.phase = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--position" || arg === "--row") { opts.position = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--question") { opts.question = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--recommend") { opts.recommend = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--rejected") { opts.rejected.push(requireValue(argv, index, arg)); index += 1; continue; }
+    if (arg === "--return-trigger") { opts.returnTriggers.push(requireValue(argv, index, arg)); index += 1; continue; }
+    if (arg === "--summary") { opts.summary = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--theory") { opts.theory = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--title") { opts.title = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
+    if (!opts.projectDir) { opts.projectDir = arg; continue; }
+    if (!opts.subcommand) { opts.subcommand = arg; continue; }
+    throw new Error(`unexpected positional arg: ${arg}`);
+  }
+  return opts;
+}
+
+async function readServerInfo(rootDir) {
+  const filePath = path.join(rootDir, "server.json");
+  const raw = await readFile(filePath, "utf8");
+  return JSON.parse(raw);
+}
+
+async function resolveAgentTownApi(options = {}) {
+  const directApi = String(
+    options.api ||
+      process.env.VIBE_RESEARCH_AGENT_TOWN_API ||
+      process.env.REMOTE_VIBES_AGENT_TOWN_API ||
+      "",
+  ).trim();
+  if (directApi) {
+    return directApi.replace(/\/+$/, "");
+  }
+
+  const rootDir = String(process.env.VIBE_RESEARCH_ROOT || process.env.REMOTE_VIBES_ROOT || "").trim();
+  if (!rootDir) {
+    throw new Error("VIBE_RESEARCH_AGENT_TOWN_API or VIBE_RESEARCH_ROOT is required for --ask-human.");
+  }
+
+  const serverInfo = await readServerInfo(rootDir);
+  const baseUrl = String(serverInfo?.helperBaseUrl || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("Vibe Research server metadata does not include helperBaseUrl.");
+  }
+  return `${baseUrl}/api/agent-town`;
+}
+
+async function fetchJsonOrThrow(url, options) {
+  const response = await fetch(url, options);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error || `${response.status} ${response.statusText}`.trim());
+  }
+  return payload;
+}
+
+async function createBriefReviewCard(api, { projectDir, brief, briefPath }) {
+  const recommended = brief.recommendedMove || brief.candidateMoves[0]?.move || "";
+  const projectName = path.basename(path.resolve(projectDir));
+  const body = {
+    id: `research-brief-${brief.slug}`,
+    kind: "review",
+    priority: "high",
+    title: `Review research brief: ${brief.slug}`,
+    detail: brief.question || "Review the proposed research brief before experiments start.",
+    recommendation: recommended
+      ? `Approve compiling \`${recommended}\` into QUEUE, or steer with edits/splits/more literature.`
+      : "Steer this brief until it has a concrete first move.",
+    consequence: "Approval gives the agent permission to leave brainstorm mode and start the selected experiment path.",
+    source: "research-brief",
+    href: "?view=agent-inbox",
+    cta: "Review",
+    target: {
+      type: "file",
+      id: briefPath,
+      label: path.basename(briefPath),
+      projectName,
+      briefSlug: brief.slug,
+      action: "compile-research-brief",
+      href: `/research/${encodeURIComponent(projectName)}`,
+    },
+    evidence: [
+      { label: "brief", path: briefPath, kind: "brief" },
+      ...brief.candidateMoves.slice(0, 3).map((move) => ({
+        label: move.move,
+        kind: "candidate",
+      })),
+    ],
+    choices: ["approve", "steer", "reject"],
+  };
+
+  return fetchJsonOrThrow(`${api}/action-items`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function waitForBriefReview(api, actionItemId) {
+  return fetchJsonOrThrow(`${api}/wait`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      predicate: "action_item_resolved",
+      predicateParams: { actionItemId },
+      timeoutMs: 30_000,
+    }),
+  });
+}
+
+function getActionItemFromWait(waitResult, actionItemId) {
+  const items = Array.isArray(waitResult?.state?.actionItems) ? waitResult.state.actionItems : [];
+  return items.find((item) => item.id === actionItemId) || null;
+}
+
+async function runCreate(opts, projectDir) {
+  if (!opts.slug) throw new Error("--slug is required for create");
+  if (!opts.question) throw new Error("--question is required for create");
+  const sourceText = opts.sourcePath
+    ? await readFile(path.resolve(opts.sourcePath), "utf8")
+    : "";
+  const candidateMoves = opts.moveSpecs.map(parseCandidateMoveSpec).filter(Boolean);
+  const result = await createResearchBrief({
+    projectDir,
+    slug: opts.slug,
+    title: opts.title,
+    phase: opts.phase || "move-design",
+    question: opts.question,
+    currentTheory: opts.theory,
+    grounding: opts.grounding,
+    candidateMoves,
+    recommendedMove: opts.recommend,
+    rejectedMoves: opts.rejected,
+    budget: opts.budget,
+    returnTriggers: opts.returnTriggers,
+    sourceText,
+    force: opts.force,
+  });
+
+  const phaseResult = await updateResearchState({
+    projectDir,
+    phase: opts.phase || "move-design",
+    briefSlug: result.brief.slug,
+    summary: `created research brief ${result.brief.slug}`,
+  });
+
+  let review = null;
+  let wait = null;
+  let compiled = null;
+  if (opts.askHuman) {
+    const api = await resolveAgentTownApi(opts);
+    review = await createBriefReviewCard(api, result);
+    if (opts.wait) {
+      wait = await waitForBriefReview(api, review.actionItem?.id || `research-brief-${result.brief.slug}`);
+      const actionItem = getActionItemFromWait(wait, review.actionItem?.id);
+      if (opts.compileOnApprove && actionItem?.resolution === "approved") {
+        compiled = await compileBriefToQueue({ projectDir, slug: result.brief.slug });
+        await updateResearchState({
+          projectDir,
+          phase: "experiment",
+          briefSlug: result.brief.slug,
+          summary: `approved brief ${result.brief.slug}; compiled recommended move`,
+        });
+      }
+    }
+  }
+
+  return { ...result, phase: phaseResult.state, review, wait, compiled };
+}
+
+async function runCompile(opts, projectDir) {
+  if (!opts.slug && !opts.briefPath) throw new Error("--slug or --brief-path is required for compile");
+  const result = await compileBriefToQueue({
+    projectDir,
+    slug: opts.slug,
+    briefPath: opts.briefPath,
+    all: opts.all,
+    moveSlugs: opts.only,
+    position: opts.position,
+    dryRun: opts.dryRun,
+  });
+  let phase = null;
+  if (!opts.dryRun) {
+    phase = (await updateResearchState({
+      projectDir,
+      phase: "experiment",
+      briefSlug: result.brief.slug,
+      summary: `compiled ${result.queueRows.map((row) => row.slug).join(", ")} into QUEUE`,
+    })).state;
+  }
+  return { ...result, phase };
+}
+
+async function runPhase(opts, projectDir) {
+  if (!opts.phase) {
+    return { projectDir, state: await readResearchState({ projectDir }) };
+  }
+  return updateResearchState({
+    projectDir,
+    phase: opts.phase,
+    briefSlug: opts.slug,
+    summary: opts.summary,
+  });
+}
+
+async function runShow(opts, projectDir) {
+  if (!opts.slug && !opts.briefPath) throw new Error("--slug or --brief-path is required for show");
+  return readResearchBrief({ projectDir, slug: opts.slug, briefPath: opts.briefPath });
+}
+
+function printTextResult(subcommand, result) {
+  if (subcommand === "create") {
+    process.stdout.write(`created research brief ${result.brief.slug}\n`);
+    process.stdout.write(`  ${result.briefPath}\n`);
+    if (result.review?.actionItem?.id) {
+      process.stdout.write(`  review card: ${result.review.actionItem.id}\n`);
+    }
+    if (result.compiled?.queueRows?.length) {
+      process.stdout.write(`  compiled: ${result.compiled.queueRows.map((row) => row.slug).join(", ")}\n`);
+    }
+    return;
+  }
+  if (subcommand === "compile") {
+    const label = result.dryRun ? "would compile" : "compiled";
+    process.stdout.write(`${label} ${result.queueRows.length} move(s) from ${result.brief.slug}\n`);
+    for (const row of result.queueRows) {
+      process.stdout.write(`  ${row.slug} | ${row.startingPoint} | ${row.why}\n`);
+    }
+    return;
+  }
+  if (subcommand === "phase") {
+    process.stdout.write(`phase: ${result.state.phase}\n`);
+    if (result.state.briefSlug) process.stdout.write(`brief: ${result.state.briefSlug}\n`);
+    if (result.state.summary) process.stdout.write(`summary: ${result.state.summary}\n`);
+    return;
+  }
+  if (subcommand === "show") {
+    process.stdout.write(result.text);
+    if (!result.text.endsWith("\n")) process.stdout.write("\n");
+  }
+}
+
+async function main() {
+  let opts;
+  try {
+    opts = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`${error.message}\n\n`);
+    printHelp();
+    process.exit(2);
+  }
+
+  if (opts.help) {
+    printHelp();
+    process.exit(0);
+  }
+  if (!opts.projectDir) {
+    process.stderr.write("project-dir positional argument is required\n");
+    process.exit(2);
+  }
+
+  const subcommand = opts.subcommand || "phase";
+  if (!["create", "compile", "phase", "show"].includes(subcommand)) {
+    process.stderr.write(`subcommand must be create, compile, phase, or show; got "${subcommand}"\n`);
+    process.exit(2);
+  }
+
+  const projectDir = path.resolve(opts.projectDir);
+  let result;
+  try {
+    if (subcommand === "create") {
+      result = await runCreate(opts, projectDir);
+    } else if (subcommand === "compile") {
+      result = await runCompile(opts, projectDir);
+    } else if (subcommand === "phase") {
+      result = await runPhase(opts, projectDir);
+    } else {
+      result = await runShow(opts, projectDir);
+    }
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(1);
+  }
+
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } else {
+    printTextResult(subcommand, result);
+  }
+}
+
+main();

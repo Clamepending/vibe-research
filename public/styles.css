@@ -3223,6 +3223,67 @@ input[readonly][data-folder-picker-target] {
   color: rgba(255, 210, 218, 0.95);
 }
 
+.agent-inbox-review-details {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.agent-inbox-review-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
+}
+
+.agent-inbox-review-row span {
+  color: rgba(226, 233, 239, 0.48);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.64rem;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.agent-inbox-review-row strong {
+  color: rgba(244, 247, 251, 0.88);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.38;
+}
+
+.agent-inbox-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-inbox-evidence-link {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding: 3px 7px;
+  border: 1px solid rgba(124, 231, 240, 0.16);
+  border-radius: 999px;
+  background: rgba(124, 231, 240, 0.07);
+  color: rgba(206, 246, 250, 0.86);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.68rem;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-inbox-evidence-link:hover {
+  color: #f4fbff;
+  border-color: rgba(124, 231, 240, 0.34);
+}
+
 .plugin-status {
   align-self: start;
   justify-self: end;

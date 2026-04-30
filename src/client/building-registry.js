@@ -361,6 +361,8 @@ const CORE_BUILDING_MANIFESTS = [
         preflight: [
           {
             kind: "command",
+            // Detect wandb on PATH, or importable from system Python, or in
+            // the vr-managed venv created by vr-pip-install-tool.
             command: "command -v wandb || python3 -c 'import wandb' 2>/dev/null || [ -x \"${VIBE_RESEARCH_HOME:-$HOME/.vibe-research}/bin/wandb\" ]",
             label: "Detect wandb client",
           },

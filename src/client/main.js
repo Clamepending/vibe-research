@@ -14470,7 +14470,17 @@ function renderSessionCards() {
                 <span class="session-project-name">${escapeHtml(group.name)}</span>
               </span>
             </button>
-            ${paperButtonHtml}${wandbButtonHtml}
+            <button
+              class="session-project-graph"
+              type="button"
+              data-open-swarm-project="${escapeHtml(group.cwd)}"
+              data-swarm-project-fallback-session="${escapeHtml(graphSessionId)}"
+              data-swarm-project-name="${escapeHtml(group.name)}"
+              aria-label="Open repo graph for ${escapeHtml(group.name)}"
+              ${tooltipAttributes("Repo graph")}
+            >
+              ${renderIcon(Waypoints)}
+            </button>${paperButtonHtml}${wandbButtonHtml}
             <button
               class="session-project-new"
               type="button"
@@ -18989,6 +18999,113 @@ function renderAgentInboxCard(item) {
   `;
 }
 
+function renderAgentTownEvidenceLink(entry) {
+  const label = String(entry?.label || entry?.path || entry?.href || "evidence").trim();
+  const href = String(entry?.href || "").trim();
+  const pathLabel = String(entry?.path || "").trim();
+  const kind = String(entry?.kind || "reference").trim().replaceAll("_", " ");
+  const text = [kind, label].filter(Boolean).join(": ");
+  if (href) {
+    return `<a class="agent-inbox-evidence-link" href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(text)}</a>`;
+  }
+  return `<span class="agent-inbox-evidence-link" title="${escapeHtml(pathLabel || label)}">${escapeHtml(text)}</span>`;
+}
+
+function renderAgentTownReviewDetails(item) {
+  const recommendation = String(item.recommendation || "").trim();
+  const consequence = String(item.consequence || "").trim();
+  const evidence = Array.isArray(item.evidence) ? item.evidence.slice(0, 4) : [];
+  if (!recommendation && !consequence && !evidence.length) {
+    return "";
+  }
+
+  return `
+    <div class="agent-inbox-review-details">
+      ${
+        recommendation
+          ? `<div class="agent-inbox-review-row"><span>recommend</span><strong>${escapeHtml(recommendation)}</strong></div>`
+          : ""
+      }
+      ${
+        consequence
+          ? `<div class="agent-inbox-review-row"><span>impact</span><strong>${escapeHtml(consequence)}</strong></div>`
+          : ""
+      }
+      ${
+        evidence.length
+          ? `<div class="agent-inbox-evidence">${evidence.map(renderAgentTownEvidenceLink).join("")}</div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function getActionItemResolutionForChoice(choice) {
+  const normalized = String(choice || "").trim().toLowerCase();
+  if (normalized === "approve") return { resolution: "approved", status: "completed", label: "approve" };
+  if (normalized === "reject") return { resolution: "rejected", status: "dismissed", label: "reject" };
+  if (normalized === "steer") return { resolution: "steered", status: "completed", label: "steer" };
+  if (normalized === "pause") return { resolution: "paused", status: "dismissed", label: "pause" };
+  if (normalized === "resume") return { resolution: "resumed", status: "completed", label: "resume" };
+  if (normalized === "dismiss") return { resolution: "dismissed", status: "dismissed", label: "dismiss" };
+  if (normalized === "complete") return { resolution: "completed", status: "completed", label: "done" };
+  return null;
+}
+
+function getResearchBriefCompileTarget(item) {
+  const target = item?.target && typeof item.target === "object" ? item.target : {};
+  const source = String(item?.source || "").trim();
+  const action = String(target.action || "").trim();
+  if (source !== "research-brief" && action !== "compile-research-brief") {
+    return null;
+  }
+  const projectName = String(target.projectName || "").trim();
+  const briefSlug = String(target.briefSlug || "").trim();
+  if (!projectName || !briefSlug) {
+    return null;
+  }
+  return { projectName, briefSlug };
+}
+
+function renderResearchBriefCompileButton(item) {
+  const target = getResearchBriefCompileTarget(item);
+  if (!target) {
+    return "";
+  }
+  return `
+    <button
+      class="primary-button toolbar-control"
+      type="button"
+      data-research-brief-compile-action="${escapeHtml(item.id)}"
+    >approve & queue</button>
+  `;
+}
+
+function renderAgentTownActionChoiceButtons(item) {
+  const choices = Array.isArray(item.choices) ? item.choices : [];
+  const compileTarget = getResearchBriefCompileTarget(item);
+  const buttons = choices
+    .map(getActionItemResolutionForChoice)
+    .filter(Boolean)
+    .filter((choice) => !(compileTarget && choice.resolution === "approved"))
+    .map((choice, index) => {
+      const buttonClass = index === 0 && ["approved", "completed", "resumed"].includes(choice.resolution)
+        ? "primary-button"
+        : "ghost-button";
+      return `
+        <button
+          class="${buttonClass} toolbar-control"
+          type="button"
+          data-agent-town-action-resolve="${escapeHtml(item.id)}"
+          data-agent-town-action-resolution="${escapeHtml(choice.resolution)}"
+          data-agent-town-action-status="${escapeHtml(choice.status)}"
+        >${escapeHtml(choice.label)}</button>
+      `;
+    });
+
+  return buttons.join("");
+}
+
 function renderAgentTownActionItemCard(item) {
   const kindLabel = getAgentTownActionItemKindLabel(item);
   const metaLabel = getAgentTownActionItemMetaLabel(item);
@@ -18999,9 +19116,12 @@ function renderAgentTownActionItemCard(item) {
   const tutorialAttr = tutorialId ? ` data-tutorial-id="${escapeHtml(tutorialId)}"` : "";
   const primaryButton = tutorialId
     ? `<button class="primary-button toolbar-control" type="button" data-tutorial-open="${escapeHtml(tutorialId)}" data-tutorial-action-item="${escapeHtml(item.id)}">${escapeHtml(getGuidedTutorialConfig(tutorialId) ? "Start walkthrough" : "View tutorial")}</button>`
-    : href
-      ? `<button class="primary-button toolbar-control" type="button" data-agent-town-action-open="${escapeHtml(item.id)}">${escapeHtml(item.cta || "Open")}</button>`
-      : "";
+      : href
+        ? `<button class="primary-button toolbar-control" type="button" data-agent-town-action-open="${escapeHtml(item.id)}">${escapeHtml(item.cta || "Open")}</button>`
+        : "";
+  const compileButton = renderResearchBriefCompileButton(item);
+  const choiceButtons = renderAgentTownActionChoiceButtons(item);
+  const actionButtons = [primaryButton, compileButton, choiceButtons].filter(Boolean).join("");
   return `
     <article class="automation-card agent-inbox-card is-action is-${escapeHtml(item.kind || "action")}${priorityClass}" data-agent-town-action-item="${escapeHtml(item.id)}"${tutorialAttr}>
       <div class="agent-inbox-card-head">
@@ -19010,11 +19130,13 @@ function renderAgentTownActionItemCard(item) {
       </div>
       <strong>${escapeHtml(item.title || "Action item")}</strong>
       <p>${escapeHtml(item.detail || fallbackLabel)}</p>
+      ${renderAgentTownReviewDetails(item)}
       <div class="agent-inbox-card-meta">${escapeHtml(metaLabel || fallbackLabel)}</div>
       <div class="plugin-onboarding-actions">
-        ${primaryButton}
-        <button class="ghost-button toolbar-control" type="button" data-agent-town-action-complete="${escapeHtml(item.id)}">done</button>
-        <button class="ghost-button toolbar-control" type="button" data-agent-town-action-dismiss="${escapeHtml(item.id)}">dismiss</button>
+        ${actionButtons || `
+          <button class="ghost-button toolbar-control" type="button" data-agent-town-action-complete="${escapeHtml(item.id)}">done</button>
+          <button class="ghost-button toolbar-control" type="button" data-agent-town-action-dismiss="${escapeHtml(item.id)}">dismiss</button>
+        `}
       </div>
     </article>
   `;
@@ -23810,7 +23932,7 @@ async function recordAgentTownEvent(type, detail = {}) {
   }
 }
 
-async function updateAgentTownActionItemStatus(actionItemId, status) {
+async function updateAgentTownActionItemStatus(actionItemId, status, extra = {}) {
   const id = String(actionItemId || "").trim();
   if (!id) {
     return null;
@@ -23819,7 +23941,7 @@ async function updateAgentTownActionItemStatus(actionItemId, status) {
   try {
     const payload = await fetchJson(`/api/agent-town/action-items/${encodeURIComponent(id)}`, {
       method: "PATCH",
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, ...(extra && typeof extra === "object" ? extra : {}) }),
     });
     applyAgentTownState(payload.agentTown);
     refreshAgentTownActionItemUi();
@@ -23827,6 +23949,40 @@ async function updateAgentTownActionItemStatus(actionItemId, status) {
     return payload.actionItem;
   } catch (error) {
     window.alert(error.message);
+    return null;
+  }
+}
+
+async function compileResearchBriefFromActionItem(actionItemId) {
+  const id = String(actionItemId || "").trim();
+  if (!id) {
+    return null;
+  }
+  const item = state.agentTown.actionItems.find((candidate) => candidate.id === id);
+  const target = getResearchBriefCompileTarget(item);
+  if (!target) {
+    window.alert("This review card is missing research brief compile metadata.");
+    return null;
+  }
+
+  try {
+    const payload = await fetchJson(
+      `/api/research/projects/${encodeURIComponent(target.projectName)}/briefs/${encodeURIComponent(target.briefSlug)}/compile`,
+      {
+        method: "POST",
+        body: JSON.stringify({}),
+      },
+    );
+    const moveCount = Array.isArray(payload.queueRows) ? payload.queueRows.length : 0;
+    const note = moveCount
+      ? `Compiled ${moveCount} move${moveCount === 1 ? "" : "s"} into QUEUE.`
+      : "Approved research brief.";
+    return updateAgentTownActionItemStatus(id, "completed", {
+      resolution: "approved",
+      resolutionNote: note,
+    });
+  } catch (error) {
+    window.alert(error.message || "Could not compile research brief.");
     return null;
   }
 }
@@ -24732,6 +24888,8 @@ function getAgentTownPlacedFunctionalPluginIds() {
 function getAgentTownBuildingInstallStatus(plugin) {
   const pluginId = getPluginId(plugin);
   if (!pluginId) return "installed";
+  // buildinghub is always considered fully installed — it's the workshop
+  // that ships built-in.
   if (pluginId === "buildinghub") return "installed";
   const job = state.buildingInstallJobs && state.buildingInstallJobs[pluginId];
   if (job) {
@@ -24740,7 +24898,9 @@ function getAgentTownBuildingInstallStatus(plugin) {
     if (job.status === "failed") return "failed";
   }
   if (isPluginInstalled(plugin)) return "installed";
-  // Has placement record but no install in flight and not yet installed.
+  // Has placement record but no install in flight and not yet installed —
+  // user dropped it on the map and either install hasn't started or the
+  // job state has rolled over.
   return "placed";
 }
 
@@ -24754,9 +24914,9 @@ function getAgentTownInstallStatusMeta(installStatus, fallbackMeta) {
 
 function getAgentTownPluginBuildingBlueprints() {
   // Visibility = placement, not install state. A building shows on the map
-  // the moment it's dropped; appearance reflects install status. Pending
+  // the moment it's placed; appearance reflects install status. Pending
   // placements (user opened install dialog but hasn't dropped yet) stay
-  // excluded.
+  // excluded — they aren't on the map.
   const visiblePlugins = PLUGIN_CATALOG
     .filter(isAgentTownPluginBuilding)
     .filter((plugin) => {
@@ -27364,7 +27524,7 @@ function drawAgentTownBuildingInstallStatusOverlay(context, rect, status, time =
   const height = Math.round(rect.height);
 
   // 1. Desaturation wash for failed / placed-without-install. Skipped for
-  // installing + auth-required to keep them looking "live".
+  // installing + auth-required — those are meant to look "live".
   if (theme.desaturateAlpha > 0) {
     context.save();
     context.fillStyle = `rgba(28, 32, 40, ${theme.desaturateAlpha})`;
@@ -27373,7 +27533,8 @@ function drawAgentTownBuildingInstallStatusOverlay(context, rect, status, time =
   }
 
   // 2. Diagonal scaffold stripes, clipped to the building footprint.
-  // Animated only while installing.
+  // Animated only while installing — for static states the stripes are
+  // an inert "construction tarp" pattern.
   context.save();
   context.beginPath();
   context.rect(x, y, width, height);
@@ -27397,7 +27558,8 @@ function drawAgentTownBuildingInstallStatusOverlay(context, rect, status, time =
   }
   context.restore();
 
-  // 3. Status frame: pulsing glow for installing, steady accent otherwise.
+  // 3. Status frame around the perimeter — pulsing for installing, steady
+  // accent for everything else.
   context.save();
   if (theme.pulse) {
     const pulse = 0.55 + 0.45 * Math.sin(time * 0.005);
@@ -27412,10 +27574,12 @@ function drawAgentTownBuildingInstallStatusOverlay(context, rect, status, time =
   }
   context.restore();
 
-  // 4. Status pill above the building.
+  // 4. Status pill above the building. Same pixel-art shading vibe as the
+  // building sign — a 2-tone rect with a 1-px highlight on top.
   drawAgentTownBuildingStatusPill(context, { x, y, width }, theme);
 
-  // 5. Failure marker corner triangle for failed.
+  // 5. Failure marker corner triangle so a failed building reads at a
+  // glance even before you read the pill.
   if (status === "failed") {
     drawAgentTownBuildingFailureMarker(context, { x, y, width }, theme);
   }
@@ -27432,17 +27596,22 @@ function drawAgentTownBuildingStatusPill(context, rect, theme) {
   const pillHeight = 11;
   const pillX = Math.round(x + (width - pillWidth) / 2);
   const pillY = Math.round(y - pillHeight - 3);
+  // Drop shadow
   context.fillStyle = "rgba(0, 0, 0, 0.45)";
   context.fillRect(pillX + 1, pillY + 1, pillWidth, pillHeight);
+  // Body
   context.fillStyle = theme.pillBody;
   context.fillRect(pillX, pillY, pillWidth, pillHeight);
+  // Trim border
   context.fillStyle = theme.pillTrim;
   context.fillRect(pillX, pillY, pillWidth, 1);
   context.fillRect(pillX, pillY + pillHeight - 1, pillWidth, 1);
   context.fillRect(pillX, pillY, 1, pillHeight);
   context.fillRect(pillX + pillWidth - 1, pillY, 1, pillHeight);
+  // Top highlight
   context.fillStyle = "rgba(255, 255, 255, 0.10)";
   context.fillRect(pillX + 1, pillY + 1, pillWidth - 2, 1);
+  // Label
   context.fillStyle = theme.pillText;
   context.textBaseline = "middle";
   context.textAlign = "center";
@@ -27455,6 +27624,7 @@ function drawAgentTownBuildingFailureMarker(context, rect, theme) {
   const cornerX = Math.round(rect.x + rect.width - size - 3);
   const cornerY = Math.round(rect.y + 3);
   context.save();
+  // Triangle plate
   context.fillStyle = "rgba(0, 0, 0, 0.45)";
   context.beginPath();
   context.moveTo(cornerX + 1, cornerY + size + 1);
@@ -27476,6 +27646,7 @@ function drawAgentTownBuildingFailureMarker(context, rect, theme) {
   context.lineTo(cornerX + size - 1, cornerY + 2);
   context.closePath();
   context.fill();
+  // Exclamation mark
   context.fillStyle = theme.pillText;
   context.fillRect(cornerX + size - 5, cornerY + 3, 2, 6);
   context.fillRect(cornerX + size - 5, cornerY + 10, 2, 2);
@@ -34007,6 +34178,42 @@ function bindSessionEvents() {
     });
   });
 
+  document.querySelectorAll("[data-agent-town-action-resolve]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const actionItemId = button.getAttribute("data-agent-town-action-resolve") || "";
+      const resolution = button.getAttribute("data-agent-town-action-resolution") || "";
+      const status = button.getAttribute("data-agent-town-action-status") || "completed";
+      let resolutionNote = "";
+      if (resolution === "steered") {
+        resolutionNote = window.prompt("Steer this agent with one short note:", "") || "";
+        if (!resolutionNote.trim()) {
+          return;
+        }
+      }
+      void updateAgentTownActionItemStatus(actionItemId, status, { resolution, resolutionNote });
+    });
+  });
+
+  document.querySelectorAll("[data-research-brief-compile-action]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (button instanceof HTMLButtonElement) {
+        button.disabled = true;
+        button.textContent = "queuing...";
+      }
+      void compileResearchBriefFromActionItem(button.getAttribute("data-research-brief-compile-action") || "")
+        .finally(() => {
+          if (button instanceof HTMLButtonElement && document.body.contains(button)) {
+            button.disabled = false;
+            button.textContent = "approve & queue";
+          }
+        });
+    });
+  });
+
   document.querySelectorAll("[data-agent-town-action-complete]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -38455,6 +38662,12 @@ function normalizeAgentTownActionItems(value) {
           priority: ["low", "normal", "high", "urgent"].includes(item.priority) ? item.priority : "normal",
           capabilityIds: Array.isArray(item.capabilityIds) ? item.capabilityIds : [],
           target: item.target && typeof item.target === "object" ? item.target : null,
+          recommendation: String(item.recommendation || ""),
+          consequence: String(item.consequence || ""),
+          evidence: Array.isArray(item.evidence) ? item.evidence.filter((entry) => entry && typeof entry === "object") : [],
+          choices: Array.isArray(item.choices) ? item.choices.map((entry) => String(entry || "")).filter(Boolean) : [],
+          resolution: String(item.resolution || ""),
+          resolutionNote: String(item.resolutionNote || ""),
         }))
     : [];
 }

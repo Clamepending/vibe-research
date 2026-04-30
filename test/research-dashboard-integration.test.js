@@ -5,12 +5,13 @@
 //   - GET /research/<name>                       → static project page
 
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, copyFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, copyFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createVibeResearchApp } from "../src/create-app.js";
+import { createResearchBrief } from "../src/research/brief.js";
 import { SleepPreventionService } from "../src/sleep-prevention.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -124,6 +125,44 @@ test("GET /api/research/projects/<bad-name> returns 400", async () => {
     assert.equal(res.status, 400);
     const body = await res.json();
     assert.match(body.error, /invalid project name/);
+  });
+});
+
+test("POST /api/research/projects/<name>/briefs/<slug>/compile adds brief move to QUEUE", async () => {
+  await withLibraryServer(async ({ baseUrl, libraryRoot }) => {
+    const projectDir = path.join(libraryRoot, "projects", "prose-style");
+    await createResearchBrief({
+      projectDir,
+      slug: "branch-plan",
+      question: "Should the next research phase test a diagnostic few-shot branch?",
+      currentTheory: "The prompt scaffold may need an explicit contrastive example.",
+      grounding: ["Fixture test grounding."],
+      candidateMoves: [
+        {
+          move: "v3-diagnostic",
+          startingPoint: "https://github.com/example/prose-style/tree/r/v2-scaffold",
+          why: "Compare a diagnostic few-shot prompt against the current scaffold.",
+          hypothesis: "A contrastive exemplar improves readability review clarity.",
+        },
+      ],
+      recommendedMove: "v3-diagnostic",
+    });
+
+    const res = await fetch(`${baseUrl}/api/research/projects/prose-style/briefs/branch-plan/compile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.compiled, true);
+    assert.equal(body.queueRows[0].slug, "v3-diagnostic");
+    assert.equal(body.phase.phase, "experiment");
+    assert.equal(body.phase.briefSlug, "branch-plan");
+
+    const readme = await readFile(path.join(projectDir, "README.md"), "utf8");
+    assert.match(readme, /\| v3-diagnostic \| \[r\/v2-scaffold\]\(https:\/\/github\.com\/example\/prose-style\/tree\/r\/v2-scaffold\) \| Compare a diagnostic few-shot prompt/);
   });
 });
 

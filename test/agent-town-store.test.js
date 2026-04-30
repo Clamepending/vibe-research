@@ -242,6 +242,80 @@ test("AgentTownStore normalizes approval metadata while preserving backward-comp
   }
 });
 
+test("AgentTownStore stores review-card metadata and resolves action-item predicates", async () => {
+  const stateDir = await createTempStateDir();
+  const store = new AgentTownStore({ stateDir });
+
+  try {
+    await store.initialize();
+    const { actionItem } = await store.createActionItem({
+      id: "review:move-summary",
+      kind: "review",
+      priority: "high",
+      title: "Review move summary",
+      detail: "The agent found a null result and recommends stopping this branch.",
+      recommendation: "Reject admission and add a targeted diagnostic move.",
+      consequence: "Approving will let the agent clear ACTIVE and update QUEUE.",
+      evidence: [
+        { label: "result doc", path: "projects/demo/results/null.md", kind: "result" },
+        { label: "run chart", href: "https://example.test/runs/123", kind: "artifact" },
+        "plain note",
+      ],
+      target: {
+        type: "file",
+        id: "projects/demo/briefs/null.md",
+        projectName: "demo",
+        briefSlug: "null-move",
+        action: "compile-research-brief",
+      },
+      choices: ["approve", "reject", "steer", "reject"],
+    });
+
+    assert.equal(actionItem.kind, "review");
+    assert.equal(actionItem.recommendation, "Reject admission and add a targeted diagnostic move.");
+    assert.equal(actionItem.consequence, "Approving will let the agent clear ACTIVE and update QUEUE.");
+    assert.deepEqual(actionItem.choices, ["approve", "reject", "steer"]);
+    assert.deepEqual(actionItem.evidence, [
+      { label: "result doc", href: "", path: "projects/demo/results/null.md", kind: "result" },
+      { label: "run chart", href: "https://example.test/runs/123", path: "", kind: "artifact" },
+      { label: "plain note", href: "", path: "", kind: "reference" },
+    ]);
+    assert.deepEqual(actionItem.target, {
+      type: "file",
+      id: "projects/demo/briefs/null.md",
+      label: "",
+      href: "",
+      projectName: "demo",
+      briefSlug: "null-move",
+      action: "compile-research-brief",
+    });
+
+    const waitPromise = store.waitForPredicate({
+      predicate: "action_item_approved",
+      predicateParams: { actionItemId: "review:move-summary" },
+      timeoutMs: 5_000,
+    });
+
+    const { actionItem: approved } = await store.updateActionItem("review:move-summary", {
+      resolution: "approved",
+      resolutionNote: "Looks good.",
+    });
+
+    assert.equal(approved.status, "completed");
+    assert.equal(approved.resolution, "approved");
+    assert.equal(approved.resolutionNote, "Looks good.");
+    assert.equal(store.evaluatePredicate("action_item_resolved", { actionItemId: "review:move-summary" }), true);
+    assert.equal(store.evaluatePredicate("action_item_approved", { actionItemId: "review:move-summary" }), true);
+    assert.equal(store.evaluatePredicate("action_item_rejected", { actionItemId: "review:move-summary" }), false);
+
+    const waitResult = await waitPromise;
+    assert.equal(waitResult.satisfied, true);
+    assert.equal(waitResult.predicate, "action_item_approved");
+  } finally {
+    await removeTempStateDir(stateDir);
+  }
+});
+
 test("AgentTownStore upserts and persists per-session canvases", async () => {
   const stateDir = await createTempStateDir();
 

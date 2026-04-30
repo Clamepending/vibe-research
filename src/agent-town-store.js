@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const AGENT_TOWN_STATE_FILENAME = "agent-town-state.json";
-const AGENT_TOWN_STATE_VERSION = 5;
+const AGENT_TOWN_STATE_VERSION = 6;
 const MAX_ACTION_ITEMS = 100;
 const MAX_EVENTS = 200;
 const MAX_CANVASES = 100;
@@ -24,6 +24,27 @@ const DEFAULT_AGENT_TOWN_DOG_NAME = "Dog";
 const VALID_ACTION_ITEM_STATUSES = new Set(["open", "completed", "dismissed"]);
 const VALID_ACTION_ITEM_KINDS = new Set(["action", "approval", "review", "setup"]);
 const VALID_ACTION_ITEM_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
+const VALID_ACTION_ITEM_RESOLUTIONS = new Set([
+  "",
+  "approved",
+  "completed",
+  "dismissed",
+  "paused",
+  "rejected",
+  "resumed",
+  "steered",
+  "timeout",
+]);
+const VALID_ACTION_ITEM_CHOICES = new Set([
+  "approve",
+  "complete",
+  "dismiss",
+  "open",
+  "pause",
+  "reject",
+  "resume",
+  "steer",
+]);
 const VALID_VISUAL_OBJECT_TYPES = new Set([
   "agent",
   "approval",
@@ -55,6 +76,12 @@ const SUPPORTED_PREDICATES = new Set([
   "library_note_saved",
   "action_item_completed",
   "action_item_dismissed",
+  "action_item_resolved",
+  "action_item_approved",
+  "action_item_rejected",
+  "action_item_steered",
+  "action_item_paused",
+  "action_item_resumed",
   "onboarding_complete",
   "workspace_selected",
 ]);
@@ -622,6 +649,61 @@ function normalizeCapabilityIds(value) {
   ).slice(0, 24);
 }
 
+function normalizeActionItemResolution(value, fallback = "") {
+  const resolution = normalizeSlug(value, 32);
+  if (VALID_ACTION_ITEM_RESOLUTIONS.has(resolution)) {
+    return resolution;
+  }
+  return VALID_ACTION_ITEM_RESOLUTIONS.has(fallback) ? fallback : "";
+}
+
+function normalizeActionItemChoices(value, fallback = []) {
+  const source = Array.isArray(value) ? value : Array.isArray(fallback) ? fallback : [];
+  return Array.from(
+    new Set(
+      source
+        .flatMap((entry) => String(entry || "").split(","))
+        .map((entry) => normalizeSlug(entry, 32))
+        .filter((entry) => VALID_ACTION_ITEM_CHOICES.has(entry)),
+    ),
+  ).slice(0, 8);
+}
+
+function normalizeActionItemEvidence(value, fallback = []) {
+  const source = Array.isArray(value) ? value : Array.isArray(fallback) ? fallback : [];
+  return source
+    .map((entry) => {
+      if (typeof entry === "string") {
+        const text = normalizeText(entry, 300);
+        if (!text) return null;
+        return { label: text, href: "", path: "", kind: "reference" };
+      }
+
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return null;
+      }
+
+      const href = normalizeText(entry.href || entry.url, 500);
+      const evidencePath = normalizeText(entry.path || entry.filePath, 500);
+      const label = normalizeText(
+        entry.label || entry.title || href || evidencePath || entry.kind || "evidence",
+        160,
+      );
+      if (!label && !href && !evidencePath) {
+        return null;
+      }
+
+      return {
+        label: label || "evidence",
+        href,
+        path: evidencePath,
+        kind: normalizeSlug(entry.kind || entry.type || "reference", 48) || "reference",
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
 function normalizeActionTarget(value = {}, fallback = null) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const fallbackSource = fallback && typeof fallback === "object" && !Array.isArray(fallback) ? fallback : {};
@@ -629,27 +711,44 @@ function normalizeActionTarget(value = {}, fallback = null) {
   const id = normalizeText(source.id || source.sessionId || source.pluginId || fallbackSource.id || fallbackSource.sessionId || fallbackSource.pluginId, 96);
   const label = normalizeText(source.label || source.title || fallbackSource.label || fallbackSource.title, 120);
   const href = normalizeText(source.href || fallbackSource.href, 240);
+  const projectName = normalizeText(source.projectName || fallbackSource.projectName, 96)
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const briefSlug = normalizeSlug(source.briefSlug || source.brief || fallbackSource.briefSlug || fallbackSource.brief, 96);
+  const action = normalizeSlug(source.action || fallbackSource.action, 64);
 
-  if (!type && !id && !label && !href) {
+  if (!type && !id && !label && !href && !projectName && !briefSlug && !action) {
     return null;
   }
 
-  return {
+  const target = {
     type: type || "task",
     id,
     label,
     href,
   };
+  if (projectName) target.projectName = projectName;
+  if (briefSlug) target.briefSlug = briefSlug;
+  if (action) target.action = action;
+  return target;
 }
 
 function normalizeActionItem(value = {}, fallback = {}) {
   const existingStatus = VALID_ACTION_ITEM_STATUSES.has(fallback.status) ? fallback.status : "open";
   const requestedStatus = normalizeText(value.status, 32).toLowerCase();
-  const status = VALID_ACTION_ITEM_STATUSES.has(requestedStatus) ? requestedStatus : existingStatus;
+  const resolution = normalizeActionItemResolution(value.resolution || value.decision || value.verdict, fallback.resolution || "");
+  const inferredStatus = ["approved", "completed", "resumed", "steered"].includes(resolution)
+    ? "completed"
+    : ["dismissed", "paused", "rejected", "timeout"].includes(resolution)
+      ? "dismissed"
+      : existingStatus;
+  const status = VALID_ACTION_ITEM_STATUSES.has(requestedStatus) ? requestedStatus : inferredStatus;
   const fallbackKind = normalizeActionItemKind(fallback.kind || fallback.type);
   const fallbackPriority = normalizeActionItemPriority(fallback.priority);
   const createdAt = normalizeText(fallback.createdAt || value.createdAt, 64) || nowIso();
   const updatedAt = normalizeText(value.updatedAt, 64) || nowIso();
+  const fallbackChoices = normalizeActionItemChoices(fallback.choices || fallback.actions);
+  const fallbackEvidence = normalizeActionItemEvidence(fallback.evidence);
   const completedAt =
     status === "completed"
       ? normalizeText(value.completedAt || fallback.completedAt, 64) || updatedAt
@@ -672,6 +771,12 @@ function normalizeActionItem(value = {}, fallback = {}) {
     sourceSessionId: normalizeText(value.sourceSessionId || value.sessionId || fallback.sourceSessionId || fallback.sessionId, 96),
     target: normalizeActionTarget(value.target, fallback.target),
     capabilityIds: normalizeCapabilityIds(value.capabilityIds || value.capabilities || fallback.capabilityIds || fallback.capabilities),
+    recommendation: normalizeText(value.recommendation || value.recommend || fallback.recommendation || fallback.recommend, 800),
+    consequence: normalizeText(value.consequence || value.impact || fallback.consequence || fallback.impact, 800),
+    evidence: normalizeActionItemEvidence(value.evidence, fallbackEvidence),
+    choices: normalizeActionItemChoices(value.choices || value.actions, fallbackChoices),
+    resolution,
+    resolutionNote: normalizeText(value.resolutionNote || value.decisionNote || value.note || fallback.resolutionNote || fallback.decisionNote || fallback.note, 1_000),
     tutorialId: normalizeSlug(value.tutorialId || fallback.tutorialId, 96),
     predicate: normalizePredicate(value.predicate || fallback.predicate),
     predicateParams: normalizePredicateParams(value.predicateParams || fallback.predicateParams),
@@ -1065,10 +1170,33 @@ export class AgentTownStore {
       return layoutSummary.functionalCount >= minCount;
     }
 
-    if (predicate === "action_item_completed" || predicate === "action_item_dismissed") {
-      const targetStatus = predicate === "action_item_completed" ? "completed" : "dismissed";
+    if (
+      predicate === "action_item_completed" ||
+      predicate === "action_item_dismissed" ||
+      predicate === "action_item_resolved"
+    ) {
+      const targetStatus = predicate === "action_item_completed"
+        ? "completed"
+        : predicate === "action_item_dismissed"
+          ? "dismissed"
+          : "";
       return actionItems.some((item) => (
-        item.status === targetStatus &&
+        (targetStatus ? item.status === targetStatus : item.status !== "open") &&
+        (!params.actionItemId || item.id === params.actionItemId)
+      ));
+    }
+
+    const actionItemResolutionPredicates = {
+      action_item_approved: "approved",
+      action_item_rejected: "rejected",
+      action_item_steered: "steered",
+      action_item_paused: "paused",
+      action_item_resumed: "resumed",
+    };
+    if (actionItemResolutionPredicates[predicate]) {
+      const targetResolution = actionItemResolutionPredicates[predicate];
+      return actionItems.some((item) => (
+        item.resolution === targetResolution &&
         (!params.actionItemId || item.id === params.actionItemId)
       ));
     }
@@ -1462,10 +1590,8 @@ export class AgentTownStore {
     const existing = existingIndex >= 0 ? this.state.actionItems[existingIndex] : null;
     const nextItem = normalizeActionItem(
       {
-        ...existing,
         ...input,
         id: item.id,
-        status: input.status || existing?.status || "open",
       },
       existing || {},
     );
@@ -1491,7 +1617,7 @@ export class AgentTownStore {
     }
 
     const existing = this.state.actionItems[existingIndex];
-    const nextItem = normalizeActionItem({ ...existing, ...input, id }, existing);
+    const nextItem = normalizeActionItem({ ...input, id }, existing);
     this.state.actionItems[existingIndex] = nextItem;
     await this.afterStateChange();
     return {
@@ -1593,6 +1719,7 @@ export class AgentTownStore {
       return {
         ...item,
         status: "completed",
+        resolution: item.resolution || "completed",
         updatedAt,
         completedAt: updatedAt,
       };

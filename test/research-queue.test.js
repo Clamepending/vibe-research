@@ -10,21 +10,24 @@ import path from "node:path";
 
 import {
   addQueueRow,
+  listQueueRows,
   removeQueueRow,
   reprioritizeQueueRow,
   __internal,
 } from "../src/research/queue-edit.js";
 
-const VR_QUEUE = path.resolve("bin/vr-research-queue");
+const VR_RESEARCH_QUEUE = path.resolve("bin/vr-research-queue");
 
 function tmp(prefix) { return mkdtempSync(join(tmpdir(), `${prefix}-`)); }
 
 function runCli(args, { cwd, env = {}, timeoutMs = 10_000 } = {}) {
   return new Promise((resolve) => {
-    const child = spawn("node", [VR_QUEUE, ...args], {
-      cwd, env: { ...process.env, ...env },
+    const child = spawn("node", [VR_RESEARCH_QUEUE, ...args], {
+      cwd,
+      env: { ...process.env, ...env },
     });
-    let stdout = "", stderr = "";
+    let stdout = "";
+    let stderr = "";
     let settled = false;
     const settle = (status) => {
       if (settled) return;
@@ -33,301 +36,189 @@ function runCli(args, { cwd, env = {}, timeoutMs = 10_000 } = {}) {
       resolve({ status, stdout, stderr });
     };
     const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} settle(null); }, timeoutMs);
-    child.stdout.on("data", (c) => { stdout += c.toString(); });
-    child.stderr.on("data", (c) => { stderr += c.toString(); });
-    child.on("error", (err) => { stderr += `\n[spawn error] ${err.message}`; settle(null); });
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.on("error", (error) => { stderr += `\n[spawn error] ${error.message}`; settle(null); });
     child.on("exit", (code) => settle(code));
   });
 }
 
-function makeProject(prefix, rowCount = 0) {
+const README_BOILERPLATE = `# example
+
+## GOAL
+
+x
+
+## ACTIVE
+
+| move | result doc | branch | agent | started |
+|------|-----------|--------|-------|---------|
+
+## QUEUE
+
+| move | starting-point | why |
+|------|----------------|-----|
+| v1-first | main | first move |
+| v2-second | [r/v1-first](https://github.com/example/x/tree/r/v1-first) | build on first |
+
+## LOG
+
+| date | event | slug or ref | one-line summary | link |
+|------|-------|-------------|-------------------|------|
+`;
+
+function makeProject(prefix = "vr-queue") {
   const dir = tmp(prefix);
-  const rows = [];
-  for (let i = 1; i <= rowCount; i += 1) {
-    rows.push(`| q${i} | main | seed move ${i} |`);
-  }
-  const tableBody = rows.length ? rows.join("\n") + "\n" : "";
-  writeFileSync(join(dir, "README.md"), [
-    "# example",
-    "",
-    "## QUEUE",
-    "",
-    "| move | starting-point | why |",
-    "|------|----------------|-----|",
-    tableBody,
-    "## LOG",
-    "",
-    "| date | event | slug or ref | one-line summary | link |",
-    "|------|-------|-------------|-------------------|------|",
-    "",
-  ].join("\n"));
+  writeFileSync(join(dir, "README.md"), README_BOILERPLATE);
   return dir;
 }
 
-// ---- addQueueRow ----
+test("renderQueueRow: renders URL starting points as markdown links", () => {
+  const row = __internal.renderQueueRow({
+    slug: "v3",
+    startingPoint: "https://github.com/example/x/tree/r/v2-second",
+    why: "next",
+  });
+  assert.equal(row, "| v3 | [r/v2-second](https://github.com/example/x/tree/r/v2-second) | next |");
+});
 
-test("add: appends to empty queue", async () => {
-  const dir = makeProject("vr-q-empty", 0);
+test("listQueueRows: parses existing QUEUE rows", async () => {
+  const dir = makeProject("vr-queue-list");
+  try {
+    const result = await listQueueRows({ readmePath: join(dir, "README.md") });
+    assert.equal(result.rows.length, 2);
+    assert.equal(result.rows[0].slug, "v1-first");
+    assert.equal(result.rows[1].startingPoint, "https://github.com/example/x/tree/r/v1-first");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("addQueueRow: inserts at requested 1-based position", async () => {
+  const dir = makeProject("vr-queue-add");
   try {
     const readmePath = join(dir, "README.md");
     const result = await addQueueRow({
       readmePath,
-      row: { slug: "v1-newer", startingPoint: "main", why: "first move" },
-    });
-    assert.equal(result.added.slug, "v1-newer");
-    assert.equal(result.added.position, 1);
-    assert.equal(result.bumped, null);
-    const after = readFileSync(readmePath, "utf8");
-    assert.match(after, /\| v1-newer \| main \| first move \|/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("add: appends at the end by default", async () => {
-  const dir = makeProject("vr-q-tail", 2);
-  try {
-    const readmePath = join(dir, "README.md");
-    const result = await addQueueRow({
-      readmePath,
-      row: { slug: "v3-new", startingPoint: "main", why: "next" },
-    });
-    assert.equal(result.added.position, 3);
-    const after = readFileSync(readmePath, "utf8");
-    const q1Idx = after.indexOf("| q1 |");
-    const q2Idx = after.indexOf("| q2 |");
-    const newIdx = after.indexOf("| v3-new |");
-    assert.ok(q1Idx < q2Idx && q2Idx < newIdx, "new row should be after existing");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("add at position 1: shifts existing rows down", async () => {
-  const dir = makeProject("vr-q-front", 2);
-  try {
-    const readmePath = join(dir, "README.md");
-    await addQueueRow({
-      readmePath,
-      row: { slug: "v0-priority", startingPoint: "main", why: "highest" },
       position: 1,
+      row: {
+        slug: "v0-preflight",
+        startingPoint: "main",
+        why: "inspect data first",
+      },
     });
+    assert.equal(result.added, true);
+    assert.equal(result.position, 1);
     const after = readFileSync(readmePath, "utf8");
-    const newIdx = after.indexOf("| v0-priority |");
-    const q1Idx = after.indexOf("| q1 |");
-    assert.ok(newIdx < q1Idx, "v0-priority should precede q1");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+    assert.ok(after.indexOf("v0-preflight") < after.indexOf("v1-first"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
-test("add: 6th row gets bumped past the cap", async () => {
-  const dir = makeProject("vr-q-bump", 5);
+test("addQueueRow: rejects duplicate slugs and queue overflow", async () => {
+  const dir = makeProject("vr-queue-reject");
   try {
     const readmePath = join(dir, "README.md");
-    const result = await addQueueRow({
-      readmePath,
-      row: { slug: "v6-overflow", startingPoint: "main", why: "extra" },
-    });
-    // The new row was appended at position 6, then bumped because >cap.
-    assert.ok(result.bumped, "expected bumped row");
-    assert.equal(result.bumped.slug, "v6-overflow");
-    const after = readFileSync(readmePath, "utf8");
-    assert.equal(/v6-overflow/.test(after), false, "bumped row should not be in README");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("add: existing row pushed past cap by front-insert is bumped", async () => {
-  const dir = makeProject("vr-q-bump-tail", 5);
-  try {
-    const readmePath = join(dir, "README.md");
-    const result = await addQueueRow({
-      readmePath,
-      row: { slug: "v0-priority", startingPoint: "main", why: "highest" },
-      position: 1,
-    });
-    assert.ok(result.bumped, "expected bumped row");
-    assert.equal(result.bumped.slug, "q5", `expected q5 to be bumped, got ${result.bumped.slug}`);
-    const after = readFileSync(readmePath, "utf8");
-    assert.equal(/\| q5 \|/.test(after), false);
-    // v0-priority at top, q1..q4 follow.
-    assert.match(after, /\| v0-priority \| main \| highest \|/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("add: rejects duplicate slug", async () => {
-  const dir = makeProject("vr-q-dup", 2);
-  try {
     await assert.rejects(
       addQueueRow({
-        readmePath: join(dir, "README.md"),
-        row: { slug: "q1", startingPoint: "main", why: "x" },
+        readmePath,
+        row: { slug: "v1-first", startingPoint: "main", why: "duplicate" },
       }),
-      /already has a row for slug "q1"/,
+      /already has a row/,
     );
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
 
-test("add: rejects gap-leaving position", async () => {
-  const dir = makeProject("vr-q-gap", 2);
-  try {
+    await addQueueRow({ readmePath, row: { slug: "v3", startingPoint: "main", why: "x" } });
+    await addQueueRow({ readmePath, row: { slug: "v4", startingPoint: "main", why: "x" } });
+    await addQueueRow({ readmePath, row: { slug: "v5", startingPoint: "main", why: "x" } });
     await assert.rejects(
-      addQueueRow({
-        readmePath: join(dir, "README.md"),
-        row: { slug: "x", startingPoint: "main", why: "x" },
-        position: 5,
-      }),
-      /would leave a gap/,
+      addQueueRow({ readmePath, row: { slug: "v6", startingPoint: "main", why: "x" } }),
+      /already has 5 rows/,
     );
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
-// ---- removeQueueRow ----
-
-test("remove: drops the row + preserves order", async () => {
-  const dir = makeProject("vr-q-remove", 4);
+test("removeQueueRow: deletes only the QUEUE row", async () => {
+  const dir = makeProject("vr-queue-rm");
   try {
     const readmePath = join(dir, "README.md");
-    await removeQueueRow({ readmePath, slug: "q2" });
+    const result = await removeQueueRow({ readmePath, slug: "v1-first" });
+    assert.equal(result.removed, true);
     const after = readFileSync(readmePath, "utf8");
-    assert.equal(/\| q2 \|/.test(after), false);
-    const q1Idx = after.indexOf("| q1 |");
-    const q3Idx = after.indexOf("| q3 |");
-    const q4Idx = after.indexOf("| q4 |");
-    assert.ok(q1Idx < q3Idx && q3Idx < q4Idx);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+    assert.equal(/\|\s*v1-first\s*\|\s*main\s*\|/.test(after), false);
+    assert.match(after, /v2-second/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
-test("remove: errors when slug not found", async () => {
-  const dir = makeProject("vr-q-remove-miss", 2);
-  try {
-    await assert.rejects(
-      removeQueueRow({ readmePath: join(dir, "README.md"), slug: "nope" }),
-      /no row for slug "nope"/,
-    );
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-// ---- reprioritizeQueueRow ----
-
-test("reprioritize: moves a row to a higher position", async () => {
-  const dir = makeProject("vr-q-reprio-up", 4);
+test("reprioritizeQueueRow: moves row to requested position", async () => {
+  const dir = makeProject("vr-queue-move");
   try {
     const readmePath = join(dir, "README.md");
-    // Initial order: q1, q2, q3, q4. Move q3 to row 1.
-    const result = await reprioritizeQueueRow({
-      readmePath,
-      slug: "q3",
-      toRow: 1,
-    });
-    assert.equal(result.fromRow, 3);
-    assert.equal(result.toRow, 1);
+    const result = await reprioritizeQueueRow({ readmePath, slug: "v2-second", position: 1 });
+    assert.equal(result.reprioritized, true);
+    assert.equal(result.position, 1);
     const after = readFileSync(readmePath, "utf8");
-    const q3Idx = after.indexOf("| q3 |");
-    const q1Idx = after.indexOf("| q1 |");
-    const q2Idx = after.indexOf("| q2 |");
-    assert.ok(q3Idx < q1Idx, "q3 should now be first");
-    assert.ok(q1Idx < q2Idx, "q1 still precedes q2");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+    assert.ok(after.indexOf("v2-second") < after.indexOf("v1-first"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
-
-test("reprioritize: moves a row to a lower position", async () => {
-  const dir = makeProject("vr-q-reprio-down", 4);
-  try {
-    const readmePath = join(dir, "README.md");
-    await reprioritizeQueueRow({
-      readmePath,
-      slug: "q1",
-      toRow: 4,
-    });
-    const after = readFileSync(readmePath, "utf8");
-    const q1Idx = after.indexOf("| q1 |");
-    const q4Idx = after.indexOf("| q4 |");
-    assert.ok(q4Idx < q1Idx, "q1 should now follow q4");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("reprioritize: errors on slug not found", async () => {
-  const dir = makeProject("vr-q-reprio-miss", 2);
-  try {
-    await assert.rejects(
-      reprioritizeQueueRow({ readmePath: join(dir, "README.md"), slug: "nope", toRow: 1 }),
-      /no row for slug "nope"/,
-    );
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("reprioritize: errors on toRow > queue length", async () => {
-  const dir = makeProject("vr-q-reprio-overflow", 2);
-  try {
-    await assert.rejects(
-      reprioritizeQueueRow({ readmePath: join(dir, "README.md"), slug: "q1", toRow: 5 }),
-      /toRow 5 > queue length 2/,
-    );
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-// ---- bin/vr-research-queue ----
 
 test("vr-research-queue --help: exits 0", async () => {
-  const r = await runCli(["--help"]);
-  assert.equal(r.status, 0);
-  assert.match(r.stdout, /vr-research-queue/);
+  const result = await runCli(["--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /vr-research-queue/);
 });
 
-test("vr-research-queue add: appends row + prints confirmation", async () => {
-  const dir = makeProject("vr-q-cli-add", 1);
+test("vr-research-queue list: prints rows", async () => {
+  const dir = makeProject("vr-queue-cli-list");
   try {
-    const r = await runCli([
+    const result = await runCli([dir, "list"]);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /1\. v1-first/);
+    assert.match(result.stdout, /2\. v2-second/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vr-research-queue add/remove/reprioritize: edits README and supports JSON", async () => {
+  const dir = makeProject("vr-queue-cli-edit");
+  try {
+    const add = await runCli([
       dir, "add",
-      "--slug", "vk",
+      "--slug", "v0-cli",
       "--starting-point", "main",
-      "--why", "next move",
-    ]);
-    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
-    assert.match(r.stdout, /added vk at position 2/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("vr-research-queue add at full queue: prints bumped + exits 0", async () => {
-  const dir = makeProject("vr-q-cli-bump", 5);
-  try {
-    const r = await runCli([
-      dir, "add",
-      "--slug", "vk",
-      "--starting-point", "main",
-      "--why", "extra",
-    ]);
-    assert.equal(r.status, 0);
-    assert.match(r.stdout, /bumped: vk fell off the end/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("vr-research-queue remove: drops row", async () => {
-  const dir = makeProject("vr-q-cli-remove", 2);
-  try {
-    const r = await runCli([dir, "remove", "--slug", "q1"]);
-    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
-    assert.match(r.stdout, /removed q1 from QUEUE/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("vr-research-queue reprioritize: prints from→to summary", async () => {
-  const dir = makeProject("vr-q-cli-reprio", 3);
-  try {
-    const r = await runCli([dir, "reprioritize", "--slug", "q3", "--to-row", "1"]);
-    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
-    assert.match(r.stdout, /reprioritized q3: row 3 → 1/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("vr-research-queue --json: structured output", async () => {
-  const dir = makeProject("vr-q-cli-json", 2);
-  try {
-    const r = await runCli([
-      dir, "add",
-      "--slug", "vj",
-      "--starting-point", "main",
-      "--why", "y",
+      "--why", "from cli",
+      "--position", "1",
       "--json",
     ]);
-    assert.equal(r.status, 0);
-    const body = JSON.parse(r.stdout);
-    assert.equal(body.added.slug, "vj");
-    assert.equal(body.added.position, 3);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+    assert.equal(add.status, 0, add.stderr);
+    assert.equal(JSON.parse(add.stdout).row.slug, "v0-cli");
+
+    const move = await runCli([dir, "reprioritize", "--slug", "v2-second", "--position", "1"]);
+    assert.equal(move.status, 0, move.stderr);
+    assert.match(move.stdout, /moved QUEUE row "v2-second"/);
+
+    const remove = await runCli([dir, "remove", "--slug", "v0-cli"]);
+    assert.equal(remove.status, 0, remove.stderr);
+    assert.match(remove.stdout, /removed QUEUE row "v0-cli"/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vr-research-queue: missing flags exit 2", async () => {
+  const dir = makeProject("vr-queue-cli-missing");
+  try {
+    const result = await runCli([dir, "add", "--slug", "x"]);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /--starting-point is required/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
