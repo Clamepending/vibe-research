@@ -20481,6 +20481,9 @@ function renderDeviceCard(device) {
     .filter(Boolean)
     .join(" ");
   const indexAttr = hasGpuIndex ? ` data-gpu-index="${device.index}"` : "";
+  const indexChip = hasGpuIndex
+    ? `<em class="system-device-index" title="CUDA device index ${device.index}">GPU ${device.index}</em>`
+    : "";
   const reservedBadge = isOffLimits
     ? `<span class="system-device-card-reserved-badge" title="Reserved for other cluster users — not visible to vibe-research agents">Reserved</span>`
     : "";
@@ -20488,7 +20491,7 @@ function renderDeviceCard(device) {
   return `
     <article class="${cardClasses}"${indexAttr}>
       <div class="system-device-head">
-        <strong>${escapeHtml(device?.name || "Device")}</strong>
+        ${indexChip}<strong>${escapeHtml(device?.name || "Device")}</strong>
         <span>${escapeHtml(formatPercent(utilization))}</span>
       </div>
       ${reservedBadge}
