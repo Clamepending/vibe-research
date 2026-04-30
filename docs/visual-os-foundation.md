@@ -122,7 +122,7 @@ The orchestrator tick is the deterministic phase dispatcher above those tools:
 vr-research-orchestrator tick projects/demo --ask-human
 ```
 
-It reads phase state, `ACTIVE`, `QUEUE`, `LOG`, doctor state, and the latest result. If work is queued, it points at the next runner command; if work is exhausted in `experiment` or `hillclimb`, `--apply` safely moves the project to `review`; if already in `review` or `synthesis`, it runs the judge path and can open the single Agent Inbox card for the human.
+It reads phase state, `ACTIVE`, `QUEUE`, `LOG`, doctor state, planned/running `runs.tsv` sweeps, and the latest result. If work is queued, it points at the next runner command; if a sweep has runnable rows, it points at `vr-rl-sweep run`; if work is exhausted in `experiment` or `hillclimb`, `--apply` safely moves the project to `review`; if an already-reviewed brief is active, `--apply` compiles it into `QUEUE`; if already in `review` or `synthesis`, it runs the judge path and can open the single Agent Inbox card for the human.
 
 Agent canvases are intentionally current, not archival. Agents should keep their result docs and Library notes as the durable record, then point the canvas at the most useful visual artifact right now:
 

@@ -203,7 +203,7 @@ The CLIs are thin wrappers around `src/research/{project-readme,result-doc,bench
 ## The Loop
 
 0. Run `vr-research-doctor projects/<name>` and resolve any `[ERROR]` issue before doing anything else. Don't trust a corrupt README.
-   - Phase shortcut: `vr-research-orchestrator tick projects/<name> --ask-human` reads phase state, ACTIVE, QUEUE, LOG, doctor, and the latest result, then recommends the next runner / brief / judge action. Use `--apply` only for safe phase transitions such as exhausted `experiment` -> `review`.
+   - Phase shortcut: `vr-research-orchestrator tick projects/<name> --ask-human` reads phase state, ACTIVE, QUEUE, LOG, doctor, planned/running `runs.tsv` sweeps, and the latest result, then recommends the next runner / sweep / brief / judge action. Use `--apply` only for safe phase transitions such as exhausted `experiment` -> `review`, or to compile an already-reviewed brief into QUEUE.
 1. Read the project README.
    - If ACTIVE has a row (agent id is `0`), resume it.
    - Else if QUEUE is non-empty, take row 1.
