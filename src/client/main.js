@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Cpu,
   File,
   FilePenLine,
@@ -2286,6 +2287,7 @@ const state = {
   sessionProjectSuppressClickUntil: 0,
   sessionContextMenu: null,
   sessionContextMenuDismissBound: false,
+  contextMenuItems: null,
   projectFileTreeOpen: {},
   projectFileTreeEntries: {},
   projectFileTreeExpanded: {},
@@ -33415,6 +33417,27 @@ function bindSessionEvents() {
     });
   });
 
+  document.querySelectorAll("[data-session-project]").forEach((section) => {
+    section.addEventListener("contextmenu", (event) => {
+      const projectKey = section.getAttribute("data-session-project") || "";
+      if (!projectKey) return;
+      const group = getSessionProjectGroups().find((entry) => entry.key === projectKey);
+      if (!group) return;
+      // Only fire when the right-click happens on the header row, not deeper
+      // (so right-clicking a session card / file row inside still gets its
+      // own context menu).
+      const target = event.target;
+      if (target instanceof Element) {
+        if (target.closest(".session-project-sessions") || target.closest(".session-project-files")) {
+          return;
+        }
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      openProjectContextMenu(group, event.clientX, event.clientY);
+    });
+  });
+
   document.querySelectorAll("[data-create-session-in-cwd]").forEach((button) => {
     button.addEventListener("click", async (event) => {
       event.stopPropagation();
@@ -33449,6 +33472,14 @@ function bindSessionEvents() {
       if (!relativePath) return;
       toggleProjectFileTreeNode(root, relativePath);
     });
+    button.addEventListener("contextmenu", (event) => {
+      const root = button.getAttribute("data-project-file-root") || "";
+      const relativePath = normalizeFileTreePath(button.getAttribute("data-project-file-toggle"));
+      if (!relativePath) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openProjectFileContextMenu({ root, relativePath, isDirectory: true }, event.clientX, event.clientY);
+    });
   });
 
   document.querySelectorAll("[data-project-file-open]").forEach((button) => {
@@ -33460,6 +33491,15 @@ function bindSessionEvents() {
       const mode = button.getAttribute("data-file-open-mode") || "text";
       if (!relativePath) return;
       await openProjectFileFromTree(root, relativePath, mode);
+    });
+    button.addEventListener("contextmenu", (event) => {
+      const root = button.getAttribute("data-project-file-root") || "";
+      const relativePath = normalizeFileTreePath(button.getAttribute("data-project-file-open"));
+      const mode = button.getAttribute("data-file-open-mode") || "text";
+      if (!relativePath) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openProjectFileContextMenu({ root, relativePath, isDirectory: false, mode }, event.clientX, event.clientY);
     });
   });
 
@@ -33730,7 +33770,7 @@ async function deleteSessionAction(sessionId) {
   }
 }
 
-function ensureSessionContextMenuElement() {
+function ensureContextMenuElement() {
   let menu = document.querySelector("#session-context-menu");
   if (menu instanceof HTMLElement) {
     return menu;
@@ -33748,31 +33788,29 @@ function ensureSessionContextMenuElement() {
     if (!(target instanceof Element)) {
       return;
     }
-    const item = target.closest("[data-session-context-action]");
+    const item = target.closest("[data-context-menu-index]");
     if (!(item instanceof HTMLElement) || !menu.contains(item)) {
       return;
     }
     event.preventDefault();
     event.stopPropagation();
-    const action = item.getAttribute("data-session-context-action") || "";
-    const sessionId = item.getAttribute("data-session-context-session-id") || "";
-    closeSessionContextMenu();
-    if (!sessionId) {
-      return;
-    }
-    if (action === "rename") {
-      await renameSessionPrompt(sessionId);
-    } else if (action === "fork") {
-      await forkSessionAction(sessionId);
-    } else if (action === "delete") {
-      await deleteSessionAction(sessionId);
+    const idx = Number(item.getAttribute("data-context-menu-index"));
+    const items = state.contextMenuItems;
+    closeContextMenu();
+    const action = items?.[idx];
+    if (action?.onClick) {
+      try {
+        await action.onClick();
+      } catch (error) {
+        window.alert(error?.message || String(error));
+      }
     }
   });
 
   return menu;
 }
 
-function bindSessionContextMenuDismissOnce() {
+function bindContextMenuDismissOnce() {
   if (state.sessionContextMenuDismissBound) {
     return;
   }
@@ -33785,51 +33823,46 @@ function bindSessionContextMenuDismissOnce() {
     if (target instanceof Element && target.closest("#session-context-menu")) {
       return;
     }
-    closeSessionContextMenu();
+    closeContextMenu();
   }, true);
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && state.sessionContextMenu) {
-      closeSessionContextMenu();
+      closeContextMenu();
     }
   });
   window.addEventListener("blur", () => {
     if (state.sessionContextMenu) {
-      closeSessionContextMenu();
+      closeContextMenu();
     }
   });
   window.addEventListener("resize", () => {
     if (state.sessionContextMenu) {
-      closeSessionContextMenu();
+      closeContextMenu();
     }
   });
   window.addEventListener("scroll", () => {
     if (state.sessionContextMenu) {
-      closeSessionContextMenu();
+      closeContextMenu();
     }
   }, true);
 }
 
-function openSessionContextMenu(sessionId, x, y) {
-  const session = state.sessions.find((entry) => entry.id === sessionId);
-  if (!session) {
+function openContextMenu(items, x, y) {
+  const visibleItems = (items || []).filter((item) => item && !item.hidden);
+  if (!visibleItems.length) {
     return;
   }
-  const menu = ensureSessionContextMenuElement();
-  bindSessionContextMenuDismissOnce();
+  const menu = ensureContextMenuElement();
+  bindContextMenuDismissOnce();
 
-  state.sessionContextMenu = { sessionId, x, y };
+  state.sessionContextMenu = { x, y };
+  state.contextMenuItems = visibleItems;
 
-  menu.innerHTML = `
-    <button class="session-context-menu-item" type="button" role="menuitem" data-session-context-action="rename" data-session-context-session-id="${escapeHtml(sessionId)}">
-      ${renderIcon(Pencil)}<span>Rename</span>
+  menu.innerHTML = visibleItems.map((item, idx) => `
+    <button class="session-context-menu-item ${item.danger ? "is-danger" : ""}" type="button" role="menuitem" data-context-menu-index="${idx}">
+      ${item.icon ? renderIcon(item.icon) : ""}<span>${escapeHtml(item.label)}</span>
     </button>
-    <button class="session-context-menu-item" type="button" role="menuitem" data-session-context-action="fork" data-session-context-session-id="${escapeHtml(sessionId)}">
-      ${renderIcon(GitFork)}<span>Fork</span>
-    </button>
-    <button class="session-context-menu-item is-danger" type="button" role="menuitem" data-session-context-action="delete" data-session-context-session-id="${escapeHtml(sessionId)}">
-      ${renderIcon(Trash2)}<span>Delete</span>
-    </button>
-  `;
+  `).join("");
 
   menu.classList.add("is-open");
   menu.setAttribute("aria-hidden", "false");
@@ -33845,14 +33878,193 @@ function openSessionContextMenu(sessionId, x, y) {
   menu.style.top = `${top}px`;
 }
 
-function closeSessionContextMenu() {
+function closeContextMenu() {
   state.sessionContextMenu = null;
+  state.contextMenuItems = null;
   const menu = document.querySelector("#session-context-menu");
   if (menu instanceof HTMLElement) {
     menu.classList.remove("is-open");
     menu.setAttribute("aria-hidden", "true");
     menu.innerHTML = "";
   }
+}
+
+function openSessionContextMenu(sessionId, x, y) {
+  const session = state.sessions.find((entry) => entry.id === sessionId);
+  if (!session) {
+    return;
+  }
+  openContextMenu([
+    { label: "Rename", icon: Pencil, onClick: () => renameSessionPrompt(sessionId) },
+    { label: "Fork", icon: GitFork, onClick: () => forkSessionAction(sessionId) },
+    { label: "Delete", icon: Trash2, danger: true, onClick: () => deleteSessionAction(sessionId) },
+  ], x, y);
+}
+
+function openProjectContextMenu(group, x, y) {
+  if (!group) return;
+  const items = [
+    {
+      label: "New session here",
+      icon: MessageSquarePlus,
+      onClick: async () => {
+        try {
+          await createSessionInFolder(group.cwd);
+        } catch (error) {
+          window.alert(error.message);
+        }
+      },
+    },
+  ];
+
+  const paperPath = getProjectPaperNotePathForCwd(group.cwd);
+  if (paperPath) {
+    items.push({
+      label: "Open paper",
+      icon: FileText,
+      onClick: async () => {
+        setCurrentView("knowledge-base", { notePath: paperPath });
+        closeMobileSidebar();
+        if (!state.knowledgeBase.notes.length && !state.knowledgeBase.loading) {
+          await loadKnowledgeBaseIndex();
+        }
+        await openKnowledgeBaseNote(paperPath);
+      },
+    });
+  }
+
+  const wandbUrl = getProjectWandbUrlForCwd(group.cwd);
+  if (wandbUrl) {
+    items.push({
+      label: "Open W&B project",
+      icon: LineChart,
+      onClick: () => window.open(wandbUrl, "_blank", "noopener,noreferrer"),
+    });
+  }
+
+  items.push({
+    label: "Copy folder path",
+    icon: FolderOpen,
+    onClick: () => writeTextToClipboard(group.cwd || ""),
+  });
+
+  const sessionCount = group.sessions?.length || 0;
+  items.push({
+    label: sessionCount === 0 ? "Remove from sidebar" : `Remove from sidebar (${sessionCount} session${sessionCount === 1 ? "" : "s"})`,
+    icon: Trash2,
+    danger: true,
+    onClick: async () => {
+      if (sessionCount > 0) {
+        const confirmed = window.confirm(
+          `Remove "${group.name}" from the sidebar? This will delete ${sessionCount} session${sessionCount === 1 ? "" : "s"} in this folder.`,
+        );
+        if (!confirmed) return;
+      }
+      // Snapshot ids — deleteSessionAction mutates state.sessions on each call
+      const ids = (group.sessions || []).map((session) => session.id);
+      for (const id of ids) {
+        await deleteSessionAction(id);
+      }
+      // Also forget any expand/files state for this folder
+      state.sessionProjectExpanded.delete(group.key);
+      const root = normalizeWorkspaceRoot(group.cwd || "");
+      if (root) {
+        delete state.projectFileTreeOpen[root];
+        delete state.projectFileTreeEntries[root];
+        delete state.projectFileTreeExpanded[root];
+        delete state.projectFileTreeLoading[root];
+        delete state.projectFileTreeErrors[root];
+      }
+      refreshSessionsList({ force: true });
+    },
+  });
+
+  openContextMenu(items, x, y);
+}
+
+function openProjectFileContextMenu({ root, relativePath, isDirectory, mode }, x, y) {
+  if (!relativePath) return;
+  const items = [];
+
+  if (!isDirectory) {
+    items.push({
+      label: "Open",
+      icon: FileText,
+      onClick: () => openProjectFileFromTree(root, relativePath, mode || "text"),
+    });
+    items.push({
+      label: "Open raw",
+      icon: File,
+      onClick: () => openProjectFileFromTree(root, relativePath, "raw"),
+    });
+  } else {
+    items.push({
+      label: state.projectFileTreeExpanded[root]?.has(relativePath) ? "Collapse" : "Expand",
+      icon: Folder,
+      onClick: () => toggleProjectFileTreeNode(root, relativePath),
+    });
+  }
+
+  const absolutePath = joinWorkspacePath(root, relativePath);
+  items.push({
+    label: "Copy path",
+    icon: Copy,
+    onClick: () => writeTextToClipboard(absolutePath || relativePath),
+  });
+  items.push({
+    label: "Copy relative path",
+    icon: Copy,
+    onClick: () => writeTextToClipboard(relativePath),
+  });
+
+  openContextMenu(items, x, y);
+}
+
+function openGlobalFileContextMenu({ relativePath, isDirectory, mode }, x, y) {
+  if (!relativePath) return;
+  const items = [];
+
+  if (!isDirectory) {
+    items.push({
+      label: "Open",
+      icon: FileText,
+      onClick: () => openWorkspaceFilePreview(relativePath, { mode: mode || "text" }),
+    });
+    items.push({
+      label: "Open raw",
+      icon: File,
+      onClick: () => openWorkspaceFilePreview(relativePath, { mode: "raw" }),
+    });
+  } else {
+    items.push({
+      label: state.fileTreeExpanded.has(relativePath) ? "Collapse" : "Expand",
+      icon: Folder,
+      onClick: () => {
+        if (state.fileTreeExpanded.has(relativePath)) {
+          state.fileTreeExpanded.delete(relativePath);
+          refreshFileTreeUi();
+        } else {
+          state.fileTreeExpanded.add(relativePath);
+          refreshFileTreeUi();
+          void loadFileTree(relativePath);
+        }
+      },
+    });
+  }
+
+  const absolutePath = joinWorkspacePath(state.filesRoot, relativePath);
+  items.push({
+    label: "Copy path",
+    icon: Copy,
+    onClick: () => writeTextToClipboard(absolutePath || relativePath),
+  });
+  items.push({
+    label: "Copy relative path",
+    icon: Copy,
+    onClick: () => writeTextToClipboard(relativePath),
+  });
+
+  openContextMenu(items, x, y);
 }
 
 function refreshSessionsList({ force = false, bindEvents = true } = {}) {
@@ -36180,6 +36392,33 @@ function bindFileTreeEvents() {
     }
 
     void openWorkspaceFilePreview(relativePath, { mode: openMode });
+  });
+
+  filesTree.addEventListener("contextmenu", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+
+    const toggleButton = target.closest("[data-file-toggle]");
+    if (toggleButton instanceof HTMLElement && filesTree.contains(toggleButton)) {
+      const relativePath = normalizeFileTreePath(toggleButton.getAttribute("data-file-toggle"));
+      if (!relativePath) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openGlobalFileContextMenu({ relativePath, isDirectory: true }, event.clientX, event.clientY);
+      return;
+    }
+
+    const openButton = target.closest("[data-file-open]");
+    if (openButton instanceof HTMLElement && filesTree.contains(openButton)) {
+      const relativePath = normalizeFileTreePath(openButton.getAttribute("data-file-open"));
+      const mode = openButton.getAttribute("data-file-open-mode") || "text";
+      if (!relativePath) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openGlobalFileContextMenu({ relativePath, isDirectory: false, mode }, event.clientX, event.clientY);
+    }
   });
 }
 
