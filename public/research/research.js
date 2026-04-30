@@ -300,6 +300,9 @@
   function renderNextActionPayload(detail, body, payload) {
     const report = payload.report || {};
     const rec = report.recommendation || {};
+    const queueUpdates = report.judge && Array.isArray(report.judge.queueUpdates)
+      ? report.judge.queueUpdates
+      : [];
     body.innerHTML = "";
     body.appendChild(el("div", { class: "vr-next-header" }, [
       chip(rec.action || "unknown", actionVariant(rec.action || "")),
@@ -314,6 +317,18 @@
     body.appendChild(el("p", { class: "vr-next-reason" }, rec.reason || "No recommendation returned."));
     if (report.nextCommand) {
       body.appendChild(el("pre", { class: "vr-next-command" }, report.nextCommand));
+    }
+    if (queueUpdates.length) {
+      body.appendChild(el(
+        "ul",
+        { class: "vr-next-candidates" },
+        queueUpdates.slice(0, 5).map((item) =>
+          el("li", null, [
+            el("span", { class: "vr-mono" }, `${item.verb}: ${item.slug}`),
+            item.why ? el("span", null, ` — ${item.why}`) : null,
+          ]),
+        ),
+      ));
     }
     renderActionButtons({ detail, body, report, rec });
   }

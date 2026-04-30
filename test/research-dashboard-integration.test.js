@@ -224,6 +224,7 @@ test("GET /research/research.js + research.css are served", async () => {
     const jsText = await js.text();
     assert.match(jsText, /orchestrator\/tick/);
     assert.match(jsText, /briefs\/.*compile/);
+    assert.match(jsText, /vr-next-candidates/);
     const css = await fetch(`${baseUrl}/research/research.css`);
     assert.equal(css.status, 200);
     assert.match(css.headers.get("content-type") || "", /css/);

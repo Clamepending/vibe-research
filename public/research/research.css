@@ -371,6 +371,13 @@ code, .vr-mono { font-family: var(--vr-mono); font-size: 13px; }
   font-size: 12px;
 }
 .vr-next-status.is-error { color: var(--vr-bad); }
+.vr-next-candidates {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--vr-text-muted);
+  font-size: 13px;
+}
+.vr-next-candidates li { padding: 2px 0; }
 
 /* Bench card */
 .vr-bench-meta {
