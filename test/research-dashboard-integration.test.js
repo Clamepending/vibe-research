@@ -245,6 +245,7 @@ test("GET /research/research.js + research.css are served", async () => {
     assert.equal(js.status, 200);
     assert.match(js.headers.get("content-type") || "", /javascript/);
     const jsText = await js.text();
+    assert.match(jsText, /autopilot\/step/);
     assert.match(jsText, /orchestrator\/tick/);
     assert.match(jsText, /briefs\/.*compile/);
     assert.match(jsText, /vr-next-candidates/);

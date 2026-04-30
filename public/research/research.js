@@ -187,6 +187,16 @@
     return res.json();
   }
 
+  async function postAutopilotStep(detail, options) {
+    const res = await fetch(`/api/research/projects/${encodeURIComponent(detail.name)}/autopilot/step`, {
+      method: "POST",
+      headers: { accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(options || {}),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
+
   function setActionStatus(body, message, isError) {
     let status = body.querySelector(".vr-next-status");
     if (!status) {
@@ -294,12 +304,28 @@
       }, "primary"));
     }
 
+    if (rec.action === "finish-move" || rec.action === "return-to-ideation") {
+      buttons.push(button(rec.action === "finish-move" ? "Mark synthesis" : "Return to ideation", async (event) => {
+        const target = event.currentTarget;
+        target.disabled = true;
+        setActionStatus(body, "Applying autopilot phase step…");
+        try {
+          const payload = await postAutopilotStep(detail, { apply: true });
+          renderNextActionPayload(detail, body, payload);
+        } catch (err) {
+          setActionStatus(body, `Could not apply autopilot step: ${err.message}`, true);
+        } finally {
+          if (target.isConnected) target.disabled = false;
+        }
+      }, "primary"));
+    }
+
     buttons.push(button("Refresh", async (event) => {
       const target = event.currentTarget;
       target.disabled = true;
       setActionStatus(body, "Refreshing…");
       try {
-        const payload = await postOrchestratorTick(detail, {});
+        const payload = await postAutopilotStep(detail, {});
         renderNextActionPayload(detail, body, payload);
       } catch (err) {
         setActionStatus(body, `Could not refresh: ${err.message}`, true);
@@ -313,27 +339,35 @@
 
   function renderNextActionPayload(detail, body, payload) {
     const report = payload.report || {};
-    const rec = report.recommendation || {};
-    const queueUpdates = report.judge && Array.isArray(report.judge.queueUpdates)
-      ? report.judge.queueUpdates
+    const displayReport = report.delegated === "orchestrator" && report.orchestrator
+      ? report.orchestrator
+      : report;
+    const rec = displayReport.recommendation || report.recommendation || {};
+    const queueUpdates = displayReport.judge && Array.isArray(displayReport.judge.queueUpdates)
+      ? displayReport.judge.queueUpdates
       : [];
     body.innerHTML = "";
     body.appendChild(el("div", { class: "vr-next-header" }, [
+      report.delegated ? chip(`via ${report.delegated}`, "accent") : chip("autopilot", "accent"),
       chip(rec.action || "unknown", actionVariant(rec.action || "")),
       rec.slug ? chip(rec.slug) : null,
       rec.briefSlug ? chip(rec.briefSlug) : null,
       rec.evaluatorStrength ? chip(`evaluator ${rec.evaluatorStrength}`, evaluatorVariant(rec.evaluatorStrength)) : null,
       rec.nextCandidates ? chip(`${rec.nextCandidates} next`) : null,
-      report.briefReview && report.briefReview.actionItem
-        ? chip(`inbox ${report.briefReview.actionItem.id}`, "accent")
+      displayReport.briefReview && displayReport.briefReview.actionItem
+        ? chip(`inbox ${displayReport.briefReview.actionItem.id}`, "accent")
         : null,
-      report.judge && report.judge.review && report.judge.review.actionItem
-        ? chip(`inbox ${report.judge.review.actionItem.id}`, "accent")
+      displayReport.judge && displayReport.judge.review && displayReport.judge.review.actionItem
+        ? chip(`inbox ${displayReport.judge.review.actionItem.id}`, "accent")
+        : null,
+      report.decision && report.decision.action
+        ? chip(`decision ${report.decision.action}`, actionVariant(report.decision.action))
         : null,
     ]));
     body.appendChild(el("p", { class: "vr-next-reason" }, rec.reason || "No recommendation returned."));
-    if (report.nextCommand) {
-      body.appendChild(el("pre", { class: "vr-next-command" }, report.nextCommand));
+    const nextCommand = report.nextCommand || displayReport.nextCommand || "";
+    if (nextCommand) {
+      body.appendChild(el("pre", { class: "vr-next-command" }, nextCommand));
     }
     if (queueUpdates.length) {
       body.appendChild(el(
@@ -347,7 +381,7 @@
         ),
       ));
     }
-    renderActionButtons({ detail, body, report, rec });
+    renderActionButtons({ detail, body, report: { ...displayReport, nextCommand }, rec });
   }
 
   async function renderNextActionCard(detail) {
@@ -362,7 +396,7 @@
 
     let payload;
     try {
-      payload = await postOrchestratorTick(detail, {});
+      payload = await postAutopilotStep(detail, {});
     } catch (err) {
       body.innerHTML = "";
       body.appendChild(el("p", { class: "vr-card-empty" }, `Could not load next action: ${err.message}`));
