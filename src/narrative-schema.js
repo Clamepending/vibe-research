@@ -150,6 +150,13 @@ export function normaliseNarrativeEntry(rawEntry) {
     out.thinking = true;
   }
 
+  // boolean flag set when the visible text was clipped at the wire cap
+  // (12K). Renderer shows a "truncated · full text in the transcript"
+  // footer so the user knows there's more.
+  if (rawEntry.truncated === true) {
+    out.truncated = true;
+  }
+
   // {server, tool} — set on tool entries whose underlying tool is an MCP
   // call (`mcp__<server>__<tool>`).
   if (rawEntry.mcp !== undefined && rawEntry.mcp !== null) {

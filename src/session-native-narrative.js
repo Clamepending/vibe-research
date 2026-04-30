@@ -242,6 +242,13 @@ function dedupePush(entries, nextEntry, maxEntries = DEFAULT_MAX_ENTRIES) {
     return;
   }
 
+  // Stamp `truncated: true` when the visible text was clipped at the cap
+  // so the renderer can show a small "truncated · full text in the
+  // transcript" footer. We compare lengths after the OSC strip + the
+  // normalizeText() pass that truncateText runs internally — that's the
+  // length that would appear unclipped, modulo the trailing ellipsis.
+  const wasTruncated = normalizeText(cleanedText).length > MAX_TEXT_LENGTH;
+
   const previous = entries[entries.length - 1] || null;
   if (
     previous
@@ -263,6 +270,7 @@ function dedupePush(entries, nextEntry, maxEntries = DEFAULT_MAX_ENTRIES) {
     validated = normaliseNarrativeEntry({
       ...nextEntry,
       text: normalizedText,
+      ...(wasTruncated ? { truncated: true } : {}),
     });
   } catch (error) {
     // Producer bug. Log once with enough context to file an issue, then

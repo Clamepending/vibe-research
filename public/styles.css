@@ -14417,6 +14417,21 @@ body.is-reordering-file-tabs {
   gap: 8px;
 }
 
+/* Truncation footer — appears under assistant entries the wire-format cap
+   clipped at 12K chars. The full reply is still in the provider's
+   transcript; the chat keeps the visible text bounded so a 50K reply
+   doesn't make the feed unscrollable. */
+.rich-session-entry-truncated {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px dashed rgba(120, 120, 125, 0.35);
+  color: rgba(232, 234, 240, 0.6);
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+}
+
 /* MCP badge — a small pill on tool entries whose name starts with `mcp__`,
    so the user can tell at a glance the tool is going through an MCP server
    rather than the agent's built-in tool set. */

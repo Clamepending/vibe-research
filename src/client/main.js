@@ -5084,6 +5084,10 @@ function getShellSurfaceMode(session = getActiveSession()) {
 // "Stream JSON" surface mode renders this buffer, so the user can verify the
 // native UI is reading the same data the terminal sees.
 const STREAM_LOG_LIMIT = 256;
+// Mirrors the wire-format cap in src/session-native-narrative.js (kept in
+// sync manually — it's a UI detail string, not a contract). If the server
+// cap moves, update both.
+const TRUNCATION_CAP_FOR_DISPLAY = 12_000;
 
 function appendNativeSessionStreamLog(sessionId, record) {
   const id = String(sessionId || "").trim();
@@ -5729,9 +5733,18 @@ function renderRichSessionEntry(entry, index) {
         </article>
       `;
     }
+    // Truncation footer for very long entries — set by the server-side
+    // shaper when the wire-format cap (12K chars) clipped the visible
+    // text. The full reply is still in the provider's transcript file;
+    // the renderer keeps the chat scrollable rather than dumping a 50K
+    // wall of text into the feed.
+    const truncatedHtml = entry?.truncated === true
+      ? `<div class="rich-session-entry-truncated">⋯ truncated to ${TRUNCATION_CAP_FOR_DISPLAY.toLocaleString()} characters · the full reply is in the provider transcript</div>`
+      : "";
     return `
       <article class="${entryClassName}" data-rich-session-entry="${index}">
         ${renderRichSessionAssistantBody(text, entry)}
+        ${truncatedHtml}
         ${meta ? `<div class="rich-session-entry-tail">${escapeHtml(meta)}</div>` : ""}
       </article>
     `;

@@ -357,19 +357,58 @@ test("plan-mode idempotency: a second resolvePlanMode after the first returns no
   });
 });
 
-test("plan-mode: a second ExitPlanMode tool_use replaces the first awaiting id", () => {
+test("plan-mode FIFO: two ExitPlanMode tool_uses both await; head returns the older id", () => {
   const stream = makeFakeStreamForPlan();
   stream._handleLine(JSON.stringify({
     type: "assistant",
     message: { id: "m1", content: [{ type: "tool_use", id: "plan_a", name: "ExitPlanMode", input: { plan: "v1" } }] },
   }));
   assert.equal(stream.getPendingPlanToolUseId(), "plan_a");
+  assert.deepEqual(stream.getPendingPlanToolUseIds(), ["plan_a"]);
 
   stream._handleLine(JSON.stringify({
     type: "assistant",
     message: { id: "m2", content: [{ type: "tool_use", id: "plan_b", name: "ExitPlanMode", input: { plan: "v2" } }] },
   }));
-  assert.equal(stream.getPendingPlanToolUseId(), "plan_b", "newer plan replaces older awaiting id");
+  // Head is still the OLDER plan_a; plan_b is queued behind.
+  assert.equal(stream.getPendingPlanToolUseId(), "plan_a");
+  assert.deepEqual(stream.getPendingPlanToolUseIds(), ["plan_a", "plan_b"]);
+
+  // Resolve plan_a — head advances to plan_b.
+  stream.sendToolResult("plan_a", "approved a");
+  assert.equal(stream.getPendingPlanToolUseId(), "plan_b");
+  assert.deepEqual(stream.getPendingPlanToolUseIds(), ["plan_b"]);
+});
+
+test("plan-mode FIFO: out-of-order resolution dequeues the matching id, not the head", () => {
+  const stream = makeFakeStreamForPlan();
+  stream._handleLine(JSON.stringify({
+    type: "assistant",
+    message: { id: "m1", content: [{ type: "tool_use", id: "plan_a", name: "ExitPlanMode", input: { plan: "v1" } }] },
+  }));
+  stream._handleLine(JSON.stringify({
+    type: "assistant",
+    message: { id: "m2", content: [{ type: "tool_use", id: "plan_b", name: "ExitPlanMode", input: { plan: "v2" } }] },
+  }));
+  assert.deepEqual(stream.getPendingPlanToolUseIds(), ["plan_a", "plan_b"]);
+
+  // Resolve plan_b first — out of order. plan_a stays at the head.
+  stream.sendToolResult("plan_b", "approved b");
+  assert.equal(stream.getPendingPlanToolUseId(), "plan_a");
+  assert.deepEqual(stream.getPendingPlanToolUseIds(), ["plan_a"]);
+});
+
+test("plan-mode FIFO: duplicate ExitPlanMode tool_use_id is not enqueued twice", () => {
+  // Defensive: if the parser sees the same plan_a twice (edge case where
+  // the same assistant event is replayed), the queue stays at length 1.
+  const stream = makeFakeStreamForPlan();
+  const event = JSON.stringify({
+    type: "assistant",
+    message: { id: "m1", content: [{ type: "tool_use", id: "plan_a", name: "ExitPlanMode", input: { plan: "v1" } }] },
+  });
+  stream._handleLine(event);
+  stream._handleLine(event);
+  assert.equal(stream.getPendingPlanToolUseIds().length, 1);
 });
 
 // ---------------------------------------------------------------------------

@@ -743,6 +743,34 @@ test("Claude narrative attaches slashAction on an auth_failed assistant error", 
   assert.deepEqual(errorEntry.slashAction, { command: "/login", label: "Sign in" });
 });
 
+test("Claude narrative stamps `truncated: true` on entries whose visible text was clipped at the wire cap", () => {
+  const padding = "x".repeat(14_000);
+  const text = JSON.stringify({
+    timestamp: "2026-04-29T12:00:00.000Z",
+    type: "assistant",
+    message: { content: [{ type: "text", text: padding }] },
+  });
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude" });
+  const assistant = narrative.entries.find((e) => e.kind === "assistant");
+  assert.ok(assistant);
+  assert.equal(assistant.truncated, true);
+  assert.ok(assistant.text.length <= 12_000);
+  // Trailing ellipsis is present.
+  assert.match(assistant.text, /…$/u);
+});
+
+test("Claude narrative does NOT stamp `truncated: true` when the text fits within the cap", () => {
+  const text = JSON.stringify({
+    timestamp: "2026-04-29T12:00:00.000Z",
+    type: "assistant",
+    message: { content: [{ type: "text", text: "short reply" }] },
+  });
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude" });
+  const assistant = narrative.entries.find((e) => e.kind === "assistant");
+  assert.ok(assistant);
+  assert.equal(assistant.truncated, undefined);
+});
+
 test("Claude narrative extracts imageRefs from FULL text BEFORE truncation: a path mentioned in the tail of a >12K assistant message still appears", () => {
   // MAX_TEXT_LENGTH = 12_000. A 14K-char message with the image path
   // mentioned at the end would lose the path if extraction ran on the

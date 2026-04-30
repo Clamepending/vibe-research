@@ -5961,6 +5961,21 @@ export class SessionManager {
   }
 
   restoreSession(snapshot) {
+    // streamMode is a server-level config (env-var-driven), not a per-
+    // session preference. Recompute on restore so a user upgrading from
+    // an older version where stream mode was opt-in gets the current
+    // default the same way a fresh session would. Without this, restored
+    // sessions persist their old streamMode=false and miss the entire
+    // structured-rendering / push-protocol stack.
+    let resolvedStreamMode = Boolean(snapshot.streamMode);
+    if (isClaudeProviderId(snapshot.providerId)) {
+      resolvedStreamMode = isClaudeStreamModeEnabled(this.env);
+    } else if (snapshot.providerId === "codex") {
+      resolvedStreamMode = isCodexStreamModeEnabled(this.env);
+    } else {
+      resolvedStreamMode = false;
+    }
+
     const session = this.buildSessionRecord({
       id: snapshot.id || randomUUID(),
       providerId: snapshot.providerId,
@@ -5991,7 +6006,7 @@ export class SessionManager {
       lastResolvedAt: snapshot.lastResolvedAt || null,
       workspaceRepair: snapshot.workspaceRepair || null,
       occupationId: snapshot.occupationId || snapshot.promptId || this.occupationId,
-      streamMode: Boolean(snapshot.streamMode),
+      streamMode: resolvedStreamMode,
     });
 
     this.sessions.set(session.id, session);

@@ -70,13 +70,15 @@ export class ClaudeStreamSession extends EventEmitter {
     // arrives for the same message.
     this._partialByMessage = new Map();
     this._pendingThinking = false;
-    // The most recent ExitPlanMode tool_use_id awaiting a user response.
-    // Set when an assistant event carries an ExitPlanMode tool_use; cleared
-    // once we emit a tool_result for it (or when the turn completes via a
-    // result event without any plan response, which means Claude bailed).
-    // The session manager's resolvePlanMode reads this to know which id to
-    // address when the user clicks Approve / Push back.
-    this._pendingPlanToolUseId = "";
+    // FIFO queue of ExitPlanMode tool_use_ids awaiting a user response.
+    // Real Claude rarely emits two parallel plans, but it CAN — and the
+    // earlier scalar tracker overwrote the awaiting id, leaving older
+    // plan cards with buttons that no longer addressed any tool_use.
+    // Queue semantics fix that: getPendingPlanToolUseId returns the head,
+    // sendToolResult dequeues the matching id (not just the head, so an
+    // out-of-order resolution still works), and the queue is capped at
+    // MAX_PENDING_PLANS so a buggy provider can't fill memory.
+    this._pendingPlanToolUseIds = [];
   }
 
   start() {
@@ -186,17 +188,29 @@ export class ClaudeStreamSession extends EventEmitter {
       },
     };
     this._child.stdin.write(`${JSON.stringify(message)}\n`);
-    if (this._pendingPlanToolUseId === id) {
-      this._pendingPlanToolUseId = "";
+    // Dequeue the matching id from anywhere in the FIFO — not just the
+    // head — so out-of-order resolutions still clear the right slot.
+    const idx = this._pendingPlanToolUseIds.indexOf(id);
+    if (idx >= 0) {
+      this._pendingPlanToolUseIds.splice(idx, 1);
     }
     return true;
   }
 
-  // Returns the tool_use_id of the most recent ExitPlanMode call waiting
-  // on a user response, or "" if no plan is awaiting. Used by the session
-  // manager to dispatch plan-response API calls.
+  // Returns the tool_use_id of the OLDEST ExitPlanMode call waiting on a
+  // user response, or "" if no plan is awaiting. The session manager
+  // dispatches plan-response API calls against this head; if the user
+  // clicks Approve on a card whose id matches the head, that's the FIFO
+  // path. (Out-of-order resolutions are still fine — sendToolResult
+  // dequeues by id, not position.)
   getPendingPlanToolUseId() {
-    return this._pendingPlanToolUseId || "";
+    return this._pendingPlanToolUseIds[0] || "";
+  }
+
+  // Returns all currently awaiting plan tool_use_ids. Used by tests and
+  // diagnostics to confirm the FIFO depth.
+  getPendingPlanToolUseIds() {
+    return this._pendingPlanToolUseIds.slice();
   }
 
   close({ signal = "SIGTERM" } = {}) {
@@ -359,28 +373,40 @@ export class ClaudeStreamSession extends EventEmitter {
         this._partialByMessage.clear();
       }
       this._pendingThinking = false;
-      // Watch the assistant content for an ExitPlanMode tool_use — that's
-      // what's waiting on the user's plan response. The id we capture here
-      // is the tool_use_id we'll address in the corresponding tool_result.
+      // Watch the assistant content for ExitPlanMode tool_uses. Real
+      // Claude rarely emits more than one per turn, but the queue is
+      // append-only: if a second plan arrives before the first is
+      // resolved, both ids ride in the FIFO and the older card's button
+      // still addresses its real tool_use_id. Cap at MAX_PENDING_PLANS
+      // so a buggy producer can't fill memory.
+      const MAX_PENDING_PLANS = 32;
       const content = Array.isArray(event.message?.content) ? event.message.content : [];
       for (const item of content) {
         if (item?.type === "tool_use" && String(item.name || "") === "ExitPlanMode") {
-          this._pendingPlanToolUseId = String(item.id || "");
-          break;
+          const planId = String(item.id || "");
+          if (planId && !this._pendingPlanToolUseIds.includes(planId)) {
+            this._pendingPlanToolUseIds.push(planId);
+            if (this._pendingPlanToolUseIds.length > MAX_PENDING_PLANS) {
+              this._pendingPlanToolUseIds.splice(0, this._pendingPlanToolUseIds.length - MAX_PENDING_PLANS);
+            }
+          }
         }
       }
       return;
     }
 
     if (event.type === "user") {
-      // If the user already provided a tool_result for the awaiting plan
-      // (e.g. a previous resolvePlanMode call), clear our cached id so a
-      // stale Approve click doesn't double-resolve.
+      // If the user (or another client) already provided a tool_result
+      // for an awaiting plan, dequeue the matching id from the FIFO so
+      // a stale Approve click doesn't double-resolve.
       const content = Array.isArray(event.message?.content) ? event.message.content : [];
       for (const item of content) {
-        if (item?.type === "tool_result" && this._pendingPlanToolUseId
-          && String(item.tool_use_id || "") === this._pendingPlanToolUseId) {
-          this._pendingPlanToolUseId = "";
+        if (item?.type === "tool_result") {
+          const matchedId = String(item.tool_use_id || "");
+          const idx = matchedId ? this._pendingPlanToolUseIds.indexOf(matchedId) : -1;
+          if (idx >= 0) {
+            this._pendingPlanToolUseIds.splice(idx, 1);
+          }
           break;
         }
       }
