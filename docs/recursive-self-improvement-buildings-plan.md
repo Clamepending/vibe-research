@@ -476,6 +476,45 @@ Cumulative integrity story: SHA at tiering time + SHA reverify on every doctor r
 - S3/R2 cold remote for `.archive/` (current v1 keeps everything local; remote is follow-up if disk pressure forces it).
 - Real RL workload + cloud GPU end-to-end (needs user input + budget; unchanged from prior batch).
 
+### 2026-04-29 (later still) — README admin family complete
+
+The two queued admin commands shipped same-day. Loop step 9 (apply admit verdict, update README, append LOG row) is now mostly shell calls instead of careful markdown editing.
+
+- **`vr-research-leaderboard <project> insert/remove`** (PR #76): `insert --rank N --slug ... --result ... --branch ... --commit ... --score ...` shifts existing rows down, caps at 5, returns any rank-6 eviction so the agent can write the corresponding `evicted` LOG row. Cells rendered per the schema (`[<slug>](<resultPath>)`, `[r/<slug>](<branchUrl>)`, `[<sha7>](<commitUrl>)`). Refuses duplicate slugs and gap-leaving ranks. CLI prints a next-step hint with the exact `vr-research-log` command for the eviction case.
+- **`vr-research-queue <project> add/remove/reprioritize`** (PR #77): the three CLAUDE.md verbs as subcommands. Cap=5; an `add` past the cap returns the bumped row. `reprioritize --slug X --to-row N` is a 1-indexed move. Refuses gap-leaving positions and duplicate slugs.
+
+#### The full loop-step-9 flow as scriptable shell
+
+```bash
+# At step 9 (after admit verdict says "insert at rank N"):
+EVICTED=$(vr-research-leaderboard "$PROJECT" insert \
+  --rank "$RANK" --slug "$SLUG" \
+  --result "results/$SLUG.md" \
+  --branch "$BRANCH_URL" --commit "$COMMIT_URL" \
+  --score "$SCORE" --json | jq -r '.evicted.slug // empty')
+
+vr-research-active "$PROJECT" remove --slug "$SLUG"
+
+[[ -n "$EVICTED" ]] && vr-research-log "$PROJECT" \
+  --event evicted --slug "$EVICTED" --summary "bumped by $SLUG"
+
+# Apply Queue updates from the result doc:
+vr-research-queue "$PROJECT" add --slug "$NEW_QUEUE_SLUG" \
+  --starting-point "$SP_URL" --why "$WHY"
+# … or remove, reprioritize, as the result doc says
+
+# Final LOG row for the move resolution:
+vr-research-log "$PROJECT" --event resolved+admitted --slug "$SLUG" \
+  --summary "$ONE_LINE" --link "results/$SLUG.md"
+```
+
+#### Status as of this batch
+
+- **PRs this addendum**: 2 (#76 leaderboard, #77 queue). Across the full session: 11 PRs.
+- **Admin command family**: complete. log / active / leaderboard / queue.
+- **Tests**: 18 (leaderboard) + 19 (queue) = 37 new in this addendum. Total research-side: ~260 passing. Same pre-existing `getProjectDetail.figures` flake unchanged.
+- **Friction reduction**: loop step 9's "apply README updates" went from N markdown edits per move to N shell calls. Each call is atomic-rename + idempotent. No silent table-corruption bugs are possible.
+
 ### Resume instructions for the next session
 
 1. Read this doc top to bottom.
@@ -488,5 +527,5 @@ Cumulative integrity story: SHA at tiering time + SHA reverify on every doctor r
 8. **For the autonomous tuner**: the next high-value test is letting an agent run unbounded across 3-5 moves on a real (not toy) training script, with cloud execution via Modal. Before doing it, set a clear budget cap in the agent's prompt + verify the kickoff.json budget enforcement triggers Agent Inbox approval at the right threshold.
 9. **Doctor + summary** are now the agent's eyes on its own state. Before any new sweep tooling, ask: "is the next gap the agent can't see, or the next thing the agent can't do?" — the answer should drive whether to extend doctor or extend `vr-rl-sweep`.
 10. **Library GC**: `vr-research-vacuum` is local-only by design. If `.archive/` itself gets too big, the next move is an S3/R2 cold remote — `tier_destination` in the manifest already accommodates a remote URL, so the wire-up is "swap rename for upload + write the URL" plus a doctor check that follows remote pointers. Don't add this until disk pressure forces it.
-11. **README admin family is half-done.** `vr-research-log` + `vr-research-active` shipped. `vr-research-leaderboard` (rank shifts + rank-6 → LOG) and `vr-research-queue` (ADD/REMOVE/REPRIORITIZE verbs) are the natural next pair. Same string-surgery + atomic-write recipe as PRs #69/#70; ~1 hour each. Land them when the agent's hand-edit-markdown friction at loop step 9 becomes the bottleneck.
+11. **README admin family is complete** (log / active / leaderboard / queue). Loop step 9 is now scriptable end-to-end — see the bash snippet above. The next "agent can't do" gaps are higher-level: `vr-research-resolve <result-doc>` would be a one-shot command that parses the result doc's Decision + Queue updates sections and runs the four admin commands automatically. ~2 hours of work; only worth it if the agent finds the explicit-call pattern friction-y.
 
