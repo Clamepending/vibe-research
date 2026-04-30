@@ -526,6 +526,7 @@ export class SettingsStore {
       // The Library is just a folder of markdown notes by default. Beginners
       // don't need a git history of every change unless they explicitly opt
       // in via "Link GitHub" in the Library UI.
+      wandbEntity: String(this.env.VIBE_RESEARCH_WANDB_ENTITY || this.env.WANDB_ENTITY || "").trim(),
       wikiGitBackupEnabled: false,
       wikiGitRemoteBranch: "main",
       wikiGitRemoteEnabled: false,
@@ -1017,6 +1018,7 @@ export class SettingsStore {
       ),
       wikiGitRemoteName: normalizeGitRemoteName(payload.wikiGitRemoteName ?? defaults.wikiGitRemoteName),
       wikiGitRemoteUrl: String(payload.wikiGitRemoteUrl || "").trim(),
+      wandbEntity: String(payload.wandbEntity ?? defaults.wandbEntity ?? "").trim(),
       wikiBackupIntervalMs: normalizeIntervalMs(
         payload.wikiBackupIntervalMs ?? defaults.wikiBackupIntervalMs,
       ),

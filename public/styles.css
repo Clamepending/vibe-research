@@ -11542,6 +11542,7 @@ button.visual-town-building:focus-visible {
 
 .session-project-head > .session-project-graph,
 .session-project-head > .session-project-paper,
+.session-project-head > .session-project-wandb,
 .session-project-head > .session-project-new {
   flex: 0 0 auto;
 }
@@ -11610,7 +11611,8 @@ button.visual-town-building:focus-visible {
 
 .session-project-new,
 .session-project-graph,
-.session-project-paper {
+.session-project-paper,
+.session-project-wandb {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -11626,13 +11628,15 @@ button.visual-town-building:focus-visible {
 }
 
 .session-project-graph,
-.session-project-paper {
+.session-project-paper,
+.session-project-wandb {
   color: rgba(236, 240, 245, 0.78);
 }
 
 .session-project-new .vr-icon,
 .session-project-graph .vr-icon,
-.session-project-paper .vr-icon {
+.session-project-paper .vr-icon,
+.session-project-wandb .vr-icon {
   width: 15px;
   height: 15px;
   stroke-width: 2;
@@ -11643,13 +11647,16 @@ button.visual-town-building:focus-visible {
 .session-project:hover .session-project-graph,
 .session-project:focus-within .session-project-graph,
 .session-project:hover .session-project-paper,
-.session-project:focus-within .session-project-paper {
+.session-project:focus-within .session-project-paper,
+.session-project:hover .session-project-wandb,
+.session-project:focus-within .session-project-wandb {
   opacity: 1;
 }
 
 .session-project-new:hover,
 .session-project-graph:hover,
-.session-project-paper:hover {
+.session-project-paper:hover,
+.session-project-wandb:hover {
   background: var(--surface-active);
   color: var(--text);
   transform: none;

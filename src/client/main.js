@@ -23,6 +23,7 @@ import {
   Gpu,
   Image as ImageIcon,
   Inbox,
+  LineChart,
   Map as MapIcon,
   MemoryStick,
   Package,
@@ -2245,6 +2246,7 @@ const state = {
     wikiGitRemoteUrl: "",
     wikiBackupIntervalMs: 5 * 60 * 1000,
     wikiBackup: null,
+    wandbEntity: "",
   },
   folderPicker: {
     open: false,
@@ -11311,6 +11313,21 @@ function getProjectPaperNotePathForCwd(cwd) {
   return `projects/${match[1]}/paper.md`;
 }
 
+function getProjectSlugForCwd(cwd) {
+  const notePath = getProjectPaperNotePathForCwd(cwd);
+  if (!notePath) return "";
+  const match = notePath.match(/^projects\/([^/]+)\/paper\.md$/);
+  return match ? match[1] : "";
+}
+
+function getProjectWandbUrlForCwd(cwd) {
+  const entity = String(state?.settings?.wandbEntity || "").trim();
+  if (!entity) return "";
+  const slug = getProjectSlugForCwd(cwd);
+  if (!slug) return "";
+  return `https://wandb.ai/${encodeURIComponent(entity)}/${encodeURIComponent(slug)}`;
+}
+
 function renderPaperProjectToolbar(currentPath) {
   const projectRel = getProjectRelativePathFromNotePath(currentPath);
   if (!projectRel) return "";
@@ -13987,6 +14004,17 @@ function renderSessionCards() {
               ${tooltipAttributes("Open project paper")}
             >${renderIcon(FileText)}</button>`
         : "";
+      const wandbUrl = getProjectWandbUrlForCwd(group.cwd);
+      const wandbButtonHtml = wandbUrl
+        ? `
+            <button
+              class="session-project-wandb"
+              type="button"
+              data-open-wandb-for-project="${escapeHtml(wandbUrl)}"
+              aria-label="Open W&B project for ${escapeHtml(group.name)}"
+              ${tooltipAttributes("Open W&B project")}
+            >${renderIcon(LineChart)}</button>`
+        : "";
       return `
         <section class="session-project ${expanded ? "is-expanded" : ""} ${active ? "has-active-session" : ""}" data-session-project="${escapeHtml(group.key)}">
           <div class="session-project-head">
@@ -14014,7 +14042,7 @@ function renderSessionCards() {
               ${tooltipAttributes("Repo graph")}
             >
               ${renderIcon(Waypoints)}
-            </button>${paperButtonHtml}
+            </button>${paperButtonHtml}${wandbButtonHtml}
             <button
               class="session-project-new"
               type="button"
@@ -33073,6 +33101,16 @@ function bindSessionEvents() {
         await loadKnowledgeBaseIndex();
       }
       await openKnowledgeBaseNote(notePath);
+    });
+  });
+
+  document.querySelectorAll("[data-open-wandb-for-project]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const wandbUrl = button.getAttribute("data-open-wandb-for-project") || "";
+      if (!wandbUrl) return;
+      window.open(wandbUrl, "_blank", "noopener,noreferrer");
     });
   });
 
