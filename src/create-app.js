@@ -61,6 +61,7 @@ import { SleepPreventionService } from "./sleep-prevention.js";
 import { getVibeResearchStateDir, getVibeResearchSystemDir } from "./state-paths.js";
 import { collectSystemMetrics } from "./system-metrics.js";
 import { SystemMetricsHistoryStore } from "./system-metrics-history.js";
+import { readOffLimitsIndices, writeOffLimitsIndices } from "./gpu-restrictions.js";
 import { TailscaleServeManager } from "./tailscale-serve.js";
 import { PRODUCTION_TYPING_REFRESH_MS, TelegramService } from "./telegram-service.js";
 import { TwilioService } from "./twilio-service.js";
@@ -3418,11 +3419,23 @@ export async function createVibeResearchApp({
     }
   });
 
+  function extractGpuIndices(system) {
+    return (Array.isArray(system?.gpus) ? system.gpus : [])
+      .map((gpu) => gpu?.index)
+      .filter((value) => Number.isInteger(value));
+  }
+
   app.get("/api/system", async (_request, response) => {
     try {
-      response.json({
-        system: await collectAndRecordSystemMetrics(),
-      });
+      const system = await collectAndRecordSystemMetrics();
+      let gpuOffLimits = [];
+      try {
+        gpuOffLimits = await readOffLimitsIndices(extractGpuIndices(system));
+      } catch {
+        // Non-fatal: surface the system payload even if the control file is unreadable.
+        gpuOffLimits = [];
+      }
+      response.json({ system, gpuOffLimits });
     } catch (error) {
       response.status(500).json({ error: error.message || "Could not read system metrics." });
     }
@@ -3432,6 +3445,42 @@ export async function createVibeResearchApp({
     response.json({
       history: systemMetricsHistoryStore.getHistory(String(request.query.range || "1h")),
     });
+  });
+
+  app.post("/api/system/gpu-restrictions", async (request, response) => {
+    try {
+      const body = request.body || {};
+      const index = Number(body.index);
+      if (!Number.isInteger(index) || index < 0) {
+        response.status(400).json({ error: "index must be a non-negative integer." });
+        return;
+      }
+      if (typeof body.offLimits !== "boolean") {
+        response.status(400).json({ error: "offLimits must be a boolean." });
+        return;
+      }
+
+      const system = await collectAndRecordSystemMetrics();
+      const allIndices = extractGpuIndices(system);
+      if (!allIndices.includes(index)) {
+        response.status(400).json({ error: `Unknown GPU index: ${index}.` });
+        return;
+      }
+
+      const current = new Set(await readOffLimitsIndices(allIndices));
+      if (body.offLimits) {
+        current.add(index);
+      } else {
+        current.delete(index);
+      }
+
+      const gpuOffLimits = await writeOffLimitsIndices([...current], allIndices);
+      response.json({ gpuOffLimits });
+    } catch (error) {
+      response
+        .status(500)
+        .json({ error: error.message || "Could not update GPU restrictions." });
+    }
   });
 
   app.patch("/api/ports/:port", async (request, response) => {
