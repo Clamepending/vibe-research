@@ -17312,9 +17312,18 @@ select:disabled {
     grid-template-columns: 17px minmax(0, 1fr) 104px;
   }
 
-  .session-project-new,
+  /* On desktop these buttons fade in on hover to reduce visual noise.
+     Mobile has no hover, so the previous rule force-showed all of them
+     (4 small buttons per row). The graph / paper / wandb / Pi-deployment
+     shortcuts are still reachable from the long-press context menu;
+     keep only the high-value `+` (new session in this folder) inline. */
   .session-project-graph,
-  .session-project-paper {
+  .session-project-paper,
+  .session-project-wandb {
+    display: none;
+  }
+
+  .session-project-new {
     opacity: 1;
   }
 
@@ -17881,9 +17890,77 @@ select:disabled {
     font-size: 0.95rem;
   }
 
+  /* The cwd subtitle ("provider · /home/user/long/clipped/path") is
+     visual chrome on mobile — the path is always longer than the
+     viewport and gets clipped to nothing useful. The user already
+     knows what project they're in (they tapped it from the sidebar).
+     Hide on phone-width and let the title own the row. */
   .terminal-meta {
-    font-size: 0.72rem;
-    opacity: 0.78;
+    display: none;
+  }
+
+  /* Refresh button on the chat toolbar is unnecessary on mobile —
+     sessions stream in over WebSocket, there's nothing to refresh.
+     One less tap target competing with the canvas mode toggle. */
+  #refresh-sessions {
+    display: none;
+  }
+
+  /* Sidebar files section: the readonly file-root input + `auto` +
+     `choose` buttons are workspace-config affordances that almost
+     nobody uses on a phone — they're for picking a different
+     filesystem root, which is a desktop-class workflow. Hide the
+     form and the `auto` button; keep the file tree itself for the
+     occasional "open this note" use case. */
+  #files-root-form,
+  #auto-files-root {
+    display: none;
+  }
+
+  /* Tighten section heads (Threads / files / ports) on mobile —
+     keep the labels for context, just stop them from claiming a
+     ~32px-tall row. */
+  .sidebar-section .section-head {
+    min-height: 0;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+
+  /* Update banner inside the sidebar — when present, give it less
+     visual weight so it doesn't dominate the first thing the user
+     sees when they pull up the sidebar to switch projects. The card
+     is still actionable; we just trim padding and font scale. */
+  #update-banner .update-card {
+    padding: 10px 12px;
+    border-radius: 12px;
+  }
+  #update-banner .update-card strong {
+    font-size: 0.86rem;
+  }
+
+  /* Sidebar nav items have a label + a tiny mono `meta` line ("11
+     notes · wiki", "host & devices") on desktop. On mobile that
+     doubles every item's height for information that's mostly noise
+     in a vertical-scarcity context. Drop the meta line; the icons +
+     labels stay legible and the nav is roughly half as tall. */
+  .sidebar-nav-meta {
+    display: none;
+  }
+
+  .sidebar-nav-item {
+    min-height: 36px;
+    padding: 4px 8px;
+  }
+
+  .sidebar-nav-icon {
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+  }
+
+  .sidebar-nav-icon .vr-icon {
+    width: 15px;
+    height: 15px;
   }
 
   /* Plan / todo panel — collapsed by default now, so the strip should
