@@ -1,6 +1,7 @@
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "xterm-addon-canvas";
+import { createKnowledgeBaseGraphRenderer } from "./knowledge-base-graph.js";
 import {
   AppWindow,
   BookOpen,
@@ -2390,18 +2391,17 @@ const state = {
       height: KNOWLEDGE_BASE_GRAPH_HEIGHT,
       nodes: [],
       edges: [],
+      hoveredPath: "",
+      // legacy fields retained because some code paths still read them; the
+      // sigma/forceatlas2 renderer below ignores them.
       scale: 1,
       offsetX: 0,
       offsetY: 0,
-      alpha: 0,
-      running: false,
-      frameHandle: 0,
-      dragState: null,
-      panState: null,
-      refs: null,
-      cleanup: null,
-      cameraInitialized: false,
     },
+    // Sigma+graphology+fa2 renderer state (lazily mounted).
+    graphRenderer: null,
+    graphContainer: null,
+    graphSignature: "",
   },
   openFileRelativePath: "",
   openFileName: "",
@@ -11322,199 +11322,22 @@ function createEmptyKnowledgeBaseGraphLayout(previousLayout = null) {
   };
 }
 
-function stopKnowledgeBaseGraphSimulation() {
-  const layout = state.knowledgeBase.graphLayout;
-
-  if (layout.frameHandle) {
-    window.cancelAnimationFrame(layout.frameHandle);
-    layout.frameHandle = 0;
-  }
-
-  layout.running = false;
-}
-
 function teardownKnowledgeBaseGraphInteractions() {
-  const layout = state.knowledgeBase.graphLayout;
-  stopKnowledgeBaseGraphSimulation();
-  layout.cleanup?.();
-  layout.cleanup = null;
-  layout.refs = null;
-  layout.dragState = null;
-  layout.panState = null;
-  layout.hoveredPath = "";
+  state.knowledgeBase.graphRenderer?.unmount();
+  state.knowledgeBase.graphRenderer = null;
+  state.knowledgeBase.graphContainer = null;
+  state.knowledgeBase.graphSignature = "";
+  state.knowledgeBase.graphLayout.hoveredPath = "";
 }
 
-function getKnowledgeBaseGraphSvgPoint(svg, clientX, clientY) {
-  if (!(svg instanceof SVGSVGElement)) {
-    return null;
-  }
-
-  const matrix = svg.getScreenCTM();
-  if (!matrix) {
-    return null;
-  }
-
-  const point = svg.createSVGPoint();
-  point.x = clientX;
-  point.y = clientY;
-  return point.matrixTransform(matrix.inverse());
-}
-
-function getKnowledgeBaseGraphWorldPoint(svg, clientX, clientY) {
-  const layout = state.knowledgeBase.graphLayout;
-  const point = getKnowledgeBaseGraphSvgPoint(svg, clientX, clientY);
-
-  if (!point) {
-    return null;
-  }
-
-  return {
-    svgX: point.x,
-    svgY: point.y,
-    x: (point.x - layout.offsetX) / layout.scale,
-    y: (point.y - layout.offsetY) / layout.scale,
-  };
-}
-
-function syncKnowledgeBaseGraphDom() {
-  const layout = state.knowledgeBase.graphLayout;
-  const refs = layout.refs;
-
-  if (!refs?.viewport) {
-    return;
-  }
-
-  refs.viewport.setAttribute(
-    "transform",
-    `translate(${layout.offsetX.toFixed(2)} ${layout.offsetY.toFixed(2)}) scale(${layout.scale.toFixed(4)})`,
-  );
-
-  const selectedPath = state.knowledgeBase.selectedNotePath;
-  const activePath = layout.hoveredPath || selectedPath;
-  const connectedPaths = new Set(activePath ? [activePath] : []);
-
-  layout.edges.forEach((edge, index) => {
-    const source = layout.nodes[edge.sourceIndex];
-    const target = layout.nodes[edge.targetIndex];
-    const element = refs.edgeElements[index];
-
-    if (!source || !target || !(element instanceof SVGLineElement)) {
-      return;
-    }
-
-    const isConnected = Boolean(activePath && (edge.source === activePath || edge.target === activePath));
-    element.classList.toggle("is-connected", isConnected);
-    if (isConnected) {
-      connectedPaths.add(edge.source);
-      connectedPaths.add(edge.target);
-    }
-
-    element.setAttribute("x1", source.x.toFixed(2));
-    element.setAttribute("y1", source.y.toFixed(2));
-    element.setAttribute("x2", target.x.toFixed(2));
-    element.setAttribute("y2", target.y.toFixed(2));
-  });
-
-  layout.nodes.forEach((node, index) => {
-    const element = refs.nodeElements[index];
-    if (!(element instanceof SVGGElement)) {
-      return;
-    }
-
-    element.setAttribute("transform", `translate(${node.x.toFixed(2)} ${node.y.toFixed(2)})`);
-    element.classList.toggle("is-dragging", layout.dragState?.node?.relativePath === node.relativePath);
-    element.classList.toggle("is-hovered", layout.hoveredPath === node.relativePath);
-    element.classList.toggle("is-selected", selectedPath === node.relativePath);
-    element.classList.toggle("is-connected", connectedPaths.has(node.relativePath));
-  });
-
-  refs.svg.classList.toggle("is-panning", Boolean(layout.panState));
-  refs.svg.classList.toggle("is-dragging-node", Boolean(layout.dragState));
-}
-
-function getKnowledgeBaseGraphNodeLabel(node) {
-  return truncateKnowledgeBaseLabel(node?.title || node?.relativePath || "", 18);
-}
-
-function getKnowledgeBaseGraphNodeVisualBounds(node) {
-  const labelWidth = getKnowledgeBaseGraphNodeLabel(node).length * KNOWLEDGE_BASE_GRAPH_LABEL_CHAR_WIDTH;
-  const horizontalPadding = Math.max(node.radius + 12, labelWidth / 2 + 8);
-  const topPadding = node.radius + KNOWLEDGE_BASE_GRAPH_LABEL_GAP + KNOWLEDGE_BASE_GRAPH_LABEL_HEIGHT + 8;
-  const bottomPadding = node.radius + 12;
-
-  return {
-    minX: node.x - horizontalPadding,
-    minY: node.y - topPadding,
-    maxX: node.x + horizontalPadding,
-    maxY: node.y + bottomPadding,
-  };
-}
-
-function fitKnowledgeBaseGraphCamera({ maxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE, sync = true } = {}) {
-  const layout = state.knowledgeBase.graphLayout;
-
-  if (!layout.nodes.length) {
-    return;
-  }
-
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-
-  for (const node of layout.nodes) {
-    const bounds = getKnowledgeBaseGraphNodeVisualBounds(node);
-    minX = Math.min(minX, bounds.minX);
-    minY = Math.min(minY, bounds.minY);
-    maxX = Math.max(maxX, bounds.maxX);
-    maxY = Math.max(maxY, bounds.maxY);
-  }
-
-  const contentWidth = Math.max(180, maxX - minX);
-  const contentHeight = Math.max(180, maxY - minY);
-  const availableWidth = Math.max(120, layout.width - KNOWLEDGE_BASE_GRAPH_FIT_PADDING);
-  const availableHeight = Math.max(120, layout.height - KNOWLEDGE_BASE_GRAPH_FIT_PADDING);
-  const effectiveMaxScale = clamp(maxScale, KNOWLEDGE_BASE_GRAPH_MIN_SCALE, KNOWLEDGE_BASE_GRAPH_MAX_SCALE);
-  const nextScale = clamp(
-    Math.min(availableWidth / contentWidth, availableHeight / contentHeight),
-    KNOWLEDGE_BASE_GRAPH_MIN_SCALE,
-    effectiveMaxScale,
-  );
-
-  layout.scale = nextScale;
-  layout.offsetX = layout.width / 2 - ((minX + maxX) / 2) * nextScale;
-  layout.offsetY = layout.height / 2 - ((minY + maxY) / 2) * nextScale;
-  layout.cameraInitialized = true;
-  if (sync) {
-    syncKnowledgeBaseGraphDom();
-  }
+function fitKnowledgeBaseGraphCamera() {
+  state.knowledgeBase.graphRenderer?.fit();
 }
 
 function focusKnowledgeBaseGraphNode(relativePath) {
-  const layout = state.knowledgeBase.graphLayout;
   const normalizedPath = normalizeFileTreePath(relativePath);
-
-  if (!normalizedPath || !layout.nodes.length) {
-    return false;
-  }
-
-  const node = layout.nodes.find((entry) => entry.relativePath === normalizedPath);
-  if (!node) {
-    return false;
-  }
-
-  const nextScale = clamp(
-    Math.max(layout.scale || 1, KNOWLEDGE_BASE_GRAPH_FOCUS_SCALE),
-    KNOWLEDGE_BASE_GRAPH_MIN_SCALE,
-    KNOWLEDGE_BASE_GRAPH_MAX_SCALE,
-  );
-
-  layout.scale = nextScale;
-  layout.offsetX = layout.width / 2 - node.x * nextScale;
-  layout.offsetY = layout.height / 2 - node.y * nextScale;
-  layout.cameraInitialized = true;
-  syncKnowledgeBaseGraphDom();
-  return true;
+  if (!normalizedPath) return false;
+  return Boolean(state.knowledgeBase.graphRenderer?.focus(normalizedPath));
 }
 
 function requestKnowledgeBaseGraphFocus(relativePath) {
@@ -11545,216 +11368,11 @@ function requestKnowledgeBaseGraphReplay() {
   state.knowledgeBase.replayGraphOnNextBind = true;
 }
 
-function replayKnowledgeBaseGraphUnfold({ forceSimulation = false } = {}) {
+function replayKnowledgeBaseGraphUnfold({ forceSimulation: _forceSimulation = false } = {}) {
   const layout = state.knowledgeBase.graphLayout;
-
-  if (!layout.nodes.length) {
-    return false;
-  }
-
-  const centerX = layout.width / 2;
-  const centerY = layout.height / 2;
-  const minDimension = Math.min(layout.width, layout.height);
-  const velocityBase = minDimension * 0.0016;
-
-  fitKnowledgeBaseGraphCamera({ sync: false });
-  layout.autoFitDuringSimulation = true;
-  layout.autoFitMaxScale = Math.min(
-    layout.scale || KNOWLEDGE_BASE_GRAPH_REPLAY_MAX_SCALE,
-    KNOWLEDGE_BASE_GRAPH_REPLAY_MAX_SCALE,
-  );
-
-  layout.nodes.forEach((node, index) => {
-    const anchor = layout.groupAnchors?.[node.groupKey] || { x: centerX, y: centerY };
-    const groupSize = Math.max(1, node.groupSize || 1);
-    const replaySeed = getSeededKnowledgeBaseGraphVector(
-      `replay:${node.relativePath}:${index}`,
-      Math.min(132, 26 + Math.sqrt(groupSize) * 14),
-    );
-    const anchorBlend = 0.44 + getSeededKnowledgeBaseGraphUnit(`${node.relativePath}:replay-anchor`) * 0.12;
-    const tangentAngle = replaySeed.angle + Math.PI / 2;
-    const speed = velocityBase * (0.45 + getSeededKnowledgeBaseGraphUnit(`${node.relativePath}:replay-speed`) * 0.85);
-
-    node.x = centerX + (anchor.x - centerX) * anchorBlend + replaySeed.x * 0.58;
-    node.y = centerY + (anchor.y - centerY) * anchorBlend + replaySeed.y * 0.58;
-    node.vx = (anchor.x - node.x) * 0.004 + Math.cos(tangentAngle) * speed;
-    node.vy = (anchor.y - node.y) * 0.004 + Math.sin(tangentAngle) * speed;
-    node.fx = 0;
-    node.fy = 0;
-  });
-
-  syncKnowledgeBaseGraphDom();
-  startKnowledgeBaseGraphSimulation(0.42, { force: forceSimulation });
+  if (!layout.nodes.length) return false;
+  state.knowledgeBase.graphRenderer?.pulse();
   return true;
-}
-
-function scheduleKnowledgeBaseGraphFrame() {
-  const layout = state.knowledgeBase.graphLayout;
-
-  if (state.currentView !== "knowledge-base" || state.knowledgeBase.graphCollapsed) {
-    if (layout.frameHandle) {
-      window.cancelAnimationFrame(layout.frameHandle);
-      layout.frameHandle = 0;
-    }
-    layout.running = false;
-    return;
-  }
-
-  if (layout.frameHandle || !layout.running) {
-    return;
-  }
-
-  layout.frameHandle = window.requestAnimationFrame(() => {
-    layout.frameHandle = 0;
-
-    if (!layout.running || !layout.nodes.length) {
-      return;
-    }
-
-    if (state.currentView !== "knowledge-base" || state.knowledgeBase.graphCollapsed) {
-      layout.running = false;
-      return;
-    }
-
-    const physics = KNOWLEDGE_BASE_GRAPH_PHYSICS;
-    const centerX = layout.width / 2;
-    const centerY = layout.height / 2;
-    const damping = layout.dragState ? physics.dragDamping : physics.damping;
-    const alphaTarget = layout.dragState ? physics.dragAlphaTarget : physics.idleAlphaTarget;
-    const alpha = Math.max(layout.alpha || 0, alphaTarget);
-
-    for (const node of layout.nodes) {
-      const anchor = layout.groupAnchors?.[node.groupKey] || { x: centerX, y: centerY };
-      const anchorStrength = isKnowledgeBaseProjectGroup(node.groupKey)
-        ? physics.projectAnchorStrength
-        : physics.groupAnchorStrength;
-      node.fx = (anchor.x - node.x) * anchorStrength + (centerX - node.x) * physics.centerStrength;
-      node.fy = (anchor.y - node.y) * anchorStrength + (centerY - node.y) * physics.centerStrength;
-
-      const rightBoundary = layout.width - physics.boundaryMargin;
-      const bottomBoundary = layout.height - physics.boundaryMargin;
-      if (node.x < physics.boundaryMargin) {
-        node.fx += (physics.boundaryMargin - node.x) * physics.boundaryStrength;
-      } else if (node.x > rightBoundary) {
-        node.fx -= (node.x - rightBoundary) * physics.boundaryStrength;
-      }
-
-      if (node.y < physics.boundaryMargin) {
-        node.fy += (physics.boundaryMargin - node.y) * physics.boundaryStrength;
-      } else if (node.y > bottomBoundary) {
-        node.fy -= (node.y - bottomBoundary) * physics.boundaryStrength;
-      }
-    }
-
-    for (let leftIndex = 0; leftIndex < layout.nodes.length; leftIndex += 1) {
-      const left = layout.nodes[leftIndex];
-
-      for (let rightIndex = leftIndex + 1; rightIndex < layout.nodes.length; rightIndex += 1) {
-        const right = layout.nodes[rightIndex];
-        const deltaX = right.x - left.x;
-        const deltaY = right.y - left.y;
-        const distanceSquared = Math.max(deltaX * deltaX + deltaY * deltaY, 1);
-        const distance = Math.sqrt(distanceSquared);
-        const sameGroup = left.groupKey && left.groupKey === right.groupKey;
-        const minimumDistance =
-          left.radius + right.radius + (sameGroup ? physics.sameGroupMinimumGap : physics.otherGroupMinimumGap);
-        let repulsion =
-          ((sameGroup ? physics.sameGroupRepulsionBase : physics.otherGroupRepulsionBase) +
-            minimumDistance * (sameGroup ? physics.sameGroupRepulsionRadius : physics.otherGroupRepulsionRadius)) /
-          distanceSquared;
-
-        if (distance < minimumDistance) {
-          repulsion +=
-            (minimumDistance - distance) * (sameGroup ? physics.sameGroupCollisionPush : physics.otherGroupCollisionPush);
-        }
-
-        const forceX = (deltaX / distance) * repulsion;
-        const forceY = (deltaY / distance) * repulsion;
-
-        left.fx -= forceX;
-        left.fy -= forceY;
-        right.fx += forceX;
-        right.fy += forceY;
-      }
-    }
-
-    for (const edge of layout.edges) {
-      const source = layout.nodes[edge.sourceIndex];
-      const target = layout.nodes[edge.targetIndex];
-
-      if (!source || !target) {
-        continue;
-      }
-
-      const deltaX = target.x - source.x;
-      const deltaY = target.y - source.y;
-      const distance = Math.max(1, Math.sqrt(deltaX * deltaX + deltaY * deltaY));
-      const spring = (distance - edge.distance) * edge.strength;
-      const forceX = (deltaX / distance) * spring;
-      const forceY = (deltaY / distance) * spring;
-
-      source.fx += forceX;
-      source.fy += forceY;
-      target.fx -= forceX;
-      target.fy -= forceY;
-    }
-
-    let maxVelocity = 0;
-
-    for (const node of layout.nodes) {
-      if (layout.dragState?.node?.relativePath === node.relativePath) {
-        node.vx = 0;
-        node.vy = 0;
-        continue;
-      }
-
-      node.vx = (node.vx + node.fx * alpha) * damping;
-      node.vy = (node.vy + node.fy * alpha) * damping;
-      const velocity = Math.hypot(node.vx, node.vy);
-      const maxNodeVelocity = layout.dragState ? physics.maxDragVelocity : physics.maxVelocity;
-      if (velocity > maxNodeVelocity) {
-        node.vx = (node.vx / velocity) * maxNodeVelocity;
-        node.vy = (node.vy / velocity) * maxNodeVelocity;
-      }
-      node.x += node.vx;
-      node.y += node.vy;
-
-      maxVelocity = Math.max(maxVelocity, Math.abs(node.vx) + Math.abs(node.vy));
-    }
-
-    layout.alpha = Math.max(alphaTarget, alpha * physics.alphaDecay - physics.alphaCooling, 0);
-    if (layout.autoFitDuringSimulation && !layout.dragState && !layout.panState) {
-      fitKnowledgeBaseGraphCamera({ maxScale: layout.autoFitMaxScale, sync: false });
-    }
-    syncKnowledgeBaseGraphDom();
-
-    const settledFromTransient =
-      !layout.dragState && maxVelocity <= physics.stopVelocity && layout.alpha <= physics.stopAlpha;
-    if (settledFromTransient) {
-      layout.autoFitDuringSimulation = false;
-      layout.autoFitMaxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE;
-    }
-
-    layout.running =
-      state.currentView === "knowledge-base"
-      && !state.knowledgeBase.graphCollapsed
-      && layout.nodes.length > 0;
-    if (layout.running) {
-      scheduleKnowledgeBaseGraphFrame();
-    }
-  });
-}
-
-function startKnowledgeBaseGraphSimulation(boost = 0.16, { force = false } = {}) {
-  const layout = state.knowledgeBase.graphLayout;
-
-  if (!layout.nodes.length || state.knowledgeBase.graphCollapsed) {
-    return;
-  }
-
-  layout.running = true;
-  layout.alpha = clamp(Math.max(layout.alpha || 0, boost), 0, KNOWLEDGE_BASE_GRAPH_PHYSICS.maxAlpha);
-  scheduleKnowledgeBaseGraphFrame();
 }
 
 function createKnowledgeBaseGraphLayout(notes, edges) {
@@ -13039,18 +12657,6 @@ function renderKnowledgeBaseGraph() {
     `;
   }
 
-  const selectedPath = state.knowledgeBase.selectedNotePath;
-  const connectedPaths = new Set([selectedPath]);
-
-  for (const edge of layout.edges) {
-    if (edge.source === selectedPath || edge.target === selectedPath) {
-      connectedPaths.add(edge.source);
-      connectedPaths.add(edge.target);
-    }
-  }
-
-  const nodeMap = new Map(layout.nodes.map((node) => [node.relativePath, node]));
-
   return `
     <article class="knowledge-base-graph-card">
       <div class="knowledge-base-panel-head knowledge-base-graph-head">
@@ -13079,82 +12685,7 @@ function renderKnowledgeBaseGraph() {
           >hide</button>
         </div>
       </div>
-      <div class="knowledge-base-graph-frame">
-        <svg
-          class="knowledge-base-graph"
-          id="knowledge-base-graph"
-          viewBox="0 0 ${layout.width} ${layout.height}"
-          role="img"
-          aria-label="Library graph"
-        >
-          <rect
-            class="knowledge-base-graph-surface"
-            data-kb-graph-surface
-            x="0"
-            y="0"
-            width="${layout.width}"
-            height="${layout.height}"
-            rx="22"
-            ry="22"
-          ></rect>
-          <g
-            data-kb-graph-viewport
-            transform="translate(${layout.offsetX.toFixed(2)} ${layout.offsetY.toFixed(2)}) scale(${layout.scale.toFixed(4)})"
-          >
-            ${layout.edges
-              .map((edge, index) => {
-                const source = nodeMap.get(edge.source);
-                const target = nodeMap.get(edge.target);
-
-                if (!source || !target) {
-                  return "";
-                }
-
-                const isConnected = edge.source === selectedPath || edge.target === selectedPath;
-                return `
-                  <line
-                    class="knowledge-base-graph-edge ${isConnected ? "is-connected" : ""}"
-                    data-kb-graph-edge-index="${index}"
-                    ${renderStyleVariables({ "--kb-edge-stroke": edge.edgeColor })}
-                    x1="${source.x.toFixed(2)}"
-                    y1="${source.y.toFixed(2)}"
-                    x2="${target.x.toFixed(2)}"
-                    y2="${target.y.toFixed(2)}"
-                  ></line>
-                `;
-              })
-              .join("")}
-            ${layout.nodes
-              .map((node, index) => {
-                const isSelected = node.relativePath === selectedPath;
-                const isConnected = connectedPaths.has(node.relativePath);
-                const shouldShowLabel = layout.nodes.length <= 26 || isSelected || isConnected;
-
-                return `
-                  <g
-                    class="knowledge-base-graph-node ${shouldShowLabel ? "has-visible-label" : ""} ${isSelected ? "is-selected" : ""} ${isConnected ? "is-connected" : ""}"
-                    data-kb-graph-node="${escapeHtml(node.relativePath)}"
-                    data-kb-graph-node-index="${index}"
-                    ${renderStyleVariables({
-                      "--kb-node-fill": node.color?.fill,
-                      "--kb-node-stroke": node.color?.stroke,
-                      "--kb-node-label": node.color?.label,
-                      "--kb-node-connected-fill": node.color?.connectedFill,
-                      "--kb-node-connected-stroke": node.color?.connectedStroke,
-                    })}
-                    transform="translate(${node.x.toFixed(2)} ${node.y.toFixed(2)})"
-                  >
-                    <circle r="${node.radius.toFixed(2)}"></circle>
-                    <text y="${(-node.radius - 10).toFixed(2)}">${escapeHtml(
-                      truncateKnowledgeBaseLabel(node.title, 18),
-                    )}</text>
-                  </g>
-                `;
-              })
-              .join("")}
-          </g>
-        </svg>
-      </div>
+      <div class="knowledge-base-graph-frame" data-kb-graph-mount></div>
       ${renderKnowledgeBaseGraphLegend(layout)}
     </article>
   `;
@@ -37849,321 +37380,73 @@ function bindPortEvents() {
 
 function bindKnowledgeBaseGraphInteractions() {
   const layout = state.knowledgeBase.graphLayout;
-  const previousCleanup = layout.cleanup;
-  layout.cleanup = null;
-  previousCleanup?.();
-  stopKnowledgeBaseGraphSimulation();
+  const mountSlot = document.querySelector("[data-kb-graph-mount]");
 
-  const svg = document.querySelector("#knowledge-base-graph");
-  if (!(svg instanceof SVGSVGElement)) {
-    layout.refs = null;
+  // Card not present (collapsed view, view changed mid-flight, etc.) → nothing
+  // to do; teardown if a renderer is still mounted to a now-detached node.
+  if (!(mountSlot instanceof HTMLElement)) {
+    if (state.knowledgeBase.graphContainer && !state.knowledgeBase.graphContainer.isConnected) {
+      teardownKnowledgeBaseGraphInteractions();
+    }
     return;
   }
 
-  const viewport = svg.querySelector("[data-kb-graph-viewport]");
-  const nodeElements = Array.from(svg.querySelectorAll("[data-kb-graph-node-index]"));
-  const edgeElements = Array.from(svg.querySelectorAll("[data-kb-graph-edge-index]"));
-
-  if (!(viewport instanceof SVGGElement)) {
-    layout.refs = null;
-    return;
+  // Persistent container element. We deliberately keep this the same DOM node
+  // across renders so sigma's <canvas> survives the parent's innerHTML reset.
+  // The mountSlot div is freshly created on every render; we re-parent the
+  // persistent container into it.
+  let container = state.knowledgeBase.graphContainer;
+  if (!(container instanceof HTMLElement) || !container.isOwnedByThisRenderer) {
+    container = document.createElement("div");
+    container.className = "knowledge-base-graph-container";
+    container.isOwnedByThisRenderer = true;
+    state.knowledgeBase.graphContainer = container;
+  }
+  if (container.parentElement !== mountSlot) {
+    mountSlot.replaceChildren(container);
   }
 
-  const controller = new AbortController();
-  const signal = controller.signal;
-  const refs = {
-    svg,
-    viewport,
-    edgeElements,
-    nodeElements,
-  };
-
-  layout.refs = refs;
-
-  const clearInteractionState = () => {
-    layout.dragState = null;
-    layout.panState = null;
-    layout.hoveredPath = "";
-    svg.classList.remove("is-panning", "is-dragging-node");
-    layout.nodes.forEach((_node, index) => {
-      const element = nodeElements[index];
-      if (element instanceof SVGGElement) {
-        element.classList.remove("is-dragging");
-      }
-    });
-  };
-
-  const setHoveredPath = (nextPath) => {
-    if (layout.hoveredPath === nextPath) {
-      return;
-    }
-
-    layout.hoveredPath = nextPath;
-    syncKnowledgeBaseGraphDom();
-  };
-
-  const onPointerMove = (event) => {
-    if (layout.dragState?.pointerId === event.pointerId) {
-      const worldPoint = getKnowledgeBaseGraphWorldPoint(svg, event.clientX, event.clientY);
-      if (!worldPoint) {
-        return;
-      }
-
-      layout.dragState.moved =
-        layout.dragState.moved ||
-        Math.hypot(
-          event.clientX - layout.dragState.startClientX,
-          event.clientY - layout.dragState.startClientY,
-        ) >= KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX;
-
-      layout.dragState.node.x = worldPoint.x + layout.dragState.pointerOffsetX;
-      layout.dragState.node.y = worldPoint.y + layout.dragState.pointerOffsetY;
-      layout.dragState.node.vx = 0;
-      layout.dragState.node.vy = 0;
-      syncKnowledgeBaseGraphDom();
-      startKnowledgeBaseGraphSimulation(0.2);
-      return;
-    }
-
-    if (layout.panState?.pointerId === event.pointerId) {
-      const svgPoint = getKnowledgeBaseGraphSvgPoint(svg, event.clientX, event.clientY);
-      if (!svgPoint) {
-        return;
-      }
-
-      layout.panState.moved =
-        layout.panState.moved ||
-        Math.hypot(
-          event.clientX - layout.panState.startClientX,
-          event.clientY - layout.panState.startClientY,
-        ) >= KNOWLEDGE_BASE_GRAPH_DRAG_SLOP_PX;
-
-      layout.offsetX = layout.panState.originOffsetX + (svgPoint.x - layout.panState.startSvgX);
-      layout.offsetY = layout.panState.originOffsetY + (svgPoint.y - layout.panState.startSvgY);
-      layout.cameraInitialized = true;
-      syncKnowledgeBaseGraphDom();
-    }
-  };
-
-  const onPointerEnd = (event) => {
-    if (layout.dragState?.pointerId === event.pointerId) {
-      const { moved, notePath } = layout.dragState;
-      clearInteractionState();
-      syncKnowledgeBaseGraphDom();
-      startKnowledgeBaseGraphSimulation(0.14);
-
-      if (!moved) {
-        void openKnowledgeBaseNote(notePath);
-      }
-      return;
-    }
-
-    if (layout.panState?.pointerId === event.pointerId) {
-      const { moved, startedOnGraphSurface } = layout.panState;
-      clearInteractionState();
-      syncKnowledgeBaseGraphDom();
-
-      if (!moved && startedOnGraphSurface) {
+  // Lazy-construct the renderer the first time we mount.
+  if (!state.knowledgeBase.graphRenderer) {
+    state.knowledgeBase.graphRenderer = createKnowledgeBaseGraphRenderer(container, {
+      onNodeClick: (path) => {
+        if (path) void openKnowledgeBaseNote(path);
+      },
+      onNodeHover: (path) => {
+        layout.hoveredPath = path || "";
+      },
+      onSurfaceClick: () => {
         clearKnowledgeBaseNoteSelection();
-      }
-    }
-  };
+      },
+    });
+  }
 
-  svg.addEventListener(
-    "pointerdown",
-    (event) => {
-      if (event.button !== 0) {
-        return;
-      }
+  // Push the latest data into the renderer; setData is idempotent and cheap
+  // when the graph hasn't actually changed (graphology rebuild is O(N+E) and
+  // for a Library scoped to a few thousand notes this is sub-ms).
+  state.knowledgeBase.graphRenderer.setData({
+    nodes: layout.nodes,
+    edges: layout.edges,
+    labelsAlwaysThreshold: 26,
+  });
+  state.knowledgeBase.graphRenderer.setSelected(state.knowledgeBase.selectedNotePath);
 
-      const target = event.target;
-      if (!(target instanceof Element)) {
-        return;
-      }
-
-      const nodeElement = target.closest("[data-kb-graph-node-index]");
-
-      if (nodeElement instanceof SVGGElement) {
-        const nodeIndex = Number.parseInt(nodeElement.getAttribute("data-kb-graph-node-index") || "", 10);
-        const node = layout.nodes[nodeIndex];
-        const worldPoint = getKnowledgeBaseGraphWorldPoint(svg, event.clientX, event.clientY);
-
-        if (!node || !worldPoint) {
-          return;
-        }
-
-        layout.autoFitDuringSimulation = false;
-        layout.autoFitMaxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE;
-        layout.dragState = {
-          pointerId: event.pointerId,
-          node,
-          notePath: node.relativePath,
-          startClientX: event.clientX,
-          startClientY: event.clientY,
-          pointerOffsetX: node.x - worldPoint.x,
-          pointerOffsetY: node.y - worldPoint.y,
-          moved: false,
-        };
-        svg.classList.add("is-dragging-node");
-        nodeElement.classList.add("is-dragging");
-        startKnowledgeBaseGraphSimulation(0.22);
-        syncKnowledgeBaseGraphDom();
-        event.preventDefault();
-        return;
-      }
-
-      const svgPoint = getKnowledgeBaseGraphSvgPoint(svg, event.clientX, event.clientY);
-      if (!svgPoint) {
-        return;
-      }
-
-      layout.autoFitDuringSimulation = false;
-      layout.autoFitMaxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE;
-      layout.panState = {
-        pointerId: event.pointerId,
-        startClientX: event.clientX,
-        startClientY: event.clientY,
-        startSvgX: svgPoint.x,
-        startSvgY: svgPoint.y,
-        originOffsetX: layout.offsetX,
-        originOffsetY: layout.offsetY,
-        startedOnGraphSurface: target === svg || target.hasAttribute("data-kb-graph-surface"),
-        moved: false,
-      };
-      svg.classList.add("is-panning");
-      event.preventDefault();
-    },
-    { signal },
-  );
-
-  window.addEventListener("pointermove", onPointerMove, { signal });
-  window.addEventListener("pointerup", onPointerEnd, { signal });
-  window.addEventListener("pointercancel", onPointerEnd, { signal });
-
-  svg.addEventListener(
-    "pointerover",
-    (event) => {
-      const target = event.target;
-      if (!(target instanceof Element)) {
-        return;
-      }
-
-      const nodeElement = target.closest("[data-kb-graph-node-index]");
-      if (!(nodeElement instanceof SVGGElement)) {
-        return;
-      }
-
-      const nodeIndex = Number.parseInt(nodeElement.getAttribute("data-kb-graph-node-index") || "", 10);
-      setHoveredPath(layout.nodes[nodeIndex]?.relativePath || "");
-    },
-    { signal },
-  );
-
-  svg.addEventListener(
-    "pointerout",
-    (event) => {
-      const target = event.target;
-      if (!(target instanceof Element)) {
-        return;
-      }
-
-      const nodeElement = target.closest("[data-kb-graph-node-index]");
-      if (!(nodeElement instanceof SVGGElement)) {
-        return;
-      }
-
-      const relatedElement =
-        event.relatedTarget instanceof Element
-          ? event.relatedTarget.closest("[data-kb-graph-node-index]")
-          : null;
-      if (relatedElement === nodeElement) {
-        return;
-      }
-
-      setHoveredPath("");
-    },
-    { signal },
-  );
-
-  svg.addEventListener(
-    "wheel",
-    (event) => {
-      const svgPoint = getKnowledgeBaseGraphSvgPoint(svg, event.clientX, event.clientY);
-      if (!svgPoint) {
-        return;
-      }
-
-      event.preventDefault();
-
-      const worldX = (svgPoint.x - layout.offsetX) / layout.scale;
-      const worldY = (svgPoint.y - layout.offsetY) / layout.scale;
-      const zoomFactor = Math.exp(-event.deltaY * 0.0015);
-      const nextScale = clamp(
-        layout.scale * zoomFactor,
-        KNOWLEDGE_BASE_GRAPH_MIN_SCALE,
-        KNOWLEDGE_BASE_GRAPH_MAX_SCALE,
-      );
-
-      if (Math.abs(nextScale - layout.scale) < 0.0001) {
-        return;
-      }
-
-      layout.autoFitDuringSimulation = false;
-      layout.autoFitMaxScale = KNOWLEDGE_BASE_GRAPH_MAX_SCALE;
-      layout.scale = nextScale;
-      layout.offsetX = svgPoint.x - worldX * nextScale;
-      layout.offsetY = svgPoint.y - worldY * nextScale;
-      layout.cameraInitialized = true;
-      syncKnowledgeBaseGraphDom();
-    },
-    { signal, passive: false },
-  );
-
-  document.querySelector("#fit-knowledge-base-graph")?.addEventListener(
-    "click",
-    () => {
-      fitKnowledgeBaseGraphCamera();
-      layout.autoFitDuringSimulation = true;
-      layout.autoFitMaxScale = layout.scale;
-      startKnowledgeBaseGraphSimulation(0.18);
-    },
-    { signal },
-  );
-
-  document.querySelector("#pulse-knowledge-base-graph")?.addEventListener(
-    "click",
-    () => {
-      replayKnowledgeBaseGraphUnfold({ forceSimulation: true });
-    },
-    { signal },
-  );
-
-  layout.cleanup = () => {
-    controller.abort();
-    clearInteractionState();
-    if (layout.refs === refs) {
-      layout.refs = null;
-    }
-  };
-
-  if (!layout.cameraInitialized) {
-    fitKnowledgeBaseGraphCamera();
-  } else {
-    syncKnowledgeBaseGraphDom();
+  // Wire the chrome buttons. They're freshly rendered every frame; assign via
+  // .onclick to replace any prior binding.
+  const fitButton = document.querySelector("#fit-knowledge-base-graph");
+  if (fitButton instanceof HTMLElement) {
+    fitButton.onclick = () => state.knowledgeBase.graphRenderer?.fit();
+  }
+  const pulseButton = document.querySelector("#pulse-knowledge-base-graph");
+  if (pulseButton instanceof HTMLElement) {
+    pulseButton.onclick = () => state.knowledgeBase.graphRenderer?.pulse();
   }
 
   const focusedPendingNode = applyPendingKnowledgeBaseGraphFocus();
-  const replayedGraph = !focusedPendingNode && state.knowledgeBase.replayGraphOnNextBind
-    ? replayKnowledgeBaseGraphUnfold()
-    : false;
-
-  if (focusedPendingNode || replayedGraph) {
-    state.knowledgeBase.replayGraphOnNextBind = false;
+  if (state.knowledgeBase.replayGraphOnNextBind && !focusedPendingNode) {
+    state.knowledgeBase.graphRenderer.pulse();
   }
-
-  if (!focusedPendingNode && !replayedGraph) {
-    startKnowledgeBaseGraphSimulation(0.22);
-  }
+  state.knowledgeBase.replayGraphOnNextBind = false;
 }
 
 function bindKnowledgeBaseNoteOpenEvents() {
@@ -38337,18 +37620,6 @@ function refreshKnowledgeBaseUi() {
   }
 
   bindKnowledgeBaseEvents();
-
-  const graphElement = document.querySelector("#knowledge-base-graph");
-  if (state.knowledgeBase.graphLayout.refs?.svg === graphElement) {
-    if (!state.knowledgeBase.graphLayout.cameraInitialized) {
-      fitKnowledgeBaseGraphCamera();
-    } else {
-      syncKnowledgeBaseGraphDom();
-    }
-    applyPendingKnowledgeBaseGraphFocus();
-    return;
-  }
-
   bindKnowledgeBaseGraphInteractions();
 }
 
