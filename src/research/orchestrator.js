@@ -1,6 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
-import { compileBriefToQueue, getBriefPath, readResearchState, updateResearchState } from "./brief.js";
+import { compileBriefToQueue, getBriefPath, readResearchBrief, readResearchState, updateResearchState } from "./brief.js";
+import { createBriefReviewCard, waitForBriefReview } from "./brief-review.js";
 import { runDoctor } from "./doctor.js";
 import { judgeMove } from "./judge.js";
 import { loadProjectLog, parseProjectReadme } from "./project-readme.js";
@@ -99,6 +100,7 @@ export async function tickResearchOrchestrator({
   let rec;
   let judge = null;
   let briefCompile = null;
+  let briefReview = null;
   let phaseUpdate = null;
   let nextCommand = "";
 
@@ -237,6 +239,32 @@ export async function tickResearchOrchestrator({
         "--slug",
         state.briefSlug,
       ]);
+      if (askHuman) {
+        const briefResult = await readResearchBrief({
+          projectDir: resolvedProjectDir,
+          slug: state.briefSlug,
+        });
+        const review = await createBriefReviewCard({
+          agentTownApi,
+          projectDir: resolvedProjectDir,
+          brief: briefResult.brief,
+          briefPath: briefResult.briefPath,
+          fetchImpl,
+        });
+        let wait = null;
+        if (waitHuman) {
+          wait = await waitForBriefReview({
+            agentTownApi,
+            actionItemId: review.actionItem?.id || `research-brief-${briefResult.brief.slug}`,
+            timeoutMs,
+            fetchImpl,
+          });
+        }
+        briefReview = {
+          actionItem: review.actionItem || null,
+          wait,
+        };
+      }
       if (apply) {
         briefCompile = await compileBriefToQueue({
           projectDir: resolvedProjectDir,
@@ -272,6 +300,7 @@ export async function tickResearchOrchestrator({
     projectName,
     phase: state,
     phaseUpdate: phaseUpdate?.state || null,
+    briefReview,
     briefCompile: briefCompile
       ? {
         briefSlug: briefCompile.brief.slug,
@@ -310,6 +339,9 @@ export function formatOrchestratorReport(report) {
   }
   if (report.briefCompile) {
     lines.push(`brief compile: ${report.briefCompile.briefSlug} -> ${report.briefCompile.queueRows.length} queue row(s)`);
+  }
+  if (report.briefReview?.actionItem?.id) {
+    lines.push(`brief review: ${report.briefReview.actionItem.id}`);
   }
   if (report.judge?.summary) {
     lines.push(`judge: ${report.judge.summary}`);

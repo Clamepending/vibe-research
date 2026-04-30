@@ -237,6 +237,19 @@
     }
 
     if (rec.action === "review-brief" && rec.briefSlug) {
+      buttons.push(button("Ask human", async (event) => {
+        const target = event.currentTarget;
+        target.disabled = true;
+        setActionStatus(body, "Creating brief review card…");
+        try {
+          const payload = await postOrchestratorTick(detail, { askHuman: true });
+          renderNextActionPayload(detail, body, payload);
+        } catch (err) {
+          setActionStatus(body, `Could not create brief review card: ${err.message}`, true);
+        } finally {
+          if (target.isConnected) target.disabled = false;
+        }
+      }));
       buttons.push(button("Compile brief", async (event) => {
         const target = event.currentTarget;
         target.disabled = true;
@@ -311,6 +324,9 @@
       rec.briefSlug ? chip(rec.briefSlug) : null,
       rec.evaluatorStrength ? chip(`evaluator ${rec.evaluatorStrength}`, evaluatorVariant(rec.evaluatorStrength)) : null,
       rec.nextCandidates ? chip(`${rec.nextCandidates} next`) : null,
+      report.briefReview && report.briefReview.actionItem
+        ? chip(`inbox ${report.briefReview.actionItem.id}`, "accent")
+        : null,
       report.judge && report.judge.review && report.judge.review.actionItem
         ? chip(`inbox ${report.judge.review.actionItem.id}`, "accent")
         : null,
