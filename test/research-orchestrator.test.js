@@ -203,6 +203,7 @@ test("tickResearchOrchestrator judges the latest resolved result in review phase
     const report = await tickResearchOrchestrator({ projectDir: dir, checkPaper: false });
     assert.equal(report.recommendation.slug, "first-move");
     assert.match(report.recommendation.action, /^judge-/);
+    assert.equal(report.recommendation.evaluatorStrength, "weak");
     assert.equal(report.judge.slug, "first-move");
     assert.match(report.nextCommand, /vr-research-judge/);
   } finally {

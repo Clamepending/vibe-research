@@ -276,7 +276,11 @@ function recommendationFromReport({ doc, issues, admitReport }) {
 
 function evaluatorStrength({ doc, issues, admitReport }) {
   if (issues.some((item) => item.severity === "error")) return "blocked";
-  if (issues.some((item) => item.code === "artifact_missing" || item.code === "result_command_missing")) return "weak";
+  if (issues.some((item) => (
+    item.code === "artifact_missing" ||
+    item.code === "result_artifact_links_missing" ||
+    item.code === "result_command_missing"
+  ))) return "weak";
   const seeds = Array.isArray(doc.frontmatter?.seeds) ? doc.frontmatter.seeds.length : 0;
   if (admitReport?.candidateQuant && seeds >= 3 && !issues.some((item) => item.severity === "warning")) {
     return "strong";
