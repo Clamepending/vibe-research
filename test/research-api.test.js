@@ -112,6 +112,146 @@ test("getProjectDetail: returns full structured state for clean qualitative proj
   assert.equal(detail.paths.figures, "figures");
 });
 
+test("getProjectDetail: includes resolved docs that are only linked from LOG", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-api-log-docs-"));
+  try {
+    const project = path.join(tmp, "projects", "log-only");
+    await mkdir(path.join(project, "results"), { recursive: true });
+    await writeFile(
+      path.join(project, "README.md"),
+      `# log-only
+
+## GOAL
+
+Keep negative and non-admitted research results visible to reviewers.
+
+## CODE REPO
+
+https://github.com/example/log-only
+
+## SUCCESS CRITERIA
+
+- resolved result docs appear in the dashboard
+
+## RANKING CRITERION
+
+qualitative: reviewability
+
+## LEADERBOARD
+
+| rank | result | branch | commit | score / verdict |
+|------|--------|--------|--------|-----------------|
+
+## INSIGHTS
+
+_no insights yet — review mode crystallizes these from across moves._
+
+## ACTIVE
+
+| move | result doc | branch | agent | started |
+|------|------------|--------|-------|---------|
+
+## QUEUE
+
+| move | starting-point | why |
+|------|----------------|-----|
+
+## LOG
+
+See [LOG.md](./LOG.md) — append-only event history.
+`,
+    );
+    await writeFile(
+      path.join(project, "LOG.md"),
+      `# log-only — LOG
+
+| date | event | slug or ref | one-line summary | link |
+|------|-------|-------------|------------------|------|
+| 2026-04-30 | resolved | session-linked-card | session link canary resolved | [session-linked-card.md](results/session-linked-card.md) |
+`,
+    );
+    await writeFile(
+      path.join(project, "results", "session-linked-card.md"),
+      `# session-linked-card
+
+## TAKEAWAY
+
+Session-linked card reached human review without joining the leaderboard.
+
+## STATUS
+
+resolved
+
+## STARTING POINT
+
+main
+
+## BRANCH
+
+https://github.com/example/log-only/tree/r/session-linked-card
+
+## AGENT
+
+0
+
+## Question
+
+Can the dashboard show a resolved non-admitted result?
+
+## Hypothesis
+
+80% confident the LOG-linked result doc should be enough.
+
+## Research grounding
+
+Local dashboard canary.
+
+## Experiment design
+
+Create a resolved result linked from LOG only.
+
+## Cycles
+
+- cycle 1 @abc123: log-only result -> visible. qual: result is not admitted.
+
+## Results
+
+- Dashboard API should include this result doc.
+
+## Agent canvas
+
+_none._
+
+## Analysis
+
+LOG-only results are important negative evidence.
+
+## Reproducibility
+
+- local fixture.
+
+## Leaderboard verdict
+
+Decision: do not admit.
+
+## Queue updates
+
+_none._
+`,
+    );
+
+    const detail = await getProjectDetail(tmp, "log-only");
+    assert.ok(detail, "expected non-null detail");
+    assert.equal(detail.leaderboard.length, 0);
+    assert.equal(detail.resultDocs.length, 1);
+    assert.equal(detail.resultDocs[0].slug, "session-linked-card");
+    assert.equal(detail.resultDocs[0].status, "resolved");
+    assert.match(detail.resultDocs[0].takeaway, /human review/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("getProjectDetail: surfaces doctor errors when project has issues", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-research-api-doctor-"));
   try {

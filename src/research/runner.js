@@ -602,6 +602,8 @@ async function createReviewCard({
   artifactPath,
   resultPath,
   summary,
+  sessionId = "",
+  agentId = "",
   waitHuman = false,
   humanTimeoutMs = 30_000,
   fetchImpl = globalThis.fetch,
@@ -610,6 +612,12 @@ async function createReviewCard({
   if (!endpoint) return { skipped: true, reason: "Agent Town API is not configured" };
   if (typeof fetchImpl !== "function") return { skipped: true, reason: "fetch is unavailable" };
   const projectName = path.basename(path.resolve(projectDir));
+  const resolvedSessionId = trimString(
+    sessionId ||
+      process.env.VIBE_RESEARCH_SESSION_ID ||
+      process.env.REMOTE_VIBES_SESSION_ID ||
+      "",
+  );
   const body = {
     id: `research-cycle-${slug}-${cycleIndex}`,
     kind: "review",
@@ -619,11 +627,13 @@ async function createReviewCard({
     recommendation: "Choose whether to continue the hillclimb, rerun for noise, synthesize the result, or return to brainstorm.",
     consequence: "Your click steers the next autonomous research step without requiring a long notebook read.",
     source: "research-runner",
+    sourceSessionId: resolvedSessionId,
+    sourceAgentId: agentId,
     href: "?view=agent-inbox",
     cta: "Review",
     target: {
       type: "file",
-      id: resultPath,
+      id: `${projectName}:${slug}:cycle-${cycleIndex}`,
       label: path.basename(resultPath),
       projectName,
       action: "review-research-cycle",
@@ -1247,6 +1257,8 @@ export async function runCycle({
       artifactPath,
       resultPath,
       summary: `Cycle ${cycleIndex} ${outcome}`,
+      sessionId: canvasSessionId,
+      agentId: canvasAgentId,
       waitHuman,
       humanTimeoutMs,
       fetchImpl,

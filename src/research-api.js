@@ -153,17 +153,54 @@ export async function listProjects(libraryRoot) {
   return projects;
 }
 
-async function loadResultDocs(projectDir, leaderboard, active) {
-  // Gather a slim view of every result doc the leaderboard or active rows
-  // reference. Parallelized — at 5+ leaderboard rows + active rows the
-  // sequential version added measurable latency to the per-project endpoint.
+function resultSlugFromPath(relPath) {
+  return path.basename(String(relPath || ""), ".md");
+}
+
+function isSafeResultRelPath(relPath) {
+  const normalized = String(relPath || "").replaceAll("\\", "/");
+  return Boolean(
+    normalized
+      && !path.isAbsolute(normalized)
+      && normalized.startsWith(`${RESULTS_DIR}/`)
+      && normalized.endsWith(".md")
+      && !normalized.includes("../"),
+  );
+}
+
+async function loadResultDocs(projectDir, leaderboard, active, logRows = []) {
+  // Gather a slim view of every result doc the dashboard may need: admitted
+  // rows, active rows, LOG-linked resolved/falsified moves, and any remaining
+  // result docs on disk. This keeps negative/non-admitted findings visible.
   const seen = new Set();
   const targets = [];
+  const addTarget = (slug, relPath) => {
+    const normalized = String(relPath || "").replaceAll("\\", "/");
+    if (!isSafeResultRelPath(normalized) || seen.has(normalized)) return;
+    seen.add(normalized);
+    targets.push({ slug: slug || resultSlugFromPath(normalized), relPath: normalized });
+  };
+
   for (const row of [...(leaderboard || []), ...(active || [])]) {
-    if (!row.resultPath || seen.has(row.resultPath)) continue;
-    seen.add(row.resultPath);
-    targets.push({ slug: row.slug, relPath: row.resultPath });
+    addTarget(row.slug, row.resultPath);
   }
+  for (const row of logRows || []) {
+    if (!row.slug || !/^[A-Za-z0-9._-]+$/.test(row.slug)) continue;
+    addTarget(row.slug, `${RESULTS_DIR}/${row.slug}.md`);
+  }
+
+  try {
+    const entries = await readdir(path.join(projectDir, RESULTS_DIR), { withFileTypes: true });
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      addTarget(resultSlugFromPath(entry.name), `${RESULTS_DIR}/${entry.name}`);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  // Parallelized — at 5+ leaderboard rows + active rows the sequential version
+  // added measurable latency to the per-project endpoint.
   const docs = await Promise.all(
     targets.map(async ({ slug, relPath }) => {
       const text = await readTextOrNull(path.join(projectDir, relPath));
@@ -245,7 +282,7 @@ export async function getProjectDetail(libraryRoot, projectName) {
     parsed.log = [];
   }
   const benchmark = await loadBenchmark(projectDir);
-  const docs = await loadResultDocs(projectDir, parsed.leaderboard, parsed.active);
+  const docs = await loadResultDocs(projectDir, parsed.leaderboard, parsed.active, parsed.log);
 
   let doctor = null;
   try {

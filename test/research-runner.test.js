@@ -256,6 +256,8 @@ test("runCycle can wait on the Agent Inbox review card", async () => {
       metricRegex: "score=([0-9.]+)",
       waitHuman: true,
       humanTimeoutMs: 1234,
+      canvasSessionId: "session-1",
+      canvasAgentId: "agent-a",
       agentTownApi: "http://agent-town.test/api/agent-town",
       fetchImpl,
       timeoutMs: 5_000,
@@ -263,6 +265,9 @@ test("runCycle can wait on the Agent Inbox review card", async () => {
     assert.equal(result.review.id, "research-cycle-first-move-1");
     assert.equal(result.reviewWait.satisfied, true);
     assert.equal(calls.length, 2);
+    assert.equal(calls[0].body.sourceSessionId, "session-1");
+    assert.equal(calls[0].body.sourceAgentId, "agent-a");
+    assert.match(calls[0].body.target.id, /first-move:cycle-1/);
     assert.equal(calls[1].body.predicate, "action_item_resolved");
     assert.equal(calls[1].body.timeoutMs, 1234);
   } finally {
