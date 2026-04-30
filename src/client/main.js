@@ -18999,14 +18999,31 @@ function resolveVideoMemoryOpenUrl() {
     || pageHost === "::1";
 
   // The configured URL says "the service is on the same box as the server".
-  // When we're browsing from a different machine (Tailscale, LAN IP, a remote
-  // workspace, etc.), literal 127.0.0.1 resolves to *our* machine, not the
-  // server's — so the link reliably 404s. Swap the host to whatever host we're
-  // currently talking to Vibe Research on, keeping the configured port +
-  // protocol.
+  // When we're browsing from a different machine, literal 127.0.0.1 resolves
+  // to *our* laptop, not the server — the link reliably 404s. Two
+  // remote-access shapes to handle:
+  //
+  // 1. Direct port access (tailnet IP, LAN IP) — the user reaches Vibe
+  //    Research at e.g. http://100.106.229.117:4828 and ALL ports on that
+  //    host are reachable. We could swap 127.0.0.1 → 100.106.229.117
+  //    and keep the VideoMemory port (5050). That works.
+  //
+  // 2. Reverse-proxied access (Tailscale Serve, an HTTPS frontdoor) — the
+  //    user reaches Vibe Research at https://machine.ts.net (port 443).
+  //    Only port 443 is exposed; https://machine.ts.net:5050 won't connect.
+  //    Swapping the host alone breaks here.
+  //
+  // The unified fix: route through Vibe Research's own /proxy/<port>/
+  // path on the page origin. The Express proxy (with ws:true) forwards
+  // both HTTP and WebSocket traffic to 127.0.0.1:<port> on the SERVER,
+  // so it works for tailnet, LAN, and Tailscale Serve identically. The
+  // tradeoff is that VideoMemory traffic now rides through the same
+  // origin (slightly more bytes vs a direct connection), which is
+  // acceptable for a UI that's already mostly small JSON + occasional
+  // video frames.
   if (configuredIsLocal && !pageIsLocal && pageHost) {
-    parsed.hostname = pageHost;
-    return parsed.toString();
+    const port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+    return `${window.location.origin}/proxy/${encodeURIComponent(port)}/`;
   }
 
   return parsed.toString();

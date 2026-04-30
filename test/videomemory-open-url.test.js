@@ -56,7 +56,7 @@ function extractFunctionSource(source, functionName) {
   throw new Error(`unterminated body for ${functionName}`);
 }
 
-async function loadResolver({ baseUrl, statusBaseUrl, pageHost }) {
+async function loadResolver({ baseUrl, statusBaseUrl, pageOrigin }) {
   const source = await readFile(MAIN_JS_PATH, "utf8");
   const fnSource = extractFunctionSource(source, "resolveVideoMemoryOpenUrl");
 
@@ -70,6 +70,16 @@ async function loadResolver({ baseUrl, statusBaseUrl, pageHost }) {
   // eslint-disable-next-line no-new-func
   const factory = new Function(factorySource)();
 
+  let location;
+  if (pageOrigin === undefined) {
+    location = undefined;
+  } else if (pageOrigin === null) {
+    location = { hostname: "", origin: "" };
+  } else {
+    const parsed = new URL(pageOrigin);
+    location = { hostname: parsed.hostname, origin: parsed.origin };
+  }
+
   const env = {
     state: {
       settings: {
@@ -77,15 +87,13 @@ async function loadResolver({ baseUrl, statusBaseUrl, pageHost }) {
         videoMemoryStatus: { baseUrl: statusBaseUrl },
       },
     },
-    window: pageHost === undefined
-      ? { location: undefined }
-      : { location: { hostname: pageHost } },
+    window: pageOrigin === undefined ? { location: undefined } : { location },
   };
   return factory(env);
 }
 
 test("returns empty string when no base URL is configured", async () => {
-  const fn = await loadResolver({ baseUrl: "", statusBaseUrl: "", pageHost: "100.1.2.3" });
+  const fn = await loadResolver({ baseUrl: "", statusBaseUrl: "", pageOrigin: "http://100.1.2.3:4828" });
   assert.equal(fn(), "");
 });
 
@@ -95,22 +103,46 @@ test("returns the configured URL verbatim when accessed from the same machine", 
   const fn = await loadResolver({
     baseUrl: "http://127.0.0.1:5050",
     statusBaseUrl: "",
-    pageHost: "127.0.0.1",
+    pageOrigin: "http://127.0.0.1:4828",
   });
   assert.equal(fn(), "http://127.0.0.1:5050/");
 });
 
-test("rewrites 127.0.0.1 to the page host when accessed remotely (Tailscale tailnet IP)", async () => {
-  // Real-world scenario from /tmp/vr-server.log: server prints
-  // "utun4: http://100.106.229.117:4828". User clicks the tailnet URL
-  // on their laptop. Clicking "Open VideoMemory" must hit
-  // 100.106.229.117:5050, NOT 127.0.0.1:5050.
+test("Tailscale tailnet IP: routes through /proxy/<port>/ on the page origin", async () => {
+  // Real-world scenario: server printed "utun4: http://100.106.229.117:4828".
+  // User clicks that on their laptop. Clicking "Open VideoMemory" must
+  // route through the same origin so the click works on tailnet AND
+  // Tailscale Serve uniformly.
   const fn = await loadResolver({
     baseUrl: "http://127.0.0.1:5050",
     statusBaseUrl: "",
-    pageHost: "100.106.229.117",
+    pageOrigin: "http://100.106.229.117:4828",
   });
-  assert.equal(fn(), "http://100.106.229.117:5050/");
+  assert.equal(fn(), "http://100.106.229.117:4828/proxy/5050/");
+});
+
+test("Tailscale Serve: routes through /proxy/<port>/ on the HTTPS frontdoor", async () => {
+  // The case the previous host-swap implementation got wrong: Tailscale
+  // Serve exposes Vibe Research at https://machine.ts.net (port 443).
+  // Trying https://machine.ts.net:5050 won't connect because port 5050
+  // isn't proxied. Routing through /proxy/5050/ on the same origin works
+  // because the Express proxy (with ws:true) forwards to 127.0.0.1:5050
+  // server-side.
+  const fn = await loadResolver({
+    baseUrl: "http://127.0.0.1:5050",
+    statusBaseUrl: "",
+    pageOrigin: "https://my-mac.tail-scale.ts.net",
+  });
+  assert.equal(fn(), "https://my-mac.tail-scale.ts.net/proxy/5050/");
+});
+
+test("LAN IP: also routes through /proxy/<port>/ (consistent with tailnet)", async () => {
+  const fn = await loadResolver({
+    baseUrl: "http://127.0.0.1:5050",
+    statusBaseUrl: "",
+    pageOrigin: "http://192.168.1.42:4828",
+  });
+  assert.equal(fn(), "http://192.168.1.42:4828/proxy/5050/");
 });
 
 test("rewrites localhost and 0.0.0.0 the same way as 127.0.0.1", async () => {
@@ -122,29 +154,22 @@ test("rewrites localhost and 0.0.0.0 the same way as 127.0.0.1", async () => {
     const fn = await loadResolver({
       baseUrl: `http://${local}:5050`,
       statusBaseUrl: "",
-      pageHost: "100.106.229.117",
+      pageOrigin: "http://100.106.229.117:4828",
     });
-    const got = fn();
-    assert.match(
-      got,
-      /100\.106\.229\.117:5050/,
-      `expected ${local} → page host rewrite; got: ${got}`,
-    );
+    assert.equal(fn(), "http://100.106.229.117:4828/proxy/5050/", `${local} should route through /proxy/`);
   }
 });
 
-test("preserves the configured port + protocol during rewrite", async () => {
-  // If the user runs VideoMemory on a non-default port (or HTTPS),
-  // the rewrite must not silently change those.
+test("non-default VideoMemory port is preserved in the proxy path", async () => {
+  // If the user runs VideoMemory on a non-default port, the /proxy/N/
+  // path must carry that port — otherwise the proxy forwards to the
+  // wrong service.
   const fn = await loadResolver({
     baseUrl: "https://127.0.0.1:5443",
     statusBaseUrl: "",
-    pageHost: "100.106.229.117",
+    pageOrigin: "https://my-mac.tail-scale.ts.net",
   });
-  const got = fn();
-  assert.match(got, /^https:\/\//, `protocol must be preserved, got: ${got}`);
-  assert.match(got, /:5443/, `port must be preserved, got: ${got}`);
-  assert.match(got, /100\.106\.229\.117/, `host must be rewritten, got: ${got}`);
+  assert.equal(fn(), "https://my-mac.tail-scale.ts.net/proxy/5443/");
 });
 
 test("does NOT rewrite when the configured URL is already non-local", async () => {
@@ -153,7 +178,7 @@ test("does NOT rewrite when the configured URL is already non-local", async () =
   const fn = await loadResolver({
     baseUrl: "https://videomemory.example.com:5050",
     statusBaseUrl: "",
-    pageHost: "100.106.229.117",
+    pageOrigin: "http://100.106.229.117:4828",
   });
   assert.equal(fn(), "https://videomemory.example.com:5050/");
 });
@@ -165,16 +190,16 @@ test("falls back to the status.baseUrl when state.settings.videoMemoryBaseUrl is
   const fn = await loadResolver({
     baseUrl: "",
     statusBaseUrl: "http://127.0.0.1:5050",
-    pageHost: "100.106.229.117",
+    pageOrigin: "http://100.106.229.117:4828",
   });
-  assert.equal(fn(), "http://100.106.229.117:5050/");
+  assert.equal(fn(), "http://100.106.229.117:4828/proxy/5050/");
 });
 
 test("returns the raw configured URL if URL parsing fails (defensive — never throws)", async () => {
   const fn = await loadResolver({
     baseUrl: "not-a-valid-url",
     statusBaseUrl: "",
-    pageHost: "100.106.229.117",
+    pageOrigin: "http://100.106.229.117:4828",
   });
   // The function intentionally swallows URL-parse failures and returns
   // the raw input rather than throwing — clicking the link will fail
