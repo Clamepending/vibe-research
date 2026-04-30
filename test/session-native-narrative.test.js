@@ -234,7 +234,12 @@ test("Codex native narrative uses event messages for thinking and commentary bef
   );
 });
 
-test("Claude native narrative surfaces thinking blocks before tool calls complete", () => {
+test("Claude native narrative drops the placeholder Thinking spinner when the same turn already has a tool call", () => {
+  // Real thinking content should still surface; only the empty-string thinking
+  // block (which only emits the generic "Claude is thinking..." placeholder)
+  // should be suppressed when the same assistant content already carries a
+  // visible tool_use. Otherwise the feed gets a Thinking row between every
+  // pair of tool calls, which is exactly the noise the screenshot shows.
   const text = [
     JSON.stringify({
       type: "assistant",
@@ -262,12 +267,106 @@ test("Claude native narrative surfaces thinking blocks before tool calls complet
   assert.deepEqual(
     narrative.entries.map((entry) => ({ kind: entry.kind, label: entry.label, text: entry.text })),
     [
-      { kind: "status", label: "Thinking", text: "Claude is thinking..." },
       { kind: "tool", label: "Bash", text: "echo ready" },
     ],
   );
   assert.equal(narrative.entries.at(-1).status, "error");
   assert.equal(narrative.entries.at(-1).outputPreview, "Exit code 1");
+});
+
+test("Claude native narrative keeps real thinking content even when a tool call follows", () => {
+  // The opposite of the test above: when the thinking block has actual text
+  // (Claude shared its reasoning), keep the Thinking entry — it's not a
+  // redundant spinner, it's a load-bearing summary of why the tool fired.
+  const text = JSON.stringify({
+    type: "assistant",
+    timestamp: "2026-04-24T01:00:03.000Z",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "I'll check the README first to understand the layout." },
+        { type: "tool_use", id: "toolu_1", name: "Read", input: { path: "README.md" } },
+      ],
+    },
+  });
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude Code" });
+
+  assert.deepEqual(
+    narrative.entries.map((entry) => ({ kind: entry.kind, label: entry.label })),
+    [
+      { kind: "status", label: "Thinking" },
+      { kind: "tool", label: "Read" },
+    ],
+  );
+  assert.match(narrative.entries[0].text, /check the README first/);
+});
+
+test("Claude native narrative collapses a sequence of placeholder Thinking spinners across turns", () => {
+  // Three assistant turns, each carrying only the empty thinking placeholder
+  // and a tool_use. Without dedup the feed reads as Thinking · Tool · Thinking
+  // · Tool · Thinking · Tool, which is the screenshot's ladder.
+  const lines = [];
+  for (let turn = 1; turn <= 3; turn += 1) {
+    lines.push(JSON.stringify({
+      type: "assistant",
+      timestamp: `2026-04-24T01:00:0${turn}.000Z`,
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "" },
+          { type: "tool_use", id: `toolu_${turn}`, name: "Bash", input: { command: `echo ${turn}` } },
+        ],
+      },
+    }));
+    lines.push(JSON.stringify({
+      type: "user",
+      timestamp: `2026-04-24T01:00:0${turn}.500Z`,
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: `toolu_${turn}`, content: "ok" }],
+      },
+    }));
+  }
+
+  const narrative = buildClaudeNarrativeFromText(lines.join("\n"), { providerId: "claude", providerLabel: "Claude Code" });
+  const kinds = narrative.entries.map((entry) => entry.kind);
+  assert.deepEqual(kinds, ["tool", "tool", "tool"], `unexpected sequence: ${kinds.join(",")}`);
+});
+
+test("Claude native narrative renders TodoWrite tool calls with a structured todo summary instead of 'TodoWrite called'", () => {
+  const text = JSON.stringify({
+    type: "assistant",
+    timestamp: "2026-04-24T01:00:03.000Z",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_1",
+          name: "TodoWrite",
+          input: {
+            todos: [
+              { content: "Audit native chat", activeForm: "Auditing native chat", status: "completed" },
+              { content: "Fix Thinking dedup", activeForm: "Fixing Thinking dedup", status: "in_progress" },
+              { content: "Render task list", activeForm: "Rendering task list", status: "pending" },
+            ],
+          },
+        },
+      ],
+    },
+  });
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude Code" });
+  const todoEntry = narrative.entries.find((entry) => entry.kind === "tool" && entry.label === "TodoWrite");
+  assert.ok(todoEntry, "expected a TodoWrite tool entry");
+  assert.notEqual(todoEntry.text, "TodoWrite called", "TodoWrite text should describe the todos, not the placeholder");
+  assert.match(todoEntry.text, /3 tasks/);
+  assert.deepEqual(todoEntry.todos, [
+    { content: "Audit native chat", activeForm: "Auditing native chat", status: "completed" },
+    { content: "Fix Thinking dedup", activeForm: "Fixing Thinking dedup", status: "in_progress" },
+    { content: "Render task list", activeForm: "Rendering task list", status: "pending" },
+  ]);
 });
 
 test("Session manager native narrative reads Gemini jsonl chat logs", async () => {

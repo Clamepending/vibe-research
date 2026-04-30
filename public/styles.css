@@ -14465,6 +14465,87 @@ body.is-reordering-file-tabs {
   }
 }
 
+/* TodoWrite / TaskUpdate panels mirror Claude Code's TUI tasks list.
+   Header is a one-line summary ("10 tasks (8 done, 1 in progress, 1 open)"),
+   followed by a checklist where in-progress items get a filled red square,
+   pending items an empty box, completed items a green check + strikethrough. */
+.rich-session-todo-block {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.rich-session-todo-summary {
+  color: rgba(244, 244, 242, 0.78);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.rich-session-todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.rich-session-todo-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.rich-session-todo-glyph {
+  width: 16px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.rich-session-todo-item.is-completed {
+  color: rgba(244, 244, 242, 0.32);
+}
+
+.rich-session-todo-item.is-completed .rich-session-todo-text {
+  text-decoration: line-through;
+  text-decoration-color: rgba(244, 244, 242, 0.28);
+}
+
+.rich-session-todo-item.is-completed .rich-session-todo-glyph {
+  color: rgba(120, 220, 160, 0.86);
+}
+
+.rich-session-todo-item.is-in-progress {
+  color: rgba(244, 244, 242, 0.92);
+}
+
+.rich-session-todo-item.is-in-progress .rich-session-todo-glyph {
+  color: rgba(255, 121, 109, 0.95);
+}
+
+.rich-session-todo-item.is-in-progress .rich-session-todo-text {
+  font-weight: 600;
+}
+
+.rich-session-todo-item.is-pending {
+  color: rgba(244, 244, 242, 0.66);
+}
+
+.rich-session-todo-item.is-pending .rich-session-todo-glyph {
+  color: rgba(244, 244, 242, 0.4);
+}
+
+.rich-session-todo-footer {
+  color: rgba(244, 244, 242, 0.4);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  padding-left: 24px;
+}
+
 /* Inline file paths inside tool / status / code entries. Clicking opens the
    path in the workspace preview when it lives under the current root, or
    copies the absolute path to the clipboard otherwise. */

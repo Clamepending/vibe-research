@@ -4966,11 +4966,15 @@ function getRichSessionActiveMonitors(session) {
       tooltip: "Background tasks running for this session",
     });
   }
-  // Surface in-flight tool calls from the live stream (Codex marks
-  // command_execution as status="running" until completed; Claude
-  // synthesized tool entries can do the same). Provider-rich pills like
-  // "running Bash · /opt/homebrew/bin/bash -lc 'ls -la'" tell the user
-  // exactly what the agent is doing right now.
+  // Only surface long-running tool calls — the kinds the CLI footer counts
+  // as "monitors" (Bash run_in_background, Monitor, persistent BashOutput
+  // streams). Short-lived tool calls like Read/Edit/Grep/ToolSearch already
+  // get their own pulsing dot on the tool card; promoting every transient
+  // running entry into a pill is what produced the "running Read · running
+  // ToolSearch · running Edit" stack the user saw in the screenshot, when
+  // the underlying terminal said "1 monitor". Keep this list aligned with
+  // what Claude Code's TUI calls a monitor.
+  const monitorLikeTools = new Set(["Monitor", "BashOutput", "MonitorOutput"]);
   const narrative = getRichSessionNarrative(session.id);
   const entries = Array.isArray(narrative?.entries) ? narrative.entries : [];
   const seenToolKeys = new Set();
@@ -4983,6 +4987,9 @@ function getRichSessionActiveMonitors(session) {
       continue;
     }
     const label = String(entry.label || "Tool").trim();
+    if (!monitorLikeTools.has(label)) {
+      continue;
+    }
     const text = String(entry.text || "").replace(/\s+/g, " ").trim();
     const summary = text ? `${label}: ${text.slice(0, 64)}` : label;
     if (seenToolKeys.has(summary)) continue;
@@ -5402,8 +5409,19 @@ function renderRichSessionEntry(entry, index) {
     `;
   }
 
+  // TodoWrite/TaskUpdate carries a structured `todos` array; render it as
+  // a real checklist so the native feed mirrors the Claude Code TUI tasks
+  // panel ("10 tasks (8 done, 1 in progress, 1 open)" with checkmarks and
+  // strikethrough completed items) instead of just the one-line summary.
+  const isTodoEntry = kind === "tool"
+    && Array.isArray(entry?.todos)
+    && entry.todos.length
+    && (entry.label === "TodoWrite" || entry.label === "TaskUpdate");
+
   const bodyHtml = isThinking
     ? ""
+    : isTodoEntry
+    ? renderRichSessionTodoBody(entry.todos)
     : kind === "tool"
     ? `<pre class="rich-session-entry-pre">${body}</pre>${outputPreview}`
     : `<div class="rich-session-entry-copy">${body}</div>`;
@@ -5413,6 +5431,62 @@ function renderRichSessionEntry(entry, index) {
       ${kickerHtml}
       ${bodyHtml}
     </article>
+  `;
+}
+
+function renderRichSessionTodoBody(todos) {
+  const items = Array.isArray(todos) ? todos : [];
+  const counts = { completed: 0, in_progress: 0, pending: 0 };
+  for (const todo of items) {
+    const status = String(todo?.status || "pending").toLowerCase();
+    if (status === "completed" || status === "done") counts.completed += 1;
+    else if (status === "in_progress" || status === "active") counts.in_progress += 1;
+    else counts.pending += 1;
+  }
+
+  const parts = [];
+  if (counts.completed) parts.push(`${counts.completed} done`);
+  if (counts.in_progress) parts.push(`${counts.in_progress} in progress`);
+  if (counts.pending) parts.push(`${counts.pending} open`);
+  const summary = `${items.length} ${items.length === 1 ? "task" : "tasks"}${parts.length ? ` (${parts.join(", ")})` : ""}`;
+
+  // Show the in-progress tasks first, then the open ones, then the most
+  // recent completions (capped) — matches how the TUI panel reads.
+  const ordered = [
+    ...items.filter((t) => /^(in_progress|active)$/i.test(String(t?.status || ""))),
+    ...items.filter((t) => /^(pending|open)?$/i.test(String(t?.status || "")) && !/^(in_progress|active|completed|done)$/i.test(String(t?.status || ""))),
+    ...items.filter((t) => /^(completed|done)$/i.test(String(t?.status || ""))),
+  ];
+
+  const visibleLimit = 6;
+  const visible = ordered.slice(0, visibleLimit);
+  const hiddenCompletedCount = Math.max(0, items.length - visible.length);
+
+  const itemHtml = visible.map((todo) => {
+    const status = String(todo?.status || "pending").toLowerCase();
+    const isCompleted = status === "completed" || status === "done";
+    const isInProgress = status === "in_progress" || status === "active";
+    const stateClass = isCompleted ? "is-completed" : isInProgress ? "is-in-progress" : "is-pending";
+    const glyph = isCompleted ? "✓" : isInProgress ? "■" : "☐";
+    const content = isInProgress && todo?.activeForm ? todo.activeForm : (todo?.content || todo?.activeForm || "");
+    return `
+      <li class="rich-session-todo-item ${stateClass}">
+        <span class="rich-session-todo-glyph" aria-hidden="true">${glyph}</span>
+        <span class="rich-session-todo-text">${escapeHtml(String(content))}</span>
+      </li>
+    `;
+  }).join("");
+
+  const footer = hiddenCompletedCount > 0
+    ? `<div class="rich-session-todo-footer">… +${hiddenCompletedCount} more</div>`
+    : "";
+
+  return `
+    <div class="rich-session-todo-block">
+      <div class="rich-session-todo-summary">${escapeHtml(summary)}</div>
+      <ul class="rich-session-todo-list">${itemHtml}</ul>
+      ${footer}
+    </div>
   `;
 }
 

@@ -207,6 +207,49 @@ test("rich session transcript classifies a git-style commit summary as a code bl
   assert.equal(getRichSessionBlockKind(block), "code");
 });
 
+test("rich session transcript drops Claude Code TUI task panels (e.g. '5 tasks (4 done, 1 open) ✓ ...') from projection", () => {
+  // The DSRL session screenshot showed Snippet entries containing the TUI's
+  // tasks panel inlined into a projected snippet. The panel is pure UI state
+  // — already rendered above as the assistant's TodoWrite — and pollutes the
+  // feed when it leaks through transcript projection.
+  const transcript = `
+The variant misses the falsifier band by 0.4σ — borderline.
+
+   5  tasks ( 4  done, 1  open)
+       ✓  Fix 3 REINFORCE bugs (first-ba…
+       ✓  Phase 7-lite: auto-tuned KL α …
+       □  A/B comparison: Phase 7-lite v…
+       ✓  Image bench Phase 1: launch DS…
+       ✓  Wave 1.5: re-run SDXL cells wi…
+
+Continuing the analysis with the planned reruns.
+`;
+
+  assert.deepEqual(
+    splitRichSessionTranscriptBlocks(transcript, { maxBlocks: 10 }),
+    [
+      "The variant misses the falsifier band by 0.4σ — borderline.",
+      "Continuing the analysis with the planned reruns.",
+    ],
+  );
+});
+
+test("rich session transcript drops the '2 shells, N' header that prefixes leaked TUI status panels", () => {
+  // Matches the Snippet headers in the DSRL screenshot. The "2 shells, 1"
+  // line is the Claude Code TUI footer counting active shells; it has no
+  // useful information for the native feed.
+  const transcript = `
+2 shells, 1
+
+The plan stays the same.
+`;
+
+  assert.deepEqual(
+    splitRichSessionTranscriptBlocks(transcript, { maxBlocks: 10 }),
+    ["The plan stays the same."],
+  );
+});
+
 test("rich session transcript strips the startup artifact mix shown in the rich session snippet", () => {
   const transcript = `
 [vibe-research] Codex session ready

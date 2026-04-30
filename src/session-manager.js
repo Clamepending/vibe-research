@@ -778,6 +778,15 @@ function filterProjectedOverlayEntries(entries = []) {
       }
     }
 
+    // Snippet entries (label "Snippet", from the projected code-block path)
+    // are the worst offenders for runaway length — TUI panels, partial
+    // tasks lists, paginated git output. Cap them tightly. Real tool
+    // entries (Bash, Edit, etc.) keep the more generous 500-char cap so
+    // long shell commands and paths still survive.
+    if (entry.kind === "tool" && entry.label === "Snippet" && normalizedText.length > 280) {
+      return false;
+    }
+
     if ((entry.kind === "tool" || entry.kind === "status") && normalizedText.length > 500) {
       return false;
     }
@@ -3142,6 +3151,12 @@ export class SessionManager {
       recentInputs: recentInputTexts,
     });
 
+    // The projection path is the only thing left when no provider transcript
+    // file exists, so any TUI noise that survived the block-level filters
+    // would otherwise reach the user unmoderated. Apply the same overlay
+    // filter we use on the with-provider path so behaviour is consistent.
+    const filteredProjectedEntries = filterProjectedOverlayEntries(projectedNarrative.entries || []);
+
     return {
       ...projectedNarrative,
       sourceLabel: nativeEntries.length ? "Vibe Research native events + CLI projection" : projectedNarrative.sourceLabel,
@@ -3149,7 +3164,7 @@ export class SessionManager {
         nativeEntries.length
           ? nativeEntries
           : this.getNativeNarrativeEntries(session, { maxEntries, includePlaceholder: true }),
-        projectedNarrative.entries || [],
+        filteredProjectedEntries,
         maxEntries,
       ),
     };

@@ -98,12 +98,6 @@ test("rich session native feed is clean even when the raw transcript is full of 
             timestamp,
           },
           {
-            kind: "status",
-            label: "Thinking",
-            text: "Claude is thinking...",
-            timestamp,
-          },
-          {
             kind: "tool",
             label: "Bash",
             text: "vr-research-doctor projects/bidir-video-rl-bench",
@@ -112,10 +106,49 @@ test("rich session native feed is clean even when the raw transcript is full of 
             outputPreview: "doctor: 0 errors · 0 warnings",
             timestamp,
           },
+          // TodoWrite entry — should render as a checklist with the
+          // in-progress item shown first, completed items strikethrough,
+          // and a footer count for additional completed items.
+          {
+            kind: "tool",
+            label: "TodoWrite",
+            text: "5 tasks (3 done, 1 in progress, 1 open)",
+            status: "done",
+            meta: "completed",
+            timestamp,
+            todos: [
+              { content: "Map projection-narrative pipeline", activeForm: "Mapping projection pipeline", status: "completed" },
+              { content: "Add tests for ✦ noise lines", activeForm: "Adding regression tests", status: "completed" },
+              { content: "Tighten transcript filters", activeForm: "Tightening transcript filters", status: "completed" },
+              { content: "Render TodoWrite as a real task list", activeForm: "Rendering TodoWrite", status: "in_progress" },
+              { content: "Restrict monitor pills to long-running tools", activeForm: "Restricting monitor pills", status: "pending" },
+            ],
+          },
           {
             kind: "tool",
             label: "Edit",
             text: "src/research/bench-init.md",
+            status: "running",
+            meta: "running",
+            timestamp,
+          },
+          // ToolSearch is a transient running tool that the OLD monitor row
+          // would promote into a pill. The new behavior keeps it in the
+          // feed but does NOT echo it into the monitor pill row.
+          {
+            kind: "tool",
+            label: "ToolSearch",
+            text: "lookup file API",
+            status: "running",
+            meta: "running",
+            timestamp,
+          },
+          // A real long-running monitor — this one DOES belong in the
+          // monitor pill row.
+          {
+            kind: "tool",
+            label: "Monitor",
+            text: "FID 3-seed run progress",
             status: "running",
             meta: "running",
             timestamp,
@@ -144,7 +177,7 @@ test("rich session native feed is clean even when the raw transcript is full of 
     };
 
     browser = await chromium.launch({ executablePath, headless: true });
-    const page = await browser.newPage({ viewport: { width: 1600, height: 1100 }, deviceScaleFactor: 2 });
+    const page = await browser.newPage({ viewport: { width: 1600, height: 1300 }, deviceScaleFactor: 2 });
     await page.goto(`${baseUrl}/?view=shell`, { waitUntil: "domcontentloaded" });
     // Default shell surface is "terminal"; flip it to "native" so the feed
     // is visible. The button is only rendered once the active session loads.
@@ -164,28 +197,54 @@ test("rich session native feed is clean even when the raw transcript is full of 
       const toolEntries = entries.filter((entry) => entry.classList.contains("is-tool"));
       const errorTools = toolEntries.filter((entry) => entry.classList.contains("is-error"));
       const runningTools = toolEntries.filter((entry) => entry.classList.contains("is-running"));
+      const thinkingEntries = entries.filter((entry) => entry.classList.contains("is-thinking"));
       const pathLinks = feed ? Array.from(feed.querySelectorAll(".rich-session-path-link")) : [];
+      const todoBlock = document.querySelector(".rich-session-todo-block");
+      const todoItems = todoBlock ? Array.from(todoBlock.querySelectorAll(".rich-session-todo-item")) : [];
+      const monitorPills = Array.from(document.querySelectorAll("#rich-session-monitors .rich-session-monitor-pill"));
       return {
         feedText: feed?.textContent || "",
         toolCount: toolEntries.length,
         errorToolCount: errorTools.length,
         runningToolCount: runningTools.length,
+        thinkingCount: thinkingEntries.length,
         firstPathHref: pathLinks[0]?.getAttribute("data-rich-path") || "",
         pathLinkCount: pathLinks.length,
+        todoSummary: todoBlock?.querySelector(".rich-session-todo-summary")?.textContent?.trim() || "",
+        todoCount: todoItems.length,
+        todoInProgressFirst: todoItems[0]?.classList.contains("is-in-progress") || false,
+        monitorPillLabels: monitorPills.map((pill) => pill.textContent.trim()),
       };
     });
 
-    // The screenshot's noise patterns must NOT leak into the rendered feed
-    // even if the parser ran on raw CLI output. We assert the kind of UI
-    // the user is supposed to see when the feed is clean.
+    // 1. The CLI noise patterns must not appear in the rendered feed.
     assert.doesNotMatch(summary.feedText, /ctrl\+t to hide tasks/iu);
     assert.doesNotMatch(summary.feedText, /Shell cwd was reset to/iu);
     assert.doesNotMatch(summary.feedText, /Tip:\s+Use \/btw/iu);
     assert.doesNotMatch(summary.feedText, /✦\s+·\s+\d+\s+✦/u);
 
-    assert.equal(summary.toolCount, 3);
-    assert.equal(summary.runningToolCount, 1);
+    // 2. Tool entry counts and statuses match the input.
+    assert.equal(summary.toolCount, 6, "expected 6 tool entries (Bash, TodoWrite, Edit, ToolSearch, Monitor, Bash)");
+    assert.equal(summary.runningToolCount, 3);
     assert.equal(summary.errorToolCount, 1);
+
+    // 3. No standalone Thinking spinner is rendered (the parser dropped the
+    //    placeholder; the test fixture omits it but the assertion is the
+    //    contract for future regressions).
+    assert.equal(summary.thinkingCount, 0, "no placeholder Thinking entry should remain");
+
+    // 4. TodoWrite renders a structured checklist with the in-progress
+    //    task first.
+    assert.match(summary.todoSummary, /5 tasks/);
+    assert.match(summary.todoSummary, /1 in progress/);
+    assert.ok(summary.todoCount >= 5, `expected >=5 todo items, got ${summary.todoCount}`);
+    assert.equal(summary.todoInProgressFirst, true, "in-progress task should be ordered first");
+
+    // 5. The monitor row shows the long-running Monitor tool exactly once
+    //    and does NOT promote ToolSearch / Edit / TodoWrite into pills.
+    assert.deepEqual(summary.monitorPillLabels, ["running Monitor"], `unexpected monitor pills: ${JSON.stringify(summary.monitorPillLabels)}`);
+
+    // 6. File paths are linkified.
     assert.ok(summary.pathLinkCount >= 2, "expected file paths to be linkified");
     assert.match(summary.firstPathHref, /^[\w./-]+\.\w+$/);
   } finally {

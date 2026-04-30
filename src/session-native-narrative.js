@@ -357,6 +357,14 @@ function summarizeClaudeToolInput(toolUse) {
 
   const input = toolUse.input;
   if (input && typeof input === "object") {
+    // TodoWrite carries the entire todo list in `input.todos`. Show a one-line
+    // breakdown instead of the generic "TodoWrite called" placeholder so the
+    // entry is still useful when no special renderer is wired up. The full
+    // structured list rides along on the entry as `todos:` for the renderer.
+    if (Array.isArray(input.todos) && input.todos.length) {
+      return summarizeTodos(input.todos);
+    }
+
     if (typeof input.command === "string" && input.command.trim()) {
       return summarizeCommand(input.command);
     }
@@ -371,6 +379,59 @@ function summarizeClaudeToolInput(toolUse) {
   }
 
   return `${toolUse.name || "Tool"} called`;
+}
+
+function normalizeTodoStatus(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "completed" || normalized === "done") {
+    return "completed";
+  }
+  if (normalized === "in_progress" || normalized === "active" || normalized === "doing") {
+    return "in_progress";
+  }
+  return "pending";
+}
+
+function summarizeTodos(todos) {
+  if (!Array.isArray(todos) || !todos.length) {
+    return "0 tasks";
+  }
+
+  const counts = { completed: 0, in_progress: 0, pending: 0 };
+  for (const todo of todos) {
+    counts[normalizeTodoStatus(todo?.status)] += 1;
+  }
+
+  const parts = [];
+  if (counts.completed) parts.push(`${counts.completed} done`);
+  if (counts.in_progress) parts.push(`${counts.in_progress} in progress`);
+  if (counts.pending) parts.push(`${counts.pending} open`);
+  const breakdown = parts.length ? ` (${parts.join(", ")})` : "";
+  return `${todos.length} ${todos.length === 1 ? "task" : "tasks"}${breakdown}`;
+}
+
+function extractTodoListPayload(toolUse) {
+  if (!toolUse || typeof toolUse !== "object") {
+    return null;
+  }
+
+  const name = String(toolUse.name || "").trim();
+  if (name !== "TodoWrite" && name !== "TaskUpdate") {
+    return null;
+  }
+
+  const todos = toolUse.input?.todos;
+  if (!Array.isArray(todos) || !todos.length) {
+    return null;
+  }
+
+  return todos
+    .map((todo) => ({
+      content: String(todo?.content || todo?.task || "").trim(),
+      activeForm: String(todo?.activeForm || todo?.active_form || "").trim(),
+      status: normalizeTodoStatus(todo?.status),
+    }))
+    .filter((todo) => Boolean(todo.content));
 }
 
 function extractGeminiText(content) {
@@ -605,7 +666,15 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
 
       const content = Array.isArray(payload.message?.content) ? payload.message.content : [];
       const thinkingText = extractClaudeThinkingText(content);
-      if (thinkingText) {
+      const hasToolUse = content.some((item) => item?.type === "tool_use");
+      const assistantText = extractClaudeMessageText(content);
+      const placeholderThinking = thinkingText === "Claude is thinking...";
+
+      // The empty thinking placeholder is just a spinner. When the same turn
+      // already has a tool_use or visible assistant text, the Thinking entry
+      // is redundant — the user can see the work. Only surface it when it is
+      // actual reasoning content OR the only thing the turn produced so far.
+      if (thinkingText && (!placeholderThinking || (!hasToolUse && !assistantText))) {
         dedupePush(entries, {
           id: makeEntryId("claude-thinking", entries.length + 1),
           kind: "status",
@@ -615,7 +684,6 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
         }, maxEntries);
       }
 
-      const assistantText = extractClaudeMessageText(content);
       if (assistantText) {
         dedupePush(entries, {
           id: makeEntryId("claude-assistant", entries.length + 1),
@@ -641,6 +709,16 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
           meta: "running",
           outputPreview: "",
         };
+
+        // Carry the structured todo list along on TodoWrite entries so the
+        // renderer can show a real checklist instead of the one-line summary.
+        const todoPayload = extractTodoListPayload(item);
+        if (todoPayload) {
+          toolEntry.todos = todoPayload;
+          toolEntry.status = "done";
+          toolEntry.meta = "completed";
+        }
+
         toolEntries.set(String(item.id || toolEntry.id), toolEntry);
         dedupePush(entries, toolEntry, maxEntries);
       }

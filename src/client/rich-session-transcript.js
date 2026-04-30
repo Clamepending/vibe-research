@@ -389,6 +389,15 @@ function isRichSessionStartupNoiseBlock(block) {
     // Generic tooltip rotation. Anchored at the start of the comparable block
     // so a paragraph that merely *mentions* the word "Tip:" still survives.
     || /^(?:\*New\*\s+)?Tip:\s/iu.test(normalizedBlock)
+    // Claude Code TUI shell counter footer ("2 shells, 1") — appears as the
+    // header of the leaked task panels in the screenshot.
+    || /^\d+\s+shells?,\s+\d+\s*$/iu.test(normalizedBlock)
+    // Claude Code TUI tasks panel: "5 tasks (4 done, 1 open) ✓ task title …".
+    // The panel re-renders on every keystroke and is already mirrored by the
+    // structured TodoWrite entry above it; in the projected feed it reads as
+    // a wall of partial titles and ☐/✓ glyphs, which is exactly the noise
+    // shown in the DSRL screenshot.
+    || /\b\d+\s+tasks?\s*\(\s*\d+\s+done\b/iu.test(normalizedBlock)
     || (
       /^gpt-[\w.-]+(?:\s+\w+)?\s+·\s+~?\//iu.test(normalizedBlock)
       && /\b(?:model|directory|cwd|workspace):\b/iu.test(normalizedBlock)
