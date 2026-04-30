@@ -5974,6 +5974,45 @@ export class SessionManager {
     });
 
     streamSession.start();
+
+    // CRITICAL on resume: hydrate `session.streamEntries` from the
+    // existing JSONL transcript on disk. The new ClaudeStreamSession
+    // child only emits NEW events on stdout — `claude --resume <id>`
+    // loads the prior transcript silently and waits for input. Without
+    // this hydration the user reopens the session after a server
+    // restart, sees only the persisted status pills, and thinks their
+    // entire conversation history vanished. The JSONL file IS the full
+    // history; we just need to re-parse it once and seed
+    // `session.streamEntries` so the narrative snapshot includes it.
+    if (isResume) {
+      const transcriptPath = path.join(
+        getClaudeProjectDirForCwd(sessionCwd, this.userHomeDir) || "",
+        `${session.id}.jsonl`,
+      );
+      void loadProviderBackedNarrative({
+        providerId: "claude",
+        filePath: transcriptPath,
+        session: { providerId: "claude", providerLabel: provider.label },
+      })
+        .then((narrative) => {
+          if (!narrative || !Array.isArray(narrative.entries)) return;
+          // Splice the rehydrated history in front of any live entries
+          // the new child has already emitted — usually zero on a fresh
+          // resume. The merge in getNarrativeSnapshot dedupes by id.
+          const existing = Array.isArray(session.streamEntries) ? session.streamEntries : [];
+          const seenIds = new Set(existing.map((entry) => entry?.id).filter(Boolean));
+          const rehydrated = narrative.entries.filter((entry) => entry?.id && !seenIds.has(entry.id));
+          session.streamEntries = [...rehydrated, ...existing];
+          this.broadcastNarrativeDiff(session);
+          this.scheduleSessionMetaBroadcast(session, { immediate: true });
+        })
+        .catch((error) => {
+          console.warn(
+            `[vibe-research] resume hydration failed for ${session.id}:`,
+            error?.message || error,
+          );
+        });
+    }
   }
 
   startCodexStreamSession(session, provider, { restored = false } = {}) {
