@@ -2440,6 +2440,7 @@ const state = {
   updateApplying: false,
   lastUpdateError: null,
   systemMetrics: null,
+  gpuOffLimits: [],
   systemMetricHistory: [],
   systemHistoryRange: "1h",
   systemHistoryMeta: null,
@@ -20123,13 +20124,27 @@ function renderDeviceCard(device) {
     device?.details,
   ].filter(Boolean);
   const agentChips = renderGpuAgentChipsForDevice(device);
+  const hasGpuIndex = Number.isInteger(device?.index);
+  const isOffLimits = hasGpuIndex && state.gpuOffLimits.includes(device.index);
+  const cardClasses = [
+    "system-device-card",
+    usedByUs ? "is-used-by-us" : "",
+    isOffLimits ? "is-off-limits" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const indexAttr = hasGpuIndex ? ` data-gpu-index="${device.index}"` : "";
+  const reservedBadge = isOffLimits
+    ? `<span class="system-device-card-reserved-badge" title="Reserved for other cluster users — not visible to vibe-research agents">Reserved</span>`
+    : "";
 
   return `
-    <article class="system-device-card ${usedByUs ? "is-used-by-us" : ""}">
+    <article class="${cardClasses}"${indexAttr}>
       <div class="system-device-head">
         <strong>${escapeHtml(device?.name || "Device")}</strong>
         <span>${escapeHtml(formatPercent(utilization))}</span>
       </div>
+      ${reservedBadge}
       ${renderMetricBar(utilization, usedByUs ? "is-device is-used-by-us" : "is-device")}
       ${agentChips}
       <p>${escapeHtml(detailParts.join(" · ") || "detected, but utilization is not exposed by this host")}</p>
@@ -34496,6 +34511,75 @@ function closeContextMenu() {
   }
 }
 
+async function setGpuOffLimitsAction(index, offLimits) {
+  // Optimistic update so the right-click feels instant; reconcile on response.
+  const previous = state.gpuOffLimits.slice();
+  const next = new Set(previous);
+  if (offLimits) next.add(index);
+  else next.delete(index);
+  state.gpuOffLimits = [...next].sort((a, b) => a - b);
+  if (state.currentView === "system") {
+    renderShell();
+  }
+
+  try {
+    const payload = await fetchJson("/api/system/gpu-restrictions", {
+      method: "POST",
+      body: JSON.stringify({ index, offLimits }),
+    });
+    state.gpuOffLimits = Array.isArray(payload?.gpuOffLimits)
+      ? payload.gpuOffLimits.filter((value) => Number.isInteger(value))
+      : state.gpuOffLimits;
+  } catch (error) {
+    // Roll back on failure and surface the error.
+    state.gpuOffLimits = previous;
+    window.alert(error?.message || "Could not update GPU restrictions.");
+  } finally {
+    if (state.currentView === "system") {
+      renderShell();
+    }
+  }
+}
+
+function openGpuDeviceContextMenu(index, isOffLimits, x, y) {
+  if (!Number.isInteger(index)) return;
+  openContextMenu(
+    [
+      isOffLimits
+        ? {
+            label: "Allow agents to use again",
+            icon: Cpu,
+            onClick: () => {
+              void setGpuOffLimitsAction(index, false);
+            },
+          }
+        : {
+            label: "Set as off-limits (reserve for others)",
+            icon: Trash2,
+            onClick: () => {
+              void setGpuOffLimitsAction(index, true);
+            },
+          },
+    ],
+    x,
+    y,
+  );
+}
+
+function installGpuDeviceContextMenu() {
+  document.addEventListener("contextmenu", (event) => {
+    if (!(event.target instanceof Element)) return;
+    const card = event.target.closest("[data-gpu-index]");
+    if (!card) return;
+    const indexAttr = card.getAttribute("data-gpu-index");
+    const index = Number(indexAttr);
+    if (!Number.isInteger(index)) return;
+    event.preventDefault();
+    const isOffLimits = state.gpuOffLimits.includes(index);
+    openGpuDeviceContextMenu(index, isOffLimits, event.clientX, event.clientY);
+  });
+}
+
 function openSessionContextMenu(sessionId, x, y) {
   const session = state.sessions.find((entry) => entry.id === sessionId);
   if (!session) {
@@ -42368,6 +42452,9 @@ async function loadSystemMetrics({ forceRender = false } = {}) {
     }
 
     state.systemMetrics = payload.system || null;
+    state.gpuOffLimits = Array.isArray(payload.gpuOffLimits)
+      ? payload.gpuOffLimits.filter((value) => Number.isInteger(value))
+      : [];
     state.systemMetricsError = "";
     if (
       forceRender
@@ -42899,6 +42986,7 @@ async function bootstrapApp() {
     installTerminalDisposalGuard();
     installDelayedTooltips();
     bindSelectableRefreshEvents();
+    installGpuDeviceContextMenu();
 
     if ("virtualKeyboard" in navigator) {
       navigator.virtualKeyboard.overlaysContent = false;
