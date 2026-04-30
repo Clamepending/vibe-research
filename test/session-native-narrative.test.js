@@ -306,6 +306,37 @@ test("Claude native narrative keeps real thinking content even when a tool call 
   assert.match(narrative.entries[0].text, /check the README first/);
 });
 
+test("Claude native narrative emits ONE entry for an errored assistant turn (clean pill, no JSON bubble)", () => {
+  // Claude duplicates the error string into both `payload.error` and the
+  // first content[].text block on auth failures. Without skipping the
+  // content walk on errored turns, the chat shows a clean "Error" status
+  // pill (with a Sign-in slash-action) AND a separate assistant bubble
+  // dumping the raw 401 JSON next to it. Keep just the pill.
+  const text = JSON.stringify({
+    type: "assistant",
+    timestamp: "2026-04-30T19:03:00.000Z",
+    error: "authentication_failed",
+    message: {
+      id: "msg_err",
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "Failed to authenticate. API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"Invalid authentication credentials\"},\"request_id\":\"req_abc\"}",
+        },
+      ],
+    },
+  });
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude Code" });
+
+  assert.equal(narrative.entries.length, 1);
+  assert.deepEqual(
+    narrative.entries.map((entry) => ({ kind: entry.kind, label: entry.label, text: entry.text })),
+    [{ kind: "status", label: "Error", text: "authentication_failed" }],
+  );
+});
+
 test("Claude native narrative collapses a sequence of placeholder Thinking spinners across turns", () => {
   // Three assistant turns, each carrying only the empty thinking placeholder
   // and a tool_use. Without dedup the feed reads as Thinking · Tool · Thinking

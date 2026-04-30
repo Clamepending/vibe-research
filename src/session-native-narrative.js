@@ -888,6 +888,13 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
           errorEntry.slashAction = slashAction;
         }
         dedupePush(entries, errorEntry, maxEntries);
+        // When the assistant turn errored (e.g. auth failure), Claude
+        // tends to duplicate the error string into `message.content[]` —
+        // walking it would emit a second assistant bubble dumping the
+        // raw 401 JSON next to the clean pill we just pushed (with its
+        // Sign-in affordance). Skip the content walk; the error pill is
+        // the canonical surface for a failed turn.
+        continue;
       }
 
       const content = Array.isArray(payload.message?.content) ? payload.message.content : [];
