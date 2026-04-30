@@ -115,11 +115,10 @@ export class ClaudeStreamSession extends EventEmitter {
     this._pendingPlanToolUseIds = [];
   }
 
-  start() {
-    if (this._child) {
-      return this;
-    }
-
+  // Compute the args passed to the Claude CLI. Pulled out so tests can
+  // verify the resume vs fresh-session id flag without actually spawning
+  // a child process.
+  buildLaunchArgs() {
     // For a brand-new session: `--session-id <id>` stamps the id on a
     // fresh transcript. For a session that needs to survive a restart:
     // `--resume <id>` looks up the existing JSONL and continues. Claude
@@ -128,7 +127,7 @@ export class ClaudeStreamSession extends EventEmitter {
       ? ["--resume", this.sessionId]
       : ["--session-id", this.sessionId];
 
-    const args = [
+    return [
       "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
@@ -137,6 +136,14 @@ export class ClaudeStreamSession extends EventEmitter {
       ...(this.bypassPermissions ? ["--dangerously-skip-permissions"] : []),
       ...this.extraArgs,
     ];
+  }
+
+  start() {
+    if (this._child) {
+      return this;
+    }
+
+    const args = this.buildLaunchArgs();
 
     try {
       this._child = spawn(this.claudeBin, args, {
