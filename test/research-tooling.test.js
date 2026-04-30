@@ -49,6 +49,7 @@ test("parseProjectReadme: parses leaderboard / queue / ranking criterion", async
 
   assert.equal(project.rankingCriterion.kind, "quantitative");
   assert.match(project.rankingCriterion.description, /wibble/i);
+  assert.equal(project.codeRepo.url, "https://github.com/example/widget-tuning");
 
   assert.equal(project.leaderboard.length, 2);
   assert.equal(project.leaderboard[0].rank, 1);

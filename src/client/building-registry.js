@@ -1452,6 +1452,46 @@ const CORE_BUILDING_MANIFESTS = [
     install: {
       enabledSetting: "videoMemoryEnabled",
       storedFallback: false,
+      // One-click install: "Add VideoMemory" runs this plan, which calls
+      // back into the local Vibe Research API to git-clone the standalone
+      // VideoMemory server into ~/videomemory, install uv if missing, and
+      // wire up the launch command. Before this, the user had to find
+      // and click an "install & launch VideoMemory server" button buried
+      // in the panel — a setup-flow gap relative to Modal's one-click.
+      //
+      // Preflight short-circuits when ~/videomemory/start.sh already
+      // exists, so re-clicking Add doesn't re-clone.
+      plan: {
+        preflight: [
+          {
+            kind: "command",
+            command: 'test -f "$HOME/videomemory/start.sh"',
+            label: "VideoMemory: detect existing checkout",
+          },
+        ],
+        install: [
+          {
+            kind: "http",
+            method: "POST",
+            // The runner's spawnEnv injects VIBE_RESEARCH_SERVER_URL so the
+            // plan can reach the local API without hard-coding a port.
+            // We also resolve to a literal as a fallback for readers — the
+            // ${VIBE_RESEARCH_SERVER_URL} interpolation only works inside
+            // shell-step commands; runHttpStep takes a literal URL, so we
+            // use the loopback shape directly.
+            url: "${VIBE_RESEARCH_SERVER_URL}/api/videomemory/install-server",
+            body: {},
+            headers: { "content-type": "application/json" },
+            label: "Install the VideoMemory standalone server",
+            timeoutSec: 600,
+          },
+        ],
+        // No auth — VideoMemory runs locally, no token required.
+        // No verify either: the install-server endpoint already polls the
+        // running server and refreshes device state before returning, so
+        // a successful 2xx implies the server is reachable.
+        verify: [],
+      },
     },
     status: "setup available",
     source: "vibe-research",

@@ -6061,6 +6061,34 @@ textarea.setup-target-highlight {
   line-height: 1.35;
 }
 
+/* The alert now hosts an inline grant-camera button — promote the prompt
+   from "ghost link buried in the form below" to "click here to fix it"
+   so the recovery path is obvious from the alert itself. */
+.videomemory-permission-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.videomemory-permission-alert-copy {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.videomemory-permission-alert-copy em {
+  font-style: normal;
+  color: rgba(255, 232, 218, 0.62);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.videomemory-permission-alert-button {
+  flex: 0 0 auto;
+}
+
 .videomemory-monitor-panel {
   display: grid;
   gap: 8px;

@@ -20,7 +20,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseProjectReadme } from "./project-readme.js";
-import { parseResultDoc } from "./result-doc.js";
+import { getSectionBody, parseQueueUpdates, parseResultDoc } from "./result-doc.js";
 import { insertLeaderboardRow } from "./leaderboard-edit.js";
 import { removeActiveRow } from "./active-edit.js";
 import {
@@ -37,53 +37,6 @@ import {
 
 const VALID_EVENTS = new Set(["resolved", "falsified", "abandoned"]);
 
-// Parse the "Queue updates" section verbs per the contract:
-//   ADD: <slug> | starting-point <url> | why <text>
-//   REMOVE: <slug> | why <text>
-//   REPRIORITIZE: <slug> -> row <N> | why <text>
-//
-// Tolerant: stops at the first parse failure per line, doesn't throw.
-// Returns an array of { verb, slug, ... } objects.
-export function parseQueueUpdates(body) {
-  const verbs = [];
-  for (const raw of String(body || "").split("\n")) {
-    const line = raw.trim();
-    if (!line) continue;
-
-    let m = line.match(/^ADD:\s*([^\s|]+)\s*(?:\|(.*))?$/);
-    if (m) {
-      const slug = m[1].trim();
-      const rest = m[2] || "";
-      const spMatch = rest.match(/starting-point\s+([^|]+?)(?=\s*\||$)/i);
-      const whyMatch = rest.match(/why\s+(.+?)$/i);
-      verbs.push({
-        verb: "add",
-        slug,
-        startingPoint: spMatch ? spMatch[1].trim() : "",
-        why: whyMatch ? whyMatch[1].trim() : "",
-        raw: line,
-      });
-      continue;
-    }
-    m = line.match(/^REMOVE:\s*([^\s|]+)/);
-    if (m) {
-      verbs.push({ verb: "remove", slug: m[1].trim(), raw: line });
-      continue;
-    }
-    m = line.match(/^REPRIORITIZE:\s*([^\s|]+)\s*->\s*row\s+(\d+)/i);
-    if (m) {
-      verbs.push({
-        verb: "reprioritize",
-        slug: m[1].trim(),
-        toRow: Number(m[2]),
-        raw: line,
-      });
-      continue;
-    }
-  }
-  return verbs;
-}
-
 // Parse the decision string for "insert at rank N" or "do not admit".
 // Returns { admit: bool, rank: number|null }.
 export function parseAdmitDecision(decision) {
@@ -94,25 +47,6 @@ export function parseAdmitDecision(decision) {
   if (admitMatch) return { admit: true, rank: Number(admitMatch[1]) };
   if (/do\s+not\s+admit/i.test(trimmed)) return { admit: false, rank: null };
   return { admit: false, rank: null };
-}
-
-// Pull the `## <sectionName>` body out of raw markdown. Returns empty
-// string if not found. Used for the Queue updates section, which the
-// existing parseResultDoc doesn't expose.
-export function getSectionBody(text, sectionName) {
-  const lines = String(text || "").split("\n");
-  const headerRe = new RegExp(`^##\\s+${sectionName}\\s*$`, "i");
-  let inSection = false;
-  const collected = [];
-  for (const line of lines) {
-    if (inSection) {
-      if (/^##\s+/.test(line)) break;
-      collected.push(line);
-    } else if (headerRe.test(line)) {
-      inSection = true;
-    }
-  }
-  return collected.join("\n");
 }
 
 function extractFirstUrl(text) {
@@ -316,3 +250,5 @@ export const __internal = {
   deriveScore,
   VALID_EVENTS,
 };
+
+export { parseQueueUpdates, getSectionBody };

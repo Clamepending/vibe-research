@@ -13,6 +13,7 @@ import { parseProjectReadme, loadProjectLog } from "./research/project-readme.js
 import { parseResultDoc } from "./research/result-doc.js";
 import { loadBenchmark } from "./research/benchmark.js";
 import { runDoctor } from "./research/doctor.js";
+import { loadSweepSummaries } from "./research/sweep-status.js";
 
 const PROJECT_README = "README.md";
 const BENCHMARK_FILE = "benchmark.md";
@@ -304,6 +305,7 @@ export async function getProjectDetail(libraryRoot, projectName) {
   const currentBenchVersion = benchmark?.frontmatter?.version
     ? String(benchmark.frontmatter.version)
     : "";
+  const sweeps = await loadSweepSummaries(projectDir);
   const annotatedLeaderboard = annotateLeaderboardWithBench(
     parsed.leaderboard,
     docs,
@@ -322,6 +324,7 @@ export async function getProjectDetail(libraryRoot, projectName) {
     queue: parsed.queue || [],
     log: parsed.log || [],
     insights: parsed.insights || [],
+    sweeps,
     benchmark: benchmark
       ? {
           version: benchmark.frontmatter?.version

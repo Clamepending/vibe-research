@@ -147,6 +147,70 @@ function parseDecision(body) {
   return decisionLine.replace(/^Decision\s*:/i, "").trim();
 }
 
+// Pull the `## <sectionName>` body out of raw markdown. Returns empty
+// string if not found. Shared by read-only judges and mutating resolve logic.
+export function getSectionBody(text, sectionName) {
+  const lines = splitLines(text);
+  const headerRe = new RegExp(`^##\\s+${sectionName}\\s*$`, "i");
+  let inSection = false;
+  const collected = [];
+  for (const line of lines) {
+    if (inSection) {
+      if (/^##\s+/.test(line)) break;
+      collected.push(line);
+    } else if (headerRe.test(line)) {
+      inSection = true;
+    }
+  }
+  return collected.join("\n");
+}
+
+// Parse the "Queue updates" section verbs per the contract:
+//   ADD: <slug> | starting-point <url> | why <text>
+//   REMOVE: <slug> | why <text>
+//   REPRIORITIZE: <slug> -> row <N> | why <text>
+//
+// Tolerant: stops at the first parse failure per line, doesn't throw.
+// Returns an array of { verb, slug, ... } objects.
+export function parseQueueUpdates(body) {
+  const verbs = [];
+  for (const raw of splitLines(body)) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    let m = line.match(/^ADD:\s*([^\s|]+)\s*(?:\|(.*))?$/);
+    if (m) {
+      const slug = m[1].trim();
+      const rest = m[2] || "";
+      const spMatch = rest.match(/starting-point\s+([^|]+?)(?=\s*\||$)/i);
+      const whyMatch = rest.match(/why\s+(.+?)$/i);
+      verbs.push({
+        verb: "add",
+        slug,
+        startingPoint: spMatch ? spMatch[1].trim() : "",
+        why: whyMatch ? whyMatch[1].trim() : "",
+        raw: line,
+      });
+      continue;
+    }
+    m = line.match(/^REMOVE:\s*([^\s|]+)/);
+    if (m) {
+      verbs.push({ verb: "remove", slug: m[1].trim(), raw: line });
+      continue;
+    }
+    m = line.match(/^REPRIORITIZE:\s*([^\s|]+)\s*->\s*row\s+(\d+)/i);
+    if (m) {
+      verbs.push({
+        verb: "reprioritize",
+        slug: m[1].trim(),
+        toRow: Number(m[2]),
+        raw: line,
+      });
+    }
+  }
+  return verbs;
+}
+
 export function parseResultDoc(text) {
   const { frontmatter, body } = parseFrontmatter(text);
   const lines = splitLines(body);
@@ -194,5 +258,7 @@ export const __internal = {
   parseScalar,
   parseCycles,
   parseDecision,
+  parseQueueUpdates,
+  getSectionBody,
   VALID_CYCLE_KINDS,
 };

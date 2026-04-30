@@ -175,6 +175,16 @@ Build:
 - If phase is `review`, propose synthesis, rerun, sensitivity, ablation, or stop.
 - Converts broad searches into sibling QUEUE moves, not sub-experiments inside one move.
 
+Current implementation:
+
+- `vr-research-orchestrator tick <project-dir>` is a deterministic dispatcher over phase state, doctor, ACTIVE, QUEUE, LOG, and the latest result.
+- With queued work it recommends the concrete runner command.
+- With planned/running `runs.tsv` sweeps and no queued move, it recommends `vr-rl-sweep run` before entering review.
+- With exhausted `experiment` / `hillclimb` state, `--apply` safely transitions to `review`.
+- With an existing reviewed brief, `--apply` compiles the selected candidate into QUEUE and moves the project to `experiment`.
+- In `review` / `synthesis`, it invokes `vr-research-judge` logic and can open the human Agent Inbox card with `--ask-human`.
+- It does not yet synthesize new LLM-written briefs; that remains the next planner layer.
+
 Success criteria:
 
 - Empty QUEUE no longer stalls unattended safe projects.

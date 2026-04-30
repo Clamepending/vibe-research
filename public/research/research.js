@@ -141,6 +141,7 @@
     document.getElementById("dashboard").hidden = false;
 
     renderDoctorCard(detail);
+    await renderNextActionCard(detail);
     renderTakeawayCard(detail);
     renderHypothesisCard(detail);
     renderOverviewCard(detail);
@@ -148,8 +149,227 @@
     renderLeaderboardCard(detail);
     renderActiveCard(detail);
     renderQueueCard(detail);
+    renderSweepsCard(detail);
     renderBenchCard(detail);
     renderLogCard(detail);
+  }
+
+  function evaluatorVariant(strength) {
+    if (strength === "strong") return "good";
+    if (strength === "blocked" || strength === "weak") return "bad";
+    if (strength === "medium") return "accent";
+    return null;
+  }
+
+  function actionVariant(action) {
+    if (/fix|blocked/.test(action || "")) return "bad";
+    if (/review|judge|brief/.test(action || "")) return "accent";
+    if (/run|continue/.test(action || "")) return "good";
+    return null;
+  }
+
+  async function fetchProjectDetail(name) {
+    const res = await fetch(`/api/research/projects/${encodeURIComponent(name)}`, {
+      headers: { accept: "application/json" },
+    });
+    if (res.status === 404) throw new Error(`Project "${name}" not found in the library.`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
+
+  async function postOrchestratorTick(detail, options) {
+    const res = await fetch(`/api/research/projects/${encodeURIComponent(detail.name)}/orchestrator/tick`, {
+      method: "POST",
+      headers: { accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(options || {}),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
+
+  function setActionStatus(body, message, isError) {
+    let status = body.querySelector(".vr-next-status");
+    if (!status) {
+      status = el("p", { class: "vr-next-status", role: "status" });
+      body.appendChild(status);
+    }
+    status.textContent = message || "";
+    status.classList.toggle("is-error", Boolean(isError));
+    status.hidden = !message;
+  }
+
+  function button(label, onClick, variant) {
+    return el("button", { class: `vr-action-button${variant ? " is-" + variant : ""}`, type: "button", onclick: onClick }, label);
+  }
+
+  function renderActionButtons({ detail, body, report, rec }) {
+    const buttons = [];
+    const commandText = report.nextCommand || "";
+
+    if (commandText) {
+      buttons.push(button("Copy command", async () => {
+        try {
+          await navigator.clipboard.writeText(commandText);
+          setActionStatus(body, "Command copied.");
+        } catch (err) {
+          setActionStatus(body, `Could not copy: ${err.message}`, true);
+        }
+      }));
+    }
+
+    if (rec.action === "enter-review") {
+      buttons.push(button("Enter review", async (event) => {
+        const target = event.currentTarget;
+        target.disabled = true;
+        setActionStatus(body, "Switching phase…");
+        try {
+          const applied = await postOrchestratorTick(detail, { apply: true });
+          const payload = applied.report && applied.report.phaseUpdate
+            ? await postOrchestratorTick(detail, {})
+            : applied;
+          renderNextActionPayload(detail, body, payload);
+        } catch (err) {
+          setActionStatus(body, `Could not enter review: ${err.message}`, true);
+        } finally {
+          if (target.isConnected) target.disabled = false;
+        }
+      }, "primary"));
+    }
+
+    if (rec.action === "review-brief" && rec.briefSlug) {
+      buttons.push(button("Ask human", async (event) => {
+        const target = event.currentTarget;
+        target.disabled = true;
+        setActionStatus(body, "Creating brief review card…");
+        try {
+          const payload = await postOrchestratorTick(detail, { askHuman: true });
+          renderNextActionPayload(detail, body, payload);
+        } catch (err) {
+          setActionStatus(body, `Could not create brief review card: ${err.message}`, true);
+        } finally {
+          if (target.isConnected) target.disabled = false;
+        }
+      }));
+      buttons.push(button("Compile brief", async (event) => {
+        const target = event.currentTarget;
+        target.disabled = true;
+        setActionStatus(body, "Compiling brief into QUEUE…");
+        try {
+          const res = await fetch(
+            `/api/research/projects/${encodeURIComponent(detail.name)}/briefs/${encodeURIComponent(rec.briefSlug)}/compile`,
+            {
+              method: "POST",
+              headers: { accept: "application/json", "Content-Type": "application/json" },
+              body: JSON.stringify({}),
+            },
+          );
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const nextDetail = await fetchProjectDetail(detail.name);
+          renderDoctorCard(nextDetail);
+          await renderNextActionCard(nextDetail);
+          renderQueueCard(nextDetail);
+          renderActiveCard(nextDetail);
+          renderLogCard(nextDetail);
+        } catch (err) {
+          setActionStatus(body, `Could not compile brief: ${err.message}`, true);
+        } finally {
+          if (target.isConnected) target.disabled = false;
+        }
+      }, "primary"));
+    }
+
+    if (/^judge-/.test(rec.action || "")) {
+      buttons.push(button("Ask human", async (event) => {
+        const target = event.currentTarget;
+        target.disabled = true;
+        setActionStatus(body, "Creating Agent Inbox card…");
+        try {
+          const payload = await postOrchestratorTick(detail, { askHuman: true });
+          renderNextActionPayload(detail, body, payload);
+        } catch (err) {
+          setActionStatus(body, `Could not create review card: ${err.message}`, true);
+        } finally {
+          if (target.isConnected) target.disabled = false;
+        }
+      }, "primary"));
+    }
+
+    buttons.push(button("Refresh", async (event) => {
+      const target = event.currentTarget;
+      target.disabled = true;
+      setActionStatus(body, "Refreshing…");
+      try {
+        const payload = await postOrchestratorTick(detail, {});
+        renderNextActionPayload(detail, body, payload);
+      } catch (err) {
+        setActionStatus(body, `Could not refresh: ${err.message}`, true);
+      } finally {
+        if (target.isConnected) target.disabled = false;
+      }
+    }));
+
+    body.appendChild(el("div", { class: "vr-next-actions" }, buttons));
+  }
+
+  function renderNextActionPayload(detail, body, payload) {
+    const report = payload.report || {};
+    const rec = report.recommendation || {};
+    const queueUpdates = report.judge && Array.isArray(report.judge.queueUpdates)
+      ? report.judge.queueUpdates
+      : [];
+    body.innerHTML = "";
+    body.appendChild(el("div", { class: "vr-next-header" }, [
+      chip(rec.action || "unknown", actionVariant(rec.action || "")),
+      rec.slug ? chip(rec.slug) : null,
+      rec.briefSlug ? chip(rec.briefSlug) : null,
+      rec.evaluatorStrength ? chip(`evaluator ${rec.evaluatorStrength}`, evaluatorVariant(rec.evaluatorStrength)) : null,
+      rec.nextCandidates ? chip(`${rec.nextCandidates} next`) : null,
+      report.briefReview && report.briefReview.actionItem
+        ? chip(`inbox ${report.briefReview.actionItem.id}`, "accent")
+        : null,
+      report.judge && report.judge.review && report.judge.review.actionItem
+        ? chip(`inbox ${report.judge.review.actionItem.id}`, "accent")
+        : null,
+    ]));
+    body.appendChild(el("p", { class: "vr-next-reason" }, rec.reason || "No recommendation returned."));
+    if (report.nextCommand) {
+      body.appendChild(el("pre", { class: "vr-next-command" }, report.nextCommand));
+    }
+    if (queueUpdates.length) {
+      body.appendChild(el(
+        "ul",
+        { class: "vr-next-candidates" },
+        queueUpdates.slice(0, 5).map((item) =>
+          el("li", null, [
+            el("span", { class: "vr-mono" }, `${item.verb}: ${item.slug}`),
+            item.why ? el("span", null, ` — ${item.why}`) : null,
+          ]),
+        ),
+      ));
+    }
+    renderActionButtons({ detail, body, report, rec });
+  }
+
+  async function renderNextActionCard(detail) {
+    const card = document.getElementById("next-card");
+    if (!card) return;
+    card.innerHTML = "";
+    card.appendChild(el("h2", null, "Next action"));
+    const body = el("div", { class: "vr-next-action" }, [
+      el("p", { class: "vr-card-empty" }, "Checking phase state…"),
+    ]);
+    card.appendChild(body);
+
+    let payload;
+    try {
+      payload = await postOrchestratorTick(detail, {});
+    } catch (err) {
+      body.innerHTML = "";
+      body.appendChild(el("p", { class: "vr-card-empty" }, `Could not load next action: ${err.message}`));
+      return;
+    }
+
+    renderNextActionPayload(detail, body, payload);
   }
 
   function renderHypothesisCard(detail) {
@@ -418,13 +638,57 @@
     card.appendChild(list);
   }
 
+  function renderSweepsCard(detail) {
+    const card = document.getElementById("sweeps-card");
+    if (!card) return;
+    const sweeps = Array.isArray(detail.sweeps) ? detail.sweeps : [];
+    card.innerHTML = "";
+    card.appendChild(el("h2", null, [
+      "Sweeps",
+      el("span", { class: "vr-card-count" }, `(${sweeps.length})`),
+    ]));
+    if (!sweeps.length) {
+      card.appendChild(el("p", { class: "vr-card-empty" }, "No runs.tsv sweeps yet."));
+      return;
+    }
+
+    const grid = el("div", { class: "vr-sweep-grid" });
+    for (const sweep of sweeps) {
+      const counts = sweep.statusCounts || {};
+      const item = el("div", { class: "vr-sweep-item" }, [
+        el("div", { class: "vr-sweep-title" }, [
+          el("span", null, sweep.name || sweep.path || "sweep"),
+          el("span", { class: "vr-card-empty" }, `${sweep.cells || 0} cell${sweep.cells === 1 ? "" : "s"} · ${sweep.rows || 0} row${sweep.rows === 1 ? "" : "s"}`),
+        ]),
+        el("div", { class: "vr-sweep-counts" }, [
+          chip(`planned ${counts.planned || 0}`),
+          chip(`running ${counts.running || 0}`, counts.running ? "accent" : null),
+          chip(`done ${counts.done || 0}`, counts.done ? "good" : null),
+          chip(`failed ${counts.failed || 0}`, counts.failed ? "bad" : null),
+          counts.skipped ? chip(`skipped ${counts.skipped}`) : null,
+        ]),
+        sweep.bestMean !== null && sweep.bestMean !== undefined
+          ? el("div", { class: "vr-sweep-best" }, `best ${sweep.bestMean}: ${sweep.bestName || "row"}`)
+          : null,
+      ]);
+      grid.appendChild(item);
+    }
+    card.appendChild(grid);
+  }
+
   function renderBenchCard(detail) {
     const card = document.getElementById("bench-card");
     card.innerHTML = "";
+    const benchVersion = detail.benchmark && detail.benchmark.version
+      ? String(detail.benchmark.version)
+      : "";
+    const benchVersionLabel = benchVersion
+      ? (benchVersion.toLowerCase().startsWith("v") ? benchVersion : `v${benchVersion}`)
+      : "?";
     card.appendChild(el("h2", null, [
       "Benchmark",
       detail.benchmark
-        ? el("span", { class: "vr-card-count" }, `v${detail.benchmark.version} (${detail.benchmark.status})`)
+        ? el("span", { class: "vr-card-count" }, `${benchVersionLabel} (${detail.benchmark.status})`)
         : null,
       detail.paths.benchmark
         ? el("span", { class: "vr-card-action" }, detail.paths.benchmark)

@@ -52,6 +52,14 @@ export class ClaudeStreamSession extends EventEmitter {
     maxEntries = DEFAULT_MAX_ENTRIES,
     allocateSeq = null,
     bypassPermissions = true,
+    // Whether to spawn Claude with `--resume <sessionId>` instead of
+    // `--session-id <sessionId>`. Set to true when the session predates
+    // the current server process (e.g. surviving a server restart or
+    // upgrade) — Claude CLI looks up the prior JSONL transcript at
+    // ~/.claude/projects/<cwd>/<id>.jsonl and continues from there.
+    // For brand-new sessions, --session-id stamps a stable id on a
+    // fresh transcript.
+    resume = false,
   } = {}) {
     super();
     this.sessionId = sessionId;
@@ -68,6 +76,7 @@ export class ClaudeStreamSession extends EventEmitter {
     // asking the agent to look at a figure outside the session cwd.
     // Toggleable per-session for paranoid users who want the prompts.
     this.bypassPermissions = bypassPermissions !== false;
+    this.resume = resume === true;
     // Caller-provided monotonic sequence allocator. Each new stream-entry
     // id gets one seq the first time we see it. The owner (SessionManager)
     // shares the counter with native entry pushes so we get a single
@@ -111,12 +120,20 @@ export class ClaudeStreamSession extends EventEmitter {
       return this;
     }
 
+    // For a brand-new session: `--session-id <id>` stamps the id on a
+    // fresh transcript. For a session that needs to survive a restart:
+    // `--resume <id>` looks up the existing JSONL and continues. Claude
+    // CLI rejects passing both at once, so the launch path picks one.
+    const idArgs = this.resume
+      ? ["--resume", this.sessionId]
+      : ["--session-id", this.sessionId];
+
     const args = [
       "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
       "--include-partial-messages",
-      "--session-id", this.sessionId,
+      ...idArgs,
       ...(this.bypassPermissions ? ["--dangerously-skip-permissions"] : []),
       ...this.extraArgs,
     ];

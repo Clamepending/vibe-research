@@ -41,6 +41,10 @@ function extractFirstLink(cell) {
   return { label: match[1], url: match[2] };
 }
 
+function stripWrappingBackticks(value) {
+  return String(value || "").trim().replace(/^`+|`+$/g, "");
+}
+
 function extractAllLinks(cell) {
   const links = [];
   let match;
@@ -316,7 +320,7 @@ export function parseProjectReadme(text) {
     goal,
     codeRepo: {
       raw: codeRepoBody,
-      url: codeRepoLink.url || codeRepoBody,
+      url: codeRepoLink.url || stripWrappingBackticks(codeRepoBody),
     },
     successCriteria,
     budget,

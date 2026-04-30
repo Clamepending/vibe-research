@@ -205,7 +205,19 @@ async function runShellCommand(step, { signal, env: extraEnv } = {}) {
   });
 }
 
-async function runHttpStep(step, { signal, fetchImpl } = {}) {
+// Interpolate `${VAR}` references in a string against an env map. Used to
+// let install-plan http-step URLs reference VIBE_RESEARCH_SERVER_URL (etc.)
+// without callers having to know the running port. Only `${...}` is
+// recognised; bare `$VAR` is left untouched to avoid surprising matches.
+function interpolateEnv(input, env) {
+  if (typeof input !== "string" || !env) return input;
+  return input.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (whole, name) => {
+    const value = env[name];
+    return value === undefined || value === null ? whole : String(value);
+  });
+}
+
+async function runHttpStep(step, { signal, fetchImpl, env } = {}) {
   const fetcher = fetchImpl || globalThis.fetch;
   if (typeof fetcher !== "function") {
     return { ok: false, reason: "no-fetch", body: null, status: null };
@@ -230,7 +242,8 @@ async function runHttpStep(step, { signal, fetchImpl } = {}) {
         init.headers["content-type"] = init.headers["content-type"] || "application/json";
       }
     }
-    const response = await fetcher(step.url, init);
+    const resolvedUrl = interpolateEnv(step.url, env);
+    const response = await fetcher(resolvedUrl, init);
     const text = await response.text();
     let parsed = null;
     try { parsed = text ? JSON.parse(text) : null; } catch { parsed = null; }
@@ -394,7 +407,9 @@ export async function executeInstallPlan(plan, options = {}) {
           };
         }
       } else if (step.kind === "http") {
-        const result = await runHttpStep(step, { signal, fetchImpl });
+        // Pass spawnEnv so the URL can reference VIBE_RESEARCH_SERVER_URL
+        // and friends via ${VAR} interpolation — see runHttpStep.
+        const result = await runHttpStep(step, { signal, fetchImpl, env: spawnEnv });
         appendLog({
           phase: "install",
           level: result.ok ? "info" : "error",
@@ -635,11 +650,24 @@ export async function executeAuthPhase(plan, options = {}) {
   return { status: "ok" };
 }
 
+// Build the spawn env injected into install/auth-plan shell steps. Manifest
+// commands can reach internal Vibe Research APIs via `$VIBE_RESEARCH_SERVER_URL`
+// — used by buildings whose install plan needs to call back into the local
+// server (e.g. VideoMemory uses this to POST /api/videomemory/install-server
+// during its install plan).
+function buildPlanSpawnEnv({ appDir, serverBaseUrl } = {}) {
+  const env = {};
+  if (appDir) env.VIBE_RESEARCH_APP_DIR = appDir;
+  if (serverBaseUrl) env.VIBE_RESEARCH_SERVER_URL = serverBaseUrl;
+  return Object.keys(env).length ? env : null;
+}
+
 export function startAuthenticateJob({
   jobStore,
   building,
   settingsStore,
   appDir = null,
+  serverBaseUrl = null,
 }) {
   const job = jobStore.create(building.id);
   const controller = new AbortController();
@@ -660,7 +688,7 @@ export function startAuthenticateJob({
         appendLog: append,
         settingsStore,
         signal: controller.signal,
-        spawnEnv: appDir ? { VIBE_RESEARCH_APP_DIR: appDir } : null,
+        spawnEnv: buildPlanSpawnEnv({ appDir, serverBaseUrl }),
       });
       jobStore.update(job.id, {
         status: result.status === "ok" ? "ok" : result.status,
@@ -704,6 +732,12 @@ export function startInstallJob({
   // `bash "$VIBE_RESEARCH_APP_DIR/bin/vr-pip-install-tool" modal` without
   // assuming any particular install layout on disk.
   appDir = null,
+  // Resolved local URL of the running Vibe Research server (e.g.
+  // `http://127.0.0.1:4828`). Injected as VIBE_RESEARCH_SERVER_URL so an
+  // install plan can call back into local APIs without hard-coding the
+  // port — used by VideoMemory's plan to POST
+  // /api/videomemory/install-server.
+  serverBaseUrl = null,
 }) {
   const job = jobStore.create(building.id);
   const controller = new AbortController();
@@ -728,7 +762,7 @@ export function startInstallJob({
         fetchImpl,
         mcpRegistry,
         buildingId: building.id,
-        spawnEnv: appDir ? { VIBE_RESEARCH_APP_DIR: appDir } : null,
+        spawnEnv: buildPlanSpawnEnv({ appDir, serverBaseUrl }),
         // Defer auth-browser-cli to a deliberate user click (POST
         // /api/buildings/:id/authenticate) instead of auto-opening a
         // sign-in tab the moment the user finishes placing the building.

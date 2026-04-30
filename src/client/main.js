@@ -8255,10 +8255,28 @@ function renderVideoMemoryPermissionAlert() {
     getVideoMemoryCameraPermissionMessage(),
   ].join(" ");
 
+  // Surface a one-click prompt + an OS-settings shortcut so the recovery path
+  // is obvious. Without an in-alert button the user has to scroll down to
+  // the form's "enable camera permissions" ghost-button — which is easy to
+  // miss when the alert is exactly what's calling them to action.
+  const isMac = typeof navigator !== "undefined" && /Mac/i.test(String(navigator.platform || ""));
+  const osHint = isMac
+    ? "If the in-browser prompt doesn't appear, open System Settings > Privacy & Security > Camera and re-grant access for this browser."
+    : "If the in-browser prompt doesn't appear, re-grant camera access for this browser in your OS privacy settings.";
+
   return `
     <div class="videomemory-permission-alert" role="alert">
-      <strong>Camera permission needed</strong>
-      <span>${escapeHtml(detail)}</span>
+      <div class="videomemory-permission-alert-copy">
+        <strong>Camera permission needed</strong>
+        <span>${escapeHtml(detail)}</span>
+        <em>${escapeHtml(osHint)}</em>
+      </div>
+      <button
+        class="primary-button videomemory-permission-alert-button videomemory-camera-permission-button"
+        type="button"
+        data-videomemory-request-camera-permission
+        data-videomemory-permission-label="grant camera access"
+      >grant camera access</button>
     </div>
   `;
 }
@@ -24710,13 +24728,21 @@ async function compileResearchBriefFromActionItem(actionItemId) {
       `/api/research/projects/${encodeURIComponent(target.projectName)}/briefs/${encodeURIComponent(target.briefSlug)}/compile`,
       {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({ actionItemId: id }),
       },
     );
     const moveCount = Array.isArray(payload.queueRows) ? payload.queueRows.length : 0;
     const note = moveCount
       ? `Compiled ${moveCount} move${moveCount === 1 ? "" : "s"} into QUEUE.`
       : "Approved research brief.";
+    if (payload.agentTown) {
+      applyAgentTownState(payload.agentTown);
+      refreshAgentTownActionItemUi();
+      refreshAgentCanvasUi();
+    }
+    if (payload.actionItem?.resolution === "approved") {
+      return payload.actionItem;
+    }
     return updateAgentTownActionItemStatus(id, "completed", {
       resolution: "approved",
       resolutionNote: note,

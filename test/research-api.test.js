@@ -105,6 +105,14 @@ test("getProjectDetail: returns full structured state for clean qualitative proj
   assert.equal(v2.status, "resolved");
   assert.match(v2.takeaway, /readability|3\.4|4\.1/);
 
+  assert.equal(detail.sweeps.length, 1);
+  assert.equal(detail.sweeps[0].name, "top-level");
+  assert.equal(detail.sweeps[0].rows, 3);
+  assert.equal(detail.sweeps[0].cells, 2);
+  assert.equal(detail.sweeps[0].statusCounts.done, 2);
+  assert.equal(detail.sweeps[0].statusCounts.planned, 1);
+  assert.equal(detail.sweeps[0].bestMean, 4.1);
+
   assert.equal(detail.doctor.bucket, "ok");
   assert.equal(detail.doctor.counts.error, 0);
 

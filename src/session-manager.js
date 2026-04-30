@@ -5733,25 +5733,17 @@ export class SessionManager {
     const sessionEnv = this.buildSessionEnvironment(session, provider.id);
     writeProviderCredentialEnvFile(sessionEnv);
 
-    if (restored) {
-      // Stream-mode child processes don't survive a server restart. Mark the
-      // session exited and let the user start a new one.
-      session.status = "exited";
-      session.exitCode = null;
-      session.exitSignal = null;
-      session.streamSession = null;
-      session.restoreOnStartup = false;
-      session.updatedAt = new Date().toISOString();
-      this.pushNativeNarrativeEntry(session, {
-        kind: "status",
-        label: "Stream",
-        text: "Stream-mode sessions don't survive server restarts. Start a new agent to continue.",
-        timestamp: session.updatedAt,
-        meta: "stream-mode",
-      });
-      this.scheduleSessionMetaBroadcast(session, { immediate: true });
-      return;
-    }
+    // When `restored` is true, the session predates this server process —
+    // either we just restarted, or the user upgraded Vibe Research and
+    // the existing in-memory child process is gone. Claude CLI persists
+    // the full JSONL transcript at ~/.claude/projects/<cwd>/<id>.jsonl,
+    // so we can resume cleanly by passing `--resume <id>` on respawn.
+    // The user keeps their entire conversation history; the only thing
+    // they lose is in-flight work the prior child hadn't yet committed
+    // to the transcript. Previously this branch marked the session
+    // permanently "exited" with a "start a new agent" prompt; that was
+    // a UX cliff every time someone updated the app.
+    const isResume = restored;
 
     const claudeBin = getManagedProviderLaunchCommand(provider) || provider.launchCommand;
     if (!claudeBin) {

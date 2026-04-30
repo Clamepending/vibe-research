@@ -1,0 +1,124 @@
+#!/usr/bin/env node
+// Phase-aware dispatcher for Vibe Research projects.
+
+import path from "node:path";
+import process from "node:process";
+import {
+  formatOrchestratorReport,
+  tickResearchOrchestrator,
+} from "../src/research/orchestrator.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-orchestrator
+
+Read project phase, ACTIVE, QUEUE, LOG, doctor state, and recent results, then
+recommend the next research-loop action. This command is deterministic: it
+does not invent experiment content, and only mutates state with --apply.
+
+Usage:
+  vr-research-orchestrator tick <project-dir> [options]
+  vr-research-orchestrator <project-dir> [options]
+
+Options:
+  --apply                  Apply safe phase transitions or compile an existing reviewed brief into QUEUE.
+  --ask-human              In review/synthesis phase, open the judge Agent Inbox card.
+  --wait-human             Wait for that Agent Inbox card to resolve.
+  --timeout-ms <ms>        Total wait budget for --wait-human.
+  --api <url>              Overrides VIBE_RESEARCH_AGENT_TOWN_API.
+  --allow-cross-version    Allow judge admission across benchmark versions.
+  --no-paper               Skip paper.md linting in judge mode.
+  --code-cwd <dir>         Code repo cwd to include in suggested runner command.
+  --command <text>         Experiment command to include in suggested runner command.
+  --json                   Print the full structured report.
+  --help, -h               Show this help.
+`);
+}
+
+function requireValue(args, index, flag) {
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value.`);
+  }
+  return value;
+}
+
+function parseArgs(argv) {
+  const opts = {
+    allowCrossVersion: false,
+    api: "",
+    apply: false,
+    askHuman: false,
+    checkPaper: true,
+    codeCwd: "",
+    commandText: "",
+    help: false,
+    json: false,
+    projectDir: "",
+    subcommand: "tick",
+    timeoutMs: "",
+    waitHuman: false,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
+    if (arg === "--allow-cross-version") { opts.allowCrossVersion = true; continue; }
+    if (arg === "--apply") { opts.apply = true; continue; }
+    if (arg === "--ask-human") { opts.askHuman = true; continue; }
+    if (arg === "--json") { opts.json = true; continue; }
+    if (arg === "--no-paper") { opts.checkPaper = false; continue; }
+    if (arg === "--wait-human") { opts.askHuman = true; opts.waitHuman = true; continue; }
+    if (arg === "--api") { opts.api = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--code-cwd") { opts.codeCwd = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--command") { opts.commandText = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--timeout-ms") { opts.timeoutMs = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
+    if (arg === "tick" && opts.subcommand === "tick" && !opts.projectDir) { opts.subcommand = "tick"; continue; }
+    if (!opts.projectDir) { opts.projectDir = arg; continue; }
+    throw new Error(`unexpected positional arg: ${arg}`);
+  }
+  return opts;
+}
+
+async function main() {
+  let opts;
+  try {
+    opts = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`${error.message}\n\n`);
+    printHelp();
+    process.exit(2);
+  }
+
+  if (opts.help) {
+    printHelp();
+    return;
+  }
+  if (!opts.projectDir) {
+    throw new Error("project-dir is required.");
+  }
+
+  const report = await tickResearchOrchestrator({
+    projectDir: path.resolve(opts.projectDir),
+    apply: opts.apply,
+    askHuman: opts.askHuman,
+    waitHuman: opts.waitHuman,
+    agentTownApi: opts.api,
+    timeoutMs: opts.timeoutMs,
+    allowCrossVersion: opts.allowCrossVersion,
+    checkPaper: opts.checkPaper,
+    codeCwd: opts.codeCwd,
+    commandText: opts.commandText,
+  });
+
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    process.stdout.write(`${formatOrchestratorReport(report)}\n`);
+  }
+}
+
+void main().catch((error) => {
+  process.stderr.write(`[vr-research-orchestrator] error: ${error.message}\n`);
+  process.exit(1);
+});

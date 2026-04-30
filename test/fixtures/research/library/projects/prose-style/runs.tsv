@@ -1,0 +1,4 @@
+started_at	group	name	commit	hypothesis	mean_return	std_return	wandb_url	status	config
+2026-04-29T00:00:00.000Z	prompt-grid	scaffold-v2-seed0	abc1234	prompt scaffold sweep	4.1	0.2	https://wandb.ai/example/prose/runs/a	done	{"prompt":"scaffold-v2"}
+2026-04-29T00:05:00.000Z	prompt-grid	scaffold-v2-seed1	abc1234	prompt scaffold sweep	4.0	0.2	https://wandb.ai/example/prose/runs/b	done	{"prompt":"scaffold-v2"}
+	prompt-grid	scaffold-v3-seed0	abc1234	prompt scaffold sweep				planned	{"prompt":"scaffold-v3"}

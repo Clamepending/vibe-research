@@ -16,6 +16,7 @@ import {
   postAgentTownJson,
   waitForAgentTownActionItemResolved,
 } from "./agent-town-api.js";
+import { getSectionBody, parseQueueUpdates } from "./result-doc.js";
 
 const REVIEW_CHOICES = ["continue", "rerun", "synthesize", "brainstorm", "steer"];
 const SEVERITY_RANK = { error: 3, warning: 2, info: 1 };
@@ -93,6 +94,52 @@ async function pathExists(filePath) {
   }
 }
 
+function isSafeRelativeArtifactPath(value) {
+  const normalized = String(value || "").replaceAll("\\", "/");
+  return Boolean(
+    normalized
+      && !path.isAbsolute(normalized)
+      && !normalized.includes("../")
+      && /^(artifacts|figures)\//.test(normalized),
+  );
+}
+
+function extractArtifactPaths(text) {
+  const out = new Set();
+  const patterns = [
+    /`((?:artifacts|figures)\/[^`]+)`/g,
+    /\]\(((?:artifacts|figures)\/[^)\s]+)\)/g,
+    /\b((?:artifacts|figures)\/[A-Za-z0-9._/@:+-]+)\b/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of String(text || "").matchAll(pattern)) {
+      const value = String(match[1] || "").replace(/[),.;:]+$/g, "");
+      if (value) out.add(value);
+    }
+  }
+  return Array.from(out);
+}
+
+async function artifactSniffIssues({ projectDir, text, slug, doc }) {
+  const issues = [];
+  const paths = extractArtifactPaths(text);
+  if (doc.cycles.length && !paths.length) {
+    issues.push(issue("info", "result_artifact_links_missing", `results/${slug}.md`, "Cycle evidence has no artifacts/ or figures/ links for fast review"));
+  }
+
+  for (const relPath of paths) {
+    const where = `results/${slug}.md -> ${relPath}`;
+    if (!isSafeRelativeArtifactPath(relPath)) {
+      issues.push(issue("warning", "artifact_path_unsafe", where, "Artifact path must stay under artifacts/ or figures/"));
+      continue;
+    }
+    if (!(await pathExists(path.join(projectDir, relPath)))) {
+      issues.push(issue("warning", "artifact_missing", where, "Referenced artifact does not exist on disk"));
+    }
+  }
+  return issues;
+}
+
 function resultCompletenessIssues({ doc, text, slug, project }) {
   const issues = [];
   const active = doc.status === "active";
@@ -139,6 +186,19 @@ function resultCompletenessIssues({ doc, text, slug, project }) {
     }
   }
 
+  return issues;
+}
+
+function provenanceIssues({ doc, text, slug }) {
+  if (!doc.cycles.length) return [];
+  const issues = [];
+  const reproBody = sectionBody(text, "Reproducibility");
+  if (!/\bcommand\b/im.test(reproBody)) {
+    issues.push(issue("warning", "result_command_missing", `results/${slug}.md#Reproducibility`, "Cycle evidence should record the exact command"));
+  }
+  if (!/(\/commit\/[0-9a-f]{7,40}\b|\bgit\b\s*`?[0-9a-f]{7,40}`?)/im.test(reproBody)) {
+    issues.push(issue("info", "result_commit_missing", `results/${slug}.md#Reproducibility`, "No git commit SHA or commit URL found for cycle provenance"));
+  }
   return issues;
 }
 
@@ -215,17 +275,34 @@ function recommendationFromReport({ doc, issues, admitReport }) {
   };
 }
 
-function summarizeJudge({ slug, doc, issues, admitReport, paperReport, recommendation }) {
+function evaluatorStrength({ doc, issues, admitReport }) {
+  if (issues.some((item) => item.severity === "error")) return "blocked";
+  if (issues.some((item) => (
+    item.code === "artifact_missing" ||
+    item.code === "result_artifact_links_missing" ||
+    item.code === "result_command_missing"
+  ))) return "weak";
+  const seeds = Array.isArray(doc.frontmatter?.seeds) ? doc.frontmatter.seeds.length : 0;
+  if (admitReport?.candidateQuant && seeds >= 3 && !issues.some((item) => item.severity === "warning")) {
+    return "strong";
+  }
+  if (doc.cycles.length && !issues.some((item) => item.severity === "warning")) return "medium";
+  return "weak";
+}
+
+function summarizeJudge({ slug, doc, issues, admitReport, paperReport, recommendation, strength, queueUpdates }) {
   const counts = countBySeverity(issues);
   const statusPart = doc.status ? `status=${doc.status}` : "status=unknown";
   const cyclePart = `${doc.cycles.length} cycle${doc.cycles.length === 1 ? "" : "s"}`;
+  const addCount = queueUpdates.filter((item) => item.verb === "add").length;
+  const nextMovePart = `${addCount} next candidate${addCount === 1 ? "" : "s"}`;
   const admitPart = admitReport?.decision
     ? `admit=${admitReport.decision.admit ? "yes" : admitReport.decision.blocked ? "blocked" : "no"}`
     : "admit=skipped";
   const paperPart = paperReport
     ? `paper=${paperReport.summary.error}/${paperReport.summary.warning}/${paperReport.summary.info}`
     : "paper=skipped";
-  return `${slug}: ${recommendation.action} (${recommendation.reason}); ${statusPart}, ${cyclePart}, ${admitPart}, ${paperPart}, issues=${counts.error}/${counts.warning}/${counts.info}`;
+  return `${slug}: ${recommendation.action} (${recommendation.reason}); ${statusPart}, ${cyclePart}, evaluator=${strength}, ${admitPart}, ${paperPart}, ${nextMovePart}, issues=${counts.error}/${counts.warning}/${counts.info}`;
 }
 
 async function createJudgeCard({
@@ -237,6 +314,7 @@ async function createJudgeCard({
   summary,
   recommendation,
   issues,
+  queueUpdates = [],
   waitHuman = false,
   timeoutMs = "",
   fetchImpl = globalThis.fetch,
@@ -268,6 +346,11 @@ async function createJudgeCard({
       { label: "result doc", path: resultPath, kind: "result" },
       { label: "project README", path: path.join(projectDir, "README.md"), kind: "project" },
       ...(paperPath ? [{ label: "paper", path: paperPath, kind: "paper" }] : []),
+      ...queueUpdates.slice(0, 5).map((item) => ({
+        label: `queue ${item.verb}: ${item.slug}`,
+        kind: "queue-update",
+        text: item.raw,
+      })),
       ...topIssues.map((item) => ({
         label: `${item.severity}: ${item.code}`,
         kind: "audit",
@@ -316,6 +399,7 @@ export async function judgeMove({
   const readmeText = await readFile(path.join(resolvedProjectDir, "README.md"), "utf8");
   const project = parseProjectReadme(readmeText);
   const doc = parseResultDoc(resultText);
+  const queueUpdates = parseQueueUpdates(getSectionBody(resultText, "Queue updates"));
 
   const issues = [];
   issues.push(...resultCompletenessIssues({
@@ -323,6 +407,13 @@ export async function judgeMove({
     text: resultText,
     slug: inferredSlug,
     project,
+  }));
+  issues.push(...provenanceIssues({ doc, text: resultText, slug: inferredSlug }));
+  issues.push(...await artifactSniffIssues({
+    projectDir: resolvedProjectDir,
+    text: resultText,
+    slug: inferredSlug,
+    doc,
   }));
 
   const doctorReport = await runDoctor(resolvedProjectDir, { readmeText });
@@ -362,6 +453,7 @@ export async function judgeMove({
 
   const sortedIssues = sortIssues(issues);
   const recommendation = recommendationFromReport({ doc, issues, admitReport });
+  const strength = evaluatorStrength({ doc, issues, admitReport });
   const summary = summarizeJudge({
     slug: inferredSlug,
     doc,
@@ -369,6 +461,8 @@ export async function judgeMove({
     admitReport,
     paperReport,
     recommendation,
+    strength,
+    queueUpdates,
   });
 
   const review = askHuman
@@ -381,6 +475,7 @@ export async function judgeMove({
       summary,
       recommendation,
       issues: sortedIssues,
+      queueUpdates,
       waitHuman,
       timeoutMs,
       fetchImpl,
@@ -396,6 +491,8 @@ export async function judgeMove({
     cycles: doc.cycles,
     recommendation,
     summary,
+    evaluatorStrength: strength,
+    queueUpdates,
     issues: sortedIssues,
     issueSummary: countBySeverity(issues),
     doctor: {
@@ -443,6 +540,13 @@ export function formatJudgeReport(report) {
     lines.push("", "issues: none");
   }
 
+  if (report.queueUpdates?.length) {
+    lines.push("", "queue updates:");
+    for (const item of report.queueUpdates.slice(0, 8)) {
+      lines.push(`- ${item.raw}`);
+    }
+  }
+
   if (report.review) {
     const item = report.review.actionItem || report.review;
     lines.push("", `agent-inbox: ${item.id || "created"}`);
@@ -458,5 +562,9 @@ export const __internal = {
   resultCompletenessIssues,
   sectionBody,
   isPlaceholder,
+  artifactSniffIssues,
+  evaluatorStrength,
+  extractArtifactPaths,
+  provenanceIssues,
   recommendationFromReport,
 };

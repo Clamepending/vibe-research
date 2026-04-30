@@ -99,6 +99,9 @@ test("GET /api/research/projects/<name> returns full detail with doctor result",
     assert.equal(body.benchmark.version, "v1");
     assert.equal(body.benchmark.metrics[0].name, "readability");
     assert.equal(body.leaderboard.length, 2);
+    assert.equal(body.sweeps.length, 1);
+    assert.equal(body.sweeps[0].statusCounts.done, 2);
+    assert.equal(body.sweeps[0].statusCounts.planned, 1);
     assert.equal(body.doctor.bucket, "ok");
     assert.equal(body.doctor.counts.error, 0);
     assert.ok(Array.isArray(body.resultDocs));
@@ -166,6 +169,24 @@ test("POST /api/research/projects/<name>/briefs/<slug>/compile adds brief move t
   });
 });
 
+test("POST /api/research/projects/<name>/orchestrator/tick returns next phase action", async () => {
+  await withLibraryServer(async ({ baseUrl }) => {
+    const res = await fetch(`${baseUrl}/api/research/projects/prose-style/orchestrator/tick`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ commandText: "node eval.js", checkPaper: false }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.projectName, "prose-style");
+    assert.equal(body.report.recommendation.action, "run-next");
+    assert.equal(body.report.recommendation.slug, "v3-fewshot");
+    assert.match(body.report.nextCommand, /vr-research-runner/);
+    assert.match(body.report.nextCommand, /node eval\.js/);
+  });
+});
+
 test("GET /research returns the static index page", async () => {
   await withLibraryServer(async ({ baseUrl }) => {
     const res = await fetch(`${baseUrl}/research`);
@@ -184,6 +205,8 @@ test("GET /research/<name> returns the static project page", async () => {
     const text = await res.text();
     assert.match(text, /<title>Vibe Research — Project<\/title>/);
     assert.match(text, /id="dashboard"/);
+    assert.match(text, /id="next-card"/);
+    assert.match(text, /id="sweeps-card"/);
   });
 });
 
@@ -202,8 +225,14 @@ test("GET /research/research.js + research.css are served", async () => {
     const js = await fetch(`${baseUrl}/research/research.js`);
     assert.equal(js.status, 200);
     assert.match(js.headers.get("content-type") || "", /javascript/);
+    const jsText = await js.text();
+    assert.match(jsText, /orchestrator\/tick/);
+    assert.match(jsText, /briefs\/.*compile/);
+    assert.match(jsText, /vr-next-candidates/);
+    assert.match(jsText, /renderSweepsCard/);
     const css = await fetch(`${baseUrl}/research/research.css`);
     assert.equal(css.status, 200);
     assert.match(css.headers.get("content-type") || "", /css/);
+    assert.match(await css.text(), /vr-action-button/);
   });
 });
