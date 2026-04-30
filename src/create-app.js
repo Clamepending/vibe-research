@@ -2626,18 +2626,28 @@ export async function createVibeResearchApp({
     }
   }
 
-  async function collectAndRecordSystemMetrics({ forceHistory = false } = {}) {
+  async function collectAndRecordSystemMetrics({
+    forceHistory = false,
+    staleWhileRevalidate = false,
+  } = {}) {
     const system = await systemMetricsProvider({
       agentProcessRoots: sessionManager.listAgentProcessRoots(),
       cwd,
       projectPaths: sessionManager.listProjectPaths(),
+      staleWhileRevalidate,
       wikiPath: settingsStore.settings.wikiPath,
     });
     system.agentUsage = agentRunStore.getProviderUsage({
       providers,
       sessions: sessionManager.listUsageSessions(),
     });
-    await systemMetricsHistoryStore.record(system, { force: forceHistory });
+    // SWR responses can include `pending: true` placeholder storage entries; we
+    // skip the history record in that case to avoid polluting the timeline with
+    // partial samples. The recurring sampler runs in blocking mode and is what
+    // keeps history fresh.
+    if (!staleWhileRevalidate) {
+      await systemMetricsHistoryStore.record(system, { force: forceHistory });
+    }
     return system;
   }
 
@@ -3428,7 +3438,9 @@ export async function createVibeResearchApp({
 
   app.get("/api/system", async (_request, response) => {
     try {
-      const system = await collectAndRecordSystemMetrics();
+      // SWR: never block on storage `du`; serve cached/pending and let the
+      // background sampler refill the cache.
+      const system = await collectAndRecordSystemMetrics({ staleWhileRevalidate: true });
       let gpuOffLimits = [];
       try {
         gpuOffLimits = await readOffLimitsIndices(extractGpuIndices(system));
@@ -3461,7 +3473,7 @@ export async function createVibeResearchApp({
         return;
       }
 
-      const system = await collectAndRecordSystemMetrics();
+      const system = await collectAndRecordSystemMetrics({ staleWhileRevalidate: true });
       const allIndices = extractGpuIndices(system);
       if (!allIndices.includes(index)) {
         response.status(400).json({ error: `Unknown GPU index: ${index}.` });
@@ -6782,6 +6794,10 @@ export async function createVibeResearchApp({
     preferredUrl: publicBaseUrl || preferredUrl,
   });
   if (systemMetricsSampleIntervalMs > 0) {
+    // Fire one sample immediately so the storage caches are warm before the
+    // first user opens the system tab; setInterval otherwise waits the full
+    // interval before its first tick, leaving the first visit on a cold du.
+    void sampleSystemMetricsHistory();
     systemMetricsTimer = setInterval(() => {
       void sampleSystemMetricsHistory();
     }, systemMetricsSampleIntervalMs);

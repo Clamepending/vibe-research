@@ -11,9 +11,14 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFileCallback);
 const DEFAULT_TIMEOUT_MS = 2_500;
 const DEFAULT_CPU_SAMPLE_MS = 140;
-const DEFAULT_WIKI_STORAGE_CACHE_MS = 30_000;
+// Storage measurements run `du` over Library + project paths, which traverses
+// every directory entry. On NFS-backed home dirs that's hundreds of ms even
+// warm and seconds cold. The system tab polls every 30s; a 60s background
+// sampler refills the cache. Cache TTL must comfortably exceed the sampler
+// interval so UI polls always hit the cache instead of triggering a fresh du.
+const DEFAULT_WIKI_STORAGE_CACHE_MS = 5 * 60_000;
 const DEFAULT_WIKI_STORAGE_MAX_ENTRIES = 75_000;
-const DEFAULT_PROJECT_STORAGE_CACHE_MS = 60_000;
+const DEFAULT_PROJECT_STORAGE_CACHE_MS = 5 * 60_000;
 const DEFAULT_PROJECT_STORAGE_MAX_ROOTS = 32;
 const BYTES_PER_KIB = 1024;
 const MAX_VISIBLE_VOLUMES = 8;
@@ -857,6 +862,104 @@ async function readWikiStorageByWalking({
   };
 }
 
+async function computeWikiStorageOnce({ execFile, lstat, maxEntries, readdir, rootPath, timeoutMs }) {
+  let value;
+  try {
+    const { stdout } = await runCommand(execFile, "du", ["-sk", rootPath], { timeoutMs });
+    const bytes = parseDuOutput(stdout);
+    if (bytes === null) {
+      throw new Error("du did not return a byte count");
+    }
+    value = {
+      path: rootPath,
+      exists: true,
+      bytes,
+      source: "du",
+    };
+  } catch (duError) {
+    value = await readWikiStorageByWalking({ lstat, maxEntries, readdir, rootPath });
+    if (value.exists && duError?.message) {
+      value.warning = `du unavailable; used file walk (${duError.message})`;
+    }
+  }
+
+  value.checkedAt = new Date().toISOString();
+  return value;
+}
+
+async function computeProjectRootStorageOnce({ execFile, rootPath, timeoutMs }) {
+  let value;
+  try {
+    const { stdout } = await runCommand(execFile, "du", ["-sk", rootPath], { timeoutMs });
+    const bytes = parseDuOutput(stdout);
+    if (bytes === null) {
+      throw new Error("du did not return a byte count");
+    }
+    value = {
+      path: rootPath,
+      exists: true,
+      bytes,
+      source: "du",
+    };
+  } catch (error) {
+    value = {
+      path: rootPath,
+      exists: false,
+      bytes: 0,
+      source: "du",
+      error: error.message || "Could not measure project folder.",
+    };
+  }
+
+  value.checkedAt = new Date().toISOString();
+  return value;
+}
+
+// Stale-while-revalidate: serve the cached value (even if past the freshness
+// window) and trigger a background refresh, deduping concurrent refreshes via
+// the entry's `refreshing` promise. If no value has ever been computed for
+// this key, return `pendingValue` and let the next poll surface the result.
+function swrServe({ cache, key, cacheMs, computeOnce, pendingValue, now = Date.now() }) {
+  const cached = cache?.get(key);
+
+  if (cached?.value && now - cached.cachedAt < cacheMs) {
+    return {
+      ...cached.value,
+      cacheAgeMs: now - cached.cachedAt,
+    };
+  }
+
+  if (cache && !cached?.refreshing) {
+    const refreshing = (async () => {
+      try {
+        const value = await computeOnce();
+        cache.set(key, { cachedAt: Date.now(), value });
+      } catch (error) {
+        const entry = cache.get(key);
+        if (entry) {
+          cache.set(key, { ...entry, lastError: error?.message || String(error) });
+        }
+      } finally {
+        const entry = cache.get(key);
+        if (entry && entry.refreshing === refreshing) {
+          cache.set(key, { ...entry, refreshing: undefined });
+        }
+      }
+    })();
+    cache.set(key, { ...(cached || { cachedAt: 0 }), refreshing });
+  }
+
+  if (cached?.value) {
+    return {
+      ...cached.value,
+      cacheAgeMs: now - cached.cachedAt,
+      refreshing: true,
+    };
+  }
+
+  return pendingValue;
+}
+
 async function readWikiStorage({
   cache = wikiStorageCache,
   cacheMs = DEFAULT_WIKI_STORAGE_CACHE_MS,
@@ -865,6 +968,7 @@ async function readWikiStorage({
   maxEntries = DEFAULT_WIKI_STORAGE_MAX_ENTRIES,
   readdir,
   rootPath,
+  staleWhileRevalidate = false,
   timeoutMs,
 }) {
   if (!rootPath) {
@@ -872,41 +976,35 @@ async function readWikiStorage({
   }
 
   const resolvedPath = path.resolve(rootPath);
+  const computeArgs = { execFile, lstat, maxEntries, readdir, rootPath: resolvedPath, timeoutMs };
+
+  if (staleWhileRevalidate) {
+    return swrServe({
+      cache,
+      key: resolvedPath,
+      cacheMs,
+      computeOnce: () => computeWikiStorageOnce(computeArgs),
+      pendingValue: {
+        path: resolvedPath,
+        exists: false,
+        bytes: null,
+        source: "computing",
+        pending: true,
+      },
+    });
+  }
+
   const now = Date.now();
   const cached = cache?.get(resolvedPath);
-  if (cached && now - cached.cachedAt < cacheMs) {
+  if (cached?.value && now - cached.cachedAt < cacheMs) {
     return {
       ...cached.value,
       cacheAgeMs: now - cached.cachedAt,
     };
   }
 
-  let value;
-  try {
-    const { stdout } = await runCommand(execFile, "du", ["-sk", resolvedPath], { timeoutMs });
-    const bytes = parseDuOutput(stdout);
-    if (bytes === null) {
-      throw new Error("du did not return a byte count");
-    }
-    value = {
-      path: resolvedPath,
-      exists: true,
-      bytes,
-      source: "du",
-    };
-  } catch (duError) {
-    value = await readWikiStorageByWalking({ lstat, maxEntries, readdir, rootPath: resolvedPath });
-    if (value.exists && duError?.message) {
-      value.warning = `du unavailable; used file walk (${duError.message})`;
-    }
-  }
-
-  value.checkedAt = new Date(now).toISOString();
-  cache?.set(resolvedPath, {
-    cachedAt: now,
-    value,
-  });
-
+  const value = await computeWikiStorageOnce(computeArgs);
+  cache?.set(resolvedPath, { cachedAt: now, value });
   return value;
 }
 
@@ -915,6 +1013,7 @@ async function readProjectRootStorage({
   cacheMs = DEFAULT_PROJECT_STORAGE_CACHE_MS,
   execFile,
   rootPath,
+  staleWhileRevalidate = false,
   timeoutMs,
 }) {
   const resolvedPath = normalizeStorageRootPath(rootPath);
@@ -922,44 +1021,35 @@ async function readProjectRootStorage({
     return null;
   }
 
+  const computeArgs = { execFile, rootPath: resolvedPath, timeoutMs };
+
+  if (staleWhileRevalidate) {
+    return swrServe({
+      cache,
+      key: resolvedPath,
+      cacheMs,
+      computeOnce: () => computeProjectRootStorageOnce(computeArgs),
+      pendingValue: {
+        path: resolvedPath,
+        exists: false,
+        bytes: null,
+        source: "computing",
+        pending: true,
+      },
+    });
+  }
+
   const now = Date.now();
   const cached = cache?.get(resolvedPath);
-  if (cached && now - cached.cachedAt < cacheMs) {
+  if (cached?.value && now - cached.cachedAt < cacheMs) {
     return {
       ...cached.value,
       cacheAgeMs: now - cached.cachedAt,
     };
   }
 
-  let value;
-  try {
-    const { stdout } = await runCommand(execFile, "du", ["-sk", resolvedPath], { timeoutMs });
-    const bytes = parseDuOutput(stdout);
-    if (bytes === null) {
-      throw new Error("du did not return a byte count");
-    }
-    value = {
-      path: resolvedPath,
-      exists: true,
-      bytes,
-      source: "du",
-    };
-  } catch (error) {
-    value = {
-      path: resolvedPath,
-      exists: false,
-      bytes: 0,
-      source: "du",
-      error: error.message || "Could not measure project folder.",
-    };
-  }
-
-  value.checkedAt = new Date(now).toISOString();
-  cache?.set(resolvedPath, {
-    cachedAt: now,
-    value,
-  });
-
+  const value = await computeProjectRootStorageOnce(computeArgs);
+  cache?.set(resolvedPath, { cachedAt: now, value });
   return value;
 }
 
@@ -969,6 +1059,7 @@ async function readProjectStorage({
   execFile,
   maxRoots = DEFAULT_PROJECT_STORAGE_MAX_ROOTS,
   rootPaths = [],
+  staleWhileRevalidate = false,
   timeoutMs,
 }) {
   const roots = dedupeNestedStorageRoots(rootPaths);
@@ -985,12 +1076,14 @@ async function readProjectStorage({
           cacheMs,
           execFile,
           rootPath,
+          staleWhileRevalidate,
           timeoutMs,
         }),
       ),
     )
   ).filter(Boolean);
   const existingEntries = entries.filter((entry) => entry.exists);
+  const pendingEntries = entries.filter((entry) => entry.pending);
   const warnings = entries
     .filter((entry) => entry.error)
     .map((entry) => `${entry.path}: ${entry.error}`)
@@ -1004,7 +1097,9 @@ async function readProjectStorage({
     measuredRootCount: measuredRoots.length,
     totalRootCount: roots.length,
     truncated: roots.length > measuredRoots.length,
-    source: "du",
+    source: pendingEntries.length === entries.length ? "computing" : "du",
+    pending: pendingEntries.length > 0,
+    pendingRootCount: pendingEntries.length,
     roots: entries,
     warnings,
   };
@@ -1027,6 +1122,7 @@ export async function collectSystemMetrics({
   projectStorageCache: projectStorageCacheOverride = projectStorageCache,
   projectStorageCacheMs = DEFAULT_PROJECT_STORAGE_CACHE_MS,
   projectStorageMaxRoots = DEFAULT_PROJECT_STORAGE_MAX_ROOTS,
+  staleWhileRevalidate = false,
   wikiPath = "",
   wikiStorageCache: wikiStorageCacheOverride = wikiStorageCache,
   wikiStorageCacheMs = DEFAULT_WIKI_STORAGE_CACHE_MS,
@@ -1046,6 +1142,7 @@ export async function collectSystemMetrics({
       maxEntries: wikiStorageMaxEntries,
       readdir,
       rootPath: wikiPath,
+      staleWhileRevalidate,
       timeoutMs,
     }),
     readProjectStorage({
@@ -1054,6 +1151,7 @@ export async function collectSystemMetrics({
       execFile,
       maxRoots: projectStorageMaxRoots,
       rootPaths: projectPaths,
+      staleWhileRevalidate,
       timeoutMs,
     }),
   ]);

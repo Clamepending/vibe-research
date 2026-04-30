@@ -19933,14 +19933,20 @@ function renderSystemStorageCard(system) {
   const wikiPercentLabel = formatStoragePercentLabel(wikiPercent);
   const projectPercentLabel = formatStoragePercentLabel(projectPercent);
   const wikiLegend = wiki
-    ? wiki.exists
-      ? `${formatBytes(wikiBytes)} Library (${wikiPercentLabel})`
-      : "Library folder missing"
+    ? wiki.pending
+      ? "Library: measuring size…"
+      : wiki.exists
+        ? `${formatBytes(wikiBytes)} Library (${wikiPercentLabel})`
+        : "Library folder missing"
     : "";
   const projectLegend = project
-    ? project.exists
-      ? `${formatBytes(projectBytes)} Project folders (${projectPercentLabel})`
-      : "Project folders unavailable"
+    ? project.pending
+      ? project.rootCount > 0
+        ? `${formatBytes(projectBytes)} Project folders (measuring more…)`
+        : "Project folders: measuring size…"
+      : project.exists
+        ? `${formatBytes(projectBytes)} Project folders (${projectPercentLabel})`
+        : "Project folders unavailable"
     : "";
   const wikiDetailParts = [
     wiki?.path || "",
