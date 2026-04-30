@@ -1,0 +1,146 @@
+#!/usr/bin/env node
+// vr-research-leaderboard — manage the LEADERBOARD table at loop step 9.
+//
+// CLAUDE.md admission rule: "First row you beat is your rank. Insert,
+// shift lower ranks down, drop rank 6 into the LOG as `evicted`."
+//
+// `insert` does the insert + shift. If a row falls off the end (was at
+// rank 5 before, now at rank 6), it's returned as `evicted` so the
+// agent can write the corresponding `evicted` LOG row via
+// `vr-research-log`.
+//
+// Usage:
+//   vr-research-leaderboard <project-dir> insert \
+//       --rank 1 \
+//       --slug v3-deeper-knob \
+//       --result results/v3-deeper-knob.md \
+//       --branch https://github.com/example/x/tree/r/v3-deeper-knob \
+//       --commit https://github.com/example/x/commit/abc1234 \
+//       --score "0.91 mean across n=3 seeds"
+//
+//   vr-research-leaderboard <project-dir> remove --slug v3-deeper-knob
+
+import path from "node:path";
+import process from "node:process";
+import { insertLeaderboardRow, removeLeaderboardRow } from "../src/research/leaderboard-edit.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-leaderboard — manage the LEADERBOARD table
+
+Usage:
+  vr-research-leaderboard <project-dir> insert --rank N --slug ... --result ... \\
+      --branch <url> --commit <url> --score <text> [options]
+  vr-research-leaderboard <project-dir> remove --slug <slug>
+
+Subcommands:
+  insert  Insert at the given rank (1-indexed). Existing rows at >= rank
+          shift down. Cap = 5; a row falling to rank 6 is returned as
+          \`evicted\` so the caller can LOG it. Refuses duplicate slugs.
+  remove  Delete the row whose slug matches; lower ranks shift up.
+
+Insert flags:
+  --rank <N>              Target rank (1-5).
+  --slug <text>           Move slug.
+  --result <relpath>      Result-doc path, e.g. results/v3-deeper-knob.md
+  --branch <url>          GitHub URL of the move's r/<slug> branch.
+  --commit <url>          GitHub URL of the cycle commit.
+  --score <text>          Score / verdict cell, e.g. "0.91 mean across n=3 seeds"
+
+Common:
+  --json                  Machine-readable summary on stdout.
+  --help, -h              Show this message.
+`);
+}
+
+function parseArgs(argv) {
+  const opts = {
+    projectDir: "", subcommand: "",
+    rank: undefined,
+    slug: "", result: "", branch: "", commit: "", score: "",
+    json: false, help: false,
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
+    if (arg === "--json") { opts.json = true; continue; }
+    if (arg === "--rank") { opts.rank = Number(argv[++i] || ""); continue; }
+    if (arg === "--slug") { opts.slug = argv[++i] || ""; continue; }
+    if (arg === "--result") { opts.result = argv[++i] || ""; continue; }
+    if (arg === "--branch") { opts.branch = argv[++i] || ""; continue; }
+    if (arg === "--commit") { opts.commit = argv[++i] || ""; continue; }
+    if (arg === "--score") { opts.score = argv[++i] || ""; continue; }
+    if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
+    if (!opts.projectDir) { opts.projectDir = arg; continue; }
+    if (!opts.subcommand) { opts.subcommand = arg; continue; }
+    throw new Error(`unexpected positional arg: ${arg}`);
+  }
+  return opts;
+}
+
+async function main() {
+  let opts;
+  try { opts = parseArgs(process.argv.slice(2)); }
+  catch (err) {
+    process.stderr.write(`${err.message}\n\n`);
+    printHelp();
+    process.exit(2);
+  }
+  if (opts.help) { printHelp(); process.exit(0); }
+  if (!opts.projectDir) { process.stderr.write(`project-dir positional argument is required\n`); process.exit(2); }
+  if (!["insert", "remove"].includes(opts.subcommand)) {
+    process.stderr.write(`subcommand must be 'insert' or 'remove', got "${opts.subcommand}"\n`);
+    process.exit(2);
+  }
+
+  const readmePath = path.join(path.resolve(opts.projectDir), "README.md");
+  let result;
+  try {
+    if (opts.subcommand === "insert") {
+      const errs = [];
+      if (!Number.isInteger(opts.rank) || opts.rank < 1) errs.push("--rank N (>= 1) is required");
+      if (!opts.slug) errs.push("--slug is required");
+      if (!opts.result) errs.push("--result is required");
+      if (!opts.branch) errs.push("--branch is required");
+      if (!opts.commit) errs.push("--commit is required");
+      if (!opts.score) errs.push("--score is required");
+      if (errs.length) {
+        for (const e of errs) process.stderr.write(`${e}\n`);
+        process.exit(2);
+      }
+      result = await insertLeaderboardRow({
+        readmePath,
+        rank: opts.rank,
+        row: {
+          slug: opts.slug,
+          resultPath: opts.result,
+          branchUrl: opts.branch,
+          commitUrl: opts.commit,
+          score: opts.score,
+        },
+      });
+    } else {
+      if (!opts.slug) { process.stderr.write(`--slug is required for 'remove'\n`); process.exit(2); }
+      result = await removeLeaderboardRow({ readmePath, slug: opts.slug });
+    }
+  } catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  }
+
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.exit(0);
+  }
+  if (opts.subcommand === "insert") {
+    process.stdout.write(`inserted ${result.inserted.slug} at rank ${result.inserted.rank} in ${result.readmePath}\n`);
+    if (result.evicted) {
+      process.stdout.write(`  evicted: ${result.evicted.slug} (was rank ${result.evicted.previousRank})\n`);
+      process.stdout.write(`  → write a LOG row: vr-research-log <project> --event evicted --slug ${result.evicted.slug} --summary '...'\n`);
+    }
+  } else {
+    process.stdout.write(`removed ${result.slug} from LEADERBOARD in ${result.readmePath}\n`);
+  }
+  process.exit(0);
+}
+
+main();
