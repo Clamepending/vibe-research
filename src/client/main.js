@@ -32877,16 +32877,34 @@ function renderUpdateBanner() {
       ? `<a class="update-link" href="${escapeHtml(update.releaseUrl)}" target="_blank" rel="noreferrer">release notes</a>`
       : "";
 
+  // While the update is in flight (npm install + build + restart, ~30-60s),
+  // the page stays open and waitForUpdateRestart() polls /api/state until
+  // the server comes back, then reloads. Show a spinner + "updating..." so
+  // the user knows the click was received and not to click again. The
+  // compact (release) branch above does the same thing.
+  const buttonHtml = update.canUpdate && state.updateApplying
+    ? `
+      <button class="primary-button update-button is-loading" type="button" id="update-app" disabled>
+        <span class="update-button-content">
+          <span class="update-button-spinner" aria-hidden="true"></span>
+          <span>updating...</span>
+        </span>
+      </button>
+    `
+    : `
+      <button class="${update.canUpdate ? "primary-button" : "ghost-button"} update-button" type="button" id="update-app" ${update.canUpdate ? "" : "disabled"}>
+        ${update.canUpdate ? "update & restart" : "blocked"}
+      </button>
+    `;
+
   return `
-    <section class="update-card ${update.canUpdate ? "" : "is-blocked"}">
+    <section class="update-card ${update.canUpdate ? "" : "is-blocked"} ${state.updateApplying ? "is-applying" : ""}">
       <div class="update-copy">
         <strong>${escapeHtml(isRelease ? `${latest} available` : "new version available")}</strong>
         <span>${escapeHtml(detail)}</span>
         ${releaseLink}
       </div>
-      <button class="${update.canUpdate ? "primary-button" : "ghost-button"} update-button" type="button" id="update-app" ${update.canUpdate ? "" : "disabled"}>
-        ${update.canUpdate ? "update & restart" : "blocked"}
-      </button>
+      ${buttonHtml}
     </section>
   `;
 }
