@@ -138,6 +138,12 @@ export const RICH_SESSION_INLINE_IMAGE_EXTENSIONS = /\.(?:png|jpe?g|gif|webp|bmp
 // menu surfaces them top-down. The `aliases` array is the prose triggers
 // for the inline action button (e.g. "Please run /login" on an auth_failed
 // status entry).
+//
+// This is the BUILT-IN catalog. The composer prefers the server-emitted
+// list on `session.availableSlashCommands` when present (see
+// resolveRichSessionSlashCommands below) — that's the path per-session
+// custom commands take when we add them. Today the server doesn't emit
+// a custom list yet; the menu falls through to this static array.
 export const RICH_SESSION_SLASH_COMMANDS = [
   { command: "/login", label: "Sign in", hint: "Open Claude login flow", aliases: [/please\s+run\s+\/login/iu, /authentication[_\s]?(?:failed|error)/iu, /invalid\s+authentication\s+credentials/iu] },
   { command: "/logout", label: "Sign out", hint: "Sign out of the current Claude account", aliases: [/please\s+run\s+\/logout/iu] },
@@ -147,6 +153,31 @@ export const RICH_SESSION_SLASH_COMMANDS = [
   { command: "/help", label: "Help", hint: "Show available commands", aliases: [/please\s+run\s+\/help/iu] },
   { command: "/resume", label: "Resume", hint: "Resume a previous Claude session", aliases: [/please\s+run\s+\/resume/iu] },
 ];
+
+// Pulls the slash command catalog for a session. Prefers the server-
+// emitted `session.availableSlashCommands` (each entry: {command, label,
+// hint?, aliases?}) when present; falls back to the static built-in
+// catalog. The aliases / hint fields are optional; missing values fall
+// back to sensible defaults so the menu never ships a half-empty row.
+export function resolveRichSessionSlashCommands(session) {
+  const list = Array.isArray(session?.availableSlashCommands) ? session.availableSlashCommands : null;
+  if (!list || !list.length) {
+    return RICH_SESSION_SLASH_COMMANDS;
+  }
+  return list
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const command = String(entry.command || "").trim();
+      if (!command || !command.startsWith("/")) return null;
+      return {
+        command,
+        label: String(entry.label || command).trim(),
+        hint: String(entry.hint || "").trim(),
+        aliases: Array.isArray(entry.aliases) ? entry.aliases : [],
+      };
+    })
+    .filter(Boolean);
+}
 
 // Server-side narrative shaper now emits `entry.slashAction = {command,label}`
 // directly. This regex-based extractor is kept as a fallback for legacy

@@ -78,12 +78,14 @@ import {
   extractRichSessionSlashAction,
   resolveRichSessionImageRefs,
   resolveRichSessionSlashAction,
+  resolveRichSessionSlashCommands,
   getRichSessionImageUrl as getRichSessionImageUrlPure,
   renderAnsiToHtml,
   stripAnsi,
 } from "./rich-session-helpers.js";
 import {
   NARRATIVE_FRAME_TYPES,
+  NARRATIVE_SCHEMA_VERSION,
   applyNarrativeFrame,
   createInitialNarrativeState,
   selectNarrativeEntries,
@@ -5294,10 +5296,36 @@ function getRichSessionNarrative(sessionId) {
 
 // Apply a narrative-init or narrative-event frame to the reducer state for
 // the given sessionId. Returns true on success; false when the frame
-// indicates a seq gap and the caller should trigger a resync.
+// indicates a seq gap or a schema-version mismatch and the caller should
+// trigger a resync via the HTTP narrative endpoint.
 function applyNarrativeFrameToState(sessionId, frame, { armed = false } = {}) {
   const id = String(sessionId || "");
   if (!id || !frame || typeof frame !== "object") return true;
+
+  // Schema-version mismatch: the server has rolled forward to a version
+  // newer than this browser bundle understands. Drop the reducer arm so
+  // the renderer falls back to the HTTP narrative endpoint (which serves
+  // a server-canonical shape regardless of bundle vintage) and stop
+  // applying push frames until a soft reload picks up the new bundle.
+  // We allow the same version OR an older one (server-on-old / client-on-
+  // new race during deploy rollback) — newer fields are additive in
+  // additions, and the validator only requires the pre-v2 core to be
+  // present, so older frames render fine.
+  if (typeof frame.schemaVersion === "number" && frame.schemaVersion > NARRATIVE_SCHEMA_VERSION) {
+    if (!state.nativeSessionReducerSchemaWarned) {
+      state.nativeSessionReducerSchemaWarned = new Set();
+    }
+    if (!state.nativeSessionReducerSchemaWarned.has(id)) {
+      state.nativeSessionReducerSchemaWarned.add(id);
+      console.warn(
+        `[narrative] server schema v${frame.schemaVersion} > client v${NARRATIVE_SCHEMA_VERSION}; ` +
+        `falling back to HTTP narrative for session ${id}. Reload the page to pick up the new bundle.`,
+      );
+    }
+    state.nativeSessionReducerArmed.delete(id);
+    return false;
+  }
+
   const previous = state.nativeSessionReducerState[id] || createInitialNarrativeState();
 
   // Gap detection on event frames: if the frame's seq is more than one
@@ -5823,7 +5851,12 @@ function refreshRichSessionSlashMenu(input) {
   }
 
   const query = trimmed.slice(1).toLowerCase();
-  const matches = RICH_SESSION_SLASH_COMMANDS.filter((entry) => (
+  // Prefer the server-driven catalog so per-session command sets (e.g.
+  // research routines like /research-resolve, /wandb-pull) appear in the
+  // menu without a client redeploy. Falls back to the built-in list when
+  // the session hasn't shipped one.
+  const catalog = resolveRichSessionSlashCommands(getActiveSession());
+  const matches = catalog.filter((entry) => (
     !query || entry.command.slice(1).toLowerCase().startsWith(query)
   ));
 

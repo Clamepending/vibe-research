@@ -2723,7 +2723,7 @@ test("attachClient truncates oversized buffers to the snapshot replay limit", as
   }
 });
 
-test("attachClient sends snapshot-start and snapshot-end with no chunks for an empty buffer", async () => {
+test("attachClient sends snapshot-start, snapshot-end, and narrative-init for an empty buffer", async () => {
   const { manager, workspaceDir, userHomeDir } = await createManager();
 
   try {
@@ -2743,9 +2743,14 @@ test("attachClient sends snapshot-start and snapshot-end with no chunks for an e
     await flushSetImmediate();
 
     const types = socket.messages.map((m) => m.type);
-    assert.deepEqual(types, ["snapshot-start", "snapshot-end"]);
+    // narrative-init is part of the attach handshake now: snapshot for the
+    // PTY transcript replay, narrative-init to seed the WS-driven reducer.
+    assert.deepEqual(types, ["snapshot-start", "snapshot-end", "narrative-init"]);
     assert.equal(socket.messages[0].chunkCount, 0);
     assert.equal(socket.messages[0].totalBytes, 0);
+    const initFrame = socket.messages.find((m) => m.type === "narrative-init");
+    assert.ok(initFrame, "narrative-init frame should be present");
+    assert.equal(initFrame.sessionId, session.id);
   } finally {
     await cleanupManager(manager, workspaceDir, userHomeDir);
   }

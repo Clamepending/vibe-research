@@ -4,6 +4,7 @@ import {
   getRichSessionToolName,
   splitRichSessionTranscriptBlocks,
 } from "./client/rich-session-transcript.js";
+import { normaliseNarrativeEntry } from "./narrative-schema.js";
 
 const DEFAULT_MAX_ENTRIES = 96;
 const MAX_TEXT_LENGTH = 12_000;
@@ -195,10 +196,30 @@ function dedupePush(entries, nextEntry, maxEntries = DEFAULT_MAX_ENTRIES) {
     return;
   }
 
-  entries.push({
-    ...nextEntry,
-    text: normalizedText,
-  });
+  // Run every entry through the schema validator at the producer boundary
+  // so any structural drift (missing id, unknown kind, malformed mcp /
+  // slashAction / todos) throws here — at unit-test time — instead of
+  // getting caught silently in the snapshot helper at broadcast time.
+  // `getStreamNarrativeSnapshot` still has its own try/catch as a safety
+  // net for code paths that bypass dedupePush (projected entries, etc).
+  let validated;
+  try {
+    validated = normaliseNarrativeEntry({
+      ...nextEntry,
+      text: normalizedText,
+    });
+  } catch (error) {
+    // Producer bug. Log once with enough context to file an issue, then
+    // drop. Tests that exercise this path will see the warning AND the
+    // assertion failure on the missing entry, so the log message is the
+    // bug-report bait — not the failure signal.
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn(`[session-native-narrative] dropped invalid entry (${error.message}):`, JSON.stringify(nextEntry).slice(0, 240));
+    }
+    return;
+  }
+
+  entries.push(validated);
 
   if (entries.length > maxEntries) {
     entries.splice(0, entries.length - maxEntries);

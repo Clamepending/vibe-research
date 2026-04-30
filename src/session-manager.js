@@ -56,6 +56,11 @@ const SNAPSHOT_CHUNK_SIZE = 32_768;
 const STARTUP_DELAY_MS = 180;
 const SESSION_META_THROTTLE_MS = 180;
 const SESSION_PERSIST_THROTTLE_MS = 180;
+// PTY chunks arrive at keystroke frequency; running the projected-narrative
+// parser per chunk would thrash CPU and the wire. 200ms is the sweet spot:
+// faster than perceptible UI lag (humans tolerate <250ms), slower than the
+// fastest typing or paste interactions (which produce dozens of chunks).
+const NARRATIVE_DIFF_THROTTLE_MS = 200;
 const SESSION_NAME_MAX_LENGTH = 64;
 const SESSION_AUTO_NAME_MAX_WORDS = 6;
 const SESSION_AUTO_NAME_BUFFER_LIMIT = 240;
@@ -3789,6 +3794,10 @@ export class SessionManager {
     this.clearPendingProviderInputRetry(session);
     this.clearPendingProviderCaptureRetry(session);
     this.clearSessionActivityTimer(session);
+    if (session.narrativeDiffTimer) {
+      clearTimeout(session.narrativeDiffTimer);
+      session.narrativeDiffTimer = null;
+    }
     session.clients.clear();
     this.queueAgentRunTracking(this.agentRunTracker?.handleSessionDelete(session));
 
@@ -3831,12 +3840,11 @@ export class SessionManager {
 
     // Push the narrative baseline so the client reducer has coherent state
     // immediately, instead of waiting on the first /api/sessions/:id/narrative
-    // HTTP fetch. Only stream-mode sessions emit incremental events today;
-    // for non-stream sessions this is a no-op (empty entries) and the HTTP
-    // pull path remains the primary source.
-    if (session.streamMode) {
-      this.broadcastNarrativeInit(session, socket);
-    }
+    // HTTP fetch. Stream-mode sessions emit incremental events as JSONL
+    // arrives; PTY-backed sessions emit them throttled per pushOutput.
+    // Either way the reducer is the source of truth on the client once
+    // armed, so always seed it with an init frame.
+    this.broadcastNarrativeInit(session, socket);
 
     return session;
   }
@@ -4122,7 +4130,31 @@ export class SessionManager {
       }
     }
 
+    // Schedule a debounced narrative diff so PTY-backed sessions get the
+    // same WS push protocol as stream sessions. Debounced to avoid
+    // re-running buildProjectedNarrative on every keystroke during
+    // interactive use; the renderer's empty-state painted by the existing
+    // pull model is fine in the meantime.
+    this.scheduleNarrativeDiffBroadcast(session);
+
     this.schedulePersist();
+  }
+
+  // Debounced narrative diff broadcast for the PTY hot-path. Stream-mode
+  // callers fire broadcastNarrativeDiff directly because their cadence is
+  // already moderate; PTY chunks at keystroke frequency would thrash the
+  // wire (and re-run the projected-narrative parser) without throttling.
+  scheduleNarrativeDiffBroadcast(session) {
+    if (!session) return;
+    if (session.narrativeDiffTimer) return;
+    session.narrativeDiffTimer = this.setTimeoutFn(() => {
+      session.narrativeDiffTimer = null;
+      try {
+        this.broadcastNarrativeDiff(session);
+      } catch (error) {
+        console.warn(`[vibe-research] narrative diff broadcast failed for session ${session.id}:`, error?.message);
+      }
+    }, NARRATIVE_DIFF_THROTTLE_MS);
   }
 
   clearSessionActivityTimer(session) {
@@ -4253,21 +4285,46 @@ export class SessionManager {
     }
   }
 
-  // Build the canonical narrative snapshot for a stream-mode session — the
-  // entries the WS push protocol carries to a client. We deliberately skip
-  // the empty-state placeholder that getNativeNarrativeEntries injects for
-  // the HTTP narrative path: the WS reducer treats an empty entries[] as a
-  // legitimate baseline and the renderer paints its own empty state, so
-  // emitting a synthetic "waiting for stream" entry just to immediately
-  // remove it on the first real event is wire-format noise.
-  getStreamNarrativeSnapshot(session, { maxEntries = 96 } = {}) {
+  // Build the canonical narrative snapshot a session's WS push protocol
+  // carries to its clients. Dispatches by mode:
+  //
+  //   stream-mode → merges native entries with the stream session's
+  //                 structured entries (Claude/Codex JSONL paths).
+  //   PTY-backed  → merges native entries with the projected narrative
+  //                 over session.buffer (the PTY transcript). Same shape
+  //                 as getSessionNarrative's HTTP path uses, just synchronous
+  //                 and skipping the empty-state placeholder.
+  //
+  // Skipping the placeholder is deliberate: the WS reducer treats an empty
+  // entries[] as a legitimate baseline and the renderer paints its own
+  // empty state, so a synthetic "waiting for stream" entry just to remove
+  // it on the first real event is wire-format noise.
+  getNarrativeSnapshot(session, { maxEntries = 96 } = {}) {
     if (!session) return [];
-    const streamEntries = Array.isArray(session.streamEntries) ? session.streamEntries.slice(-maxEntries) : [];
     const nativeEntries = this.getNativeNarrativeEntries(session, {
       maxEntries,
       includePlaceholder: false,
     });
-    const merged = mergeNarrativeEntries(nativeEntries, streamEntries, maxEntries);
+
+    let providerEntries = [];
+    if (session.streamMode || session.streamSession) {
+      providerEntries = Array.isArray(session.streamEntries) ? session.streamEntries.slice(-maxEntries) : [];
+    } else {
+      const recentInputTexts = getRecentNarrativeInputTexts(nativeEntries);
+      const projectedNarrative = buildProjectedNarrative({
+        providerId: session.providerId,
+        providerLabel: session.providerLabel,
+        transcript: session.buffer || "",
+        maxEntries,
+        recentInputs: recentInputTexts,
+      });
+      providerEntries = timestampNarrativeEntries(
+        filterProjectedOverlayEntries(projectedNarrative.entries || []).slice(-Math.max(1, Math.min(12, maxEntries))),
+        session.lastOutputAt || session.updatedAt || session.createdAt,
+      );
+    }
+
+    const merged = mergeNarrativeEntries(nativeEntries, providerEntries, maxEntries);
     return merged.map((entry, index) => {
       try {
         return normaliseNarrativeEntry({
@@ -4282,12 +4339,17 @@ export class SessionManager {
     }).filter(Boolean);
   }
 
+  // Backwards-compat alias kept for any caller that hardcoded the old name.
+  getStreamNarrativeSnapshot(session, options = {}) {
+    return this.getNarrativeSnapshot(session, options);
+  }
+
   // Send a narrative-init frame to one client (or all of a session's
   // clients). Used on WebSocket connect to warm the client's reducer with
   // a coherent baseline before any incremental events arrive.
   broadcastNarrativeInit(session, target = null) {
     if (!session) return;
-    const entries = this.getStreamNarrativeSnapshot(session);
+    const entries = this.getNarrativeSnapshot(session);
     if (typeof session.broadcastSeq !== "number") session.broadcastSeq = 0;
     const lastSeq = session.broadcastSeq;
     let frame;
@@ -4310,13 +4372,19 @@ export class SessionManager {
     session.lastBroadcastNarrative = new Map(entries.map((entry) => [entry.id, entry]));
   }
 
-  // Compute and emit a narrative-event diff after the stream session
-  // produces a new entries snapshot. Each upsert/remove gets its own seq
-  // so a client can detect a missed frame and resync via the HTTP endpoint
-  // (or by re-handshaking the WebSocket).
+  // Compute and emit a narrative-event diff after a session produces a
+  // new entries snapshot. Each upsert/remove gets its own seq so a client
+  // can detect a missed frame and resync via the HTTP endpoint (or by
+  // re-handshaking the WebSocket). Stream-mode and PTY-backed sessions
+  // share this path — `getNarrativeSnapshot` does the dispatch.
+  //
+  // PTY sessions can produce many small chunks per second, so callers in
+  // the PTY hot-path (pushOutput) use scheduleNarrativeDiffBroadcast which
+  // debounces; stream-mode callers fire this directly because their event
+  // cadence is already moderate.
   broadcastNarrativeDiff(session) {
     if (!session) return;
-    const next = this.getStreamNarrativeSnapshot(session);
+    const next = this.getNarrativeSnapshot(session);
     const nextById = new Map(next.map((entry) => [entry.id, entry]));
     const prevById = session.lastBroadcastNarrative instanceof Map ? session.lastBroadcastNarrative : new Map();
     if (typeof session.broadcastSeq !== "number") session.broadcastSeq = 0;
@@ -4427,6 +4495,12 @@ export class SessionManager {
       streamMode: Boolean(session.streamMode),
       streamWorking: Boolean(session.streamWorking),
       claudePrompt: detectClaudePrompt(session),
+      // Per-session slash command catalog. Empty today — the client falls
+      // back to the built-in list. When per-session command sets land
+      // (research routines like /research-resolve, /wandb-pull, …) the
+      // shape is [{command, label, hint?, aliases?}]; the renderer
+      // already reads it via resolveRichSessionSlashCommands.
+      availableSlashCommands: Array.isArray(session.availableSlashCommands) ? session.availableSlashCommands : [],
     };
   }
 
