@@ -34,6 +34,7 @@
 
 import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { spawn } from "node:child_process";
 
 export const DEFAULT_PROJECT_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -165,6 +166,60 @@ async function pathExists(targetPath) {
   try { await stat(targetPath); return true; } catch { return false; }
 }
 
+// Seed the W&B project so the project shortcut links to a real page from
+// minute one — analogous to writing paper.md at init time. Best-effort:
+// returns { ok, reason } without throwing. Skipped when entity is empty.
+export async function seedWandbProject({
+  entity,
+  project,
+  pythonBin = "python3",
+  timeoutMs = 15_000,
+}) {
+  if (!entity || !project) return { ok: false, reason: "no-entity" };
+  const py = [
+    "import sys",
+    "try:",
+    "    import wandb",
+    "except ImportError:",
+    "    sys.exit(2)",
+    "try:",
+    `    wandb.init(project=${JSON.stringify(project)}, entity=${JSON.stringify(entity)}, name="_init", notes="seeded by vr-research-init", reinit=True)`,
+    "    wandb.finish()",
+    "except Exception as e:",
+    "    print(f'wandb init failed: {e}', file=sys.stderr)",
+    "    sys.exit(3)",
+  ].join("\n");
+
+  return new Promise((resolve) => {
+    // Closing stdin makes wandb fail fast on a non-interactive shell instead
+    // of blocking on a login prompt.
+    const child = spawn(pythonBin, ["-c", py], {
+      stdio: ["ignore", "ignore", "pipe"],
+      env: { ...process.env, WANDB_SILENT: "true" },
+    });
+    let stderr = "";
+    let timer = null;
+    let settled = false;
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      settle({ ok: false, reason: "timeout" });
+    }, timeoutMs);
+    child.stderr.on("data", (d) => { stderr += String(d); });
+    child.on("error", (err) => settle({ ok: false, reason: "spawn-failed", error: err.message }));
+    child.on("close", (code) => {
+      if (code === 0) return settle({ ok: true });
+      if (code === 2) return settle({ ok: false, reason: "wandb-not-installed" });
+      settle({ ok: false, reason: `exit-${code}`, stderr: stderr.trim() });
+    });
+  });
+}
+
 export async function createProject({
   projectsDir,
   name,
@@ -176,6 +231,7 @@ export async function createProject({
   paperTemplatePath,
   repoRoot = path.resolve(projectsDir, ".."),
   force = false,
+  wandbEntity = "",
 } = {}) {
   if (!projectsDir) throw new TypeError("projectsDir is required");
   const trimmedName = trimString(name);
@@ -214,5 +270,9 @@ export async function createProject({
   }
   // results/ + figures/ are dirs; nothing to write inside them at init.
 
-  return { projectDir, wrote };
+  const wandb = wandbEntity
+    ? await seedWandbProject({ entity: wandbEntity, project: trimmedName })
+    : { ok: false, reason: "no-entity" };
+
+  return { projectDir, wrote, wandb };
 }

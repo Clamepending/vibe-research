@@ -136,6 +136,9 @@ async function main() {
   }
 
   const projectsDir = path.resolve(options.library, "projects");
+  const wandbEntity = String(
+    process.env.VIBE_RESEARCH_WANDB_ENTITY || process.env.WANDB_ENTITY || "",
+  ).trim();
   let result;
   try {
     result = await createProject({
@@ -147,6 +150,7 @@ async function main() {
       ranking,
       queueRows,
       force: options.force,
+      wandbEntity,
     });
   } catch (err) {
     process.stderr.write(`${err.message}\n`);
@@ -159,6 +163,11 @@ async function main() {
     process.stdout.write(`created ${result.projectDir}\n`);
     for (const filePath of result.wrote) {
       process.stdout.write(`  ${filePath}\n`);
+    }
+    if (result.wandb?.ok) {
+      process.stdout.write(`  seeded W&B project ${wandbEntity}/${options.name}\n`);
+    } else if (wandbEntity) {
+      process.stdout.write(`  W&B seed skipped: ${result.wandb?.reason || "unknown"}\n`);
     }
   }
   process.exit(0);
