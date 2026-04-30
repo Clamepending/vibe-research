@@ -1,6 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
-import { getBriefPath, readResearchState, updateResearchState } from "./brief.js";
+import { compileBriefToQueue, getBriefPath, readResearchState, updateResearchState } from "./brief.js";
 import { runDoctor } from "./doctor.js";
 import { judgeMove } from "./judge.js";
 import { loadProjectLog, parseProjectReadme } from "./project-readme.js";
@@ -89,6 +89,7 @@ export async function tickResearchOrchestrator({
 
   let rec;
   let judge = null;
+  let briefCompile = null;
   let phaseUpdate = null;
   let nextCommand = "";
 
@@ -207,6 +208,18 @@ export async function tickResearchOrchestrator({
         "--slug",
         state.briefSlug,
       ]);
+      if (apply) {
+        briefCompile = await compileBriefToQueue({
+          projectDir: resolvedProjectDir,
+          slug: state.briefSlug,
+        });
+        phaseUpdate = await updateResearchState({
+          projectDir: resolvedProjectDir,
+          phase: "experiment",
+          briefSlug: briefCompile.brief.slug,
+          summary: `orchestrator: compiled ${briefCompile.queueRows.length} move(s) from brief ${briefCompile.brief.slug}`,
+        });
+      }
     } else {
       rec = recommendation(
         "create-brief",
@@ -230,6 +243,13 @@ export async function tickResearchOrchestrator({
     projectName,
     phase: state,
     phaseUpdate: phaseUpdate?.state || null,
+    briefCompile: briefCompile
+      ? {
+        briefSlug: briefCompile.brief.slug,
+        queueRows: briefCompile.queueRows,
+        compiled: briefCompile.compiled,
+      }
+      : null,
     doctor: {
       summary: doctor.summary,
       issues: doctor.issues,
@@ -256,6 +276,9 @@ export function formatOrchestratorReport(report) {
 
   if (report.phaseUpdate) {
     lines.push(`phase update: ${report.phaseUpdate.phase} - ${report.phaseUpdate.summary}`);
+  }
+  if (report.briefCompile) {
+    lines.push(`brief compile: ${report.briefCompile.briefSlug} -> ${report.briefCompile.queueRows.length} queue row(s)`);
   }
   if (report.judge?.summary) {
     lines.push(`judge: ${report.judge.summary}`);

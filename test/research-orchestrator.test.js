@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import test from "node:test";
@@ -228,6 +228,12 @@ test("tickResearchOrchestrator recommends compiling an existing brief", async ()
     assert.equal(report.recommendation.briefSlug, "plateau-plan");
     assert.match(report.nextCommand, /vr-research-brief/);
     assert.match(report.nextCommand, /compile/);
+
+    const applied = await tickResearchOrchestrator({ projectDir: dir, apply: true });
+    assert.equal(applied.briefCompile.briefSlug, "plateau-plan");
+    assert.equal(applied.phaseUpdate.phase, "experiment");
+    const readme = readFileSync(join(dir, "README.md"), "utf8");
+    assert.match(readme, /\| dropout-rerun \| main \| rerun with seeds \|/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
