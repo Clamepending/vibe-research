@@ -673,6 +673,71 @@ async function createReviewCard({
   return { ...actionItem, wait: waitPayload };
 }
 
+function actionItemFromWait(waitPayload, actionItemId) {
+  const items = Array.isArray(waitPayload?.state?.actionItems) ? waitPayload.state.actionItems : [];
+  return items.find((item) => item.id === actionItemId) || null;
+}
+
+function normalizeReviewDecisionAction({ resolution = "", status = "" } = {}) {
+  const normalized = trimString(resolution).toLowerCase();
+  const map = new Map([
+    ["continued", "continue"],
+    ["continue", "continue"],
+    ["rerun", "rerun"],
+    ["synthesized", "synthesize"],
+    ["synthesize", "synthesize"],
+    ["brainstorm", "brainstorm"],
+    ["steered", "steer"],
+    ["steer", "steer"],
+    ["paused", "pause"],
+    ["pause", "pause"],
+    ["resumed", "resume"],
+    ["resume", "resume"],
+    ["approved", "approve"],
+    ["approve", "approve"],
+    ["rejected", "reject"],
+    ["reject", "reject"],
+    ["dismissed", "dismiss"],
+    ["dismiss", "dismiss"],
+    ["completed", "complete"],
+    ["complete", "complete"],
+  ]);
+  if (map.has(normalized)) return map.get(normalized);
+  const normalizedStatus = trimString(status).toLowerCase();
+  if (normalizedStatus === "completed") return "complete";
+  if (normalizedStatus === "dismissed") return "dismiss";
+  return normalized ? "resolved" : "pending";
+}
+
+function deriveReviewDecision({ review, actionItemId } = {}) {
+  if (!review) return null;
+  const wait = review.wait || null;
+  const item = wait ? actionItemFromWait(wait, actionItemId) : null;
+  const resolution = trimString(item?.resolution || review.resolution || "");
+  const status = trimString(item?.status || review.status || "");
+  const resolutionNote = trimString(item?.resolutionNote || review.resolutionNote || "");
+  if (wait && !wait.satisfied) {
+    return {
+      action: "timeout",
+      actionItemId,
+      satisfied: false,
+      resolution,
+      resolutionNote,
+      status,
+      waitAttempts: wait.waitAttempts || 0,
+    };
+  }
+  return {
+    action: normalizeReviewDecisionAction({ resolution, status }),
+    actionItemId,
+    satisfied: wait ? Boolean(wait.satisfied) : false,
+    resolution,
+    resolutionNote,
+    status,
+    waitAttempts: wait?.waitAttempts || 0,
+  };
+}
+
 function buildAgentReviewPrompt({
   agentTownApi,
   actionItemId,
@@ -1368,6 +1433,7 @@ export async function runCycle({
     : null;
   const reviewSkippedReason = reviewResult?.skipped ? reviewResult.reason : "";
   const review = reviewResult?.skipped ? null : reviewResult;
+  const reviewDecision = deriveReviewDecision({ review, actionItemId });
 
   return {
     projectDir,
@@ -1390,6 +1456,7 @@ export async function runCycle({
     },
     review,
     reviewWait: review?.wait || null,
+    reviewDecision,
     reviewSkippedReason,
     agentReviewSession,
     monitorCanvas,
@@ -1685,6 +1752,7 @@ export const __internal = {
   DEFAULT_METRIC_REGEX,
   DEFAULT_TIMEOUT_MS,
   appendSectionBullet,
+  deriveReviewDecision,
   branchUrlForMove,
   buildAgentReviewPrompt,
   collectCycleMetrics,

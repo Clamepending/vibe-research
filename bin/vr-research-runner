@@ -305,6 +305,10 @@ function printCycle(result) {
   if (result.reviewWait) {
     process.stdout.write(`review wait: ${result.reviewWait.satisfied ? "resolved" : "timed out"}\n`);
   }
+  if (result.reviewDecision) {
+    const note = result.reviewDecision.resolutionNote ? ` - ${result.reviewDecision.resolutionNote}` : "";
+    process.stdout.write(`review decision: ${result.reviewDecision.action}${note}\n`);
+  }
   if (result.reviewSkippedReason) process.stdout.write(`review skipped: ${result.reviewSkippedReason}\n`);
   if (result.monitorCanvas) process.stdout.write(`monitor canvas: ${result.monitorCanvas.id || "published"}\n`);
   if (result.monitorCanvasSkippedReason) process.stdout.write(`monitor canvas skipped: ${result.monitorCanvasSkippedReason}\n`);

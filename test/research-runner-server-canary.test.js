@@ -123,6 +123,9 @@ test("research runner completes a real-server Agent Town canary", { timeout: 30_
     assert.equal(run.claim.slug, "session-linked-card");
     assert.equal(run.cycle.metric, "0.810");
     assert.equal(run.cycle.reviewWait.satisfied, true);
+    assert.equal(run.cycle.reviewDecision.action, "continue");
+    assert.equal(run.cycle.reviewDecision.resolution, "continued");
+    assert.match(run.cycle.reviewDecision.resolutionNote, /human review gate/);
     assert.equal(run.cycle.agentReviewSession.id, reviewerSession.id);
     assert.equal(run.cycle.monitorCanvas.sourceSessionId, reviewerSession.id);
     assert.equal(run.cycle.monitorCanvas.sourceAgentId, "shell");

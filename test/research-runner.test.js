@@ -243,6 +243,16 @@ test("runCycle can wait on the Agent Inbox review card", async () => {
               predicate: body.predicate,
               predicateParams: body.predicateParams,
               satisfied: true,
+              state: {
+                actionItems: [
+                  {
+                    id: body.predicateParams.actionItemId,
+                    status: "completed",
+                    resolution: "rerun",
+                    resolutionNote: "Need one more seed before synthesis.",
+                  },
+                ],
+              },
             };
           }
           return { actionItem: { id: body.id, title: body.title } };
@@ -264,6 +274,9 @@ test("runCycle can wait on the Agent Inbox review card", async () => {
     });
     assert.equal(result.review.id, "research-cycle-first-move-1");
     assert.equal(result.reviewWait.satisfied, true);
+    assert.equal(result.reviewDecision.action, "rerun");
+    assert.equal(result.reviewDecision.resolution, "rerun");
+    assert.match(result.reviewDecision.resolutionNote, /one more seed/);
     assert.equal(calls.length, 2);
     assert.equal(calls[0].body.sourceSessionId, "session-1");
     assert.equal(calls[0].body.sourceAgentId, "agent-a");
