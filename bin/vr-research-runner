@@ -53,6 +53,12 @@ Cycle options:
   --human-timeout-sec <N>
                          Human wait timeout in seconds (default: 30).
   --agent-town-api <url> Agent Town API base; defaults to env var.
+  --agent-review-provider <id>
+                         Create a reviewer agent session (e.g. codex or claude) with a prompt that resolves the review card.
+  --agent-review-name <text>
+                         Name for the reviewer agent session.
+  --agent-review-prompt <text>
+                         Override the generated reviewer prompt.
   --monitor-url <url>    Pin a live W&B/TensorBoard/Modal URL to canvas.
   --monitor-title <text> Title for the live monitor canvas.
   --monitor-caption <text>
@@ -153,6 +159,9 @@ function parseArgs(argv) {
     monitorUrl: "",
     monitorTitle: "",
     monitorCaption: "",
+    agentReviewProvider: "",
+    agentReviewName: "",
+    agentReviewPrompt: "",
     force: false,
     allowBudgetCap: false,
     codeCwd: "",
@@ -237,6 +246,9 @@ function parseArgs(argv) {
     if (arg === "--timeout-sec") { opts.timeoutSec = Number(readValue(argv, index, arg)); index += 1; continue; }
     if (arg === "--human-timeout-sec") { opts.humanTimeoutSec = Number(readValue(argv, index, arg)); index += 1; continue; }
     if (arg === "--agent-town-api") { opts.agentTownApi = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--agent-review-provider") { opts.agentReviewProvider = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--agent-review-name") { opts.agentReviewName = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--agent-review-prompt") { opts.agentReviewPrompt = readValue(argv, index, arg); index += 1; continue; }
     if (arg === "--monitor-url") { opts.monitorUrl = readValue(argv, index, arg); index += 1; continue; }
     if (arg === "--monitor-title") { opts.monitorTitle = readValue(argv, index, arg); index += 1; continue; }
     if (arg === "--monitor-caption") { opts.monitorCaption = readValue(argv, index, arg); index += 1; continue; }
@@ -288,6 +300,7 @@ function printCycle(result) {
   process.stdout.write(`cycle ${result.cycleIndex} recorded for ${result.slug}\n`);
   process.stdout.write(`outcome: ${result.metric ? `metric=${result.metric}` : `exit=${result.exitCode}`}\n`);
   process.stdout.write(`artifact: ${result.artifactPath}\n`);
+  if (result.agentReviewSession) process.stdout.write(`review agent: ${result.agentReviewSession.id || "created"}\n`);
   if (result.review) process.stdout.write(`review: ${result.review.id || "created"}\n`);
   if (result.reviewWait) {
     process.stdout.write(`review wait: ${result.reviewWait.satisfied ? "resolved" : "timed out"}\n`);
@@ -394,6 +407,9 @@ async function main() {
     monitorCaption: opts.monitorCaption,
     canvasSessionId: opts.canvasSessionId,
     canvasAgentId: opts.canvasAgentId,
+    agentReviewProvider: opts.agentReviewProvider,
+    agentReviewName: opts.agentReviewName,
+    agentReviewPrompt: opts.agentReviewPrompt,
     force: opts.force,
     allowBudgetCap: opts.allowBudgetCap,
     codeCwd: opts.codeCwd,

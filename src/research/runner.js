@@ -19,6 +19,7 @@ import { resolveMove } from "./resolve.js";
 import { updateResearchState } from "./brief.js";
 import { lintPaper } from "./paper-lint.js";
 import { budgetCapBreaches, isBudgetCapReached, normalizeBudgetDebits } from "./budget.js";
+import { normalizeAgentTownApi, waitForAgentTownActionItemResolved } from "./agent-town-api.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -39,6 +40,12 @@ function todayLocal() {
 
 function trimString(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function serverBaseFromAgentTownApi(api) {
+  const endpoint = normalizeAgentTownApi(api);
+  if (!endpoint) return "";
+  return endpoint.replace(/\/api\/agent-town$/i, "");
 }
 
 function normalizeKind(value) {
@@ -608,7 +615,7 @@ async function createReviewCard({
   humanTimeoutMs = 30_000,
   fetchImpl = globalThis.fetch,
 } = {}) {
-  const endpoint = String(api || "").trim().replace(/\/$/, "");
+  const endpoint = normalizeAgentTownApi(api);
   if (!endpoint) return { skipped: true, reason: "Agent Town API is not configured" };
   if (typeof fetchImpl !== "function") return { skipped: true, reason: "fetch is unavailable" };
   const projectName = path.basename(path.resolve(projectDir));
@@ -657,20 +664,83 @@ async function createReviewCard({
   const actionItem = payload.actionItem || payload;
   if (!waitHuman) return actionItem;
 
-  const waitResponse = await fetchImpl(`${endpoint}/wait`, {
+  const waitPayload = await waitForAgentTownActionItemResolved({
+    api: endpoint,
+    actionItemId: actionItem.id || body.id,
+    timeoutMs: humanTimeoutMs,
+    fetchImpl,
+  });
+  return { ...actionItem, wait: waitPayload };
+}
+
+function buildAgentReviewPrompt({
+  agentTownApi,
+  actionItemId,
+  artifactPath,
+  resultPath,
+  projectDir,
+  slug,
+  cycleIndex,
+  metric,
+  summary,
+}) {
+  return [
+    "You are the reviewer agent for a Vibe Research cycle.",
+    "",
+    "Goal: inspect the cycle evidence quickly, then resolve the Agent Inbox card so the runner can continue.",
+    "",
+    `Agent Town API: ${agentTownApi}`,
+    `Action item id: ${actionItemId}`,
+    `Project: ${projectDir}`,
+    `Result doc: ${resultPath}`,
+    `Cycle log: ${artifactPath}`,
+    `Move: ${slug}`,
+    `Cycle: ${cycleIndex}`,
+    metric ? `Metric: ${metric}` : "",
+    summary ? `Summary: ${summary}` : "",
+    "",
+    "Protocol:",
+    `1. Poll ${agentTownApi}/action-items until the action item id above exists.`,
+    "2. Read the result doc and cycle log paths listed above or in the action item's evidence.",
+    "3. Choose one resolution from: continued, rerun, synthesized, brainstorm, steered.",
+    "4. PATCH the action item with JSON like:",
+    '   {"resolution":"continued","resolutionNote":"Reviewed result doc and cycle log; continue."}',
+    "",
+    "Use continued only if the cycle completed cleanly and the next autonomous step can proceed. Use rerun for noise or flaky evidence, synthesized when the move should close, brainstorm when the direction should reset, and steered when you need to leave explicit guidance.",
+  ].filter(Boolean).join("\n");
+}
+
+async function createAgentReviewSession({
+  api,
+  providerId,
+  name = "",
+  cwd = "",
+  initialPrompt = "",
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  const normalizedProvider = trimString(providerId);
+  if (!normalizedProvider) return null;
+  const serverBase = serverBaseFromAgentTownApi(api);
+  if (!serverBase) throw new Error("--agent-review-provider requires --agent-town-api ending in /api/agent-town");
+  if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
+
+  const body = {
+    providerId: normalizedProvider,
+    name: trimString(name) || `Research reviewer (${normalizedProvider})`,
+    cwd,
+    initialPrompt,
+    initialPromptDelayMs: 0,
+  };
+  const response = await fetchImpl(`${serverBase}/api/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      predicate: "action_item_resolved",
-      predicateParams: { actionItemId: actionItem.id || body.id },
-      timeoutMs: humanTimeoutMs,
-    }),
+    body: JSON.stringify(body),
   });
-  const waitPayload = await waitResponse.json().catch(() => ({}));
-  if (!waitResponse.ok) {
-    throw new Error(waitPayload?.error || `Agent Inbox wait failed: ${waitResponse.status}`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error || `Agent reviewer session failed: ${response.status}`);
   }
-  return { ...actionItem, wait: waitPayload };
+  return payload.session || payload;
 }
 
 function escapeXml(value) {
@@ -1129,6 +1199,9 @@ export async function runCycle({
   monitorCaption = "",
   canvasSessionId = "",
   canvasAgentId = "",
+  agentReviewProvider = "",
+  agentReviewName = "",
+  agentReviewPrompt = "",
   gitCommit = false,
   gitCommitMessage = "",
   gitAllowEmpty = false,
@@ -1231,16 +1304,45 @@ export async function runCycle({
   }
   await atomicWrite(resultPath, after);
 
+  const reviewApi = agentTownApi || process.env.VIBE_RESEARCH_AGENT_TOWN_API || "";
+  const actionItemId = `research-cycle-${slug}-${cycleIndex}`;
+  let effectiveCanvasSessionId = canvasSessionId;
+  let effectiveCanvasAgentId = canvasAgentId;
+  let agentReviewSession = null;
+  if ((askHuman || waitHuman) && trimString(agentReviewProvider)) {
+    const prompt = trimString(agentReviewPrompt) || buildAgentReviewPrompt({
+      agentTownApi: normalizeAgentTownApi(reviewApi),
+      actionItemId,
+      artifactPath,
+      resultPath,
+      projectDir,
+      slug,
+      cycleIndex,
+      metric: metricValue,
+      summary: `Cycle ${cycleIndex} ${outcome}`,
+    });
+    agentReviewSession = await createAgentReviewSession({
+      api: reviewApi,
+      providerId: agentReviewProvider,
+      name: agentReviewName,
+      cwd: runCwd,
+      initialPrompt: prompt,
+      fetchImpl,
+    });
+    effectiveCanvasSessionId = agentReviewSession?.id || effectiveCanvasSessionId;
+    effectiveCanvasAgentId = effectiveCanvasAgentId || agentReviewProvider;
+  }
+
   const monitorCanvasResult = liveMonitorUrl
     ? await publishAgentCanvas({
-      api: agentTownApi || process.env.VIBE_RESEARCH_AGENT_TOWN_API || "",
+      api: reviewApi,
       projectDir,
       slug,
       href: liveMonitorUrl,
       title: monitorTitle || `Live monitor: ${slug}`,
       caption: monitorCaption || `Cycle ${cycleIndex} ${outcome}`,
-      sessionId: canvasSessionId,
-      agentId: canvasAgentId,
+      sessionId: effectiveCanvasSessionId,
+      agentId: effectiveCanvasAgentId,
       fetchImpl,
     })
     : null;
@@ -1249,7 +1351,7 @@ export async function runCycle({
 
   const reviewResult = (askHuman || waitHuman)
     ? await createReviewCard({
-      api: agentTownApi || process.env.VIBE_RESEARCH_AGENT_TOWN_API || "",
+      api: reviewApi,
       projectDir,
       slug,
       cycleIndex,
@@ -1257,8 +1359,8 @@ export async function runCycle({
       artifactPath,
       resultPath,
       summary: `Cycle ${cycleIndex} ${outcome}`,
-      sessionId: canvasSessionId,
-      agentId: canvasAgentId,
+      sessionId: effectiveCanvasSessionId,
+      agentId: effectiveCanvasAgentId,
       waitHuman,
       humanTimeoutMs,
       fetchImpl,
@@ -1289,6 +1391,7 @@ export async function runCycle({
     review,
     reviewWait: review?.wait || null,
     reviewSkippedReason,
+    agentReviewSession,
     monitorCanvas,
     monitorCanvasSkippedReason,
   };
@@ -1321,6 +1424,9 @@ export async function runNextMove({
   monitorCaption = "",
   canvasSessionId = "",
   canvasAgentId = "",
+  agentReviewProvider = "",
+  agentReviewName = "",
+  agentReviewPrompt = "",
   force = false,
   codeCwd = "",
   prepareBranch = false,
@@ -1374,6 +1480,9 @@ export async function runNextMove({
     monitorCaption,
     canvasSessionId,
     canvasAgentId,
+    agentReviewProvider,
+    agentReviewName,
+    agentReviewPrompt,
     gitCommit,
     gitCommitMessage,
     gitAllowEmpty,
@@ -1577,8 +1686,10 @@ export const __internal = {
   DEFAULT_TIMEOUT_MS,
   appendSectionBullet,
   branchUrlForMove,
+  buildAgentReviewPrompt,
   collectCycleMetrics,
   commitUrlForSha,
+  createAgentReviewSession,
   createReviewCard,
   escapeMarkdown,
   preparePaperFigure,
