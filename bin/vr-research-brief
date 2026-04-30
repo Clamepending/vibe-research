@@ -13,6 +13,7 @@ import {
   updateResearchState,
   VALID_RESEARCH_PHASES,
 } from "../src/research/brief.js";
+import { waitForAgentTownActionItemResolved } from "../src/research/agent-town-api.js";
 
 function printHelp() {
   process.stdout.write(`vr-research-brief - manage brainstorm -> experiment phase bridges
@@ -37,6 +38,7 @@ Create options:
   --force                    Overwrite an existing brief.
   --ask-human                Create an Agent Inbox review card for the brief.
   --wait                    With --ask-human, wait until the review card resolves.
+  --wait-timeout-ms <ms>    Total wait budget for --wait / --compile-on-approve.
   --compile-on-approve       With --wait, compile the recommended move if approved.
 
 Compile options:
@@ -106,6 +108,7 @@ function parseArgs(argv) {
     theory: "",
     title: "",
     wait: false,
+    waitTimeoutMs: "",
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -118,6 +121,7 @@ function parseArgs(argv) {
     if (arg === "--force") { opts.force = true; continue; }
     if (arg === "--json") { opts.json = true; continue; }
     if (arg === "--wait") { opts.wait = true; continue; }
+    if (arg === "--wait-timeout-ms" || arg === "--timeout-ms") { opts.waitTimeoutMs = requireValue(argv, index, arg); index += 1; continue; }
     if (arg === "--api") { opts.api = requireValue(argv, index, arg); index += 1; continue; }
     if (arg === "--brief" || arg === "--slug") { opts.slug = requireValue(argv, index, arg); index += 1; continue; }
     if (arg === "--brief-path") { opts.briefPath = requireValue(argv, index, arg); index += 1; continue; }
@@ -224,15 +228,11 @@ async function createBriefReviewCard(api, { projectDir, brief, briefPath }) {
   });
 }
 
-async function waitForBriefReview(api, actionItemId) {
-  return fetchJsonOrThrow(`${api}/wait`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      predicate: "action_item_resolved",
-      predicateParams: { actionItemId },
-      timeoutMs: 30_000,
-    }),
+async function waitForBriefReview(api, actionItemId, timeoutMs) {
+  return waitForAgentTownActionItemResolved({
+    api,
+    actionItemId,
+    timeoutMs,
   });
 }
 
@@ -279,7 +279,7 @@ async function runCreate(opts, projectDir) {
     const api = await resolveAgentTownApi(opts);
     review = await createBriefReviewCard(api, result);
     if (opts.wait) {
-      wait = await waitForBriefReview(api, review.actionItem?.id || `research-brief-${result.brief.slug}`);
+      wait = await waitForBriefReview(api, review.actionItem?.id || `research-brief-${result.brief.slug}`, opts.waitTimeoutMs);
       const actionItem = getActionItemFromWait(wait, review.actionItem?.id);
       if (opts.compileOnApprove && actionItem?.resolution === "approved") {
         compiled = await compileBriefToQueue({ projectDir, slug: result.brief.slug });

@@ -11,6 +11,11 @@ import { runDoctor, formatIssue } from "./doctor.js";
 import { lintPaper, formatPaperIssue } from "./paper-lint.js";
 import { parseProjectReadme } from "./project-readme.js";
 import { parseResultDoc } from "./result-doc.js";
+import {
+  normalizeAgentTownApi,
+  postAgentTownJson,
+  waitForAgentTownActionItemResolved,
+} from "./agent-town-api.js";
 
 const REVIEW_CHOICES = ["continue", "rerun", "synthesize", "brainstorm", "steer"];
 const SEVERITY_RANK = { error: 3, warning: 2, info: 1 };
@@ -223,19 +228,6 @@ function summarizeJudge({ slug, doc, issues, admitReport, paperReport, recommend
   return `${slug}: ${recommendation.action} (${recommendation.reason}); ${statusPart}, ${cyclePart}, ${admitPart}, ${paperPart}, issues=${counts.error}/${counts.warning}/${counts.info}`;
 }
 
-async function postJson(fetchImpl, url, body) {
-  const response = await fetchImpl(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload?.error || `${response.status} ${response.statusText}`.trim());
-  }
-  return payload;
-}
-
 async function createJudgeCard({
   api,
   projectDir,
@@ -249,7 +241,7 @@ async function createJudgeCard({
   timeoutMs = "",
   fetchImpl = globalThis.fetch,
 } = {}) {
-  const endpoint = String(api || "").trim().replace(/\/+$/, "");
+  const endpoint = normalizeAgentTownApi(api);
   if (!endpoint) return { skipped: true, reason: "Agent Town API is not configured" };
   if (typeof fetchImpl !== "function") return { skipped: true, reason: "fetch is unavailable" };
 
@@ -286,13 +278,14 @@ async function createJudgeCard({
     capabilityIds: ["research-judge", "human-in-the-loop", "artifact-review"],
   };
 
-  const created = await postJson(fetchImpl, `${endpoint}/action-items`, body);
+  const created = await postAgentTownJson(fetchImpl, `${endpoint}/action-items`, body);
   let wait = null;
   if (waitHuman) {
-    wait = await postJson(fetchImpl, `${endpoint}/wait`, {
-      predicate: "action_item_resolved",
-      predicateParams: { actionItemId: created.actionItem?.id || body.id },
+    wait = await waitForAgentTownActionItemResolved({
+      api: endpoint,
+      actionItemId: created.actionItem?.id || body.id,
       timeoutMs,
+      fetchImpl,
     });
   }
   return { actionItem: created.actionItem || created, wait };

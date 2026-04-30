@@ -19,6 +19,7 @@ import { resolveMove } from "./resolve.js";
 import { updateResearchState } from "./brief.js";
 import { lintPaper } from "./paper-lint.js";
 import { budgetCapBreaches, isBudgetCapReached, normalizeBudgetDebits } from "./budget.js";
+import { normalizeAgentTownApi, waitForAgentTownActionItemResolved } from "./agent-town-api.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -41,12 +42,8 @@ function trimString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function normalizeApiBase(value) {
-  return String(value || "").trim().replace(/\/+$/, "");
-}
-
 function serverBaseFromAgentTownApi(api) {
-  const endpoint = normalizeApiBase(api);
+  const endpoint = normalizeAgentTownApi(api);
   if (!endpoint) return "";
   return endpoint.replace(/\/api\/agent-town$/i, "");
 }
@@ -618,7 +615,7 @@ async function createReviewCard({
   humanTimeoutMs = 30_000,
   fetchImpl = globalThis.fetch,
 } = {}) {
-  const endpoint = normalizeApiBase(api);
+  const endpoint = normalizeAgentTownApi(api);
   if (!endpoint) return { skipped: true, reason: "Agent Town API is not configured" };
   if (typeof fetchImpl !== "function") return { skipped: true, reason: "fetch is unavailable" };
   const projectName = path.basename(path.resolve(projectDir));
@@ -667,19 +664,12 @@ async function createReviewCard({
   const actionItem = payload.actionItem || payload;
   if (!waitHuman) return actionItem;
 
-  const waitResponse = await fetchImpl(`${endpoint}/wait`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      predicate: "action_item_resolved",
-      predicateParams: { actionItemId: actionItem.id || body.id },
-      timeoutMs: humanTimeoutMs,
-    }),
+  const waitPayload = await waitForAgentTownActionItemResolved({
+    api: endpoint,
+    actionItemId: actionItem.id || body.id,
+    timeoutMs: humanTimeoutMs,
+    fetchImpl,
   });
-  const waitPayload = await waitResponse.json().catch(() => ({}));
-  if (!waitResponse.ok) {
-    throw new Error(waitPayload?.error || `Agent Inbox wait failed: ${waitResponse.status}`);
-  }
   return { ...actionItem, wait: waitPayload };
 }
 
@@ -1321,7 +1311,7 @@ export async function runCycle({
   let agentReviewSession = null;
   if ((askHuman || waitHuman) && trimString(agentReviewProvider)) {
     const prompt = trimString(agentReviewPrompt) || buildAgentReviewPrompt({
-      agentTownApi: normalizeApiBase(reviewApi),
+      agentTownApi: normalizeAgentTownApi(reviewApi),
       actionItemId,
       artifactPath,
       resultPath,
