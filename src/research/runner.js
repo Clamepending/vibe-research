@@ -6,7 +6,7 @@
 // loop cheap and durable.
 
 import { execFile } from "node:child_process";
-import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { spawn } from "node:child_process";
@@ -17,6 +17,7 @@ import { parseFrontmatter, parseResultDoc } from "./result-doc.js";
 import { removeQueueRow } from "./queue-edit.js";
 import { resolveMove } from "./resolve.js";
 import { updateResearchState } from "./brief.js";
+import { lintPaper } from "./paper-lint.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -215,6 +216,82 @@ function replaceSectionBody(text, sectionName, body) {
     ...replacement,
     "",
     ...lines.slice(end),
+  ];
+  return `${next.join("\n").replace(/\n*$/, "")}\n`;
+}
+
+function paperSectionPattern(sectionTitle) {
+  return new RegExp(`^##\\s+(?:\\d+\\.\\s*)?${sectionTitle}\\s*$`, "i");
+}
+
+function findPaperSection(lines, sectionTitle) {
+  const headerRe = paperSectionPattern(sectionTitle);
+  const headerIndex = lines.findIndex((entry) => headerRe.test(entry));
+  if (headerIndex < 0) return null;
+  let end = headerIndex + 1;
+  while (end < lines.length && !/^##\s+/.test(lines[end])) end += 1;
+  return { headerIndex, end };
+}
+
+function removePlaceholderLines(lines) {
+  const out = [];
+  let inComment = false;
+  for (const line of lines) {
+    const trimmed = String(line || "").trim();
+    if (trimmed.startsWith("<!--")) {
+      inComment = !trimmed.includes("-->");
+      continue;
+    }
+    if (inComment) {
+      if (trimmed.includes("-->")) inComment = false;
+      continue;
+    }
+    if (!trimmed) {
+      out.push(line);
+      continue;
+    }
+    if (/^-?\s*_no .* yet_\.?$/i.test(trimmed)) continue;
+    if (/^_No resolved moves yet\._$/i.test(trimmed)) continue;
+    if (/^_Stub: not enough evidence yet\._$/i.test(trimmed)) continue;
+    out.push(line);
+  }
+  return out;
+}
+
+function appendToPaperSection(text, sectionTitle, addition) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const section = findPaperSection(lines, sectionTitle);
+  if (!section) {
+    return `${String(text || "").trimEnd()}\n\n## ${sectionTitle}\n\n${addition.trim()}\n`;
+  }
+
+  const body = removePlaceholderLines(lines.slice(section.headerIndex + 1, section.end));
+  const nextBody = `${body.join("\n").trimEnd()}\n\n${addition.trim()}`.trim();
+  const next = [
+    ...lines.slice(0, section.headerIndex + 1),
+    "",
+    ...nextBody.split("\n"),
+    "",
+    ...lines.slice(section.end),
+  ];
+  return `${next.join("\n").replace(/\n*$/, "")}\n`;
+}
+
+function prependToPaperSection(text, sectionTitle, addition) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const section = findPaperSection(lines, sectionTitle);
+  if (!section) {
+    return `${String(text || "").trimEnd()}\n\n## ${sectionTitle}\n\n${addition.trim()}\n`;
+  }
+
+  const body = removePlaceholderLines(lines.slice(section.headerIndex + 1, section.end));
+  const nextBody = `${addition.trim()}\n${body.join("\n").trimEnd() ? `\n${body.join("\n").trimEnd()}` : ""}`.trim();
+  const next = [
+    ...lines.slice(0, section.headerIndex + 1),
+    "",
+    ...nextBody.split("\n"),
+    "",
+    ...lines.slice(section.end),
   ];
   return `${next.join("\n").replace(/\n*$/, "")}\n`;
 }
@@ -585,6 +662,319 @@ async function createReviewCard({
   return { ...actionItem, wait: waitPayload };
 }
 
+function escapeXml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function escapeMarkdown(value) {
+  return String(value || "").replace(/\|/g, "\\|").replace(/\n+/g, " ").trim();
+}
+
+function truncateText(value, maxLength = 140) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function sanitizeFootnoteId(value) {
+  const normalized = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized.includes("-") ? normalized : `${normalized || "result"}-note`;
+}
+
+async function loadPaperTemplate() {
+  const templateUrl = new URL("../../templates/paper-template.md", import.meta.url);
+  return readFile(templateUrl, "utf8");
+}
+
+function fillPaperTemplate(template, { projectName, goal, codeRepoUrl } = {}) {
+  let out = String(template || "");
+  out = out.replace(/^#\s+<Project title>\s*$/m, `# ${projectName || "Research project"}`);
+  if (goal) {
+    out = out.replace(
+      /(## 1\. Question\s*\n\s*<!-- locked: pre-registration -->\s*\n\s*\n)([^\n]+)/,
+      (_match, header) => `${header}${goal}`,
+    );
+  }
+  if (codeRepoUrl) {
+    out = out.replace("- Code repo: _<github-url>_", `- Code repo: ${codeRepoUrl}`);
+  }
+  return out;
+}
+
+async function readOrCreatePaper(projectDir, project) {
+  const paperPath = path.join(projectDir, "paper.md");
+  try {
+    return { paperPath, text: await readFile(paperPath, "utf8"), created: false };
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const template = await loadPaperTemplate();
+  const projectName = path.basename(path.resolve(projectDir));
+  return {
+    paperPath,
+    text: fillPaperTemplate(template, {
+      projectName,
+      goal: project.goal,
+      codeRepoUrl: project.codeRepo?.url || "",
+    }),
+    created: true,
+  };
+}
+
+function latestCycleSha(doc) {
+  const cycles = Array.isArray(doc?.cycles) ? doc.cycles : [];
+  const latest = cycles
+    .slice()
+    .sort((a, b) => (Number(b.index) || 0) - (Number(a.index) || 0))
+    .find((cycle) => cycle.sha);
+  return latest?.sha || "";
+}
+
+function renderSummarySvg({ slug, title, metricLine, decisionLine }) {
+  const safeTitle = escapeXml(truncateText(title || slug || "Research result", 70));
+  const safeMetric = escapeXml(truncateText(metricLine || "Result recorded", 80));
+  const safeDecision = escapeXml(truncateText(decisionLine || "See result doc for provenance", 80));
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">`,
+    `<rect width="1200" height="630" fill="#f7f5ef"/>`,
+    `<rect x="52" y="52" width="1096" height="526" rx="22" fill="#ffffff" stroke="#242424" stroke-width="3"/>`,
+    `<text x="92" y="145" font-family="Arial, sans-serif" font-size="48" font-weight="700" fill="#191919">${safeTitle}</text>`,
+    `<text x="92" y="248" font-family="Arial, sans-serif" font-size="34" fill="#2f4f4f">${safeMetric}</text>`,
+    `<text x="92" y="328" font-family="Arial, sans-serif" font-size="30" fill="#5c4033">${safeDecision}</text>`,
+    `<text x="92" y="505" font-family="Arial, sans-serif" font-size="24" fill="#666666">Generated by vr-research-runner finish</text>`,
+    `</svg>`,
+    "",
+  ].join("\n");
+}
+
+function normalizeFigureExtension(filePath) {
+  const ext = path.extname(String(filePath || "")).toLowerCase();
+  return [".apng", ".avif", ".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png", ".svg", ".tif", ".tiff", ".webp"].includes(ext)
+    ? ext
+    : ".png";
+}
+
+async function preparePaperFigure({
+  projectDir,
+  slug,
+  figurePath = "",
+  title = "",
+  metricLine = "",
+  decisionLine = "",
+} = {}) {
+  await mkdir(path.join(projectDir, "figures"), { recursive: true });
+  const rawFigure = String(figurePath || "").trim();
+  if (/^https?:\/\//i.test(rawFigure)) {
+    return {
+      relativePath: rawFigure,
+      absolutePath: "",
+      sourcePath: rawFigure,
+      remote: true,
+      generated: false,
+    };
+  }
+
+  if (rawFigure) {
+    let sourcePath = path.resolve(rawFigure);
+    if (!path.isAbsolute(rawFigure) && !(await pathExists(sourcePath))) {
+      sourcePath = path.resolve(projectDir, rawFigure);
+    }
+    const sourceRelative = path.relative(projectDir, sourcePath).replace(/\\/g, "/");
+    if (sourceRelative.startsWith("figures/") && !sourceRelative.startsWith("../")) {
+      return {
+        relativePath: sourceRelative,
+        absolutePath: sourcePath,
+        sourcePath,
+        remote: false,
+        generated: false,
+      };
+    }
+
+    const ext = normalizeFigureExtension(sourcePath);
+    const filename = `${slug}-figure${ext}`;
+    const destination = path.join(projectDir, "figures", filename);
+    if (sourcePath !== destination) {
+      await copyFile(sourcePath, destination);
+    }
+    return {
+      relativePath: `figures/${filename}`,
+      absolutePath: destination,
+      sourcePath,
+      remote: false,
+      generated: false,
+    };
+  }
+
+  const filename = `${slug}-summary.svg`;
+  const destination = path.join(projectDir, "figures", filename);
+  await writeFile(destination, renderSummarySvg({ slug, title, metricLine, decisionLine }), "utf8");
+  return {
+    relativePath: `figures/${filename}`,
+    absolutePath: destination,
+    sourcePath: "",
+    remote: false,
+    generated: true,
+  };
+}
+
+function resultDecision(text) {
+  return String(text || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => /^Decision\s*:/i.test(line)) || "";
+}
+
+function aggregateMetricLine(aggregate, metricName = "") {
+  if (!aggregate) return "";
+  const metric = metricName || "metric";
+  return `${metric}_mean=${formatNumber(aggregate.mean)} std=${formatNumber(aggregate.std)} n=${aggregate.n}`;
+}
+
+function appendFootnote(text, footnoteId, body) {
+  const definitionRe = new RegExp(`^\\[\\^${footnoteId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]:`, "m");
+  if (definitionRe.test(text)) return text;
+  return `${String(text || "").replace(/\n*$/, "")}\n\n[^${footnoteId}]: ${body}\n`;
+}
+
+async function updatePaperForMove({
+  projectDir,
+  slug,
+  project,
+  doc,
+  resultText,
+  resultPath,
+  aggregate,
+  metricName = "",
+  paperFigure = "",
+  paperCaption = "",
+  paperLimitations = "",
+  paperDiscussion = "",
+} = {}) {
+  const { paperPath, text: initialText, created } = await readOrCreatePaper(projectDir, project);
+  const takeaway = doc.takeaway && !/^_/.test(doc.takeaway.trim()) ? doc.takeaway : "";
+  const decisionLine = resultDecision(resultText);
+  const metricLine = aggregateMetricLine(aggregate, metricName);
+  const caption = truncateText(paperCaption || takeaway || metricLine || `Move ${slug} resolved.`);
+  const safeCaption = escapeMarkdown(caption);
+  const figure = await preparePaperFigure({
+    projectDir,
+    slug,
+    figurePath: paperFigure,
+    title: caption,
+    metricLine,
+    decisionLine,
+  });
+  const latestSha = latestCycleSha(doc);
+  const footnoteId = sanitizeFootnoteId(`${slug}-runner-finish`);
+  const relativeResultPath = path.relative(projectDir, resultPath).replace(/\\/g, "/");
+  let text = initialText;
+
+  const sinceLine = `- ${latestSha ? `@${latestSha} ` : ""}${slug}: ${safeCaption}`;
+  if (!text.includes(sinceLine)) {
+    text = prependToPaperSection(text, "Since last update", sinceLine);
+  }
+
+  if (!text.includes(`./${relativeResultPath}`) && !text.includes(`](${relativeResultPath})`)) {
+    const subsection = [
+      `### ${slug} - ${safeCaption}`,
+      "",
+      `![Result figure](${figure.relativePath})`,
+      "",
+      `See [\`${relativeResultPath}\`](./${relativeResultPath}). ${safeCaption}[^${footnoteId}]`,
+    ].join("\n");
+    text = appendToPaperSection(text, "Results", subsection);
+  }
+
+  const discussion = truncateText(
+    paperDiscussion || `${slug} is now recorded in the project ledger. The result should be reviewed against the leaderboard and follow-up queue before broadening the claim.`,
+    500,
+  );
+  const discussionMarker = `**Update after \`${slug}\`.**`;
+  if (!text.includes(discussionMarker)) {
+    text = appendToPaperSection(text, "Discussion", `${discussionMarker} ${discussion}`);
+  }
+
+  const limitation = `- ${slug}: ${truncateText(paperLimitations || "This move was recorded through the generic runner; it does not by itself test alternate datasets, broader hyperparameter neighborhoods, or external validity.", 500)}`;
+  if (!text.includes(limitation)) {
+    text = appendToPaperSection(text, "Limitations", limitation);
+  }
+
+  const reproLine = `- ${slug}: see [\`${relativeResultPath}\`](./${relativeResultPath}); figure \`${figure.relativePath}\`.`;
+  if (!text.includes(reproLine)) {
+    text = appendToPaperSection(text, "Reproducibility appendix", reproLine);
+  }
+
+  text = appendFootnote(
+    text,
+    footnoteId,
+    `Generated by \`vr-research-runner finish --slug ${slug} --update-paper\` - result \`${relativeResultPath}\` - figure \`${figure.relativePath}\`.`,
+  );
+
+  await atomicWrite(paperPath, text);
+  const lint = await lintPaper(projectDir).catch((error) => ({
+    error: error.message,
+    summary: { error: 1, warning: 0, info: 0 },
+    issues: [{ severity: "error", code: "paper_lint_exception", message: error.message }],
+  }));
+  return { paperPath, created, figure, lint };
+}
+
+async function publishAgentCanvas({
+  api,
+  projectDir,
+  slug,
+  imagePath = "",
+  imageUrl = "",
+  title = "",
+  caption = "",
+  sessionId = "",
+  agentId = "",
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  const endpoint = String(api || "").trim().replace(/\/+$/, "");
+  if (!endpoint) return { skipped: true, reason: "Agent Town API is not configured" };
+  if (typeof fetchImpl !== "function") return { skipped: true, reason: "fetch is unavailable" };
+  const resolvedSessionId = String(
+    sessionId ||
+      process.env.VIBE_RESEARCH_SESSION_ID ||
+      process.env.REMOTE_VIBES_SESSION_ID ||
+      "",
+  ).trim();
+  if (!resolvedSessionId) return { skipped: true, reason: "VIBE_RESEARCH_SESSION_ID is not configured" };
+  if (!imagePath && !imageUrl) return { skipped: true, reason: "no canvas image or URL provided" };
+
+  const canvasId = agentId ? `${resolvedSessionId}-${agentId}` : resolvedSessionId;
+  const body = {
+    id: canvasId,
+    sourceSessionId: resolvedSessionId,
+    sourceAgentId: agentId,
+    title: title || `Result: ${slug}`,
+    caption,
+    alt: title || `Result figure for ${slug}`,
+    href: imageUrl || "",
+    imagePath,
+    imageUrl,
+  };
+  const response = await fetchImpl(`${endpoint}/canvases`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error || `Agent Canvas publish failed: ${response.status}`);
+  }
+  return payload.canvas || payload;
+}
+
 export async function claimNextMove({
   projectDir,
   slug = "",
@@ -951,6 +1341,20 @@ export async function finishMove({
   commit = "",
   score = "",
   summary = "",
+  updatePaper = false,
+  paperFigure = "",
+  paperCaption = "",
+  paperLimitations = "",
+  paperDiscussion = "",
+  publishCanvas = false,
+  canvasImage = "",
+  canvasUrl = "",
+  canvasTitle = "",
+  canvasCaption = "",
+  canvasSessionId = "",
+  canvasAgentId = "",
+  agentTownApi = "",
+  fetchImpl = globalThis.fetch,
 } = {}) {
   if (!projectDir) throw new TypeError("projectDir is required");
   if (!slug) throw new TypeError("slug is required");
@@ -1016,6 +1420,52 @@ export async function finishMove({
     throw new Error("auto-admission is blocked; wrote the verdict to the result doc but did not apply README/LOG updates");
   }
 
+  let paper = null;
+  if (updatePaper || paperFigure) {
+    paper = await updatePaperForMove({
+      projectDir,
+      slug,
+      project,
+      doc: parseResultDoc(text),
+      resultText: text,
+      resultPath,
+      aggregate,
+      metricName,
+      paperFigure,
+      paperCaption,
+      paperLimitations,
+      paperDiscussion,
+    });
+  }
+
+  let canvas = null;
+  const shouldPublishCanvas = publishCanvas || canvasImage || canvasUrl;
+  if (shouldPublishCanvas) {
+    const fallbackImagePath = paper?.figure?.remote ? "" : paper?.figure?.absolutePath || "";
+    const fallbackImageUrl = paper?.figure?.remote ? paper.figure.relativePath : "";
+    let explicitCanvasImage = "";
+    if (canvasImage) {
+      explicitCanvasImage = path.resolve(canvasImage);
+      if (!path.isAbsolute(canvasImage) && !(await pathExists(explicitCanvasImage))) {
+        explicitCanvasImage = path.resolve(projectDir, canvasImage);
+      }
+    }
+    const imagePath = explicitCanvasImage || fallbackImagePath;
+    const imageUrl = canvasUrl || fallbackImageUrl;
+    canvas = await publishAgentCanvas({
+      api: agentTownApi || process.env.VIBE_RESEARCH_AGENT_TOWN_API || "",
+      projectDir,
+      slug,
+      imagePath,
+      imageUrl,
+      title: canvasTitle || paperCaption || takeaway || `Result: ${slug}`,
+      caption: canvasCaption || paperCaption || takeaway || summary,
+      sessionId: canvasSessionId,
+      agentId: canvasAgentId,
+      fetchImpl,
+    });
+  }
+
   const resolveResult = apply
     ? await resolveMove({
       projectDir,
@@ -1040,6 +1490,9 @@ export async function finishMove({
     status: normalizedStatus,
     resultPath,
     aggregate,
+    paper,
+    canvas: canvas?.skipped ? null : canvas,
+    canvasSkippedReason: canvas?.skipped ? canvas.reason : "",
     applied: Boolean(resolveResult),
     resolve: resolveResult,
   };
@@ -1053,6 +1506,9 @@ export const __internal = {
   collectCycleMetrics,
   commitUrlForSha,
   createReviewCard,
+  escapeMarkdown,
+  preparePaperFigure,
+  publishAgentCanvas,
   deriveMetricConfig,
   extractMetric,
   inferGitRef,

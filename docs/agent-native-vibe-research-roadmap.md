@@ -126,12 +126,10 @@ flowchart TD
 
 Goal: one agent can run a queued move end-to-end with minimal manual markdown editing.
 
-Status: mostly implemented.
+Status: mostly implemented. The runner now handles claim/cycle/run/finish, human wait gates, result aggregation, paper updates, generated or copied figures, and Agent Canvas publishing.
 
 Remaining work:
 
-- Add first-class paper update support to `vr-research-runner finish`.
-- Add figure/canvas publishing hooks to `finish`.
 - Add budget debit support when a move resolves.
 - Add optional live monitor URL support for long cycles.
 - Extend `--wait-human` beyond the current Agent Town timeout cap for truly long review windows.

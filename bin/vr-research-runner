@@ -75,6 +75,22 @@ Finish options:
   --commit <url>         Commit URL required if the move is admitted.
   --score <text>         Override leaderboard score cell if admitted.
   --summary <text>       Override LOG summary.
+  --update-paper         Create/update paper.md with a Results subsection.
+  --paper-figure <path>  Figure to copy into figures/<slug>-figure.*.
+  --paper-caption <text> Figure/result caption for the paper update.
+  --paper-limitations <text>
+                         Limitation bullet for this move.
+  --paper-discussion <text>
+                         Discussion paragraph for this move.
+  --publish-canvas       Publish the paper figure or explicit image/URL.
+  --canvas-image <path>  Image path for Agent Canvas.
+  --canvas-url <url>     Image URL for Agent Canvas.
+  --canvas-title <text>  Agent Canvas title.
+  --canvas-caption <text>
+                         Agent Canvas caption.
+  --canvas-session-id <id>
+                         Override VIBE_RESEARCH_SESSION_ID.
+  --canvas-agent-id <id> Associate canvas with a subagent.
 
 Git options:
   --git-branch <name>    Branch name for preparation/push (default r/<slug>).
@@ -154,6 +170,18 @@ function parseArgs(argv) {
     commit: "",
     score: "",
     summary: "",
+    updatePaper: false,
+    paperFigure: "",
+    paperCaption: "",
+    paperLimitations: "",
+    paperDiscussion: "",
+    publishCanvas: false,
+    canvasImage: "",
+    canvasUrl: "",
+    canvasTitle: "",
+    canvasCaption: "",
+    canvasSessionId: "",
+    canvasAgentId: "",
     json: false,
     help: false,
   };
@@ -176,6 +204,8 @@ function parseArgs(argv) {
     if (arg === "--higher-is-better") { opts.higherIsBetter = true; continue; }
     if (arg === "--lower-is-better") { opts.higherIsBetter = false; continue; }
     if (arg === "--apply") { opts.apply = true; continue; }
+    if (arg === "--update-paper") { opts.updatePaper = true; continue; }
+    if (arg === "--publish-canvas") { opts.publishCanvas = true; continue; }
     if (arg === "--slug") { opts.slug = readValue(argv, index, arg); index += 1; continue; }
     if (arg === "--agent") { opts.agent = readValue(argv, index, arg); index += 1; continue; }
     if (arg === "--question") { opts.question = readValue(argv, index, arg); index += 1; continue; }
@@ -209,6 +239,16 @@ function parseArgs(argv) {
     if (arg === "--commit") { opts.commit = readValue(argv, index, arg); index += 1; continue; }
     if (arg === "--score") { opts.score = readValue(argv, index, arg); index += 1; continue; }
     if (arg === "--summary") { opts.summary = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--paper-figure") { opts.paperFigure = readValue(argv, index, arg); opts.updatePaper = true; index += 1; continue; }
+    if (arg === "--paper-caption") { opts.paperCaption = readValue(argv, index, arg); opts.updatePaper = true; index += 1; continue; }
+    if (arg === "--paper-limitations") { opts.paperLimitations = readValue(argv, index, arg); opts.updatePaper = true; index += 1; continue; }
+    if (arg === "--paper-discussion") { opts.paperDiscussion = readValue(argv, index, arg); opts.updatePaper = true; index += 1; continue; }
+    if (arg === "--canvas-image") { opts.canvasImage = readValue(argv, index, arg); opts.publishCanvas = true; index += 1; continue; }
+    if (arg === "--canvas-url") { opts.canvasUrl = readValue(argv, index, arg); opts.publishCanvas = true; index += 1; continue; }
+    if (arg === "--canvas-title") { opts.canvasTitle = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--canvas-caption") { opts.canvasCaption = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--canvas-session-id") { opts.canvasSessionId = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--canvas-agent-id") { opts.canvasAgentId = readValue(argv, index, arg); index += 1; continue; }
     if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
     if (!opts.projectDir) { opts.projectDir = arg; continue; }
     if (!opts.subcommand) { opts.subcommand = arg; continue; }
@@ -244,6 +284,16 @@ function printFinish(result) {
   if (result.aggregate) {
     process.stdout.write(`aggregate: mean=${result.aggregate.mean} std=${result.aggregate.std} n=${result.aggregate.n}\n`);
   }
+  if (result.paper) {
+    process.stdout.write(`paper: ${result.paper.paperPath}\n`);
+    if (result.paper.figure?.relativePath) process.stdout.write(`figure: ${result.paper.figure.relativePath}\n`);
+    if (result.paper.lint?.summary) {
+      const s = result.paper.lint.summary;
+      process.stdout.write(`paper lint: ${s.error || 0}/${s.warning || 0}/${s.info || 0}\n`);
+    }
+  }
+  if (result.canvas) process.stdout.write(`canvas: ${result.canvas.id || "published"}\n`);
+  if (result.canvasSkippedReason) process.stdout.write(`canvas skipped: ${result.canvasSkippedReason}\n`);
   if (result.resolve) {
     process.stdout.write(`applied: ${result.resolve.event}\n`);
   }
@@ -370,6 +420,19 @@ async function main() {
         commit: opts.commit,
         score: opts.score,
         summary: opts.summary,
+        updatePaper: opts.updatePaper,
+        paperFigure: opts.paperFigure,
+        paperCaption: opts.paperCaption,
+        paperLimitations: opts.paperLimitations,
+        paperDiscussion: opts.paperDiscussion,
+        publishCanvas: opts.publishCanvas,
+        canvasImage: opts.canvasImage,
+        canvasUrl: opts.canvasUrl,
+        canvasTitle: opts.canvasTitle,
+        canvasCaption: opts.canvasCaption,
+        canvasSessionId: opts.canvasSessionId,
+        canvasAgentId: opts.canvasAgentId,
+        agentTownApi: opts.agentTownApi,
       });
     } else {
       result = await runNextMove(common);
