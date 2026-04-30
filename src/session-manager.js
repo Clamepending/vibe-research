@@ -27,6 +27,7 @@ import {
 } from "./building-agent-guides.js";
 import { AgentRunTracker } from "./agent-run-tracker.js";
 import {
+  buildClaudeNarrativeFromText,
   buildProjectedNarrative,
   classifyPromptEntry,
   loadProviderBackedNarrative,
@@ -5940,7 +5941,15 @@ export class SessionManager {
     });
 
     streamSession.on("entries", (entries) => {
-      session.streamEntries = Array.isArray(entries) ? entries : [];
+      // Merge-by-id rather than replace so resume-hydrated history
+      // (stamped with `resumed-` ids below) survives every new live event.
+      // Without this, the first live "entries" emission of a new turn
+      // would clobber the entire prior conversation we just spliced in.
+      const incoming = Array.isArray(entries) ? entries : [];
+      const incomingIds = new Set(incoming.map((entry) => entry?.id).filter(Boolean));
+      const existing = Array.isArray(session.streamEntries) ? session.streamEntries : [];
+      const preserved = existing.filter((entry) => entry?.id && !incomingIds.has(entry.id));
+      session.streamEntries = [...preserved, ...incoming];
       // Push narrative diffs over the WS so the client reducer applies
       // upserts/removes directly — no HTTP round-trip required. The legacy
       // session-meta broadcast still fires alongside (cheap; small payload)
@@ -5993,46 +6002,60 @@ export class SessionManager {
       this.schedulePersist({ immediate: true });
     });
 
-    streamSession.start();
-
     // CRITICAL on resume: hydrate `session.streamEntries` from the
-    // existing JSONL transcript on disk. The new ClaudeStreamSession
-    // child only emits NEW events on stdout — `claude --resume <id>`
-    // loads the prior transcript silently and waits for input. Without
-    // this hydration the user reopens the session after a server
-    // restart, sees only the persisted status pills, and thinks their
-    // entire conversation history vanished. The JSONL file IS the full
-    // history; we just need to re-parse it once and seed
-    // `session.streamEntries` so the narrative snapshot includes it.
+    // existing JSONL transcript on disk BEFORE launching the live child.
+    // The new ClaudeStreamSession child only emits NEW events on stdout —
+    // `claude --resume <id>` loads the prior transcript silently and
+    // waits for input. Without this hydration the user reopens the
+    // session after a server restart, sees only the persisted status
+    // pills, and thinks their entire conversation history vanished.
+    //
+    // We do this BEFORE start() (and synchronously) for two reasons:
+    //   1. Each rehydrated entry gets a session-wide `seq` allocated
+    //      from the same counter the live child will draw from. Doing
+    //      it first means the prior conversation's seqs (low) sort
+    //      before any subsequent live entry's seqs (high) — fixing the
+    //      "new prompt appears above old history" bug.
+    //   2. Rehydrated entry ids are derived from positional indexes
+    //      (e.g. `claude-user-1`), which would collide with the same
+    //      ids the LIVE stream's parser will mint for fresh transcript
+    //      lines. We re-namespace them with a `resumed-` prefix here so
+    //      the live "entries" handler's merge-by-id can never clobber a
+    //      rehydrated entry by accident.
     if (isResume) {
-      const transcriptPath = path.join(
-        getClaudeProjectDirForCwd(sessionCwd, this.userHomeDir) || "",
-        `${session.id}.jsonl`,
-      );
-      void loadProviderBackedNarrative({
-        providerId: "claude",
-        filePath: transcriptPath,
-        session: { providerId: "claude", providerLabel: provider.label },
-      })
-        .then((narrative) => {
-          if (!narrative || !Array.isArray(narrative.entries)) return;
-          // Splice the rehydrated history in front of any live entries
-          // the new child has already emitted — usually zero on a fresh
-          // resume. The merge in getNarrativeSnapshot dedupes by id.
-          const existing = Array.isArray(session.streamEntries) ? session.streamEntries : [];
-          const seenIds = new Set(existing.map((entry) => entry?.id).filter(Boolean));
-          const rehydrated = narrative.entries.filter((entry) => entry?.id && !seenIds.has(entry.id));
-          session.streamEntries = [...rehydrated, ...existing];
-          this.broadcastNarrativeDiff(session);
-          this.scheduleSessionMetaBroadcast(session, { immediate: true });
-        })
-        .catch((error) => {
+      try {
+        const transcriptPath = path.join(
+          getClaudeProjectDirForCwd(sessionCwd, this.userHomeDir) || "",
+          `${session.id}.jsonl`,
+        );
+        const text = readFileSync(transcriptPath, "utf8");
+        const narrative = buildClaudeNarrativeFromText(text, {
+          providerId: "claude",
+          providerLabel: provider.label,
+        });
+        const rehydrated = (narrative?.entries || []).map((entry) => {
+          if (typeof session.entrySeqCounter !== "number") {
+            session.entrySeqCounter = 0;
+          }
+          session.entrySeqCounter += 1;
+          return {
+            ...entry,
+            id: `resumed-${entry.id || `${session.entrySeqCounter}`}`,
+            seq: session.entrySeqCounter,
+          };
+        });
+        session.streamEntries = rehydrated;
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
           console.warn(
             `[vibe-research] resume hydration failed for ${session.id}:`,
             error?.message || error,
           );
-        });
+        }
+      }
     }
+
+    streamSession.start();
   }
 
   startCodexStreamSession(session, provider, { restored = false } = {}) {
