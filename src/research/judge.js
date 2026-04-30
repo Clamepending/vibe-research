@@ -16,6 +16,7 @@ import {
   postAgentTownJson,
   waitForAgentTownActionItemResolved,
 } from "./agent-town-api.js";
+import { getSectionBody, parseQueueUpdates } from "./result-doc.js";
 
 const REVIEW_CHOICES = ["continue", "rerun", "synthesize", "brainstorm", "steer"];
 const SEVERITY_RANK = { error: 3, warning: 2, info: 1 };
@@ -289,17 +290,19 @@ function evaluatorStrength({ doc, issues, admitReport }) {
   return "weak";
 }
 
-function summarizeJudge({ slug, doc, issues, admitReport, paperReport, recommendation, strength }) {
+function summarizeJudge({ slug, doc, issues, admitReport, paperReport, recommendation, strength, queueUpdates }) {
   const counts = countBySeverity(issues);
   const statusPart = doc.status ? `status=${doc.status}` : "status=unknown";
   const cyclePart = `${doc.cycles.length} cycle${doc.cycles.length === 1 ? "" : "s"}`;
+  const addCount = queueUpdates.filter((item) => item.verb === "add").length;
+  const nextMovePart = `${addCount} next candidate${addCount === 1 ? "" : "s"}`;
   const admitPart = admitReport?.decision
     ? `admit=${admitReport.decision.admit ? "yes" : admitReport.decision.blocked ? "blocked" : "no"}`
     : "admit=skipped";
   const paperPart = paperReport
     ? `paper=${paperReport.summary.error}/${paperReport.summary.warning}/${paperReport.summary.info}`
     : "paper=skipped";
-  return `${slug}: ${recommendation.action} (${recommendation.reason}); ${statusPart}, ${cyclePart}, evaluator=${strength}, ${admitPart}, ${paperPart}, issues=${counts.error}/${counts.warning}/${counts.info}`;
+  return `${slug}: ${recommendation.action} (${recommendation.reason}); ${statusPart}, ${cyclePart}, evaluator=${strength}, ${admitPart}, ${paperPart}, ${nextMovePart}, issues=${counts.error}/${counts.warning}/${counts.info}`;
 }
 
 async function createJudgeCard({
@@ -311,6 +314,7 @@ async function createJudgeCard({
   summary,
   recommendation,
   issues,
+  queueUpdates = [],
   waitHuman = false,
   timeoutMs = "",
   fetchImpl = globalThis.fetch,
@@ -342,6 +346,11 @@ async function createJudgeCard({
       { label: "result doc", path: resultPath, kind: "result" },
       { label: "project README", path: path.join(projectDir, "README.md"), kind: "project" },
       ...(paperPath ? [{ label: "paper", path: paperPath, kind: "paper" }] : []),
+      ...queueUpdates.slice(0, 5).map((item) => ({
+        label: `queue ${item.verb}: ${item.slug}`,
+        kind: "queue-update",
+        text: item.raw,
+      })),
       ...topIssues.map((item) => ({
         label: `${item.severity}: ${item.code}`,
         kind: "audit",
@@ -390,6 +399,7 @@ export async function judgeMove({
   const readmeText = await readFile(path.join(resolvedProjectDir, "README.md"), "utf8");
   const project = parseProjectReadme(readmeText);
   const doc = parseResultDoc(resultText);
+  const queueUpdates = parseQueueUpdates(getSectionBody(resultText, "Queue updates"));
 
   const issues = [];
   issues.push(...resultCompletenessIssues({
@@ -452,6 +462,7 @@ export async function judgeMove({
     paperReport,
     recommendation,
     strength,
+    queueUpdates,
   });
 
   const review = askHuman
@@ -464,6 +475,7 @@ export async function judgeMove({
       summary,
       recommendation,
       issues: sortedIssues,
+      queueUpdates,
       waitHuman,
       timeoutMs,
       fetchImpl,
@@ -480,6 +492,7 @@ export async function judgeMove({
     recommendation,
     summary,
     evaluatorStrength: strength,
+    queueUpdates,
     issues: sortedIssues,
     issueSummary: countBySeverity(issues),
     doctor: {
@@ -525,6 +538,13 @@ export function formatJudgeReport(report) {
     }
   } else {
     lines.push("", "issues: none");
+  }
+
+  if (report.queueUpdates?.length) {
+    lines.push("", "queue updates:");
+    for (const item of report.queueUpdates.slice(0, 8)) {
+      lines.push(`- ${item.raw}`);
+    }
   }
 
   if (report.review) {

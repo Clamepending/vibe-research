@@ -93,6 +93,7 @@ function writeResult(dir, slug, {
   cycles = "",
   results = "- score=0.81 from toy artifact.",
   reproducibility = "- command `node toy.js`.",
+  queueUpdates = "_none_",
 } = {}) {
   writeFileSync(join(dir, "results", `${slug}.md`), `${frontmatter}# ${slug}
 
@@ -158,7 +159,7 @@ ${decision}
 
 ## Queue updates
 
-_none_
+${queueUpdates}
 `);
 }
 
@@ -255,6 +256,42 @@ test("judgeMove can create an Agent Inbox review card", async () => {
     assert.equal(report.review.actionItem.id, "research-judge-first-move");
     assert.deepEqual(requests[0].body.choices, __internal.REVIEW_CHOICES);
     assert.match(requests[0].body.recommendation, /continue/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("judgeMove surfaces Queue updates as next-move evidence", async () => {
+  const dir = makeProject("vr-judge-queue-updates");
+  const requests = [];
+  try {
+    writeResult(dir, "first-move", {
+      status: "active",
+      queueUpdates: "ADD: second-move | starting-point main | why vary the prompt scaffold",
+    });
+    const report = await judgeMove({
+      projectDir: dir,
+      slug: "first-move",
+      checkPaper: false,
+      askHuman: true,
+      agentTownApi: "http://agent-town.test/api/agent-town",
+      fetchImpl: async (_url, options) => {
+        const body = JSON.parse(options.body);
+        requests.push(body);
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { actionItem: { id: body.id } };
+          },
+        };
+      },
+    });
+    assert.equal(report.queueUpdates.length, 1);
+    assert.equal(report.queueUpdates[0].verb, "add");
+    assert.equal(report.queueUpdates[0].slug, "second-move");
+    assert.match(report.summary, /1 next candidate/);
+    assert.ok(requests[0].evidence.some((item) => item.kind === "queue-update" && /second-move/.test(item.text)));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -90,7 +90,7 @@ ${logRows}
   return dir;
 }
 
-function writeResolvedResult(dir, slug) {
+function writeResolvedResult(dir, slug, { queueUpdates = "_none_" } = {}) {
   writeFileSync(join(dir, "results", `${slug}.md`), `---
 metric: score
 metric_higher_is_better: true
@@ -162,7 +162,7 @@ Decision: insert at rank 1
 
 ## Queue updates
 
-_none_
+${queueUpdates}
 `);
 }
 
@@ -228,6 +228,23 @@ test("tickResearchOrchestrator recommends compiling an existing brief", async ()
     assert.equal(report.recommendation.briefSlug, "plateau-plan");
     assert.match(report.nextCommand, /vr-research-brief/);
     assert.match(report.nextCommand, /compile/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("tickResearchOrchestrator carries judge next candidates into the recommendation", async () => {
+  const dir = makeProject("vr-orchestrator-judge-candidates", {
+    logRows: "| 2026-04-30 | resolved | first-move | toy result | [first-move](results/first-move.md) |\n",
+  });
+  try {
+    writeResolvedResult(dir, "first-move", {
+      queueUpdates: "ADD: second-move | starting-point main | why inspect the failure mode",
+    });
+    await updateResearchState({ projectDir: dir, phase: "review", summary: "move resolved" });
+    const report = await tickResearchOrchestrator({ projectDir: dir, checkPaper: false });
+    assert.equal(report.recommendation.nextCandidates, 1);
+    assert.equal(report.judge.queueUpdates[0].slug, "second-move");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

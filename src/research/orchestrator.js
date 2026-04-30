@@ -149,7 +149,11 @@ export async function tickResearchOrchestrator({
       rec = recommendation(
         `judge-${judge.recommendation.action}`,
         judge.recommendation.reason,
-        { slug: latestSlug, evaluatorStrength: judge.evaluatorStrength || "" },
+        {
+          slug: latestSlug,
+          evaluatorStrength: judge.evaluatorStrength || "",
+          nextCandidates: (judge.queueUpdates || []).filter((item) => item.verb === "add").length,
+        },
       );
       nextCommand = command([
         "vr-research-judge",
@@ -258,6 +262,9 @@ export function formatOrchestratorReport(report) {
   }
   if (report.recommendation.evaluatorStrength) {
     lines.push(`evaluator: ${report.recommendation.evaluatorStrength}`);
+  }
+  if (report.recommendation.nextCandidates) {
+    lines.push(`next candidates: ${report.recommendation.nextCandidates}`);
   }
   if (report.judge?.review?.actionItem?.id) {
     lines.push(`agent-inbox: ${report.judge.review.actionItem.id}`);

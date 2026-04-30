@@ -306,6 +306,7 @@
       rec.slug ? chip(rec.slug) : null,
       rec.briefSlug ? chip(rec.briefSlug) : null,
       rec.evaluatorStrength ? chip(`evaluator ${rec.evaluatorStrength}`, evaluatorVariant(rec.evaluatorStrength)) : null,
+      rec.nextCandidates ? chip(`${rec.nextCandidates} next`) : null,
       report.judge && report.judge.review && report.judge.review.actionItem
         ? chip(`inbox ${report.judge.review.actionItem.id}`, "accent")
         : null,
