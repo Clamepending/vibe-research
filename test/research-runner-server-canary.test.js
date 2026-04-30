@@ -78,19 +78,6 @@ test("research runner completes a real-server Agent Town canary", { timeout: 30_
     const baseUrl = `http://127.0.0.1:${app.config.port}`;
     const agentTownApi = `${baseUrl}/api/agent-town`;
 
-    const sessionResponse = await fetch(`${baseUrl}/api/sessions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        providerId: "shell",
-        name: "Canary Shell Agent",
-        cwd: codeDir,
-      }),
-    });
-    assert.equal(sessionResponse.status, 201);
-    const { session } = await sessionResponse.json();
-    assert.ok(session.id);
-
     const runPromise = runNextMove({
       projectDir,
       cwd: codeDir,
@@ -104,16 +91,21 @@ test("research runner completes a real-server Agent Town canary", { timeout: 30_
       monitorUrl: `${baseUrl}/research/${projectName}`,
       monitorTitle: "Server canary monitor",
       monitorCaption: "Live monitor URL pinned during the automated canary.",
-      canvasSessionId: session.id,
-      canvasAgentId: "canary-agent",
+      agentReviewProvider: "shell",
+      agentReviewName: "Canary Shell Reviewer",
       timeoutMs: 5_000,
     });
 
     const actionItemId = "research-cycle-session-linked-card-1";
     const openItem = await waitForActionItem(baseUrl, actionItemId);
+    const sessionsResponse = await fetch(`${baseUrl}/api/sessions`);
+    assert.equal(sessionsResponse.status, 200);
+    const { sessions } = await sessionsResponse.json();
+    const reviewerSession = sessions.find((entry) => entry.name === "Canary Shell Reviewer");
+    assert.ok(reviewerSession?.id);
     assert.equal(openItem.status, "open");
-    assert.equal(openItem.sourceSessionId, session.id);
-    assert.equal(openItem.sourceAgentId, "canary-agent");
+    assert.equal(openItem.sourceSessionId, reviewerSession.id);
+    assert.equal(openItem.sourceAgentId, "shell");
     assert.equal(openItem.target.id, `${projectName}:session-linked-card:cycle-1`);
     assert.deepEqual(openItem.choices, ["continue", "rerun", "synthesize", "brainstorm", "steer"]);
 
@@ -131,8 +123,9 @@ test("research runner completes a real-server Agent Town canary", { timeout: 30_
     assert.equal(run.claim.slug, "session-linked-card");
     assert.equal(run.cycle.metric, "0.810");
     assert.equal(run.cycle.reviewWait.satisfied, true);
-    assert.equal(run.cycle.monitorCanvas.sourceSessionId, session.id);
-    assert.equal(run.cycle.monitorCanvas.sourceAgentId, "canary-agent");
+    assert.equal(run.cycle.agentReviewSession.id, reviewerSession.id);
+    assert.equal(run.cycle.monitorCanvas.sourceSessionId, reviewerSession.id);
+    assert.equal(run.cycle.monitorCanvas.sourceAgentId, "shell");
 
     const finish = await finishMove({
       projectDir,
@@ -147,8 +140,8 @@ test("research runner completes a real-server Agent Town canary", { timeout: 30_
       publishCanvas: true,
       canvasTitle: "Server canary final result",
       canvasCaption: "Final generated result figure from the automated real-server canary.",
-      canvasSessionId: session.id,
-      canvasAgentId: "canary-agent",
+      canvasSessionId: reviewerSession.id,
+      canvasAgentId: "shell",
       agentTownApi,
       summary: "automated real-server canary completed",
       apply: true,
@@ -156,7 +149,7 @@ test("research runner completes a real-server Agent Town canary", { timeout: 30_
     assert.equal(finish.status, "resolved");
     assert.equal(finish.applied, true);
     assert.equal(finish.paper.lint.summary.error, 0);
-    assert.equal(finish.canvas.sourceSessionId, session.id);
+    assert.equal(finish.canvas.sourceSessionId, reviewerSession.id);
     assert.match(finish.canvas.imagePath, /session-linked-card-summary\.svg$/);
 
     const stateResponse = await fetch(`${baseUrl}/api/agent-town/state`);
@@ -165,10 +158,10 @@ test("research runner completes a real-server Agent Town canary", { timeout: 30_
     const completedItem = agentTown.actionItems.find((entry) => entry.id === actionItemId);
     assert.equal(completedItem.status, "completed");
     assert.equal(completedItem.resolution, "continued");
-    assert.equal(completedItem.sourceSessionId, session.id);
-    const finalCanvas = agentTown.canvases.find((entry) => entry.id === `${session.id}-canary-agent`);
+    assert.equal(completedItem.sourceSessionId, reviewerSession.id);
+    const finalCanvas = agentTown.canvases.find((entry) => entry.id === `${reviewerSession.id}-shell`);
     assert.equal(finalCanvas.title, "Server canary final result");
-    assert.equal(finalCanvas.sourceSessionId, session.id);
+    assert.equal(finalCanvas.sourceSessionId, reviewerSession.id);
     assert.match(finalCanvas.imagePath, /session-linked-card-summary\.svg$/);
 
     const projectResponse = await fetch(`${baseUrl}/api/research/projects/${projectName}`);
