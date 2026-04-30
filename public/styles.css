@@ -14401,45 +14401,85 @@ body.is-reordering-file-tabs {
   display: flex;
   align-items: center;
   gap: 10px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+
+.rich-session-plan-panel-header:focus-visible {
+  outline: 2px solid rgba(123, 195, 255, 0.6);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 .rich-session-plan-panel-icon {
   font-size: 1rem;
   color: rgba(244, 244, 242, 0.66);
   line-height: 1;
+  flex-shrink: 0;
 }
 
 .rich-session-plan-panel-title {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex-shrink: 0;
   color: rgba(244, 244, 242, 0.88);
   font-family: "Manrope", sans-serif;
   font-size: 0.92rem;
-  font-weight: 500;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
   letter-spacing: 0;
+  white-space: nowrap;
+}
+
+/* In-progress task preview — only shown when the panel is collapsed so the
+   user retains a sense of "what is the agent doing right now" without
+   having to expand the full list. Truncates with an ellipsis. */
+.rich-session-plan-panel-active-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: rgba(255, 234, 196, 0.92);
+  font-size: 0.86rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.rich-session-plan-panel-collapse {
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: rgba(244, 244, 242, 0.55);
-  font-family: "Manrope", sans-serif;
-  font-size: 0.95rem;
-  cursor: pointer;
-  transition: background 120ms ease, color 120ms ease;
+.rich-session-plan-panel-active-preview::before {
+  content: "·";
+  margin: 0 8px 0 0;
+  color: rgba(244, 244, 242, 0.32);
 }
 
-.rich-session-plan-panel-collapse:hover {
+.rich-session-plan-panel-collapse {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(244, 244, 242, 0.5);
+  font-size: 0.78rem;
+  margin-left: auto;
+  transition: color 120ms ease;
+}
+
+.rich-session-plan-panel-header:hover .rich-session-plan-panel-collapse {
+  color: rgba(244, 244, 242, 0.92);
+}
+
+/* Thin progress bar shown at the bottom of the collapsed panel. Extends
+   to the panel's outer edge by negating the panel's horizontal padding,
+   so the fill reads as a real progress indicator and not a centered chip. */
+.rich-session-plan-panel.is-collapsed {
+  padding-bottom: 0;
+}
+
+.rich-session-plan-panel.is-collapsed .rich-session-plan-panel-progress.is-collapsed-bar {
+  height: 3px;
+  margin: 7px -14px 0;
   background: rgba(255, 255, 255, 0.05);
-  color: rgba(244, 244, 242, 0.88);
+  border-radius: 0 0 14px 14px;
+  overflow: hidden;
 }
 
 .rich-session-plan-panel-progress {
@@ -14539,6 +14579,108 @@ body.is-reordering-file-tabs {
 
 .rich-session-plan-panel-plan-link:hover {
   text-decoration: underline;
+}
+
+/* Composer message queue — sits between the plan panel and the composer.
+   When the user submits while the agent is working, the message lives
+   here until the working→idle transition; then it auto-flushes (oldest
+   first). Each row exposes edit / remove affordances. */
+.rich-session-queue {
+  padding: 0 max(18px, calc((100% - 1080px) / 2));
+}
+
+.rich-session-queue.is-empty {
+  display: none;
+}
+
+.rich-session-queue-list {
+  display: grid;
+  gap: 6px;
+}
+
+.rich-session-queue-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid rgba(123, 195, 255, 0.22);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(123, 195, 255, 0.06), rgba(123, 195, 255, 0.02));
+  color: rgba(244, 244, 242, 0.92);
+  font-size: 0.86rem;
+}
+
+.rich-session-queue-item.is-next {
+  border-color: rgba(123, 195, 255, 0.42);
+  background: linear-gradient(180deg, rgba(123, 195, 255, 0.1), rgba(123, 195, 255, 0.04));
+}
+
+.rich-session-queue-icon {
+  color: rgba(123, 195, 255, 0.92);
+  font-size: 0.92rem;
+  text-align: center;
+  line-height: 1;
+}
+
+.rich-session-queue-text-wrap {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.rich-session-queue-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: rgba(244, 244, 242, 0.96);
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.rich-session-queue-meta {
+  color: rgba(123, 195, 255, 0.78);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+}
+
+.rich-session-queue-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rich-session-queue-action {
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(244, 244, 242, 0.78);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.rich-session-queue-action:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(244, 244, 242, 0.96);
+}
+
+.rich-session-queue-action.is-remove {
+  width: 26px;
+  min-width: 26px;
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.rich-session-queue-action.is-remove:hover {
+  border-color: rgba(255, 121, 109, 0.56);
+  color: rgba(255, 144, 134, 1);
+  background: rgba(255, 121, 109, 0.12);
 }
 
 /* Brief flash on a feed entry the panel jumped to — the user clicks
@@ -15985,6 +16127,49 @@ details.rich-session-compact-output[open] .rich-session-compact-output-toggle {
 .rich-session-send .vr-icon {
   width: 17px;
   height: 17px;
+}
+
+/* Send button working state. The icon and the spinner stack on top of
+   each other; whichever has aria-hidden=false is shown. The whole pile
+   sits in the same 44px circle so the button doesn't reflow as it
+   morphs between the two states. */
+.rich-session-send-icon,
+.rich-session-send-spinner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  line-height: 1;
+}
+
+.rich-session-send-icon[aria-hidden="true"],
+.rich-session-send-spinner[aria-hidden="true"] {
+  display: none;
+}
+
+.rich-session-send-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  opacity: 0.86;
+  animation: rich-session-thinking-spin 0.85s linear infinite;
+}
+
+/* While the agent is working, the send button keeps the same circle but
+   reads as "queue / wait" rather than "send now". Submitting is still
+   allowed (the message goes to the queue, not to the agent). */
+.rich-session-send.is-working {
+  cursor: progress;
+}
+
+/* The standalone "X is replying…" activity strip is gone — the send
+   button now carries the working signal. Hide any leftover element if
+   it still renders (e.g. cached HTML). */
+.rich-session-working {
+  display: none !important;
 }
 
 .terminal-transcript-pre {
@@ -17538,4 +17723,213 @@ select:disabled {
   gap: 8px;
   padding: 12px 20px;
   border-top: 1px solid rgba(17, 17, 20, 0.08);
+}
+
+/* ==========================================================================
+   Mobile chat polish — kept at the end so the cascade wins over the
+   earlier scoped media queries. The chat surface is the most-used screen
+   on a phone, so we:
+     1. Drop expensive backdrop-filters (single biggest mobile perf cost
+        in this stylesheet — they force GPU compositing of the blurred
+        region every frame, and they STACK when toolbar + plan-panel +
+        composer all blur the same scrolling content).
+     2. Replace the body radial-gradient with a flat color (gradient
+        repaints constantly as the iOS URL bar collapses/expands).
+     3. Hide the Native / Stream-JSON debug toggle (useless without a
+        keyboard; reachable via state for power users).
+     4. Tighten the toolbar / plan-panel / composer so messages get
+        more vertical space.
+   ========================================================================== */
+@media (max-width: 720px) {
+  html,
+  body {
+    background: #0d0d10;
+  }
+
+  .terminal-toolbar,
+  .rich-session-plan-panel,
+  .rich-session-composer,
+  .sidebar,
+  .knowledge-base-app-toolbar,
+  .knowledge-settings-popover-panel,
+  .agent-canvas-window {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  /* Native / Terminal / Stream-JSON toggle. Debug surface only useful
+     on desktop; on mobile it eats a whole row above the chat. */
+  .shell-surface-toggle {
+    display: none !important;
+  }
+
+  /* Slimmer chat toolbar — was forcing a 56px-tall row. */
+  .terminal-toolbar {
+    min-height: 48px;
+    padding: 6px 10px;
+    border-radius: 14px;
+    background: rgba(28, 27, 32, 0.96);
+  }
+
+  .terminal-toolbar .toolbar-actions {
+    gap: 4px;
+  }
+
+  .terminal-toolbar .toolbar-actions > .icon-button,
+  .terminal-toolbar .toolbar-actions > .ghost-button {
+    min-height: 36px;
+    min-width: 36px;
+    padding: 0 8px;
+  }
+
+  .terminal-copy strong {
+    font-size: 0.95rem;
+  }
+
+  .terminal-meta {
+    font-size: 0.72rem;
+    opacity: 0.78;
+  }
+
+  /* Plan / todo panel — collapsed by default now, so the strip should
+     read as a single quiet row, not a heavy card. */
+  .rich-session-plan-panel-mount {
+    padding-left: max(12px, calc(var(--safe-left) + 8px));
+    padding-right: max(12px, calc(var(--safe-right) + 8px));
+  }
+
+  .rich-session-plan-panel {
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(20, 22, 26, 0.94);
+  }
+
+  .rich-session-plan-panel.is-collapsed {
+    padding: 8px 12px 0;
+  }
+
+  .rich-session-plan-panel.is-collapsed .rich-session-plan-panel-progress.is-collapsed-bar {
+    margin: 7px -12px 0;
+    border-radius: 0 0 12px 12px;
+  }
+
+  .rich-session-plan-panel-title {
+    font-size: 0.86rem;
+  }
+
+  .rich-session-plan-panel-active-preview {
+    font-size: 0.8rem;
+  }
+
+  .rich-session-plan-panel-task {
+    font-size: 0.88rem;
+  }
+
+  /* Even when expanded the list must not push the composer off-screen.
+     Cap to ~40% of the viewport height; the list scrolls inside. */
+  .rich-session-plan-panel-tasks {
+    max-height: 38vh;
+  }
+
+  /* Activity strip ("Claude Code is thinking…"). */
+  .rich-session-working {
+    margin-left: max(12px, calc(var(--safe-left) + 8px));
+    margin-right: max(12px, calc(var(--safe-right) + 8px));
+    padding: 5px 12px;
+    font-size: 0.8rem;
+  }
+
+  /* Feed — pull messages up under the toolbar. */
+  .rich-session-feed {
+    padding: 12px max(12px, calc(var(--safe-left) + 8px)) 6px max(12px, calc(var(--safe-left) + 8px));
+    gap: 12px;
+  }
+
+  /* Composer — tighter margin + bottom safe-area, larger send target. */
+  .rich-session-composer {
+    width: calc(100% - max(20px, calc(var(--safe-left) + var(--safe-right) + 16px)));
+    margin-bottom: max(10px, calc(var(--safe-bottom) + 6px));
+    padding: 10px 12px;
+    border-radius: 18px;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
+  }
+
+  .rich-session-input {
+    /* 16px is the magic number that prevents iOS from auto-zooming
+       when the textarea is focused. The base rule is already 16px;
+       reaffirm here so a future "shrink fonts on mobile" pass can't
+       silently regress it. */
+    font-size: 16px;
+    min-height: 32px;
+    max-height: 28vh;
+  }
+
+  .rich-session-send {
+    width: 40px;
+    height: 40px;
+  }
+
+  /* Composer queue strip — match the plan-panel mobile gutter. */
+  .rich-session-queue {
+    padding-left: max(12px, calc(var(--safe-left) + 8px));
+    padding-right: max(12px, calc(var(--safe-right) + 8px));
+  }
+
+  .rich-session-queue-item {
+    padding: 7px 10px;
+    border-radius: 10px;
+    font-size: 0.84rem;
+  }
+
+  /* Active monitor pills — keep on one row so they don't push
+     everything down; horizontal scroll if there are many. */
+  .rich-session-monitors {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-left: max(12px, calc(var(--safe-left) + 8px));
+    padding-right: max(12px, calc(var(--safe-right) + 8px));
+  }
+
+  .rich-session-monitors::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* User messages — let them take more of the row, with consistent
+     left margin so the bubble doesn't hug the edge awkwardly. */
+  .rich-session-entry.is-user {
+    max-width: min(720px, 92%);
+    padding: 9px 12px;
+    border-radius: 14px;
+  }
+
+  /* Tool-result kickers can wrap awkwardly on narrow screens. */
+  .rich-session-entry-kicker-label {
+    font-size: 0.68rem;
+  }
+}
+
+/* Even at the slim phone breakpoint (≤420px) a few extra tweaks:
+   the title can break onto two lines if the cwd subtitle is long, and
+   the canvas/refresh icons benefit from being slightly larger as the
+   only top-bar affordances. */
+@media (max-width: 420px) {
+  .terminal-meta {
+    /* Long cwd paths just look like noise on a phone — clip earlier. */
+    max-width: calc(100vw - 160px);
+  }
+
+  .rich-session-plan-panel-title {
+    font-size: 0.84rem;
+  }
+
+  .rich-session-plan-panel-active-preview {
+    font-size: 0.78rem;
+  }
+
+  .rich-session-feed {
+    padding-top: 10px;
+    padding-bottom: 4px;
+    gap: 10px;
+  }
 }

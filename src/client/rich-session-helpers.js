@@ -364,8 +364,20 @@ export function getRichSessionImageUrl(rawPath, { workspaceRoot = "" } = {}) {
   }
 
   if (relativePath && root && root !== "/") {
-    const params = new URLSearchParams({ root, path: relativePath });
-    return `/api/files/content?${params.toString()}`;
+    // Combine root + relative into an absolute path and route through
+    // /api/files/image-by-path. The image-by-path endpoint applies the
+    // user's imagePathAliases — necessary when the agent's session cwd
+    // is on a different machine (e.g. a Linux dev box) than the web
+    // server (e.g. the user's Mac). Without this, a relative figure
+    // ref under `/home/agent/proj/...` builds a /api/files/content URL
+    // pointing at a path that doesn't exist locally and 404s.
+    //
+    // We also pass `root=` so the server can add the workspace root to
+    // the whitelist for this request — that covers the local-machine
+    // case where the session cwd lives outside `workspaceRootPath`.
+    const absolute = `${root}/${relativePath}`;
+    const params = new URLSearchParams({ path: absolute, root });
+    return `/api/files/image-by-path?${params.toString()}`;
   }
 
   // Absolute path that doesn't fit the workspace branch — let the server

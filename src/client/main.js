@@ -2435,6 +2435,15 @@ const state = {
   nativeSessionStreamLog: {},
   nativeSessionStreamLogRenderFrame: null,
   richSessionComposerDrafts: {},
+  // Per-session queue of messages the user submitted while the agent was
+  // still working on the previous turn. Each entry: { id, text,
+  // attachments, queuedAt }. Auto-flushed (oldest first) when the session
+  // transitions from streamWorking=true to false. The user can edit
+  // (restore to composer) or delete any pending entry.
+  richSessionComposerQueue: {},
+  // Per-session previous streamWorking value, used to detect the
+  // working→idle transition that triggers the queue flush.
+  richSessionComposerQueueLastWorking: {},
   // Attachments queued in the composer, keyed by sessionId. Each entry:
   // { id, absolutePath, fileName, source, sizeBytes, mimeType }. The
   // composer renders a chip strip above the textarea so users see thumbnails
@@ -2455,14 +2464,14 @@ const state = {
   richSessionPlanPushbackOpen: new Set(),
   // Sticky plan/todo panel — shows the latest plan/task list above the
   // composer so the user can see current progress while the chat scrolls.
-  // Per-session collapsed state so a user can dismiss it without losing
-  // it forever; it re-expands when a new plan or todo update arrives.
-  richSessionPlanPanelCollapsed: new Set(),
-  // Last (plan-entry-id, todo-entry-id) we showed in the panel — when these
-  // change (i.e. a NEW plan or todo update arrived), we auto-expand the
-  // panel even if the user had collapsed it. Avoids the "I collapsed it
-  // and now I never see updates" foot-gun.
-  richSessionPlanPanelLastSignature: {},
+  // Default state is COLLAPSED (the header still surfaces "X of Y tasks
+  // completed" / "Plan proposed" so the user always sees what's happening
+  // at a glance); the set tracks sessions the user has explicitly EXPANDED.
+  // No auto-expand on chat updates — once collapsed, stay collapsed until
+  // the user taps the header. The previous "auto-expand on new plan/todo"
+  // behavior was popping the panel open every chat tick and pushing the
+  // composer off-screen on mobile.
+  richSessionPlanPanelExpanded: new Set(),
   richSessionRenderFrame: null,
   richSessionScrollToBottom: false,
   terminalComposing: false,
@@ -5263,6 +5272,91 @@ function setRichSessionComposerDraft(sessionId, value) {
   state.richSessionComposerDrafts[normalizedSessionId] = nextValue;
 }
 
+// =====================================================================
+// Composer message queue. When the user submits while the agent is still
+// working, the message is held here instead of being sent. The queue
+// auto-flushes one message at a time on every working→idle transition,
+// so multi-step prompts the user types ahead are processed in order.
+// The queue strip above the composer lets them edit/remove pending items.
+// =====================================================================
+function getRichSessionComposerQueue(sessionId) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return [];
+  const list = state.richSessionComposerQueue[sid];
+  return Array.isArray(list) ? list : [];
+}
+
+function pushRichSessionComposerQueueItem(sessionId, item) {
+  const sid = String(sessionId || "").trim();
+  if (!sid || !item) return;
+  if (!Array.isArray(state.richSessionComposerQueue[sid])) {
+    state.richSessionComposerQueue[sid] = [];
+  }
+  state.richSessionComposerQueue[sid].push(item);
+}
+
+function shiftRichSessionComposerQueue(sessionId) {
+  const sid = String(sessionId || "").trim();
+  const list = state.richSessionComposerQueue[sid];
+  if (!Array.isArray(list) || !list.length) return null;
+  const item = list.shift();
+  if (!list.length) delete state.richSessionComposerQueue[sid];
+  return item;
+}
+
+function unshiftRichSessionComposerQueueItem(sessionId, item) {
+  const sid = String(sessionId || "").trim();
+  if (!sid || !item) return;
+  if (!Array.isArray(state.richSessionComposerQueue[sid])) {
+    state.richSessionComposerQueue[sid] = [];
+  }
+  state.richSessionComposerQueue[sid].unshift(item);
+}
+
+function removeRichSessionComposerQueueItem(sessionId, itemId) {
+  const sid = String(sessionId || "").trim();
+  const list = state.richSessionComposerQueue[sid];
+  if (!Array.isArray(list)) return null;
+  const index = list.findIndex((entry) => entry?.id === itemId);
+  if (index < 0) return null;
+  const [removed] = list.splice(index, 1);
+  if (!list.length) delete state.richSessionComposerQueue[sid];
+  return removed || null;
+}
+
+// Send the next queued message for a session. Called by the working→idle
+// transition detector in refreshRichSessionSurfaceUi. If the session has
+// already started working again (a transient agent-emitted message could
+// re-flip streamWorking), the message is put back on the front of the
+// queue and we retry on the next idle.
+function flushNextRichSessionComposerQueueItem(sessionId) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return;
+  const session = state.sessions.find((s) => s.id === sid);
+  if (!session) return;
+  if (session.streamWorking) return; // Will retry on next idle.
+  const next = shiftRichSessionComposerQueue(sid);
+  if (!next) return;
+  const text = String(next.text || "").trim();
+  const attachments = Array.isArray(next.attachments) ? next.attachments : null;
+  if (!text && !(attachments && attachments.length)) return;
+  const isStreamMode = Boolean(session.streamMode);
+  const outgoing = text || (attachments && attachments.length ? "Take a look at this image." : "");
+  const sent = sendTerminalInput(`${outgoing}\r`, {
+    queueIfDisconnected: true,
+    attachments: isStreamMode && attachments && attachments.length ? attachments : null,
+  });
+  if (!sent) {
+    // WebSocket isn't ready — keep the message at the front of the queue
+    // so the next idle/connect retries. Avoids losing user messages on a
+    // brief disconnect.
+    unshiftRichSessionComposerQueueItem(sid, next);
+    return;
+  }
+  scheduleRichSessionNarrativeRefresh(sid, { immediate: true });
+  refreshRichSessionSurfaceUi({ scrollToBottom: true });
+}
+
 function appendRichSessionComposerText(sessionId, text) {
   const normalizedSessionId = String(sessionId || "").trim();
   const addition = String(text || "").trim();
@@ -6293,44 +6387,57 @@ function renderRichSessionPlanPanel(activeSession) {
   if (!planEntry && !todoEntry) return "";
 
   const sessionId = activeSession?.id || "";
-  const signature = `${planEntry?.id || ""}|${todoEntry?.id || ""}`;
-  const lastSignature = sessionId ? state.richSessionPlanPanelLastSignature[sessionId] : "";
-  // When the visible plan/todo identity changes (new plan ID or new
-  // TodoWrite emission), auto-expand: the user wanted updates surfaced.
-  if (sessionId && lastSignature !== signature) {
-    state.richSessionPlanPanelLastSignature[sessionId] = signature;
-    state.richSessionPlanPanelCollapsed.delete(sessionId);
-  }
-  const collapsed = sessionId ? state.richSessionPlanPanelCollapsed.has(sessionId) : false;
+  // Default state is collapsed. The panel never auto-expands on chat
+  // updates — the header still says "Plan proposed" / "X of Y tasks
+  // completed" so the user knows what's happening, and they can tap the
+  // header to drill in. Once collapsed, stay collapsed.
+  const collapsed = sessionId ? !state.richSessionPlanPanelExpanded.has(sessionId) : true;
 
-  // Header: "X of Y completed" when we have a todo list; else "Plan
-  // proposed" while waiting for plan approval.
+  // Header: "X / Y" + active-task preview when collapsed; "X of Y completed"
+  // when expanded. The collapsed header is also a click target — tapping
+  // anywhere on it expands the panel, which on mobile is a much bigger
+  // hit area than the small chevron alone.
   let headerText = "";
+  let counts = null;
+  let total = 0;
+  let progressRatio = 0;
+  let activeTaskLabel = "";
   if (todoEntry) {
-    const counts = summariseTodoCounts(todoEntry.todos);
-    const total = todoEntry.todos.length;
-    headerText = `${counts.completed} of ${total} ${total === 1 ? "task" : "tasks"} completed`;
-    if (counts.in_progress) headerText += ` · ${counts.in_progress} in progress`;
+    counts = summariseTodoCounts(todoEntry.todos);
+    total = todoEntry.todos.length;
+    progressRatio = total ? counts.completed / total : 0;
+    if (collapsed) {
+      headerText = `${counts.completed} / ${total}`;
+    } else {
+      headerText = `${counts.completed} of ${total} ${total === 1 ? "task" : "tasks"} completed`;
+      if (counts.in_progress) headerText += ` · ${counts.in_progress} in progress`;
+    }
+    const active = todoEntry.todos.find((t) => {
+      const s = String(t?.status || "").toLowerCase();
+      return s === "in_progress" || s === "active";
+    });
+    if (active) {
+      activeTaskLabel = String(active.activeForm || active.content || "").trim();
+    }
   } else if (planEntry) {
     headerText = "Plan proposed";
   }
 
-  const collapseGlyph = collapsed ? "↙" : "↗";
+  const collapseGlyph = collapsed ? "▾" : "▴";
   const headerHtml = `
-    <header class="rich-session-plan-panel-header">
+    <header class="rich-session-plan-panel-header" data-rich-session-plan-panel-toggle role="button" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}">
       <span class="rich-session-plan-panel-icon" aria-hidden="true">⊟</span>
       <span class="rich-session-plan-panel-title">${escapeHtml(headerText)}</span>
-      <button
-        class="rich-session-plan-panel-collapse"
-        type="button"
-        aria-label="${collapsed ? "Expand plan panel" : "Collapse plan panel"}"
-        data-rich-session-plan-panel-toggle
-      >${collapseGlyph}</button>
+      ${collapsed && activeTaskLabel ? `<span class="rich-session-plan-panel-active-preview" title="${escapeHtml(activeTaskLabel)}">${escapeHtml(activeTaskLabel)}</span>` : ""}
+      <span class="rich-session-plan-panel-collapse" aria-hidden="true">${collapseGlyph}</span>
     </header>
   `;
 
   if (collapsed) {
-    return `<section class="rich-session-plan-panel is-collapsed" id="rich-session-plan-panel">${headerHtml}</section>`;
+    const collapsedProgress = todoEntry && total
+      ? `<div class="rich-session-plan-panel-progress is-collapsed-bar" aria-hidden="true"><div class="rich-session-plan-panel-progress-fill" style="width: ${(progressRatio * 100).toFixed(1)}%"></div></div>`
+      : "";
+    return `<section class="rich-session-plan-panel is-collapsed" id="rich-session-plan-panel">${headerHtml}${collapsedProgress}</section>`;
   }
 
   let bodyHtml = "";
@@ -6671,6 +6778,44 @@ function renderRichSessionComposerAttachmentChips(activeSession) {
   return `<div class="rich-session-composer-attachments ${attachments.length ? "" : "is-empty"}" data-rich-session-attachment-mount>${renderRichSessionComposerAttachmentTilesHtml(attachments)}</div>`;
 }
 
+function renderRichSessionQueueStripHtml(activeSession) {
+  // Live-updated mount above the composer. Empty when the queue is empty
+  // (the .is-empty class hides the wrapper entirely so it adds no gap).
+  const items = getRichSessionComposerQueue(activeSession?.id);
+  if (!items.length) return "";
+
+  const rows = items.map((item, index) => {
+    const text = String(item?.text || "").trim();
+    const preview = text || (Array.isArray(item?.attachments) && item.attachments.length
+      ? `${item.attachments.length} image${item.attachments.length === 1 ? "" : "s"}`
+      : "(empty)");
+    const status = index === 0
+      ? "next — sends after current turn"
+      : `queued · #${index + 1}`;
+    const id = String(item?.id || "");
+    return `
+      <div class="rich-session-queue-item ${index === 0 ? "is-next" : ""}" data-rich-session-queue-item="${escapeHtml(id)}">
+        <span class="rich-session-queue-icon" aria-hidden="true">⤴</span>
+        <div class="rich-session-queue-text-wrap">
+          <span class="rich-session-queue-text" title="${escapeHtml(text)}">${escapeHtml(preview)}</span>
+          <span class="rich-session-queue-meta">${escapeHtml(status)}</span>
+        </div>
+        <div class="rich-session-queue-actions">
+          <button class="rich-session-queue-action" type="button" data-rich-session-queue-edit="${escapeHtml(id)}" aria-label="Edit queued message">edit</button>
+          <button class="rich-session-queue-action is-remove" type="button" data-rich-session-queue-remove="${escapeHtml(id)}" aria-label="Remove queued message">×</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  return `<div class="rich-session-queue-list">${rows}</div>`;
+}
+
+function renderRichSessionQueueStrip(activeSession) {
+  const items = getRichSessionComposerQueue(activeSession?.id);
+  return `<div class="rich-session-queue ${items.length ? "" : "is-empty"}" id="rich-session-queue" data-rich-session-queue-mount aria-label="Queued messages">${renderRichSessionQueueStripHtml(activeSession)}</div>`;
+}
+
 function renderRichSessionComposerAttachmentTilesHtml(attachments) {
   if (!Array.isArray(attachments) || !attachments.length) return "";
   return attachments.map((att) => {
@@ -6705,28 +6850,23 @@ function renderRichSessionSurface(activeSession) {
   const richActive = surfaceMode === "native";
   const streamLogActive = surfaceMode === "stream-json";
   const surfaceActive = richActive || streamLogActive;
-  // Single authoritative "what's the agent doing right now" indicator.
-  // Pending placeholders are no longer rendered inline (see
-  // renderRichSessionEntry's early return), so the strip is always
-  // shown when streamWorking is true — its label reflects whichever of
-  // tool / replying / thinking the narrative tail signals.
-  const activity = deriveRichSessionActivity(activeSession);
-  const isWorking = activity !== null;
-  const activityLabel = activity?.label || `${activeSession?.providerLabel || "Agent"} is working…`;
-  const activityKindClass = activity?.kind ? `is-activity-${activity.kind}` : "";
+  // The "agent is doing X right now" signal lives ON the send button now
+  // (it morphs into a spinner while streamWorking is true). The standalone
+  // activity strip used to be a full-width row above the composer with
+  // the label "Claude Code is replying…", which doubled the chrome and
+  // pushed messages off-screen on mobile. The send-button affordance is
+  // less noisy and never fights with the queue strip for vertical space.
+  const isWorking = Boolean(activeSession?.streamWorking);
   const activeMonitors = getRichSessionActiveMonitors(activeSession);
   return `
     <div class="rich-session-surface ${surfaceActive ? "is-active" : ""} ${streamLogActive ? "is-stream-log" : ""}" id="rich-session-surface" aria-hidden="${surfaceActive ? "false" : "true"}" data-rich-session-surface-mode="${escapeHtml(surfaceMode)}">
       <div class="rich-session-feed ${richActive ? "" : "is-hidden"}" id="rich-session-feed" aria-hidden="${richActive ? "false" : "true"}">${renderRichSessionFeedHtml(activeSession)}</div>
       <div class="rich-session-stream-log ${streamLogActive ? "" : "is-hidden"}" id="rich-session-stream-log" aria-hidden="${streamLogActive ? "false" : "true"}"></div>
-      <div class="rich-session-working ${isWorking ? "is-active" : ""} ${activityKindClass}" id="rich-session-working" aria-live="polite" aria-hidden="${isWorking ? "false" : "true"}">
-        <span class="rich-session-thinking-spinner" aria-hidden="true"></span>
-        <span class="rich-session-working-label">${escapeHtml(activityLabel)}</span>
-      </div>
       <div class="rich-session-monitors ${activeMonitors.length ? "is-active" : ""}" id="rich-session-monitors" aria-hidden="${activeMonitors.length ? "false" : "true"}">
         ${activeMonitors.map((m) => `<span class="rich-session-monitor-pill" title="${escapeHtml(m.tooltip)}"><span class="rich-session-monitor-dot" aria-hidden="true"></span>${escapeHtml(m.label)}</span>`).join("")}
       </div>
       <div class="rich-session-plan-panel-mount" id="rich-session-plan-panel-mount" data-rich-session-plan-panel-mount>${renderRichSessionPlanPanel(activeSession)}</div>
+      ${renderRichSessionQueueStrip(activeSession)}
       ${canSend ? `
         <form class="rich-session-composer" id="rich-session-form">
           <label class="sr-only" for="rich-session-input">Send input</label>
@@ -6743,13 +6883,15 @@ function renderRichSessionSurface(activeSession) {
           <div class="rich-session-composer-foot">
             <div class="rich-session-composer-actions">
               <button
-                class="primary-button toolbar-control rich-session-send"
+                class="primary-button toolbar-control rich-session-send ${isWorking ? "is-working" : ""}"
                 type="submit"
                 id="rich-session-send"
                 data-terminal-control
-                aria-label="Send message"
+                aria-label="${isWorking ? "Queue message — agent is still working" : "Send message"}"
+                title="${isWorking ? "Queue message — agent is still working" : ""}"
               >
-                ${renderIcon(ArrowUp)}
+                <span class="rich-session-send-icon" aria-hidden="${isWorking ? "true" : "false"}">${renderIcon(ArrowUp)}</span>
+                <span class="rich-session-send-spinner" aria-hidden="${isWorking ? "false" : "true"}"></span>
               </button>
             </div>
           </div>
@@ -6932,7 +7074,10 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
       input.value = draft;
     }
     input.disabled = !canSend;
-    input.placeholder = `Message ${activeSession?.providerLabel || "agent"}...`;
+    const providerLabel = activeSession?.providerLabel || "agent";
+    input.placeholder = activeSession?.streamWorking
+      ? `Queue a message for ${providerLabel}…`
+      : `Message ${providerLabel}...`;
     syncRichSessionComposerHeight(input);
   }
 
@@ -6958,26 +7103,53 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
     attachmentMount.classList.toggle("is-empty", !attachments.length);
   }
 
-  // Update the persistent activity indicator without rebuilding it.
-  // The strip's label reflects whichever of tool / replying / thinking
-  // the narrative tail currently signals (see deriveRichSessionActivity).
-  const workingIndicator = document.querySelector("#rich-session-working");
-  if (workingIndicator instanceof HTMLElement) {
-    const activity = deriveRichSessionActivity(activeSession);
-    const isWorking = activity !== null;
-    workingIndicator.classList.toggle("is-active", isWorking);
-    workingIndicator.setAttribute("aria-hidden", isWorking ? "false" : "true");
-    // Reset all activity-kind classes, then apply the current one.
-    for (const cls of Array.from(workingIndicator.classList)) {
-      if (cls.startsWith("is-activity-")) workingIndicator.classList.remove(cls);
+  // Live-update the message-queue strip above the composer. Same
+  // mount-point pattern as the chip strip.
+  const queueMount = document.querySelector("[data-rich-session-queue-mount]");
+  if (queueMount instanceof HTMLElement) {
+    const items = getRichSessionComposerQueue(activeSession?.id);
+    queueMount.classList.toggle("is-empty", !items.length);
+    queueMount.innerHTML = renderRichSessionQueueStripHtml(activeSession);
+  }
+
+  // Working→idle transition detector. When a session was working on the
+  // previous refresh and is no longer working, flush the next queued
+  // message. We do it here (rather than in a server-event hook) because
+  // refreshRichSessionSurfaceUi runs on every narrative-event and on
+  // every session-list change, so any path that flips streamWorking will
+  // trigger it. Per-session memo so the transition fires once.
+  if (activeSession?.id) {
+    const sid = activeSession.id;
+    const wasWorking = state.richSessionComposerQueueLastWorking[sid] === true;
+    const nowWorking = Boolean(activeSession.streamWorking);
+    state.richSessionComposerQueueLastWorking[sid] = nowWorking;
+    if (wasWorking && !nowWorking && getRichSessionComposerQueue(sid).length) {
+      // Defer to next tick so the UI paints the "idle" state before we
+      // immediately send the next message — otherwise the activity strip
+      // can flicker straight from "thinking…" into the new turn without
+      // the user seeing the brief idle gap, which is disorienting.
+      setTimeout(() => flushNextRichSessionComposerQueueItem(sid), 0);
     }
-    if (activity?.kind) {
-      workingIndicator.classList.add(`is-activity-${activity.kind}`);
-    }
-    const label = workingIndicator.querySelector(".rich-session-working-label");
-    if (label instanceof HTMLElement) {
-      label.textContent = activity?.label || `${activeSession?.providerLabel || "Agent"} is working…`;
-    }
+  }
+
+  // Send-button working state. The send button morphs into a spinner
+  // while streamWorking is true, replacing the old "Claude is replying…"
+  // strip above the composer. The submit handler still works during this
+  // state — submitting just enqueues instead of sending immediately, and
+  // the placeholder change ("Queue a message for…") makes that intent
+  // legible.
+  const sendButtonForState = document.querySelector("#rich-session-send");
+  const isAgentWorking = Boolean(activeSession?.streamWorking);
+  if (sendButtonForState instanceof HTMLButtonElement) {
+    sendButtonForState.classList.toggle("is-working", isAgentWorking);
+    const sendIcon = sendButtonForState.querySelector(".rich-session-send-icon");
+    const sendSpinner = sendButtonForState.querySelector(".rich-session-send-spinner");
+    if (sendIcon instanceof HTMLElement) sendIcon.setAttribute("aria-hidden", isAgentWorking ? "true" : "false");
+    if (sendSpinner instanceof HTMLElement) sendSpinner.setAttribute("aria-hidden", isAgentWorking ? "false" : "true");
+    sendButtonForState.setAttribute(
+      "aria-label",
+      isAgentWorking ? "Queue message — agent is still working" : "Send message",
+    );
   }
 
   // Update the active monitors row (subagents / background tasks).
@@ -9776,7 +9948,7 @@ function getKnowledgeBaseAbsoluteFileUrl(filePath) {
   return absolutePath ? getFileContentUrlForRoot(absolutePath.root, absolutePath.path) : "";
 }
 
-function getKnowledgeBaseMediaResource(currentPath, targetPath, { defaultToImage = false } = {}) {
+function getKnowledgeBaseMediaResource(currentPath, targetPath, { defaultToImage = false, assetRoot = null } = {}) {
   const cleanedTarget = cleanMarkdownLinkTarget(targetPath);
 
   if (!cleanedTarget || cleanedTarget.startsWith("#")) {
@@ -9804,13 +9976,21 @@ function getKnowledgeBaseMediaResource(currentPath, targetPath, { defaultToImage
   }
 
   const kind = getKnowledgeBaseMediaKind(relativeAssetPath, { defaultToImage });
-  return kind
-    ? {
-        kind,
-        url: getKnowledgeBaseNoteRawUrl(relativeAssetPath),
-        local: true,
-      }
-    : null;
+  if (!kind) {
+    return null;
+  }
+
+  // When the markdown is being rendered for a file that lives outside the
+  // Library (e.g. a workspace paper.md), relative asset paths must resolve
+  // against the workspace root, not the wiki root. Without this, a paper.md
+  // at /workspace/projects/foo/paper.md with `![](figures/x.png)` builds a
+  // URL pointing at <wikiRoot>/projects/foo/figures/x.png, which 404s and
+  // falls back to alt-text-as-prose.
+  const url = assetRoot
+    ? getFileContentUrlForRoot(assetRoot, relativeAssetPath)
+    : getKnowledgeBaseNoteRawUrl(relativeAssetPath);
+
+  return { kind, url, local: true };
 }
 
 function getFileDisplayName(relativePath) {
@@ -11866,7 +12046,7 @@ function renderKnowledgeBaseMedia(media, { altText = "", caption = "" } = {}) {
   `;
 }
 
-function createKnowledgeBaseMarked(currentPath) {
+function createKnowledgeBaseMarked(currentPath, { assetRoot = null } = {}) {
   const wikiLinkExtension = {
     name: "kbWikiLink",
     level: "inline",
@@ -11945,7 +12125,7 @@ function createKnowledgeBaseMarked(currentPath) {
   const renderer = {
     image({ href, title, text }) {
       const altText = String(text || "");
-      const media = getKnowledgeBaseMediaResource(currentPath, href, { defaultToImage: true });
+      const media = getKnowledgeBaseMediaResource(currentPath, href, { defaultToImage: true, assetRoot });
       if (!media) {
         return `<span>${escapeHtml(altText)}</span>`;
       }
@@ -11960,7 +12140,7 @@ function createKnowledgeBaseMarked(currentPath) {
         return `<button class="knowledge-base-inline-link" type="button" data-kb-open-note="${escapeHtml(notePath)}">${innerHtml}</button>`;
       }
 
-      const media = getKnowledgeBaseMediaResource(currentPath, cleanedTarget);
+      const media = getKnowledgeBaseMediaResource(currentPath, cleanedTarget, { assetRoot });
       if (media) {
         // Use the rendered inner as the visible label, but fall back to a plain
         // text caption derived from the link tokens via the textRenderer.
@@ -11976,7 +12156,9 @@ function createKnowledgeBaseMarked(currentPath) {
       const absoluteFileHref = getKnowledgeBaseAbsoluteFileUrl(cleanedTarget);
       const relativeAssetPath = absoluteFileHref ? "" : resolveKnowledgeBaseRelativePath(currentPath, cleanedTarget);
       const externalHref = absoluteFileHref || (relativeAssetPath
-        ? getKnowledgeBaseNoteRawUrl(relativeAssetPath)
+        ? (assetRoot
+            ? getFileContentUrlForRoot(assetRoot, relativeAssetPath)
+            : getKnowledgeBaseNoteRawUrl(relativeAssetPath))
         : cleanedTarget || String(href || "").trim());
       return `<a class="knowledge-base-external-link" href="${escapeHtml(externalHref)}" target="_blank" rel="noreferrer">${innerHtml}</a>`;
     },
@@ -12031,11 +12213,11 @@ function createKnowledgeBaseMarked(currentPath) {
   });
 }
 
-function renderKnowledgeBaseInline(text, currentPath) {
+function renderKnowledgeBaseInline(text, currentPath, { assetRoot = null } = {}) {
   const source = String(text || "");
   if (!source) return "";
   try {
-    return createKnowledgeBaseMarked(currentPath).parseInline(source);
+    return createKnowledgeBaseMarked(currentPath, { assetRoot }).parseInline(source);
   } catch (error) {
     if (typeof console !== "undefined" && console.warn) {
       console.warn("renderKnowledgeBaseInline failed", error);
@@ -12484,7 +12666,7 @@ function installPaperQuoteListenerOnce() {
   window.addEventListener("resize", updatePaperQuoteFloater);
 }
 
-function renderKnowledgeBaseMarkdown(markdown, currentPath) {
+function renderKnowledgeBaseMarkdown(markdown, currentPath, { assetRoot = null } = {}) {
   let prefixHtml = "";
   let source = String(markdown || "");
   const isPaper = isPaperMarkdownPath(currentPath);
@@ -12505,7 +12687,7 @@ function renderKnowledgeBaseMarkdown(markdown, currentPath) {
 
   let mainHtml = "";
   try {
-    mainHtml = createKnowledgeBaseMarked(currentPath).parse(source);
+    mainHtml = createKnowledgeBaseMarked(currentPath, { assetRoot }).parse(source);
   } catch (error) {
     if (typeof console !== "undefined" && console.warn) {
       console.warn("renderKnowledgeBaseMarkdown failed", error);
@@ -13308,9 +13490,15 @@ function renderFileTextPreview(activeTab) {
   const notePath = getKnowledgeBaseNotePathForWorkspaceFile(state.openFileRelativePath);
 
   if (isMarkdownFilePath(state.openFileRelativePath)) {
+    // When the file lives outside the Library (no resolved notePath),
+    // relative image refs like `figures/foo.png` must resolve against the
+    // workspace root, not the wiki root — otherwise the API URL points
+    // into <wikiRoot>/... which 404s and the renderer falls back to
+    // alt-text-as-prose. See getKnowledgeBaseMediaResource for context.
+    const assetRoot = notePath ? null : state.filesRoot;
     return `
       <div class="file-rendered-markdown knowledge-base-markdown">
-        ${renderKnowledgeBaseMarkdown(content, notePath || state.openFileRelativePath)}
+        ${renderKnowledgeBaseMarkdown(content, notePath || state.openFileRelativePath, { assetRoot })}
       </div>
     `;
   }
@@ -32848,16 +33036,34 @@ function renderUpdateBanner() {
       ? `<a class="update-link" href="${escapeHtml(update.releaseUrl)}" target="_blank" rel="noreferrer">release notes</a>`
       : "";
 
+  // While the update is in flight (npm install + build + restart, ~30-60s),
+  // the page stays open and waitForUpdateRestart() polls /api/state until
+  // the server comes back, then reloads. Show a spinner + "updating..." so
+  // the user knows the click was received and not to click again. The
+  // compact (release) branch above does the same thing.
+  const buttonHtml = update.canUpdate && state.updateApplying
+    ? `
+      <button class="primary-button update-button is-loading" type="button" id="update-app" disabled>
+        <span class="update-button-content">
+          <span class="update-button-spinner" aria-hidden="true"></span>
+          <span>updating...</span>
+        </span>
+      </button>
+    `
+    : `
+      <button class="${update.canUpdate ? "primary-button" : "ghost-button"} update-button" type="button" id="update-app" ${update.canUpdate ? "" : "disabled"}>
+        ${update.canUpdate ? "update & restart" : "blocked"}
+      </button>
+    `;
+
   return `
-    <section class="update-card ${update.canUpdate ? "" : "is-blocked"}">
+    <section class="update-card ${update.canUpdate ? "" : "is-blocked"} ${state.updateApplying ? "is-applying" : ""}">
       <div class="update-copy">
         <strong>${escapeHtml(isRelease ? `${latest} available` : "new version available")}</strong>
         <span>${escapeHtml(detail)}</span>
         ${releaseLink}
       </div>
-      <button class="${update.canUpdate ? "primary-button" : "ghost-button"} update-button" type="button" id="update-app" ${update.canUpdate ? "" : "disabled"}>
-        ${update.canUpdate ? "update & restart" : "blocked"}
-      </button>
+      ${buttonHtml}
     </section>
   `;
 }
@@ -41256,14 +41462,14 @@ function bindShellEvents() {
     document.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : null;
       const toggle = target?.closest("[data-rich-session-plan-panel-toggle]");
-      if (toggle instanceof HTMLButtonElement) {
+      if (toggle instanceof HTMLElement) {
         event.preventDefault();
         const sid = getActiveSession()?.id;
         if (sid) {
-          if (state.richSessionPlanPanelCollapsed.has(sid)) {
-            state.richSessionPlanPanelCollapsed.delete(sid);
+          if (state.richSessionPlanPanelExpanded.has(sid)) {
+            state.richSessionPlanPanelExpanded.delete(sid);
           } else {
-            state.richSessionPlanPanelCollapsed.add(sid);
+            state.richSessionPlanPanelExpanded.add(sid);
           }
           refreshRichSessionSurfaceUi();
         }
@@ -41284,6 +41490,67 @@ function bindShellEvents() {
         }
       }
     }, { capture: true });
+    // Keyboard activation for the role=button plan panel header (the
+    // header itself is now the toggle so the whole strip is one big tap
+    // target on mobile).
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const target = event.target instanceof Element ? event.target : null;
+      const toggle = target?.closest("[data-rich-session-plan-panel-toggle]");
+      if (!(toggle instanceof HTMLElement)) return;
+      event.preventDefault();
+      const sid = getActiveSession()?.id;
+      if (!sid) return;
+      if (state.richSessionPlanPanelExpanded.has(sid)) {
+        state.richSessionPlanPanelExpanded.delete(sid);
+      } else {
+        state.richSessionPlanPanelExpanded.add(sid);
+      }
+      refreshRichSessionSurfaceUi();
+    });
+  }
+
+  // Composer queue — edit / remove buttons on each pending row. The
+  // queue strip lives outside the form so a form-level handler doesn't
+  // catch it; bind once at the document level. "Edit" pulls the
+  // queued text back into the textarea (and removes the entry); "remove"
+  // just drops it.
+  if (!state.__richSessionComposerQueueBound) {
+    state.__richSessionComposerQueueBound = true;
+    document.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const editBtn = target?.closest("[data-rich-session-queue-edit]");
+      if (editBtn instanceof HTMLElement) {
+        event.preventDefault();
+        const sid = getActiveSession()?.id;
+        const itemId = editBtn.getAttribute("data-rich-session-queue-edit") || "";
+        if (!sid || !itemId) return;
+        const removed = removeRichSessionComposerQueueItem(sid, itemId);
+        if (!removed) return;
+        // Restore the queued text into the composer. If the textarea
+        // already has unsent text, prepend a newline so we don't smash
+        // them together. Attachments aren't restored — that path would
+        // need re-uploading; the user can re-attach if they want them.
+        const current = getRichSessionComposerDraft(sid);
+        const restored = current
+          ? `${removed.text}\n${current}`
+          : String(removed.text || "");
+        setRichSessionComposerDraft(sid, restored);
+        refreshRichSessionSurfaceUi();
+        focusRichSessionComposer();
+        return;
+      }
+      const removeBtn = target?.closest("[data-rich-session-queue-remove]");
+      if (removeBtn instanceof HTMLElement) {
+        event.preventDefault();
+        const sid = getActiveSession()?.id;
+        const itemId = removeBtn.getAttribute("data-rich-session-queue-remove") || "";
+        if (!sid || !itemId) return;
+        removeRichSessionComposerQueueItem(sid, itemId);
+        refreshRichSessionSurfaceUi();
+        return;
+      }
+    });
   }
 
   // Restart-session button on exited stream-mode sessions. Spawns a
@@ -41765,6 +42032,27 @@ function bindShellEvents() {
     // to a simple "look at this" prompt so the agent knows what to do.
     const outgoing = value || (attachments.length ? "Take a look at this image." : "");
     if (!outgoing) {
+      return;
+    }
+
+    // Queueing: if the agent is still working on the previous turn, hold
+    // this message in the per-session queue instead of sending it. The
+    // queue auto-flushes (oldest first) when the session transitions
+    // back to idle. The user sees a strip above the composer with each
+    // pending message and can edit/remove them.
+    if (activeSession.streamWorking) {
+      pushRichSessionComposerQueueItem(activeSession.id, {
+        id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        text: outgoing,
+        attachments: isStreamMode && attachments.length ? attachments.slice() : null,
+        queuedAt: new Date().toISOString(),
+      });
+      setRichSessionComposerDraft(activeSession.id, "");
+      clearRichSessionComposerAttachments(activeSession.id);
+      input.value = "";
+      syncRichSessionComposerHeight(input);
+      refreshRichSessionSurfaceUi();
+      focusRichSessionComposer();
       return;
     }
 

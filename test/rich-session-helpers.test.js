@@ -201,20 +201,27 @@ test("image url: empty path returns empty string", () => {
   assert.equal(getRichSessionImageUrl(null), "");
 });
 
-test("image url: workspace-relative path uses /api/files/content", () => {
+test("image url: workspace-relative path uses /api/files/image-by-path with absolute path + root whitelist", () => {
+  // Routed through image-by-path (not /api/files/content) so the server
+  // can apply the user's imagePathAliases — the agent's session cwd may
+  // be on a different machine than the web server. The `root` query
+  // param tells the server which workspace root to add to the
+  // per-request whitelist.
   const url = getRichSessionImageUrl("figures/x.png", { workspaceRoot: "/Users/me/proj" });
-  assert.match(url, /^\/api\/files\/content\?/);
+  assert.match(url, /^\/api\/files\/image-by-path\?/);
   const params = new URL(url, "http://x").searchParams;
+  assert.equal(params.get("path"), "/Users/me/proj/figures/x.png");
   assert.equal(params.get("root"), "/Users/me/proj");
-  assert.equal(params.get("path"), "figures/x.png");
 });
 
-test("image url: absolute path inside workspace root → relative + /api/files/content", () => {
+test("image url: absolute path inside workspace root → image-by-path with absolute path + root whitelist", () => {
   const url = getRichSessionImageUrl("/Users/me/proj/figures/x.png", {
     workspaceRoot: "/Users/me/proj",
   });
+  assert.match(url, /^\/api\/files\/image-by-path\?/);
   const params = new URL(url, "http://x").searchParams;
-  assert.equal(params.get("path"), "figures/x.png");
+  assert.equal(params.get("path"), "/Users/me/proj/figures/x.png");
+  assert.equal(params.get("root"), "/Users/me/proj");
 });
 
 test("image url: absolute path under attachments dir → /api/attachments/file (regardless of workspace root)", () => {
@@ -244,12 +251,14 @@ test("image url: bare relative path with no workspace root still returns '' (not
   assert.equal(url, "");
 });
 
-test("image url: trailing slash on workspace root is normalised", () => {
+test("image url: trailing slash on workspace root is normalised in the absolute path", () => {
   const url = getRichSessionImageUrl("/Users/me/proj/figures/x.png", {
     workspaceRoot: "/Users/me/proj/",
   });
   const params = new URL(url, "http://x").searchParams;
-  assert.equal(params.get("path"), "figures/x.png");
+  // Absolute path stays absolute; the trailing slash on the workspace
+  // root is stripped during normalisation so we don't get a `//` join.
+  assert.equal(params.get("path"), "/Users/me/proj/figures/x.png");
 });
 
 test("image url: workspace root '/' is treated as missing (so we don't auto-serve / as the root)", () => {
@@ -259,7 +268,9 @@ test("image url: workspace root '/' is treated as missing (so we don't auto-serv
 
 test("image url: query string params are URL-encoded for paths with spaces", () => {
   const url = getRichSessionImageUrl("figures/my file.png", { workspaceRoot: "/Users/me/proj" });
-  assert.match(url, /path=figures%2Fmy\+file\.png/);
+  // The full absolute path is encoded in the query string. Slashes
+  // become %2F and spaces become +.
+  assert.match(url, /path=%2FUsers%2Fme%2Fproj%2Ffigures%2Fmy\+file\.png/);
 });
 
 // ============================================================================

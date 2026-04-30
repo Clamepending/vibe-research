@@ -6320,6 +6320,28 @@ export async function createVibeResearchApp({
         }
       }
 
+      // Optional `root` query param: when the chat helper rebuilds a
+      // workspace-relative image path into an absolute path, it also
+      // sends the workspace root that anchored it. We add that root (and
+      // its alias-translated equivalent) to the whitelist for this
+      // request so users whose session cwd lives outside `workspaceRootPath`
+      // (or who are running the agent on a different machine) still see
+      // their figures inline. Only an absolute root is accepted, and the
+      // whitelist is per-request — random absolute paths the user didn't
+      // open are still rejected.
+      const requestedRoot = typeof request.query.root === "string" ? request.query.root : "";
+      const requestRoots = [];
+      if (requestedRoot && path.isAbsolute(requestedRoot)) {
+        requestRoots.push(requestedRoot);
+        for (const alias of aliases) {
+          if (requestedRoot === alias.from.slice(0, -1) || requestedRoot.startsWith(alias.from)) {
+            const tail = requestedRoot.startsWith(alias.from) ? requestedRoot.slice(alias.from.length) : "";
+            requestRoots.push(path.resolve(alias.to, tail));
+            break;
+          }
+        }
+      }
+
       // Build the whitelist of allowed real-path roots. Each alias `to`
       // and the active workspace root + cwd are valid serving roots.
       const whitelistRoots = [];
@@ -6329,6 +6351,15 @@ export async function createVibeResearchApp({
         } catch {
           // alias.to may not exist on this machine yet — skip silently
           // rather than 500ing on a stale config entry.
+        }
+      }
+      for (const root of requestRoots) {
+        try {
+          whitelistRoots.push(await realpath(root));
+        } catch {
+          // The requested root may be a foreign path with no local
+          // equivalent — that's fine, the alias-translated version
+          // (also pushed above) will provide coverage.
         }
       }
       try {
