@@ -15587,10 +15587,28 @@ details.rich-session-compact-output[open] .rich-session-compact-output-toggle {
   font-size: 0.78rem;
 }
 
-/* TodoWrite / TaskUpdate panels mirror Claude Code's TUI tasks list.
-   Header is a one-line summary ("10 tasks (8 done, 1 in progress, 1 open)"),
-   followed by a checklist where in-progress items get a filled red square,
-   pending items an empty box, completed items a green check + strikethrough. */
+/* TodoWrite / TaskUpdate inline ticks render as a single muted summary
+   row — the sticky plan/todo panel above the composer is the canonical
+   "current state" view; the inline entry just records that an update
+   happened (e.g. "3 tasks · 1 done, 2 open") so the chat stays an audit
+   trail without duplicating the panel's content. */
+.rich-session-todo-tick {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.rich-session-todo-tick-summary {
+  color: rgba(244, 244, 242, 0.62);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+}
+
+/* Legacy block-style todo rendering — kept in CSS for backwards-compat
+   with any older entries that might still ship the full layout, but the
+   client now emits the compact tick above for new TodoWrite entries. */
 .rich-session-todo-block {
   display: grid;
   gap: 4px;

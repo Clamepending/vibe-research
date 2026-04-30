@@ -6342,6 +6342,13 @@ function renderRichSessionPlanPanel(activeSession) {
 }
 
 function renderRichSessionTodoBody(todos) {
+  // Inline TodoWrite ticks render as a compact one-line audit row. The
+  // sticky plan / todo panel above the composer is the canonical CURRENT
+  // view; rendering the full task list inline too just duplicates state
+  // and pads the chat. The inline tick still preserves history — each
+  // emission shows the snapshot at that moment ("3 tasks: 0 done, 1
+  // active, 2 open" → "3 tasks: 1 done, 1 active, 1 open" → ...) so the
+  // user can scroll back and see how the agent's plan evolved.
   const items = Array.isArray(todos) ? todos : [];
   const counts = { completed: 0, in_progress: 0, pending: 0 };
   for (const todo of items) {
@@ -6355,46 +6362,9 @@ function renderRichSessionTodoBody(todos) {
   if (counts.completed) parts.push(`${counts.completed} done`);
   if (counts.in_progress) parts.push(`${counts.in_progress} in progress`);
   if (counts.pending) parts.push(`${counts.pending} open`);
-  const summary = `${items.length} ${items.length === 1 ? "task" : "tasks"}${parts.length ? ` (${parts.join(", ")})` : ""}`;
+  const summary = `${items.length} ${items.length === 1 ? "task" : "tasks"}${parts.length ? ` · ${parts.join(", ")}` : ""}`;
 
-  // Show the in-progress tasks first, then the open ones, then the most
-  // recent completions (capped) — matches how the TUI panel reads.
-  const ordered = [
-    ...items.filter((t) => /^(in_progress|active)$/i.test(String(t?.status || ""))),
-    ...items.filter((t) => /^(pending|open)?$/i.test(String(t?.status || "")) && !/^(in_progress|active|completed|done)$/i.test(String(t?.status || ""))),
-    ...items.filter((t) => /^(completed|done)$/i.test(String(t?.status || ""))),
-  ];
-
-  const visibleLimit = 6;
-  const visible = ordered.slice(0, visibleLimit);
-  const hiddenCompletedCount = Math.max(0, items.length - visible.length);
-
-  const itemHtml = visible.map((todo) => {
-    const status = String(todo?.status || "pending").toLowerCase();
-    const isCompleted = status === "completed" || status === "done";
-    const isInProgress = status === "in_progress" || status === "active";
-    const stateClass = isCompleted ? "is-completed" : isInProgress ? "is-in-progress" : "is-pending";
-    const glyph = isCompleted ? "✓" : isInProgress ? "■" : "☐";
-    const content = isInProgress && todo?.activeForm ? todo.activeForm : (todo?.content || todo?.activeForm || "");
-    return `
-      <li class="rich-session-todo-item ${stateClass}">
-        <span class="rich-session-todo-glyph" aria-hidden="true">${glyph}</span>
-        <span class="rich-session-todo-text">${escapeHtml(String(content))}</span>
-      </li>
-    `;
-  }).join("");
-
-  const footer = hiddenCompletedCount > 0
-    ? `<div class="rich-session-todo-footer">… +${hiddenCompletedCount} more</div>`
-    : "";
-
-  return `
-    <div class="rich-session-todo-block">
-      <div class="rich-session-todo-summary">${escapeHtml(summary)}</div>
-      <ul class="rich-session-todo-list">${itemHtml}</ul>
-      ${footer}
-    </div>
-  `;
+  return `<div class="rich-session-todo-tick"><span class="rich-session-todo-tick-summary">${escapeHtml(summary)}</span></div>`;
 }
 
 function renderRichSessionOverviewCard(activeSession) {
