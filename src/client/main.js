@@ -24710,13 +24710,21 @@ async function compileResearchBriefFromActionItem(actionItemId) {
       `/api/research/projects/${encodeURIComponent(target.projectName)}/briefs/${encodeURIComponent(target.briefSlug)}/compile`,
       {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({ actionItemId: id }),
       },
     );
     const moveCount = Array.isArray(payload.queueRows) ? payload.queueRows.length : 0;
     const note = moveCount
       ? `Compiled ${moveCount} move${moveCount === 1 ? "" : "s"} into QUEUE.`
       : "Approved research brief.";
+    if (payload.agentTown) {
+      applyAgentTownState(payload.agentTown);
+      refreshAgentTownActionItemUi();
+      refreshAgentCanvasUi();
+    }
+    if (payload.actionItem?.resolution === "approved") {
+      return payload.actionItem;
+    }
     return updateAgentTownActionItemStatus(id, "completed", {
       resolution: "approved",
       resolutionNote: note,

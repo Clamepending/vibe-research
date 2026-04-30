@@ -36,17 +36,6 @@ async function postJson(url, body) {
   return payload;
 }
 
-async function patchJson(url, body) {
-  const response = await fetch(url, {
-    method: "PATCH",
-    headers: { accept: "application/json", "Content-Type": "application/json" },
-    body: JSON.stringify(body || {}),
-  });
-  const payload = await response.json().catch(() => ({}));
-  assert.equal(response.status, 200, payload.error || `${response.status} ${response.statusText}`);
-  return payload;
-}
-
 async function readActionItem(baseUrl, id) {
   const response = await fetch(`${baseUrl}/api/agent-town/action-items`);
   assert.equal(response.status, 200);
@@ -255,14 +244,14 @@ test("research orchestrator drives brief review, sweep routing, and judge cards 
     assert.equal(briefCard.target.action, "compile-research-brief");
     assert.deepEqual(briefCard.choices, ["approve", "steer", "reject"]);
 
-    const compile = await postJson(`${baseUrl}/api/research/projects/${briefProjectName}/briefs/plateau-plan/compile`, {});
+    const compile = await postJson(`${baseUrl}/api/research/projects/${briefProjectName}/briefs/plateau-plan/compile`, {
+      actionItemId: "research-brief-plateau-plan",
+    });
     assert.equal(compile.compiled, true);
     assert.equal(compile.queueRows[0].slug, "contrastive-prompt");
     assert.equal(compile.phase.phase, "experiment");
-    await patchJson(`${baseUrl}/api/agent-town/action-items/research-brief-plateau-plan`, {
-      resolution: "approved",
-      resolutionNote: "Canary approved and queued the recommended move.",
-    });
+    assert.equal(compile.actionItem.id, "research-brief-plateau-plan");
+    assert.equal(compile.actionItem.resolution, "approved");
 
     const approvedBriefCard = await readActionItem(baseUrl, "research-brief-plateau-plan");
     assert.equal(approvedBriefCard.status, "completed");

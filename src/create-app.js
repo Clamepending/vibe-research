@@ -6584,6 +6584,11 @@ export async function createVibeResearchApp({
         : body.only
           ? [body.only]
           : [];
+      const actionItemId = String(body.actionItemId || body.reviewActionItemId || "").trim();
+      if (actionItemId && !agentTownStore.getState().actionItems.some((item) => item.id === actionItemId)) {
+        response.status(404).json({ error: `Agent Inbox action item "${actionItemId}" not found.` });
+        return;
+      }
       const result = await compileBriefToQueue({
         projectDir,
         slug: String(request.params.slug || ""),
@@ -6600,6 +6605,21 @@ export async function createVibeResearchApp({
           briefSlug: result.brief.slug,
           summary: `compiled ${result.queueRows.length} move(s) from brief ${result.brief.slug}`,
         });
+      let actionItem = null;
+      let agentTown = null;
+      if (!result.dryRun && actionItemId) {
+        const moveCount = result.queueRows.length;
+        const note = moveCount
+          ? `Compiled ${moveCount} move${moveCount === 1 ? "" : "s"} into QUEUE.`
+          : "Approved research brief.";
+        const update = await agentTownStore.updateActionItem(actionItemId, {
+          status: "completed",
+          resolution: "approved",
+          resolutionNote: note,
+        });
+        actionItem = update.actionItem;
+        agentTown = update.state;
+      }
 
       response.json({
         ok: true,
@@ -6611,6 +6631,8 @@ export async function createVibeResearchApp({
         compiled: result.compiled,
         dryRun: result.dryRun,
         phase: phaseResult?.state || null,
+        actionItem,
+        agentTown,
       });
     } catch (error) {
       const message = error?.message || "Could not compile research brief.";
