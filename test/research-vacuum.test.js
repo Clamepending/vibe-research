@@ -25,6 +25,8 @@ import {
   restoreFromArchive,
   readManifest,
   resolveArtifactPath,
+  planPurge,
+  applyPurge,
   BINARY_EXTENSIONS,
   TEXT_EXTENSIONS_PINNED,
   ARCHIVE_DIRNAME,
@@ -393,6 +395,74 @@ test("__internal.falsifiedSlugs: matches simple + compound events", () => {
   assert.deepEqual([...slugs].sort(), ["a", "b", "d"]);
 });
 
+// ---- planPurge / applyPurge ----
+
+test("planPurge: enumerates archived files + manifest rows without mutating", async () => {
+  const dir = makeProject("vr-vacuum-purge-plan");
+  try {
+    mkdirSync(join(dir, "figures"));
+    writeFileSync(join(dir, "figures", "old.png"), Buffer.from("aaaa"));
+    setAgeDays(join(dir, "figures", "old.png"), 200);
+    const plan = await planVacuum(dir, { ageDays: 90 });
+    await applyVacuum(dir, plan);
+    const purgePlan = await planPurge(dir);
+    assert.equal(purgePlan.archivedFiles.length, 1);
+    assert.equal(purgePlan.archivedFiles[0].relPath.split(/[/\\]/).pop(), "old.png");
+    assert.equal(purgePlan.manifestRows, 1);
+    // Dry-run mutates nothing.
+    assert.equal(existsSync(join(dir, ARCHIVE_DIRNAME, "figures", "old.png")), true);
+    assert.equal(existsSync(join(dir, ARCHIVE_DIRNAME, "manifest.tsv")), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("planPurge: returns empty plan when no .archive/", async () => {
+  const dir = makeProject("vr-vacuum-purge-empty");
+  try {
+    const plan = await planPurge(dir);
+    assert.equal(plan.archivedFiles.length, 0);
+    assert.equal(plan.totalBytes, 0);
+    assert.equal(plan.manifestRows, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("applyPurge: wipes .archive/ entirely (files + manifest)", async () => {
+  const dir = makeProject("vr-vacuum-purge-apply");
+  try {
+    mkdirSync(join(dir, "figures"));
+    writeFileSync(join(dir, "figures", "old1.png"), Buffer.from("aaaa"));
+    writeFileSync(join(dir, "figures", "old2.png"), Buffer.from("bbbbcc"));
+    setAgeDays(join(dir, "figures", "old1.png"), 200);
+    setAgeDays(join(dir, "figures", "old2.png"), 200);
+    const plan = await planVacuum(dir, { ageDays: 90 });
+    await applyVacuum(dir, plan);
+    const result = await applyPurge(dir);
+    assert.equal(result.removed, 2);
+    assert.equal(result.totalBytes, 4 + 6);
+    assert.equal(result.manifestRowsDropped, 2);
+    assert.equal(existsSync(join(dir, ARCHIVE_DIRNAME)), false, ".archive/ dir gone");
+    // Original files are still gone (vacuum had moved them).
+    assert.equal(existsSync(join(dir, "figures", "old1.png")), false);
+    assert.equal(existsSync(join(dir, "figures", "old2.png")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("applyPurge: idempotent (no-op when no .archive/)", async () => {
+  const dir = makeProject("vr-vacuum-purge-idempotent");
+  try {
+    const result = await applyPurge(dir);
+    assert.equal(result.removed, 0);
+    assert.equal(result.totalBytes, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---- bin/vr-research-vacuum CLI ----
 
 test("vr-research-vacuum --help: exits 0", async () => {
@@ -476,6 +546,65 @@ test("vr-research-vacuum --restore: round-trips a tiered file", async () => {
 
 test("vr-research-vacuum --apply --restore: mutually exclusive", async () => {
   const r = await runCli(["/tmp/whatever", "--apply", "--restore", "x"]);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /mutually exclusive/);
+});
+
+test("vr-research-vacuum --purge (dry-run): prints plan + mutates nothing", async () => {
+  const dir = makeProject("vr-vacuum-cli-purge-dry");
+  try {
+    mkdirSync(join(dir, "figures"));
+    writeFileSync(join(dir, "figures", "old.png"), Buffer.alloc(2048));
+    setAgeDays(join(dir, "figures", "old.png"), 200);
+    await runCli([dir, "--apply", "--age-days", "90"]);
+    const r = await runCli([dir, "--purge"]);
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /--purge dry-run/);
+    assert.match(r.stdout, /files:\s+1/);
+    assert.match(r.stdout, /destructive and irreversible/);
+    // Mutates nothing.
+    assert.equal(existsSync(join(dir, ARCHIVE_DIRNAME, "manifest.tsv")), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vr-research-vacuum --purge --apply: wipes archive", async () => {
+  const dir = makeProject("vr-vacuum-cli-purge-apply");
+  try {
+    mkdirSync(join(dir, "figures"));
+    writeFileSync(join(dir, "figures", "old.png"), Buffer.alloc(2048));
+    setAgeDays(join(dir, "figures", "old.png"), 200);
+    await runCli([dir, "--apply", "--age-days", "90"]);
+    const r = await runCli([dir, "--purge", "--apply"]);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, /purged/);
+    assert.match(r.stdout, /removed:\s+1 files/);
+    assert.equal(existsSync(join(dir, ARCHIVE_DIRNAME)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vr-research-vacuum --purge --json: structured plan", async () => {
+  const dir = makeProject("vr-vacuum-cli-purge-json");
+  try {
+    mkdirSync(join(dir, "figures"));
+    writeFileSync(join(dir, "figures", "old.png"), Buffer.alloc(1024));
+    setAgeDays(join(dir, "figures", "old.png"), 200);
+    await runCli([dir, "--apply", "--age-days", "90"]);
+    const r = await runCli([dir, "--purge", "--json"]);
+    assert.equal(r.status, 0);
+    const body = JSON.parse(r.stdout);
+    assert.equal(body.mode, "purge-dry-run");
+    assert.equal(body.plan.archivedFiles.length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vr-research-vacuum --purge --list: mutually exclusive", async () => {
+  const r = await runCli(["/tmp/whatever", "--purge", "--list"]);
   assert.equal(r.status, 2);
   assert.match(r.stderr, /mutually exclusive/);
 });

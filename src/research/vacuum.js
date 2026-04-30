@@ -30,7 +30,7 @@
 // adopting "follow manifest pointers" can use readManifest() without
 // pulling in the whole vacuum lifecycle.
 
-import { readFile, writeFile, rename, stat, readdir, mkdir, unlink } from "node:fs/promises";
+import { readFile, writeFile, rename, stat, readdir, mkdir, unlink, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { parseProjectReadme } from "./project-readme.js";
@@ -323,6 +323,70 @@ export async function restoreFromArchive(projectDir, originalPath) {
   manifest.rows.splice(idx, 1);
   await writeManifest(projectDir, manifest);
   return { restored: true, originalPath: normalised, sha256: row.sha256 };
+}
+
+// Plan a purge: enumerate everything under .archive/ and the manifest
+// rows. Pure (no mutations). Used for --purge dry-run.
+export async function planPurge(projectDir) {
+  if (!projectDir) throw new TypeError("projectDir is required");
+  const archiveDir = path.join(projectDir, ARCHIVE_DIRNAME);
+  if (!(await pathExists(archiveDir))) {
+    return { projectDir, archiveDir, archivedFiles: [], totalBytes: 0, manifestRows: 0 };
+  }
+  const manifest = await readManifest(projectDir);
+  const archivedFiles = [];
+  let totalBytes = 0;
+  // Walk .archive/ excluding the manifest file itself (we report it separately).
+  async function* walk(absRoot) {
+    let entries;
+    try { entries = await readdir(absRoot, { withFileTypes: true }); }
+    catch { return; }
+    for (const entry of entries) {
+      const child = path.join(absRoot, entry.name);
+      if (entry.isDirectory()) yield* walk(child);
+      else if (entry.isFile()) yield child;
+    }
+  }
+  for await (const abs of walk(archiveDir)) {
+    if (abs === manifest.manifestPath) continue;
+    let info;
+    try { info = await stat(abs); } catch { continue; }
+    archivedFiles.push({ absPath: abs, relPath: path.relative(projectDir, abs), size: info.size });
+    totalBytes += info.size;
+  }
+  return {
+    projectDir,
+    archiveDir,
+    archivedFiles,
+    totalBytes,
+    manifestRows: manifest.rows.length,
+    manifestPath: manifest.manifestPath,
+  };
+}
+
+// Apply a purge: physically remove the entire .archive/ subtree.
+// Destructive — manifest rows are GONE after this. The audit trail
+// they preserved is lost; that's the user's deliberate choice when
+// they pick option (a) in the design discussion. The alternative
+// (manifest survives with a `purged_at` column) is option (b), which
+// we don't ship as the default per the design call (the user picked
+// `a` — clean slate).
+export async function applyPurge(projectDir) {
+  if (!projectDir) throw new TypeError("projectDir is required");
+  const archiveDir = path.join(projectDir, ARCHIVE_DIRNAME);
+  if (!(await pathExists(archiveDir))) {
+    return { projectDir, archiveDir, removed: 0, totalBytes: 0 };
+  }
+  const plan = await planPurge(projectDir);
+  // rm -rf the whole subtree (Node's `rm` with `recursive: true`).
+  await rm(archiveDir, { recursive: true, force: true });
+  return {
+    projectDir,
+    archiveDir,
+    removed: plan.archivedFiles.length,
+    totalBytes: plan.totalBytes,
+    manifestRowsDropped: plan.manifestRows,
+  };
 }
 
 // Used by paper-lint and doctor: given a project-relative figure path,
