@@ -349,25 +349,94 @@ const CORE_BUILDING_MANIFESTS = [
     category: "Observability",
     description: "Track training runs, sweeps, metrics, and artifacts from research-agent experiments.",
     icon: Activity,
-    status: "connector-ready",
+    status: "one-click install",
     source: "external",
     visual: {
       shape: "studio",
     },
+    install: {
+      storedFallback: false,
+      plan: {
+        preflight: [
+          {
+            kind: "command",
+            command: "command -v wandb || python3 -c 'import wandb' 2>/dev/null || [ -x \"${VIBE_RESEARCH_HOME:-$HOME/.vibe-research}/bin/wandb\" ]",
+            label: "Detect wandb client",
+          },
+        ],
+        install: [
+          {
+            kind: "command",
+            command: "bash \"$VIBE_RESEARCH_APP_DIR/bin/vr-pip-install-tool\" wandb",
+            label: "Install wandb Python package",
+            timeoutSec: 300,
+          },
+        ],
+        auth: {
+          kind: "auth-browser-cli",
+          command: "wandb login --relogin",
+          detail: "Opens a browser tab; sign in to W&B and paste the API key when prompted.",
+          timeoutSec: 600,
+        },
+        verify: [
+          {
+            kind: "command",
+            command: "python3 -c \"import wandb; print(wandb.Api().viewer.username)\"",
+            label: "Verify W&B credentials",
+          },
+        ],
+      },
+    },
     access: {
-      label: "Weights & Biases API",
-      detail: "Requires WANDB_API_KEY or an existing wandb login where the agent runs, plus explicit entity/project scope for experiment logging.",
+      label: "wandb CLI + API key",
+      detail: "Requires the wandb Python package where the agent runs plus W&B credentials from wandb login or WANDB_API_KEY. Vibe Research tracks the building and guide only; API keys, run secrets, and account scope stay in the agent runtime.",
     },
     onboarding: {
       variables: [
-        { label: "W&B API key", value: "WANDB_API_KEY in agent environment", required: true },
-        { label: "Entity / project", value: "wandb entity and project name", required: true },
-        { label: "Artifact policy", value: "run URLs, configs, checkpoints, tables, and plots", required: false },
+        { label: "wandb client", value: "wandb Python package on PATH", required: true },
+        { label: "W&B credentials", value: "wandb login or WANDB_API_KEY in the agent environment", required: true },
+        { label: "Default entity", value: "WANDB_ENTITY (used by vr-research-init to seed the project)", required: false },
+        { label: "Project / group / name", value: "project=<project-slug>, group=<move-slug>, name=cycle-N (per the researcher contract)", required: true },
       ],
       steps: [
-        { title: "Authenticate wandb", detail: "Log in or provide WANDB_API_KEY in the environment used by the training agent." },
-        { title: "Declare the project", detail: "Tell agents which entity/project to log to before long runs start." },
-        { title: "Install the building", detail: "Add W&B to Agent Town once experiment logging is configured.", completeWhen: { type: "installed" } },
+        { title: "Install wandb", detail: "Install the wandb Python package in the agent environment and confirm wandb --help works." },
+        { title: "Authenticate", detail: "Run wandb login (interactive) or set WANDB_API_KEY in the agent environment." },
+        { title: "Set the default entity", detail: "Export WANDB_ENTITY so vr-research-init can seed the project's W&B page when the project is created." },
+        { title: "Install the building", detail: "Add W&B to Agent Town once credentials are wired and the entity is set.", completeWhen: { type: "installed" } },
+      ],
+    },
+    agentGuide: {
+      summary: "Use W&B for any cycle that produces metrics-over-time (training, fine-tuning, eval sweeps). Project/group/name follow the researcher contract: project=<project-slug>, group=<move-slug>, name=cycle-N.",
+      useCases: [
+        "Log full training metric history for a research cycle so curves are inspectable later.",
+        "Group all cycles of one move under a single W&B group for per-move comparison.",
+        "Archive every move of a research project under one W&B project for cross-move review.",
+        "Persist run config (hyperparams, seed, commit SHA) and artifacts (checkpoints, sample outputs, plots) alongside metrics.",
+      ],
+      setup: [
+        "Run wandb login or set WANDB_API_KEY before the first wandb.init() call.",
+        "Set WANDB_ENTITY in the environment so vr-research-init seeds the W&B project at creation time and the project shortcut links to a real page.",
+        "Always pass project=<project-slug>, group=<move-slug>, name=cycle-N to wandb.init so leaderboard discipline and W&B grouping stay aligned.",
+        "Pin the run URL with vr-agent-canvas --url after wandb.init returns so the human sees a live monitor without opening the result doc.",
+      ],
+      commands: [
+        { label: "Check wandb CLI", command: "command -v wandb && wandb --help", detail: "Confirms wandb is installed in the agent environment." },
+        { label: "Check auth", command: "python3 -c \"import wandb; print(wandb.Api().viewer.username)\"", detail: "Prints the authenticated W&B username; non-zero exit means creds are missing." },
+        { label: "Init a run", command: "python3 -c \"import wandb; r=wandb.init(project='<slug>', group='<move>', name='cycle-1', config={'seed':0}); wandb.finish()\"", detail: "Smoke-test that wandb.init works with the contract's project/group/name shape." },
+        { label: "List recent runs", command: "python3 -c \"import wandb; api=wandb.Api(); [print(r.url) for r in api.runs(f'{api.viewer.username}/<slug>', per_page=5)]\"", detail: "Read-only check of the project's recent run URLs." },
+      ],
+      env: [
+        { name: "WANDB_API_KEY", detail: "W&B API key for non-interactive authentication; keep secret.", required: false },
+        { name: "WANDB_ENTITY", detail: "Default W&B entity (user or team) used for project seeding and the UI shortcut.", required: false },
+        { name: "WANDB_PROJECT", detail: "Override default project; usually unnecessary because the contract derives it from the project slug.", required: false },
+        { name: "WANDB_MODE", detail: "Set to 'offline' to log without network; 'disabled' to skip W&B entirely.", required: false },
+      ],
+      docs: [
+        { label: "W&B docs", url: "https://docs.wandb.ai/" },
+        { label: "Quickstart", url: "https://docs.wandb.ai/quickstart" },
+        { label: "wandb.init API", url: "https://docs.wandb.ai/ref/python/init" },
+        { label: "Groups & organizing runs", url: "https://docs.wandb.ai/guides/runs/grouping" },
+        { label: "Public API (read runs)", url: "https://docs.wandb.ai/ref/python/public-api/api" },
       ],
     },
   },
