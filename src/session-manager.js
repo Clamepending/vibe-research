@@ -4161,6 +4161,17 @@ export class SessionManager {
         }
 
         session.pty = null;
+
+        // Stream-mode children have no PTY but still need to be killed —
+        // otherwise they linger as orphans after the server exits, keep
+        // writing to the JSONL, and conflict with the new server's
+        // `--resume <id>` spawn that owns the same session id. Without
+        // this kill the user gets duplicate Claude processes after every
+        // update / restart.
+        if (session.streamSession && typeof session.streamSession.close === "function") {
+          try { session.streamSession.close(); } catch { /* best effort */ }
+        }
+        session.streamSession = null;
       }
 
       return;
