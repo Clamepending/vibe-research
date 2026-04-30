@@ -224,6 +224,88 @@ test("tickResearchOrchestrator can apply experiment-to-review when work is exhau
   }
 });
 
+test("tickResearchOrchestrator can draft a missing brainstorm brief", async () => {
+  const dir = makeProject("vr-orchestrator-draft");
+  try {
+    const dry = await tickResearchOrchestrator({ projectDir: dir });
+    assert.equal(dry.recommendation.action, "create-brief");
+    assert.equal(dry.briefDraft, null);
+    assert.match(dry.nextCommand, /vr-research-brief/);
+
+    const applied = await tickResearchOrchestrator({ projectDir: dir, apply: true });
+    assert.equal(applied.recommendation.action, "create-brief");
+    assert.equal(applied.briefDraft.briefSlug, "next-brief");
+    assert.equal(applied.briefDraft.recommendedMove, "baseline-characterization");
+    assert.equal(applied.phaseUpdate.phase, "move-design");
+
+    const brief = readFileSync(join(dir, "briefs", "next-brief.md"), "utf8");
+    assert.match(brief, /baseline-characterization/);
+    assert.match(brief, /Create the first reproducible baseline/);
+
+    const followup = await tickResearchOrchestrator({ projectDir: dir });
+    assert.equal(followup.recommendation.action, "review-brief");
+    assert.equal(followup.recommendation.briefSlug, "next-brief");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("tickResearchOrchestrator can gate a newly drafted brief on human approval", async () => {
+  const dir = makeProject("vr-orchestrator-draft-approved");
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    const body = JSON.parse(options.body || "{}");
+    calls.push({ url: String(url), body });
+    if (String(url).endsWith("/action-items")) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { actionItem: { id: body.id, title: body.title, choices: body.choices } };
+        },
+      };
+    }
+    if (String(url).endsWith("/wait")) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            satisfied: true,
+            state: {
+              actionItems: [
+                { id: body.predicateParams.actionItemId, resolution: "approved" },
+              ],
+            },
+          };
+        },
+      };
+    }
+    throw new Error(`unexpected fetch url: ${url}`);
+  };
+
+  try {
+    const report = await tickResearchOrchestrator({
+      projectDir: dir,
+      apply: true,
+      askHuman: true,
+      waitHuman: true,
+      agentTownApi: "http://agent-town.test/api/agent-town",
+      fetchImpl,
+    });
+    assert.equal(report.briefDraft.briefSlug, "next-brief");
+    assert.equal(report.briefReview.actionItem.id, "research-brief-next-brief");
+    assert.equal(report.briefReview.resolution, "approved");
+    assert.equal(report.briefCompile.briefSlug, "next-brief");
+    assert.equal(report.phaseUpdate.phase, "experiment");
+    assert.match(readFileSync(join(dir, "README.md"), "utf8"), /\| baseline-characterization \|/);
+    assert.equal(calls.some((call) => call.url.endsWith("/action-items")), true);
+    assert.equal(calls.some((call) => call.url.endsWith("/wait")), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("tickResearchOrchestrator judges the latest resolved result in review phase", async () => {
   const dir = makeProject("vr-orchestrator-judge", {
     logRows: "| 2026-04-30 | resolved | first-move | toy result | [first-move](results/first-move.md) |\n",

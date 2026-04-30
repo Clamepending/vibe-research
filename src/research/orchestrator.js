@@ -1,6 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
-import { compileBriefToQueue, getBriefPath, readResearchBrief, readResearchState, updateResearchState } from "./brief.js";
+import { compileBriefToQueue, createResearchBrief, getBriefPath, readResearchBrief, readResearchState, updateResearchState } from "./brief.js";
 import { createBriefReviewCard, getActionItemFromWait, waitForBriefReview } from "./brief-review.js";
 import { runDoctor } from "./doctor.js";
 import { judgeMove } from "./judge.js";
@@ -28,6 +28,26 @@ function shellQuote(value) {
 
 function command(parts) {
   return parts.map(shellQuote).join(" ");
+}
+
+function normalizeSlug(value, fallback = "next") {
+  return trimString(value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    || fallback;
+}
+
+function uniqueSlug(base, used = new Set()) {
+  const root = normalizeSlug(base);
+  let slug = root;
+  let index = 2;
+  while (used.has(slug)) {
+    slug = `${root}-${index}`;
+    index += 1;
+  }
+  used.add(slug);
+  return slug;
 }
 
 function firstDoctorError(doctor) {
@@ -65,6 +85,96 @@ function recommendation(action, reason, extra = {}) {
   return { action, reason, ...extra };
 }
 
+function defaultStartingPoint(parsed) {
+  const topBranch = trimString(parsed?.leaderboard?.[0]?.branchUrl || "");
+  if (topBranch) return topBranch;
+  const codeRepo = trimString(parsed?.codeRepo?.url || "").replace(/\.git$/i, "").replace(/\/+$/g, "");
+  return codeRepo ? `${codeRepo}/tree/main` : "main";
+}
+
+function usedMoveSlugs(parsed, logRows = []) {
+  return new Set([
+    ...(parsed?.queue || []).map((row) => row.slug),
+    ...(parsed?.active || []).map((row) => row.slug),
+    ...(parsed?.leaderboard || []).map((row) => row.slug),
+    ...logRows.map((row) => row.slug),
+  ].filter(Boolean).map((slug) => normalizeSlug(slug)));
+}
+
+function buildPlannerBriefDraft({ parsed, logRows = [], projectName, state, briefSlug = "" } = {}) {
+  const used = usedMoveSlugs(parsed, logRows);
+  const ranking = trimString(parsed?.rankingCriterion?.raw || parsed?.rankingCriterion?.description || "");
+  const isQuantitative = /^(quantitative|mix)$/i.test(parsed?.rankingCriterion?.kind || "");
+  const hasPriorResult = Boolean(
+    (parsed?.leaderboard || []).length
+      || logRows.some((row) => /resolved|falsified|abandoned/i.test(row.event || "")),
+  );
+  const latestResult = logRows.find((row) => row.slug && /resolved|falsified|abandoned/i.test(row.event || ""));
+  const moveBase = hasPriorResult
+    ? (isQuantitative ? "noise-rerun" : "artifact-audit")
+    : "baseline-characterization";
+  const moveSlug = uniqueSlug(moveBase, used);
+  const slug = normalizeSlug(briefSlug || state?.briefSlug || "next-brief", "next-brief");
+  const startingPoint = defaultStartingPoint(parsed);
+  const success = (parsed?.successCriteria || []).slice(0, 3);
+  const grounding = [
+    parsed?.goal ? `Project goal: ${parsed.goal}` : "",
+    ranking ? `Ranking criterion: ${ranking}` : "",
+    ...success.map((line) => `Success criterion: ${line}`),
+    latestResult?.slug
+      ? `Latest logged result: ${latestResult.slug} (${latestResult.event}) - ${latestResult.summary || "no summary"}`
+      : "",
+  ].filter(Boolean);
+
+  return {
+    slug,
+    phase: "move-design",
+    title: `${projectName} next move`,
+    question: hasPriorResult
+      ? `What follow-up should test whether the current ${projectName} result is stable enough to guide the next hillclimb?`
+      : `What first experiment should establish a trustworthy baseline for ${projectName}?`,
+    currentTheory: hasPriorResult
+      ? "The project has at least one logged result, so the next move should tighten evaluator confidence or inspect the most important failure mode before widening the search."
+      : "The project needs a small reproducible baseline with durable artifacts before autonomous hillclimbing can make reliable comparisons.",
+    grounding: grounding.length ? grounding : ["No prior project evidence found; keep the first move conservative and cheap."],
+    candidateMoves: [
+      {
+        move: moveSlug,
+        startingPoint,
+        why: hasPriorResult
+          ? (isQuantitative
+              ? "Estimate variance and stability before promoting a new direction."
+              : "Audit representative artifacts against the ranking criterion before changing the method.")
+          : "Create the first reproducible baseline, artifact, and provenance record.",
+        hypothesis: hasPriorResult
+          ? "A focused confidence check will make the next autonomous step safer than adding another blind variant."
+          : "A minimal baseline will expose the metric scale, artifact shape, and obvious failure modes.",
+      },
+    ],
+    recommendedMove: moveSlug,
+    budget: "cheap pre-flight only until the human approves the brief",
+    returnTriggers: [
+      "doctor or paper lint fails",
+      "no durable artifact is produced",
+      "the evaluator cannot distinguish candidate outputs",
+    ],
+    sourceText: "Auto-drafted by vr-research-orchestrator from README, LOG, leaderboard, and research-state. Human review should refine the move before expensive work.",
+  };
+}
+
+async function allocateBriefSlug(projectDir, preferredSlug) {
+  const used = new Set();
+  let slug = normalizeSlug(preferredSlug || "next-brief", "next-brief");
+  while (used.size < 100) {
+    if (!(await pathExists(getBriefPath(projectDir, slug)))) {
+      return slug;
+    }
+    used.add(slug);
+    slug = uniqueSlug(slug.replace(/-\d+$/u, ""), used);
+  }
+  throw new Error("could not allocate a unique brief slug");
+}
+
 function sweepNameForCommand(sweep) {
   return sweep?.path && sweep.path.startsWith("runs/")
     ? path.basename(sweep.path, ".tsv")
@@ -100,6 +210,7 @@ export async function tickResearchOrchestrator({
   let rec;
   let judge = null;
   let briefCompile = null;
+  let briefDraft = null;
   let briefReview = null;
   let phaseUpdate = null;
   let nextCommand = "";
@@ -283,9 +394,16 @@ export async function tickResearchOrchestrator({
         });
       }
     } else {
+      const draft = buildPlannerBriefDraft({
+        parsed,
+        logRows: logFile.rows,
+        projectName,
+        state,
+      });
       rec = recommendation(
         "create-brief",
         `${state.phase} phase needs a research brief before experiments should start.`,
+        { briefSlug: draft.slug, recommendedMove: draft.recommendedMove },
       );
       nextCommand = command([
         "vr-research-brief",
@@ -297,6 +415,67 @@ export async function tickResearchOrchestrator({
         parsed.goal || "<question>",
         "--ask-human",
       ]);
+      if (apply) {
+        const briefSlug = await allocateBriefSlug(resolvedProjectDir, draft.slug);
+        const created = await createResearchBrief({
+          projectDir: resolvedProjectDir,
+          ...draft,
+          slug: briefSlug,
+        });
+        briefDraft = {
+          briefSlug: created.brief.slug,
+          briefPath: created.briefPath,
+          candidateMoves: created.brief.candidateMoves,
+          recommendedMove: created.brief.recommendedMove,
+          wrote: created.wrote,
+        };
+        phaseUpdate = await updateResearchState({
+          projectDir: resolvedProjectDir,
+          phase: "move-design",
+          briefSlug: created.brief.slug,
+          summary: `orchestrator: drafted brief ${created.brief.slug}`,
+        });
+
+        if (askHuman) {
+          const review = await createBriefReviewCard({
+            agentTownApi,
+            projectDir: resolvedProjectDir,
+            brief: created.brief,
+            briefPath: created.briefPath,
+            fetchImpl,
+          });
+          let wait = null;
+          let resolution = "";
+          const actionItemId = review.actionItem?.id || `research-brief-${created.brief.slug}`;
+          if (waitHuman) {
+            wait = await waitForBriefReview({
+              agentTownApi,
+              actionItemId,
+              timeoutMs,
+              fetchImpl,
+            });
+            resolution = getActionItemFromWait(wait, actionItemId)?.resolution || "";
+          }
+          briefReview = {
+            actionItem: review.actionItem || null,
+            wait,
+            resolution,
+          };
+
+          if (waitHuman && resolution === "approved") {
+            briefCompile = await compileBriefToQueue({
+              projectDir: resolvedProjectDir,
+              slug: created.brief.slug,
+            });
+            phaseUpdate = await updateResearchState({
+              projectDir: resolvedProjectDir,
+              phase: "experiment",
+              briefSlug: briefCompile.brief.slug,
+              summary: `orchestrator: compiled ${briefCompile.queueRows.length} move(s) from brief ${briefCompile.brief.slug}`,
+            });
+          }
+        }
+      }
     }
   }
 
@@ -305,6 +484,7 @@ export async function tickResearchOrchestrator({
     projectName,
     phase: state,
     phaseUpdate: phaseUpdate?.state || null,
+    briefDraft,
     briefReview,
     briefCompile: briefCompile
       ? {
@@ -341,6 +521,9 @@ export function formatOrchestratorReport(report) {
 
   if (report.phaseUpdate) {
     lines.push(`phase update: ${report.phaseUpdate.phase} - ${report.phaseUpdate.summary}`);
+  }
+  if (report.briefDraft?.briefSlug) {
+    lines.push(`brief draft: ${report.briefDraft.briefSlug} -> ${report.briefDraft.recommendedMove || "no recommendation"}`);
   }
   if (report.briefCompile) {
     lines.push(`brief compile: ${report.briefCompile.briefSlug} -> ${report.briefCompile.queueRows.length} queue row(s)`);

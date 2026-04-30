@@ -83,6 +83,23 @@ async function seedBriefProject({ projectsDir, projectName }) {
   return project.projectDir;
 }
 
+async function seedDraftProject({ projectsDir, projectName }) {
+  const project = await createProject({
+    projectsDir,
+    name: projectName,
+    goal: "Verify the orchestrator can turn an empty brainstorm state into a reviewable brief.",
+    codeRepoUrl: "https://github.com/example/orchestrator-draft-canary-code",
+    successCriteria: [
+      "orchestrator drafts a brief",
+      "the brief appears in Agent Inbox for approval",
+    ],
+    ranking: { kind: "quantitative", metric: "review_speed", direction: "higher" },
+    queueRows: [],
+    force: true,
+  });
+  return project.projectDir;
+}
+
 async function seedSweepProject({ projectsDir, projectName }) {
   const project = await createProject({
     projectsDir,
@@ -220,15 +237,36 @@ test("research orchestrator drives brief review, sweep routing, and judge cards 
 
   try {
     await mkdir(codeDir, { recursive: true });
+    const draftProjectName = "orchestrator-draft-canary";
     const briefProjectName = "orchestrator-brief-canary";
     const sweepProjectName = "orchestrator-sweep-canary";
     const judgeProjectName = "orchestrator-judge-canary";
+    const draftProjectDir = await seedDraftProject({ projectsDir, projectName: draftProjectName });
     const briefProjectDir = await seedBriefProject({ projectsDir, projectName: briefProjectName });
     await seedSweepProject({ projectsDir, projectName: sweepProjectName });
     await seedJudgeProject({ projectsDir, projectName: judgeProjectName });
 
     app = await startCanaryApp({ workspaceDir, stateDir, codeDir });
     const baseUrl = `http://127.0.0.1:${app.config.port}`;
+
+    const draftTick = await postJson(`${baseUrl}/api/research/projects/${draftProjectName}/orchestrator/tick`, {
+      apply: true,
+      askHuman: true,
+      checkPaper: false,
+    });
+    assert.equal(draftTick.report.recommendation.action, "create-brief");
+    assert.equal(draftTick.report.briefDraft.briefSlug, "next-brief");
+    assert.equal(draftTick.report.phaseUpdate.phase, "move-design");
+    assert.equal(draftTick.report.briefReview.actionItem.id, "research-brief-next-brief");
+
+    const draftBrief = await readFile(path.join(draftProjectDir, "briefs", "next-brief.md"), "utf8");
+    assert.match(draftBrief, /artifact-audit|baseline-characterization/);
+    const draftCard = await readActionItem(baseUrl, "research-brief-next-brief");
+    assert.equal(draftCard.source, "research-brief");
+    assert.equal(draftCard.target.projectName, draftProjectName);
+    assert.equal(draftCard.target.briefSlug, "next-brief");
+    assert.deepEqual(draftCard.choices, ["approve", "steer", "reject"]);
+    assert.ok(draftCard.evidence.some((item) => item.kind === "brief" && /next-brief\.md$/.test(item.path)));
 
     const briefTick = await postJson(`${baseUrl}/api/research/projects/${briefProjectName}/orchestrator/tick`, {
       askHuman: true,
