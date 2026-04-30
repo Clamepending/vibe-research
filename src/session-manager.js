@@ -5738,12 +5738,20 @@ export class SessionManager {
     // the existing in-memory child process is gone. Claude CLI persists
     // the full JSONL transcript at ~/.claude/projects/<cwd>/<id>.jsonl,
     // so we can resume cleanly by passing `--resume <id>` on respawn.
-    // The user keeps their entire conversation history; the only thing
-    // they lose is in-flight work the prior child hadn't yet committed
-    // to the transcript. Previously this branch marked the session
-    // permanently "exited" with a "start a new agent" prompt; that was
-    // a UX cliff every time someone updated the app.
-    const isResume = restored;
+    // Previously this branch marked the session permanently "exited"
+    // with a "start a new agent" prompt; that was a UX cliff every time
+    // someone updated the app — the user keeps the conversation history
+    // and the only thing they lose is in-flight work the prior child
+    // hadn't yet committed to the transcript.
+    //
+    // Guard against `--resume` failing (e.g. legacy sessions that never
+    // produced a transcript): only try the resume if a JSONL exists in
+    // Claude's project dir for this cwd. Otherwise spawn fresh with
+    // `--session-id` so the user gets a usable session in the worst case.
+    const transcriptIds = restored
+      ? listClaudeSessionsForCwd(sessionCwd, this.userHomeDir).map((entry) => entry.id)
+      : [];
+    const isResume = restored && transcriptIds.includes(session.id);
 
     const claudeBin = getManagedProviderLaunchCommand(provider) || provider.launchCommand;
     if (!claudeBin) {
@@ -5770,6 +5778,10 @@ export class SessionManager {
       // VIBE_RESEARCH_CLAUDE_BYPASS_PERMISSIONS=0 for paranoid users
       // who want the per-tool approval prompts.
       bypassPermissions: isClaudeBypassPermissionsEnabled(this.env),
+      // On restore, swap `--session-id` for `--resume` so Claude CLI
+      // re-reads the prior JSONL transcript and continues the
+      // conversation seamlessly.
+      resume: isResume,
       allocateSeq: () => {
         if (typeof session.entrySeqCounter !== "number") {
           session.entrySeqCounter = 0;
@@ -5795,7 +5807,9 @@ export class SessionManager {
     this.pushNativeNarrativeEntry(session, {
       kind: "status",
       label: "Stream",
-      text: `Stream mode active for ${provider.label}. Replies stream from JSONL events instead of a PTY.`,
+      text: isResume
+        ? `Resumed ${provider.label} session — conversation history loaded from the prior JSONL transcript.`
+        : `Stream mode active for ${provider.label}. Replies stream from JSONL events instead of a PTY.`,
       timestamp: session.updatedAt,
       meta: "stream-mode",
     });
