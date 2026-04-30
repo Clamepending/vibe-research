@@ -12,10 +12,18 @@
       accessibility zoom on mobile. The standard iOS auto-zoom-on-focus
       foot-gun is mitigated by keeping textarea/input font-size >= 16px,
       which is already the case across the app.
+
+      `interactive-widget=overlays-content` (the default) keeps the
+      layout viewport stable when the visual viewport changes — without
+      this, macOS Safari/Chrome treats trackpad pinch-zoom like a virtual
+      keyboard appearing and resizes the layout, which shoves the
+      composer (anchored to the bottom of the layout grid) up into the
+      middle of the user's view. We opted out of that resize behavior
+      here.
     -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <title>Vibe Research</title>
     <style>
