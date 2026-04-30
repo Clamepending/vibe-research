@@ -329,13 +329,19 @@ export function extractRichSessionImageRefs(text, { includeMarkdown = false, max
 }
 
 // Resolves an image path to a URL the renderer can drop into <img src=...>.
-// Three cases:
+// Four cases, evaluated in order:
 //   1. Absolute path under the vibe-research attachments dir (drag/paste
 //      uploads) — route through /api/attachments/file.
 //   2. Absolute path inside the active workspace root, OR a workspace-
 //      relative path — route through /api/files/content.
-//   3. Anything else (absolute path outside both) → return "" and let the
-//      renderer fall back to the path link.
+//   3. Any other absolute path — route through /api/files/image-by-path,
+//      which applies the user's `imagePathAliases` settings to translate
+//      foreign-machine paths (e.g. an agent running on a different host)
+//      into local equivalents. The server-side endpoint enforces the
+//      whitelist, so clients can pass any abs path and rely on a 4xx if
+//      the alias rules don't allow it.
+//   4. Bare relative path with no usable workspace root → "" (the
+//      renderer falls back to a clickable path link).
 export function getRichSessionImageUrl(rawPath, { workspaceRoot = "" } = {}) {
   const trimmed = String(rawPath || "").trim();
   if (!trimmed) {
@@ -357,10 +363,17 @@ export function getRichSessionImageUrl(rawPath, { workspaceRoot = "" } = {}) {
     relativePath = trimmed;
   }
 
-  if (!relativePath || !root || root === "/") {
-    return "";
+  if (relativePath && root && root !== "/") {
+    const params = new URLSearchParams({ root, path: relativePath });
+    return `/api/files/content?${params.toString()}`;
   }
 
-  const params = new URLSearchParams({ root, path: relativePath });
-  return `/api/files/content?${params.toString()}`;
+  // Absolute path that doesn't fit the workspace branch — let the server
+  // try its alias rules. Bare relative paths with no usable workspace
+  // root still fall through to "" because there's nothing to anchor them.
+  if (trimmed.startsWith("/")) {
+    return `/api/files/image-by-path?${new URLSearchParams({ path: trimmed }).toString()}`;
+  }
+
+  return "";
 }
