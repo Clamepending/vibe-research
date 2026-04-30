@@ -11797,6 +11797,13 @@ button.visual-town-building:focus-visible {
   min-width: 0;
 }
 
+/* While the row is being dragged, fade the source so the cursor's drag
+   image stays the visible reference point and the user can see the drop
+   indicator beneath it. */
+.session-project.is-dragging {
+  opacity: 0.4;
+}
+
 .session-project-head {
   display: flex;
   align-items: center;
@@ -11820,6 +11827,71 @@ button.visual-town-building:focus-visible {
 
 .session-project.has-active-session .session-project-head {
   background: transparent;
+}
+
+/* Drag grip — only visible on hover so the row stays visually tidy
+   when the user isn't reaching for it. The whole row is also draggable,
+   but the explicit handle gives a discoverable affordance. */
+.session-project-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  min-width: 16px;
+  min-height: 28px;
+  margin-left: -4px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(222, 228, 235, 0.32);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+  flex: 0 0 auto;
+  /* Browsers default a button to "no drag image" — explicitly disable
+     pointer-events while dragging so the dragstart fires on the parent
+     row, not on the button (which would set the drag image to the small
+     button bounds and look weird). */
+  -webkit-user-drag: none;
+}
+
+.session-project-drag-handle .vr-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.session-project:hover .session-project-drag-handle,
+.session-project-head:focus-within .session-project-drag-handle {
+  opacity: 1;
+}
+
+.session-project-drag-handle:hover {
+  color: rgba(244, 247, 251, 0.88);
+  background: rgba(112, 124, 140, 0.16);
+}
+
+.session-project-drag-handle:active {
+  cursor: grabbing;
+}
+
+.session-project[draggable="true"] .session-project-head {
+  cursor: grab;
+}
+
+.session-project[draggable="true"].is-dragging .session-project-head {
+  cursor: grabbing;
+}
+
+/* Drop indicator — a 2px line in the project's accent color. Inserted
+   above or below the hover-target row by the renderer. */
+.session-project-drop-indicator {
+  height: 2px;
+  margin: 1px 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f28a68, #ffd6a5);
+  box-shadow: 0 0 8px rgba(242, 138, 104, 0.55);
+  pointer-events: none;
 }
 
 .session-project-toggle {

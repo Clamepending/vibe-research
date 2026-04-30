@@ -22,6 +22,7 @@ import {
   FolderUp,
   GitFork,
   Gpu,
+  GripVertical,
   Image as ImageIcon,
   Inbox,
   LineChart,
@@ -546,6 +547,7 @@ const LIKELY_TEXT_FILENAMES = new Set([
 const SESSION_READ_STORAGE_KEY = "vibe-research-session-read-at-v1";
 const LAYOUT_STORAGE_KEY = "vibe-research-layout-v1";
 const OPEN_FILE_TAB_ORDER_STORAGE_KEY = "vibe-research-open-file-tab-order-v1";
+const SESSION_PROJECT_ORDER_STORAGE_KEY = "vibe-research-session-project-order-v1";
 const WORKSPACE_TABS_STORAGE_KEY = "vibe-research-workspace-tabs-v1";
 const WORKSPACE_GROUPS_STORAGE_KEY = "vibe-research-workspace-groups-v1";
 const AGENT_TOWN_LAYOUT_STORAGE_KEY = "vibe-research-agent-town-layout-v1";
@@ -1440,6 +1442,28 @@ function normalizeOpenFileTabOrderList(value) {
     .slice(0, 200);
 }
 
+function normalizeSessionProjectOrder(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const entry of value) {
+    const key = String(entry || "").trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+    if (out.length >= 200) break;
+  }
+  return out;
+}
+
+function loadSessionProjectOrderState() {
+  try {
+    return normalizeSessionProjectOrder(JSON.parse(window.localStorage.getItem(SESSION_PROJECT_ORDER_STORAGE_KEY) || "[]"));
+  } catch {
+    return [];
+  }
+}
+
 function loadOpenFileTabOrderState() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(OPEN_FILE_TAB_ORDER_STORAGE_KEY) || "{}");
@@ -2305,6 +2329,16 @@ const state = {
   },
   sessionProjectExpanded: new Set(),
   sessionProjectInteractionSeen: false,
+  // Persisted user-defined order of project keys in the sidebar. Loaded
+  // from localStorage on boot; mutated by sidebar drag-and-drop. Keys
+  // not present here fall to the bottom of the sidebar in their natural
+  // (newest-active-first) order, so freshly-created projects show up
+  // immediately without manual placement.
+  sessionProjectOrder: loadSessionProjectOrderState(),
+  // Active drag state for sidebar project rows. `key` is the project
+  // key being dragged; `overKey` / `overPosition` mark the current drop
+  // target so the drop indicator can render in the right slot.
+  sessionProjectDrag: null,
   sessionListInteractionUntil: 0,
   sessionRefreshFlushTimer: null,
   sessionProjectSuppressClickKey: "",
@@ -2516,6 +2550,18 @@ function saveLayoutPreferences() {
     );
   } catch {
     // Layout preferences are optional; the app should keep working without storage.
+  }
+}
+
+function saveSessionProjectOrderState() {
+  try {
+    window.localStorage.setItem(
+      SESSION_PROJECT_ORDER_STORAGE_KEY,
+      JSON.stringify(normalizeSessionProjectOrder(state.sessionProjectOrder)),
+    );
+  } catch {
+    // Project order is a convenience preference; storage failures
+    // shouldn't block sidebar interaction.
   }
 }
 
@@ -13878,7 +13924,61 @@ function getSessionProjectGroups() {
     groupsByKey.get(project.key).sessions.push(session);
   }
 
-  return Array.from(groupsByKey.values());
+  return sortSessionProjectGroupsByUserOrder(Array.from(groupsByKey.values()));
+}
+
+// Re-sort the project groups according to the user's saved drag order.
+// Keys present in `state.sessionProjectOrder` win in that order. Keys NOT
+// in the saved order (newly-created projects, projects from sessions that
+// just appeared) fall to the bottom in their natural (build-order) slot —
+// that way a brand-new project appears at the bottom right after creation
+// rather than disappearing into a random middle position.
+function sortSessionProjectGroupsByUserOrder(groups) {
+  const order = Array.isArray(state.sessionProjectOrder) ? state.sessionProjectOrder : [];
+  if (!order.length) return groups;
+  const orderIndex = new Map(order.map((key, idx) => [key, idx]));
+  const knownKeys = new Set(groups.map((g) => g.key));
+  // Drop stale keys from the saved order on the fly so the localStorage
+  // entry doesn't grow unbounded over the lifetime of a workspace.
+  let pruned = false;
+  for (const key of order) {
+    if (!knownKeys.has(key)) {
+      pruned = true;
+      break;
+    }
+  }
+  if (pruned) {
+    state.sessionProjectOrder = order.filter((key) => knownKeys.has(key));
+    saveSessionProjectOrderState();
+  }
+  return groups.slice().sort((a, b) => {
+    const ai = orderIndex.has(a.key) ? orderIndex.get(a.key) : Number.POSITIVE_INFINITY;
+    const bi = orderIndex.has(b.key) ? orderIndex.get(b.key) : Number.POSITIVE_INFINITY;
+    if (ai !== bi) return ai - bi;
+    // Both unranked → preserve insertion order (which matches the order
+    // they appeared in state.sessions, i.e. activity order).
+    return 0;
+  });
+}
+
+// Mutate the saved order so `movedKey` lands at the slot relative to
+// `targetKey` indicated by `position` ("before" or "after"). Called by
+// the drag-and-drop handler. We work in terms of the *current* group
+// order so the resulting array reflects what the user sees on screen.
+function reorderSessionProject(movedKey, targetKey, position) {
+  const moved = String(movedKey || "").trim();
+  const target = String(targetKey || "").trim();
+  if (!moved || !target || moved === target) return false;
+  const groups = getSessionProjectGroups();
+  const currentKeys = groups.map((g) => g.key);
+  if (!currentKeys.includes(moved) || !currentKeys.includes(target)) return false;
+  const without = currentKeys.filter((k) => k !== moved);
+  const targetIndex = without.indexOf(target);
+  const insertAt = position === "before" ? targetIndex : targetIndex + 1;
+  without.splice(insertAt, 0, moved);
+  state.sessionProjectOrder = without;
+  saveSessionProjectOrderState();
+  return true;
 }
 
 function ensureSessionProjectDefaults(groups) {
@@ -15209,9 +15309,37 @@ function renderSessionCards() {
               ${tooltipAttributes("Open W&B project")}
             >${renderIcon(LineChart)}</button>`
         : "";
+      // Drag-and-drop reorder. Each project section is `draggable`; the
+      // dedicated grip handle on the left is the recommended grab area
+      // (the rest of the header row is still clickable for expand /
+      // open). Drop indicator renders above OR below this row when it's
+      // the current dragover target — see sortSessionProjectGroupsByUserOrder
+      // and the dragover handler in bindShellEvents.
+      const drag = state.sessionProjectDrag;
+      const isDragging = drag?.key === group.key;
+      const isDropAbove = drag && drag.overKey === group.key && drag.overPosition === "before";
+      const isDropBelow = drag && drag.overKey === group.key && drag.overPosition === "after";
+      const dropIndicatorAbove = isDropAbove
+        ? `<div class="session-project-drop-indicator" aria-hidden="true"></div>`
+        : "";
+      const dropIndicatorBelow = isDropBelow
+        ? `<div class="session-project-drop-indicator" aria-hidden="true"></div>`
+        : "";
       return `
-        <section class="session-project ${expanded ? "is-expanded" : ""} ${active ? "has-active-session" : ""}" data-session-project="${escapeHtml(group.key)}">
+        ${dropIndicatorAbove}
+        <section
+          class="session-project ${expanded ? "is-expanded" : ""} ${active ? "has-active-session" : ""} ${isDragging ? "is-dragging" : ""}"
+          data-session-project="${escapeHtml(group.key)}"
+          draggable="true"
+        >
           <div class="session-project-head">
+            <button
+              class="session-project-drag-handle"
+              type="button"
+              data-session-project-drag-handle="${escapeHtml(group.key)}"
+              aria-label="Drag to reorder ${escapeHtml(group.name)}"
+              tabindex="-1"
+            >${renderIcon(GripVertical)}</button>
             <button
               class="session-project-toggle"
               type="button"
@@ -15251,6 +15379,7 @@ function renderSessionCards() {
               : ""
           }
         </section>
+        ${dropIndicatorBelow}
       `;
     })
     .join("");
@@ -41550,6 +41679,101 @@ function bindShellEvents() {
         refreshRichSessionSurfaceUi();
         return;
       }
+    });
+  }
+
+  // Sidebar project drag-and-drop reorder. Each `.session-project` is
+  // draggable; the user grabs the grip handle (or anywhere on the row)
+  // and drops it into a new slot. State.sessionProjectDrag tracks the
+  // dragging key + current dropover target, so the render layer can
+  // show a 1px drop indicator above or below the target row. Only
+  // re-renders when the (overKey, overPosition) tuple actually
+  // changes — dragover fires too often to refresh on every event.
+  if (!state.__sessionProjectDragBound) {
+    state.__sessionProjectDragBound = true;
+
+    document.addEventListener("dragstart", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const section = target?.closest("[data-session-project]");
+      if (!(section instanceof HTMLElement)) return;
+      const key = section.getAttribute("data-session-project") || "";
+      if (!key) return;
+      // Only respond to drags that started on the row itself, not on a
+      // nested anchor/button/input that might own its own drag behavior.
+      // The grip handle has `[data-session-project-drag-handle]`; allow
+      // that AND any non-interactive child of the section.
+      const interactive = target?.closest("a[href], input, textarea, select, [contenteditable=\"true\"]");
+      if (interactive && !interactive.hasAttribute("data-session-project-drag-handle")) return;
+
+      state.sessionProjectDrag = { key, overKey: "", overPosition: "" };
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        // Required for Firefox to start the drag at all.
+        try { event.dataTransfer.setData("text/plain", key); } catch { /* ignore */ }
+      }
+      // Mark the row visually after the browser has captured its drag image.
+      // Without rAF the row goes invisible-as-drag-image because `is-dragging`
+      // sets opacity:0.4 on the source itself.
+      window.requestAnimationFrame(() => {
+        if (state.sessionProjectDrag?.key === key) {
+          refreshSessionsList({ force: true });
+        }
+      });
+    });
+
+    document.addEventListener("dragover", (event) => {
+      const drag = state.sessionProjectDrag;
+      if (!drag?.key) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const section = target?.closest("[data-session-project]");
+      if (!(section instanceof HTMLElement)) {
+        // Outside any project row — no drop hint, but still allow drop
+        // so the dragend cleanup path runs even on cancel.
+        if (drag.overKey || drag.overPosition) {
+          drag.overKey = "";
+          drag.overPosition = "";
+          refreshSessionsList({ force: true });
+        }
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      const overKey = section.getAttribute("data-session-project") || "";
+      if (!overKey) return;
+      // Compute insert-before vs insert-after by comparing pointer Y to
+      // the row midpoint. Dropping on the dragging row itself is a
+      // no-op; treat it as no target so the indicator hides.
+      const rect = section.getBoundingClientRect();
+      const overPosition = (event.clientY - rect.top) < rect.height / 2 ? "before" : "after";
+      const effectiveOverKey = overKey === drag.key ? "" : overKey;
+      const effectivePosition = effectiveOverKey ? overPosition : "";
+      if (drag.overKey !== effectiveOverKey || drag.overPosition !== effectivePosition) {
+        drag.overKey = effectiveOverKey;
+        drag.overPosition = effectivePosition;
+        refreshSessionsList({ force: true });
+      }
+    });
+
+    document.addEventListener("drop", (event) => {
+      const drag = state.sessionProjectDrag;
+      if (!drag?.key) return;
+      event.preventDefault();
+      const movedKey = drag.key;
+      const overKey = drag.overKey;
+      const overPosition = drag.overPosition;
+      state.sessionProjectDrag = null;
+      if (overKey && overKey !== movedKey && overPosition) {
+        reorderSessionProject(movedKey, overKey, overPosition);
+      }
+      refreshSessionsList({ force: true });
+    });
+
+    // dragend always fires (drop, cancel, escape). Clear the drag state
+    // so a cancelled drag doesn't leave the row at 0.4 opacity.
+    document.addEventListener("dragend", () => {
+      if (!state.sessionProjectDrag) return;
+      state.sessionProjectDrag = null;
+      refreshSessionsList({ force: true });
     });
   }
 
