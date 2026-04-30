@@ -11977,7 +11977,7 @@ function renderKnowledgeBaseView() {
           <button class="icon-button toolbar-control refresh-icon-button" type="button" id="refresh-knowledge-base" aria-label="Refresh library" ${tooltipAttributes("Refresh library")}>${renderIcon(RefreshCw)}</button>
         </div>
       </div>
-      <div class="knowledge-base-grid ${state.knowledgeBase.graphCollapsed ? "is-graph-collapsed" : ""}">
+      <div class="knowledge-base-grid ${state.knowledgeBase.graphCollapsed ? "is-graph-collapsed" : ""} ${selectedNotePath ? "is-note-selected" : ""}">
         <aside class="knowledge-base-column knowledge-base-column-list">
           <div class="knowledge-base-panel-head">
             <div>
@@ -11992,6 +11992,13 @@ function renderKnowledgeBaseView() {
         </aside>
         <section class="knowledge-base-column knowledge-base-column-note">
           <div class="knowledge-base-panel-head">
+            ${selectedNotePath ? `<button
+              class="knowledge-base-mobile-back hidden-desktop"
+              type="button"
+              data-kb-mobile-back
+              aria-label="Back to notes list"
+              ${tooltipAttributes("Back to notes list")}
+            >${renderIcon(ChevronLeft)}</button>` : ""}
             <div>
               <strong>${escapeHtml(
                 state.knowledgeBase.selectedNoteTitle || selectedNoteMeta?.title || "Note Viewer",
@@ -12045,7 +12052,7 @@ function renderKnowledgeBaseApp() {
           </div>
         </header>
 
-        <div class="knowledge-base-grid">
+        <div class="knowledge-base-grid ${selectedNotePath ? "is-note-selected" : ""}">
           <aside class="knowledge-base-column knowledge-base-column-list">
             <div class="knowledge-base-panel-head">
               <div>
@@ -12060,6 +12067,13 @@ function renderKnowledgeBaseApp() {
           </aside>
           <section class="knowledge-base-column knowledge-base-column-note">
             <div class="knowledge-base-panel-head">
+              ${selectedNotePath ? `<button
+                class="knowledge-base-mobile-back hidden-desktop"
+                type="button"
+                data-kb-mobile-back
+                aria-label="Back to notes list"
+                ${tooltipAttributes("Back to notes list")}
+              >${renderIcon(ChevronLeft)}</button>` : ""}
               <div>
                 <strong>${escapeHtml(
                   state.knowledgeBase.selectedNoteTitle || getKnowledgeBaseSelectedNoteMeta()?.title || "Note Viewer",
@@ -35048,6 +35062,13 @@ function bindKnowledgeBaseEvents() {
     button.addEventListener("click", () => {
       const action = button.dataset.kbGraphToggle;
       setKnowledgeBaseGraphCollapsed(action !== "show");
+    });
+  });
+
+  document.querySelectorAll("[data-kb-mobile-back]").forEach((button) => {
+    if (!(button instanceof HTMLElement)) return;
+    button.addEventListener("click", () => {
+      clearKnowledgeBaseNoteSelection();
     });
   });
 

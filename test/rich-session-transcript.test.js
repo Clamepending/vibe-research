@@ -281,3 +281,20 @@ Investigating startup handling now.
     ["Investigating startup handling now."],
   );
 });
+
+test("rich session transcript filters Claude Code thinking pills across the rotating verb set", () => {
+  const transcript = [
+    "Brewed for 12s",
+    "Sautéed for 9m 37s",
+    "✻ Pondered for 1h 23m 5s",
+    "Whisked for 4s",
+    "Sautéed for 9m 37s",
+    "Real assistant content survives.",
+    "Worked together for years",
+  ].join("\n");
+
+  assert.equal(
+    sanitizeRichSessionTranscriptText(transcript),
+    "Real assistant content survives.\nWorked together for years",
+  );
+});

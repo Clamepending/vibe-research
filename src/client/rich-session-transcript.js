@@ -320,7 +320,11 @@ function isRichSessionEphemeralLine(line) {
     return true;
   }
 
-  if (/^(?:✻\s*)?brewed for\b/iu.test(trimmed)) {
+  // Claude Code's thinking spinner emits a "<verb> for <duration>" pill in a
+  // rotating set of cooking-style verbs (Brewed, Sautéed, Whisked, Simmered,
+  // Pondered, …). Match the shape rather than enumerate the verbs: a single
+  // capitalized word followed by "for" and one or more `Nh|Nm|Ns|Nd` segments.
+  if (/^(?:✻\s*)?[A-Za-zÀ-ÿ-]+\s+for\s+\d+(?:h|m|s|d)(?:\s+\d+(?:h|m|s|d))*\s*$/u.test(trimmed)) {
     return true;
   }
 
