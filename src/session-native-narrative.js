@@ -1106,45 +1106,59 @@ export function buildProjectedNarrative({
     maxBlocks: maxEntries,
     recentInputs,
   });
+  // Helper to attach structured fields (imageRefs / slashAction) from the
+  // projected text. This mirrors what the JSONL paths do so the renderer
+  // can drop its regex fallbacks once every producer emits structured
+  // fields.
+  const enrich = (entry) => {
+    const imageRefs = extractImageRefsFromText(entry.text || "");
+    if (imageRefs.length) entry.imageRefs = imageRefs;
+    if (entry.kind === "status" || entry.kind === "system") {
+      const slashAction = extractSlashActionFromText(entry.text || "");
+      if (slashAction) entry.slashAction = slashAction;
+    }
+    return entry;
+  };
+
   const entries = blocks.map((block, index) => {
     const blockKind = getRichSessionBlockKind(block);
     if (blockKind === "tool") {
-      return {
+      return enrich({
         id: makeEntryId("projected-tool", index + 1),
         kind: "tool",
         label: getRichSessionToolName(block) || "Tool",
         text: block,
         status: "done",
         meta: "transcript",
-      };
+      });
     }
 
     if (blockKind === "code") {
-      return {
+      return enrich({
         id: makeEntryId("projected-code", index + 1),
         kind: "tool",
         label: "Snippet",
         text: block,
         status: "done",
         meta: "transcript",
-      };
+      });
     }
 
     if (blockKind === "status" || blockKind === "recap") {
-      return {
+      return enrich({
         id: makeEntryId("projected-status", index + 1),
         kind: "status",
         label: blockKind === "recap" ? "Recap" : "Activity",
         text: block,
-      };
+      });
     }
 
-    return {
+    return enrich({
       id: makeEntryId("projected-message", index + 1),
       kind: "assistant",
       label: providerLabel || "Assistant",
       text: block,
-    };
+    });
   });
 
   return toNarrative({

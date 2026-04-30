@@ -359,34 +359,37 @@ test("ansi: image extractor cleans coloured paths so the tile gets the bare path
 });
 
 // ============================================================================
-// resolveRichSessionSlashAction / resolveRichSessionImageRefs — these favour
-// the structured field on the entry over the regex extractor. Once all
-// in-flight entries pre-date the structured field, the extractors become
-// dead code; until then the resolvers are the unified source of truth the
-// renderer reads.
+// resolveRichSessionSlashAction / resolveRichSessionImageRefs — schema-only
+// resolvers used by the renderer. After the schema rollout, every producer
+// emits structured fields directly, so the resolvers are now thin readers
+// of `entry.slashAction` / `entry.imageRefs`. The regex extractors stay
+// exported because the producers themselves use them at parse time.
 // ============================================================================
 
-test("resolver: prefers structured slashAction field when present", () => {
+test("resolver: reads structured slashAction field when present", () => {
   const entry = { kind: "status", text: "unrelated body", slashAction: { command: "/login", label: "Sign in" } };
   assert.deepEqual(resolveRichSessionSlashAction(entry), { command: "/login", label: "Sign in" });
 });
 
-test("resolver: falls back to regex extractor when slashAction missing", () => {
+test("resolver: returns null when slashAction is absent (no regex fallback)", () => {
+  // Renderer-side resolver no longer regexes the prose. The shaper is
+  // responsible for stamping the field; if it didn't, the entry has no
+  // action attached.
   const entry = { kind: "status", text: "Authentication failed: please reauthenticate" };
-  assert.deepEqual(resolveRichSessionSlashAction(entry), { command: "/login", label: "Sign in" });
+  assert.equal(resolveRichSessionSlashAction(entry), null);
 });
 
-test("resolver: returns null when neither structured field nor regex matches", () => {
+test("resolver: returns null on missing/null entry", () => {
   assert.equal(resolveRichSessionSlashAction({ kind: "status", text: "all good" }), null);
   assert.equal(resolveRichSessionSlashAction(null), null);
 });
 
-test("resolver: prefers structured imageRefs field when present", () => {
+test("resolver: reads structured imageRefs field when present", () => {
   const entry = { kind: "tool", text: "see foo", imageRefs: ["figures/a.png", "figures/b.png"] };
   assert.deepEqual(resolveRichSessionImageRefs(entry), ["figures/a.png", "figures/b.png"]);
 });
 
-test("resolver: falls back to regex extractor when imageRefs missing", () => {
+test("resolver: returns [] when imageRefs absent (no regex fallback)", () => {
   const entry = { kind: "tool", text: "saved to figures/x.png" };
-  assert.deepEqual(resolveRichSessionImageRefs(entry), ["figures/x.png"]);
+  assert.deepEqual(resolveRichSessionImageRefs(entry), []);
 });

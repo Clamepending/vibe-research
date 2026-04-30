@@ -171,8 +171,13 @@ export function extractRichSessionSlashAction(text) {
   return null;
 }
 
-// Resolves a slash action for an entry, preferring the structured field over
-// the regex fallback. Returns null when neither yields one.
+// Resolves a slash action for an entry. Reads the structured field set by
+// the server-side narrative shaper. Every producer (claude/codex stream,
+// projected transcript, gemini) now enriches entries with this field
+// before they hit the wire, so the renderer is a pure function of the
+// schema. The legacy regex fallback was removed; the underlying
+// extractRichSessionSlashAction stays exported for the producers and the
+// unit tests that still pin its behaviour.
 export function resolveRichSessionSlashAction(entry) {
   if (!entry || typeof entry !== "object") {
     return null;
@@ -183,13 +188,12 @@ export function resolveRichSessionSlashAction(entry) {
       label: entry.slashAction.label || entry.slashAction.command,
     };
   }
-  return extractRichSessionSlashAction(entry.text || "");
+  return null;
 }
 
-// Resolves the image refs for an entry, preferring the structured field over
-// the regex fallback. The fallback only fires for entries that pre-date the
-// structured field — once those age out of the buffer the helper is dead
-// code that we'll delete in a follow-up.
+// Resolves the image refs for an entry. Reads the structured field set by
+// the server-side narrative shaper. See resolveRichSessionSlashAction for
+// why the regex fallback was removed.
 export function resolveRichSessionImageRefs(entry, options = {}) {
   if (!entry || typeof entry !== "object") {
     return [];
@@ -197,7 +201,7 @@ export function resolveRichSessionImageRefs(entry, options = {}) {
   if (Array.isArray(entry.imageRefs) && entry.imageRefs.length) {
     return entry.imageRefs.slice(0, options.maxRefs || 4);
   }
-  return extractRichSessionImageRefs(String(entry.text || ""), options);
+  return [];
 }
 
 // Pulls every plausible image path out of a CLI / assistant text block.
