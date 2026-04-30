@@ -1,0 +1,385 @@
+#!/usr/bin/env node
+// vr-research-runner - claim queued moves and record experiment cycles.
+
+import path from "node:path";
+import process from "node:process";
+import {
+  claimNextMove,
+  finishMove,
+  runCycle,
+  runNextMove,
+} from "../src/research/runner.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-runner - generic QUEUE -> ACTIVE -> cycle runner
+
+Usage:
+  vr-research-runner <project-dir> claim [options]
+  vr-research-runner <project-dir> cycle --slug <slug> --command <cmd> [options]
+  vr-research-runner <project-dir> finish --slug <slug> [options]
+  vr-research-runner <project-dir> run --command <cmd> [options]
+
+Commands:
+  claim   Move the next QUEUE row into ACTIVE and create results/<slug>.md.
+  cycle   Run one command for an active move and append a cycle record.
+  finish  Close a move, aggregate metrics, and optionally apply README/LOG updates.
+  run     Claim the next move if needed, then run one cycle.
+
+Claim options:
+  --slug <slug>          Claim a specific QUEUE row instead of row 1.
+  --agent <id>           Agent id for ACTIVE (default: 0).
+  --question <text>      Override result-doc Question.
+  --hypothesis <text>    Override result-doc Hypothesis.
+  --grounding <text>     Override result-doc Research grounding.
+  --design <text>        Override result-doc Experiment design.
+  --force                Overwrite an existing result doc while claiming.
+  --code-cwd <path>      Code repo directory for branch preparation.
+  --prepare-branch       Switch/create r/<slug> in --code-cwd before claiming.
+  --start-ref <ref>      Git ref to branch from (defaults to QUEUE starting-point).
+
+Cycle options:
+  --command <cmd>        Shell command to run.
+  --cwd <path>           Command working directory (default: project dir).
+  --kind <kind>          change | rerun | analysis (default: change).
+  --change <text>        Cycle change description (default: command).
+  --metric <text>        Explicit metric/outcome value.
+  --metric-regex <regex> Extract metric from stdout/stderr capture group 1.
+  --qual <text>          One-line qualitative observation.
+  --seed <text>          Seed/id attached to this cycle metric.
+  --timeout-sec <N>      Per-cycle timeout in seconds (default: 1800).
+  --ask-human            Create an Agent Inbox review card after the cycle.
+  --agent-town-api <url> Agent Town API base; defaults to env var.
+  --git-commit           Commit code repo changes after the command.
+  --git-commit-message <text>
+                         Override the generated cycle commit message.
+  --git-allow-empty      Permit empty git commits (analysis cycles do by default).
+
+Finish options:
+  --status <text>        resolved | abandoned (default: resolved).
+  --event <text>         resolved | falsified | abandoned for LOG (default: resolved).
+  --takeaway <text>      Replace TAKEAWAY.
+  --analysis <text>      Replace Analysis.
+  --decision <text>      Replace Leaderboard verdict with Decision: <text>.
+  --queue-update <line>  Add one ADD/REMOVE/REPRIORITIZE line; repeatable.
+  --aggregate-metric     Compute mean/std frontmatter from cycle logs.
+  --metric-name <text>   Metric name for aggregate frontmatter.
+  --higher-is-better     Mark aggregate metric as higher-is-better.
+  --lower-is-better      Mark aggregate metric as lower-is-better.
+  --noise-multiplier <N> Noise multiplier for admission (default: 2).
+  --auto-admit           Run vr-research-admit and paste its verdict.
+  --allow-cross-version  Allow benchmark cross-version admission comparison.
+  --apply                Apply README/LOG updates with vr-research-resolve.
+  --commit <url>         Commit URL required if the move is admitted.
+  --score <text>         Override leaderboard score cell if admitted.
+  --summary <text>       Override LOG summary.
+
+Git options:
+  --git-branch <name>    Branch name for preparation/push (default r/<slug>).
+  --git-fetch            Fetch before preparing a branch.
+  --git-push             Push prepared branch or cycle commit.
+  --git-remote <name>    Remote for fetch/push (default: origin).
+
+Common:
+  --json                 Emit machine-readable output.
+  --help, -h             Show this message.
+
+Examples:
+  vr-research-runner projects/widget claim
+  vr-research-runner projects/widget cycle --slug dropout-rerun \\
+    --command "python train.py --dropout=0.2" --metric-regex "accuracy=([0-9.]+)" --ask-human
+  vr-research-runner projects/widget finish --slug dropout-rerun \\
+    --aggregate-metric --auto-admit --apply --event resolved
+  vr-research-runner projects/widget run --command "npm test" --change "baseline harness smoke"
+`);
+}
+
+function readValue(argv, index, flag) {
+  const value = argv[index + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return value;
+}
+
+function parseArgs(argv) {
+  const opts = {
+    projectDir: "",
+    subcommand: "",
+    slug: "",
+    agent: "0",
+    question: "",
+    hypothesis: "",
+    grounding: "",
+    design: "",
+    command: "",
+    cwd: "",
+    kind: "change",
+    change: "",
+    metric: "",
+    metricRegex: "",
+    qual: "",
+    seed: "",
+    timeoutSec: 1800,
+    askHuman: false,
+    agentTownApi: "",
+    force: false,
+    codeCwd: "",
+    prepareBranch: false,
+    startRef: "",
+    gitBranch: "",
+    gitFetch: false,
+    gitCommit: false,
+    gitCommitMessage: "",
+    gitAllowEmpty: false,
+    gitPush: false,
+    gitRemote: "origin",
+    status: "resolved",
+    event: "resolved",
+    takeaway: "",
+    analysis: "",
+    decision: "",
+    queueUpdates: [],
+    aggregateMetric: false,
+    metricName: "",
+    higherIsBetter: undefined,
+    noiseMultiplier: 2,
+    autoAdmit: false,
+    allowCrossVersion: false,
+    apply: false,
+    commit: "",
+    score: "",
+    summary: "",
+    json: false,
+    help: false,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
+    if (arg === "--json") { opts.json = true; continue; }
+    if (arg === "--ask-human") { opts.askHuman = true; continue; }
+    if (arg === "--force") { opts.force = true; continue; }
+    if (arg === "--prepare-branch") { opts.prepareBranch = true; continue; }
+    if (arg === "--git-fetch") { opts.gitFetch = true; continue; }
+    if (arg === "--git-commit") { opts.gitCommit = true; continue; }
+    if (arg === "--git-allow-empty") { opts.gitAllowEmpty = true; continue; }
+    if (arg === "--git-push") { opts.gitPush = true; continue; }
+    if (arg === "--aggregate-metric") { opts.aggregateMetric = true; continue; }
+    if (arg === "--auto-admit") { opts.autoAdmit = true; continue; }
+    if (arg === "--allow-cross-version") { opts.allowCrossVersion = true; continue; }
+    if (arg === "--higher-is-better") { opts.higherIsBetter = true; continue; }
+    if (arg === "--lower-is-better") { opts.higherIsBetter = false; continue; }
+    if (arg === "--apply") { opts.apply = true; continue; }
+    if (arg === "--slug") { opts.slug = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--agent") { opts.agent = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--question") { opts.question = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--hypothesis") { opts.hypothesis = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--grounding") { opts.grounding = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--design") { opts.design = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--command") { opts.command = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--cwd") { opts.cwd = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--kind") { opts.kind = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--change") { opts.change = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--metric") { opts.metric = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--metric-regex") { opts.metricRegex = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--qual") { opts.qual = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--seed") { opts.seed = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--timeout-sec") { opts.timeoutSec = Number(readValue(argv, index, arg)); index += 1; continue; }
+    if (arg === "--agent-town-api") { opts.agentTownApi = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--code-cwd") { opts.codeCwd = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--start-ref") { opts.startRef = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--git-branch") { opts.gitBranch = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--git-commit-message") { opts.gitCommitMessage = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--git-remote") { opts.gitRemote = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--status") { opts.status = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--event") { opts.event = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--takeaway") { opts.takeaway = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--analysis") { opts.analysis = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--decision") { opts.decision = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--queue-update") { opts.queueUpdates.push(readValue(argv, index, arg)); index += 1; continue; }
+    if (arg === "--metric-name") { opts.metricName = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--noise-multiplier") { opts.noiseMultiplier = Number(readValue(argv, index, arg)); index += 1; continue; }
+    if (arg === "--commit") { opts.commit = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--score") { opts.score = readValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--summary") { opts.summary = readValue(argv, index, arg); index += 1; continue; }
+    if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
+    if (!opts.projectDir) { opts.projectDir = arg; continue; }
+    if (!opts.subcommand) { opts.subcommand = arg; continue; }
+    throw new Error(`unexpected positional arg: ${arg}`);
+  }
+
+  return opts;
+}
+
+function printClaim(result) {
+  const mode = result.resumed ? "resumed" : "claimed";
+  process.stdout.write(`${mode} ${result.slug}\n`);
+  process.stdout.write(`result: ${result.resultPath}\n`);
+  if (result.branchUrl) process.stdout.write(`branch: ${result.branchUrl}\n`);
+}
+
+function printCycle(result) {
+  process.stdout.write(`cycle ${result.cycleIndex} recorded for ${result.slug}\n`);
+  process.stdout.write(`outcome: ${result.metric ? `metric=${result.metric}` : `exit=${result.exitCode}`}\n`);
+  process.stdout.write(`artifact: ${result.artifactPath}\n`);
+  if (result.review) process.stdout.write(`review: ${result.review.id || "created"}\n`);
+  if (result.reviewSkippedReason) process.stdout.write(`review skipped: ${result.reviewSkippedReason}\n`);
+  if (result.git?.committed) process.stdout.write(`commit: ${result.git.commitUrl || result.git.sha}\n`);
+  if (result.git?.pushed) process.stdout.write(`pushed: ${result.git.branch || result.git.shortSha}\n`);
+}
+
+function printFinish(result) {
+  process.stdout.write(`finished ${result.slug} as ${result.status}\n`);
+  process.stdout.write(`result: ${result.resultPath}\n`);
+  if (result.aggregate) {
+    process.stdout.write(`aggregate: mean=${result.aggregate.mean} std=${result.aggregate.std} n=${result.aggregate.n}\n`);
+  }
+  if (result.resolve) {
+    process.stdout.write(`applied: ${result.resolve.event}\n`);
+  }
+}
+
+async function main() {
+  let opts;
+  try {
+    opts = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`${error.message}\n\n`);
+    printHelp();
+    process.exit(2);
+  }
+
+  if (opts.help) {
+    printHelp();
+    process.exit(0);
+  }
+
+  const subcommand = opts.subcommand || "run";
+  const errors = [];
+  if (!opts.projectDir) errors.push("project-dir positional argument is required");
+  if (!["claim", "cycle", "finish", "run"].includes(subcommand)) {
+    errors.push(`subcommand must be claim, cycle, finish, or run; got "${subcommand}"`);
+  }
+  if ((subcommand === "cycle" || subcommand === "run") && !opts.command) {
+    errors.push("--command is required");
+  }
+  if (subcommand === "cycle" && !opts.slug) {
+    errors.push("--slug is required for cycle");
+  }
+  if (subcommand === "finish" && !opts.slug) {
+    errors.push("--slug is required for finish");
+  }
+  if (!Number.isFinite(opts.timeoutSec) || opts.timeoutSec <= 0) {
+    errors.push("--timeout-sec must be a positive number");
+  }
+  if (!Number.isFinite(opts.noiseMultiplier) || opts.noiseMultiplier <= 0) {
+    errors.push("--noise-multiplier must be a positive number");
+  }
+  if (errors.length) {
+    for (const error of errors) process.stderr.write(`${error}\n`);
+    process.exit(2);
+  }
+
+  const projectDir = path.resolve(opts.projectDir);
+  const common = {
+    projectDir,
+    slug: opts.slug,
+    agent: opts.agent,
+    question: opts.question,
+    hypothesis: opts.hypothesis,
+    grounding: opts.grounding,
+    design: opts.design,
+    command: opts.command,
+    cwd: opts.cwd,
+    kind: opts.kind,
+    change: opts.change,
+    metric: opts.metric,
+    metricRegex: opts.metricRegex,
+    qual: opts.qual,
+    seed: opts.seed,
+    timeoutMs: Math.max(1000, opts.timeoutSec * 1000),
+    askHuman: opts.askHuman,
+    agentTownApi: opts.agentTownApi,
+    force: opts.force,
+    codeCwd: opts.codeCwd,
+    prepareBranch: opts.prepareBranch,
+    startRef: opts.startRef,
+    gitBranch: opts.gitBranch,
+    gitFetch: opts.gitFetch,
+    gitCommit: opts.gitCommit,
+    gitCommitMessage: opts.gitCommitMessage,
+    gitAllowEmpty: opts.gitAllowEmpty,
+    gitPush: opts.gitPush,
+    gitRemote: opts.gitRemote,
+  };
+
+  let result;
+  try {
+    if (subcommand === "claim") {
+      result = await claimNextMove({
+        projectDir,
+        slug: opts.slug,
+        agent: opts.agent,
+        question: opts.question,
+        hypothesis: opts.hypothesis,
+        grounding: opts.grounding,
+        design: opts.design,
+        force: opts.force,
+        codeCwd: opts.codeCwd,
+        prepareBranch: opts.prepareBranch,
+        startRef: opts.startRef,
+        gitBranch: opts.gitBranch,
+        gitFetch: opts.gitFetch,
+        gitPush: opts.gitPush,
+        gitRemote: opts.gitRemote,
+      });
+    } else if (subcommand === "cycle") {
+      result = await runCycle(common);
+    } else if (subcommand === "finish") {
+      result = await finishMove({
+        projectDir,
+        slug: opts.slug,
+        status: opts.status,
+        event: opts.event,
+        takeaway: opts.takeaway,
+        analysis: opts.analysis,
+        decision: opts.decision,
+        queueUpdates: opts.queueUpdates,
+        aggregateMetric: opts.aggregateMetric,
+        metricName: opts.metricName,
+        higherIsBetter: opts.higherIsBetter,
+        noiseMultiplier: opts.noiseMultiplier,
+        autoAdmit: opts.autoAdmit,
+        allowCrossVersion: opts.allowCrossVersion,
+        apply: opts.apply,
+        commit: opts.commit,
+        score: opts.score,
+        summary: opts.summary,
+      });
+    } else {
+      result = await runNextMove(common);
+    }
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(1);
+  }
+
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.exit(0);
+  }
+
+  if (subcommand === "claim") {
+    printClaim(result);
+  } else if (subcommand === "cycle") {
+    printCycle(result);
+  } else if (subcommand === "finish") {
+    printFinish(result);
+  } else {
+    printClaim(result.claim);
+    printCycle(result.cycle);
+  }
+  process.exit(0);
+}
+
+main();

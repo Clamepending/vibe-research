@@ -85,6 +85,8 @@ export function parseAdmitDecision(decision) {
   const trimmed = String(decision || "").trim();
   const rankMatch = trimmed.match(/insert\s+at\s+rank\s+(\d+)/i);
   if (rankMatch) return { admit: true, rank: Number(rankMatch[1]) };
+  const admitMatch = trimmed.match(/\badmit\s+at\s+rank\s+(\d+)/i);
+  if (admitMatch) return { admit: true, rank: Number(admitMatch[1]) };
   if (/do\s+not\s+admit/i.test(trimmed)) return { admit: false, rank: null };
   return { admit: false, rank: null };
 }

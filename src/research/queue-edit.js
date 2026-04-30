@@ -156,7 +156,7 @@ export async function removeQueueRow({ readmePath, slug } = {}) {
   return { readmePath, slug: trimmed, row: removedRow, removed: true };
 }
 
-export async function reprioritizeQueueRow({ readmePath, slug, position } = {}) {
+export async function reprioritizeQueueRow({ readmePath, slug, position, toRow } = {}) {
   if (!readmePath) throw new TypeError("readmePath is required");
   if (!slug || !String(slug).trim()) throw new Error("slug is required");
   const text = await readFile(readmePath, "utf8");
@@ -168,7 +168,7 @@ export async function reprioritizeQueueRow({ readmePath, slug, position } = {}) 
   const index = rows.findIndex((entry) => entry.slug === trimmed);
   if (index < 0) throw new Error(`QUEUE has no row for slug "${trimmed}"`);
   const [row] = rows.splice(index, 1);
-  rows.splice(clampInsertPosition(position, rows.length), 0, row);
+  rows.splice(clampInsertPosition(position ?? toRow, rows.length), 0, row);
 
   await atomicWrite(readmePath, replaceQueueRows(text, loc, rows));
   return { readmePath, slug: trimmed, row, position: rows.findIndex((entry) => entry.slug === trimmed) + 1, reprioritized: true };

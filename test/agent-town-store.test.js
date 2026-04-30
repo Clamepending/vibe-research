@@ -316,6 +316,39 @@ test("AgentTownStore stores review-card metadata and resolves action-item predic
   }
 });
 
+test("AgentTownStore supports research-runner review choices", async () => {
+  const stateDir = await createTempStateDir();
+  const store = new AgentTownStore({ stateDir });
+
+  try {
+    await store.initialize();
+    const { actionItem } = await store.createActionItem({
+      id: "review:cycle-1",
+      kind: "review",
+      title: "Review cycle",
+      choices: ["continue", "rerun", "synthesize", "brainstorm", "steer", "rerun"],
+    });
+
+    assert.deepEqual(actionItem.choices, ["continue", "rerun", "synthesize", "brainstorm", "steer"]);
+
+    const waitPromise = store.waitForPredicate({
+      predicate: "action_item_rerun",
+      predicateParams: { actionItemId: "review:cycle-1" },
+      timeoutMs: 5_000,
+    });
+    const { actionItem: updated } = await store.updateActionItem("review:cycle-1", {
+      resolution: "rerun",
+    });
+
+    assert.equal(updated.status, "completed");
+    assert.equal(updated.resolution, "rerun");
+    assert.equal(store.evaluatePredicate("action_item_rerun", { actionItemId: "review:cycle-1" }), true);
+    assert.equal((await waitPromise).satisfied, true);
+  } finally {
+    await removeTempStateDir(stateDir);
+  }
+});
+
 test("AgentTownStore upserts and persists per-session canvases", async () => {
   const stateDir = await createTempStateDir();
 

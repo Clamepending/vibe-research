@@ -197,6 +197,7 @@ test("parseQueueUpdates: empty body returns []", () => {
 test("parseAdmitDecision: insert at rank N", () => {
   assert.deepEqual(parseAdmitDecision("insert at rank 1"), { admit: true, rank: 1 });
   assert.deepEqual(parseAdmitDecision("Insert at rank 3."), { admit: true, rank: 3 });
+  assert.deepEqual(parseAdmitDecision("admit at rank 2 — beats rank 2"), { admit: true, rank: 2 });
 });
 
 test("parseAdmitDecision: do not admit", () => {

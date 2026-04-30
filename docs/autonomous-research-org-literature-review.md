@@ -4,6 +4,8 @@ Snapshot date: 2026-04-30
 
 This is a synthesis of recent work on multi-agent LLM systems, AlphaEvolve-style evolutionary discovery, autonomous research systems, and human-in-the-loop communication. The goal is to extract design principles for Vibe Research, not to produce a full survey.
 
+Roadmap distilled from this review: [Agent-Native Vibe Research Roadmap](./agent-native-vibe-research-roadmap.md).
+
 ## Executive Synthesis
 
 Vibe Research should not copy "many agents talking" as the central metaphor. The stronger pattern across the literature is an auditable research organization:

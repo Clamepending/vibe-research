@@ -25,6 +25,8 @@
     "vr-research-lint-paper": "./bin/vr-research-lint-paper",
     "vr-research-log": "./bin/vr-research-log",
     "vr-research-queue": "./bin/vr-research-queue",
+    "vr-research-resolve": "./bin/vr-research-resolve",
+    "vr-research-runner": "./bin/vr-research-runner",
     "vr-scaffold-recipe": "./bin/vr-scaffold-recipe",
     "vr-session-name": "./bin/vr-session-name",
     "vr-telegram-reply": "./bin/vr-telegram-reply",
@@ -42,6 +44,8 @@
     "rv-videomemory": "./bin/rv-videomemory",
     "rv-playwright": "./bin/rv-playwright",
     "rv-research-brief": "./bin/vr-research-brief",
+    "rv-research-resolve": "./bin/vr-research-resolve",
+    "rv-research-runner": "./bin/vr-research-runner",
     "playwright-cli": "./bin/playwright-cli"
   },
   "engines": {

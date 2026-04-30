@@ -4,6 +4,8 @@ Vibe Research is growing toward a visual operating system for agents: nontechnic
 
 The foundation is not the town art by itself. The foundation is the contract between the visual interface, the local control plane, and the agents.
 
+Research-org roadmap: [Agent-Native Vibe Research Roadmap](./agent-native-vibe-research-roadmap.md).
+
 ## Core Objects
 
 | Object | User meaning | System anchor |
@@ -75,6 +77,33 @@ vr-research-brief projects/demo create \
 ```
 
 Briefs live in `projects/<name>/briefs/<slug>.md`; phase state lives in `projects/<name>/.vibe-research/research-state.json`. Once a brief is approved, `vr-research-brief projects/demo compile --slug dropout-mechanism` turns the recommended candidate into a `QUEUE` row and moves the project phase to `experiment`. Brief review cards created with `--ask-human` also carry compile metadata, so Agent Inbox can offer a one-click `approve & queue` path.
+
+The generic experiment runner picks up after that:
+
+```sh
+vr-research-runner projects/demo run \
+  --cwd ../demo-code \
+  --command "python train.py --dropout=0.2 --seed=0" \
+  --metric-regex "accuracy=([0-9.]+)" \
+  --change "dropout=0.2 seed 0" \
+  --seed 0 \
+  --git-commit \
+  --ask-human
+```
+
+`claim` moves the first `QUEUE` row into `ACTIVE` and creates `results/<slug>.md`; with `--prepare-branch --code-cwd <repo>` it also switches or creates the code branch. `cycle` runs a command, appends the cycle line, captures the artifact log, records seed/git provenance, and can commit/push the code repo with `--git-commit --git-push`. `run` does claim + one cycle. `finish` closes the loop by setting `STATUS`, aggregating cycle metrics into quantitative frontmatter, running admission, applying Queue updates, and removing `ACTIVE` through `vr-research-resolve`:
+
+```sh
+vr-research-runner projects/demo finish \
+  --slug dropout-rerun \
+  --takeaway "dropout=0.2 stayed within noise across three seeds." \
+  --aggregate-metric \
+  --metric-name accuracy \
+  --auto-admit \
+  --apply
+```
+
+Cycle review cards use `continue`, `rerun`, `synthesize`, `brainstorm`, and `steer` choices so the human can redirect the hillclimb from Agent Inbox.
 
 Agent canvases are intentionally current, not archival. Agents should keep their result docs and Library notes as the durable record, then point the canvas at the most useful visual artifact right now:
 

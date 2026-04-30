@@ -28,22 +28,30 @@ const VALID_ACTION_ITEM_RESOLUTIONS = new Set([
   "",
   "approved",
   "completed",
+  "brainstorm",
+  "continued",
   "dismissed",
   "paused",
   "rejected",
+  "rerun",
   "resumed",
   "steered",
+  "synthesized",
   "timeout",
 ]);
 const VALID_ACTION_ITEM_CHOICES = new Set([
   "approve",
+  "brainstorm",
   "complete",
+  "continue",
   "dismiss",
   "open",
   "pause",
   "reject",
+  "rerun",
   "resume",
   "steer",
+  "synthesize",
 ]);
 const VALID_VISUAL_OBJECT_TYPES = new Set([
   "agent",
@@ -79,6 +87,10 @@ const SUPPORTED_PREDICATES = new Set([
   "action_item_resolved",
   "action_item_approved",
   "action_item_rejected",
+  "action_item_rerun",
+  "action_item_continued",
+  "action_item_brainstorm",
+  "action_item_synthesized",
   "action_item_steered",
   "action_item_paused",
   "action_item_resumed",
@@ -737,7 +749,7 @@ function normalizeActionItem(value = {}, fallback = {}) {
   const existingStatus = VALID_ACTION_ITEM_STATUSES.has(fallback.status) ? fallback.status : "open";
   const requestedStatus = normalizeText(value.status, 32).toLowerCase();
   const resolution = normalizeActionItemResolution(value.resolution || value.decision || value.verdict, fallback.resolution || "");
-  const inferredStatus = ["approved", "completed", "resumed", "steered"].includes(resolution)
+  const inferredStatus = ["approved", "brainstorm", "completed", "continued", "rerun", "resumed", "steered", "synthesized"].includes(resolution)
     ? "completed"
     : ["dismissed", "paused", "rejected", "timeout"].includes(resolution)
       ? "dismissed"
@@ -1192,6 +1204,10 @@ export class AgentTownStore {
       action_item_steered: "steered",
       action_item_paused: "paused",
       action_item_resumed: "resumed",
+      action_item_rerun: "rerun",
+      action_item_continued: "continued",
+      action_item_brainstorm: "brainstorm",
+      action_item_synthesized: "synthesized",
     };
     if (actionItemResolutionPredicates[predicate]) {
       const targetResolution = actionItemResolutionPredicates[predicate];

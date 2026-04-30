@@ -19162,6 +19162,10 @@ function getActionItemResolutionForChoice(choice) {
   if (normalized === "resume") return { resolution: "resumed", status: "completed", label: "resume" };
   if (normalized === "dismiss") return { resolution: "dismissed", status: "dismissed", label: "dismiss" };
   if (normalized === "complete") return { resolution: "completed", status: "completed", label: "done" };
+  if (normalized === "continue") return { resolution: "continued", status: "completed", label: "continue" };
+  if (normalized === "rerun") return { resolution: "rerun", status: "completed", label: "rerun" };
+  if (normalized === "synthesize") return { resolution: "synthesized", status: "completed", label: "synthesize" };
+  if (normalized === "brainstorm") return { resolution: "brainstorm", status: "completed", label: "brainstorm" };
   return null;
 }
 
