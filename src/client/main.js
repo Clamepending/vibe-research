@@ -5781,6 +5781,7 @@ function renderRichSessionEntry(entry, index) {
     entry?.mcp ? "is-mcp" : "",
     isThinking ? "is-thinking" : "",
     isAssistantPending ? "is-pending" : "",
+    kind === "assistant" && entry?.preamble === true ? "is-preamble" : "",
   ].filter(Boolean).join(" ");
   const kickerHtml = `
     <div class="rich-session-entry-kicker">
@@ -5897,13 +5898,19 @@ function renderRichSessionEntry(entry, index) {
       </div>`
     : "";
 
-  // Tool entries get an inline image strip when the entry carries one.
-  // Server-side shaper emits `entry.imageRefs` for any tool whose input or
-  // output paths name an image. As a guard against accidentally tile-spamming
-  // grep-like tools, we still gate by a label allowlist; a bare image-ref on
-  // a Bash entry without "saved/wrote/figure/screenshot" prose stays text.
+  // Tool entries get an inline image strip whenever the server-side shaper
+  // emitted `entry.imageRefs` for them. The shaper already filters to paths
+  // that match an image extension AND that originated in the tool's input or
+  // output (not arbitrary prose), so trusting the field is safe and the
+  // user gets thumbnails for screenshots/plots/figures regardless of label.
+  // The legacy regex extractor stays as a fallback for entries that pre-date
+  // the structured field, gated by an image-producing label allowlist so
+  // grep-style tools that incidentally name a `.png` don't tile-spam.
   const toolImageRefs = kind === "tool"
     ? (() => {
+        if (Array.isArray(entry?.imageRefs) && entry.imageRefs.length) {
+          return entry.imageRefs.slice(0, 4);
+        }
         const labelStr = String(entry?.label || "");
         const looksImageProducing = /^(?:Write|Edit|MultiEdit|Read|NotebookEdit|Open|View)$/i.test(labelStr)
           || (labelStr === "Bash" && /\b(?:saved\s+to|wrote|figure\s+at|image\s+at|plot\s+at|screenshot)\b/iu.test(`${text} ${entry?.outputPreview || ""}`));
@@ -5922,6 +5929,65 @@ function renderRichSessionEntry(entry, index) {
     ? entry.imageRefs.slice(0, 4)
     : [];
   const userImageStripHtml = renderRichSessionImageStrip(userImageRefs);
+
+  // Bash and lookup tools (Read/Grep/Glob/LS) flood the feed when the agent
+  // explores aggressively — a 30-call exploration produces 30 stacked cards.
+  // Render them as a single compact row so the chat stays scannable: the
+  // label collapses into a tiny prefix glyph, the command/path is the only
+  // prominent line, and the output preview shrinks to a one-line summary
+  // with status meta on the right.
+  const isCompactToolEntry = kind === "tool"
+    && !isTodoEntry
+    && /^(?:Bash|Read|Grep|Glob|LS|WebFetch|WebSearch)$/i.test(String(entry?.label || ""));
+  if (isCompactToolEntry) {
+    const compactClass = [
+      "rich-session-entry",
+      "is-tool",
+      "is-compact-tool",
+      `is-tool-${escapeHtml(String(entry?.label || "").toLowerCase())}`,
+      entry?.status ? `is-${escapeHtml(entry.status)}` : "",
+      entry?.mcp ? "is-mcp" : "",
+    ].filter(Boolean).join(" ");
+    const labelStr = String(entry?.label || "");
+    const isBash = labelStr === "Bash";
+    // Show "$ <cmd>" for bash, "<label> <arg>" for everything else; the body
+    // already carries the path/command via summarizeClaudeToolInput.
+    const prefix = isBash
+      ? '<span class="rich-session-compact-prompt" aria-hidden="true">$</span>'
+      : `<span class="rich-session-compact-tag">${escapeHtml(labelStr)}</span>`;
+    const compactCommand = `<code class="rich-session-compact-command">${body}</code>`;
+    const statusMeta = entry?.meta && entry.meta !== "running"
+      ? `<span class="rich-session-compact-meta is-${escapeHtml(entry.status || "done")}">${escapeHtml(entry.meta)}</span>`
+      : entry?.status === "running"
+      ? '<span class="rich-session-compact-meta is-running">…</span>'
+      : "";
+    // Output preview: collapsed to first non-empty line, with a "more" toggle
+    // if longer. The full preview already lives in entry.outputPreview; the
+    // <details> element keeps the markup self-contained, so no extra event
+    // wiring is needed for expand/collapse.
+    const previewText = String(entry?.outputPreview || "").trim();
+    const firstLine = previewText.split(/\n/).map((line) => line.trim()).find(Boolean) || "";
+    const hasMore = previewText.length > firstLine.length + 8;
+    const previewHtml = previewText
+      ? hasMore
+        ? `<details class="rich-session-compact-output">
+            <summary>${renderRichSessionInlineHtml(firstLine)}<span class="rich-session-compact-output-toggle"> · show more</span></summary>
+            <pre class="rich-session-compact-output-full">${renderRichSessionInlineHtml(previewText)}</pre>
+          </details>`
+        : `<div class="rich-session-compact-output is-single">${renderRichSessionInlineHtml(firstLine)}</div>`
+      : "";
+    return `
+      <article class="${compactClass}" data-rich-session-entry="${index}">
+        <div class="rich-session-compact-row">
+          ${prefix}
+          ${compactCommand}
+          ${statusMeta}
+        </div>
+        ${previewHtml}
+        ${toolImageStripHtml}
+      </article>
+    `;
+  }
 
   const bodyHtml = isThinking
     ? ""
@@ -6381,9 +6447,16 @@ function renderClaudePromptCard(prompt) {
 }
 
 function renderRichSessionComposerAttachmentChips(activeSession) {
+  // Always render the wrapper so the chip strip can be live-updated by
+  // refreshRichSessionSurfaceUi without rebuilding the entire form. The
+  // wrapper is hidden via the .is-empty class when there are no chips.
   const attachments = getRichSessionComposerAttachments(activeSession?.id);
-  if (!attachments.length) return "";
-  const tiles = attachments.map((att) => {
+  return `<div class="rich-session-composer-attachments ${attachments.length ? "" : "is-empty"}" data-rich-session-attachment-mount>${renderRichSessionComposerAttachmentTilesHtml(attachments)}</div>`;
+}
+
+function renderRichSessionComposerAttachmentTilesHtml(attachments) {
+  if (!Array.isArray(attachments) || !attachments.length) return "";
+  return attachments.map((att) => {
     const url = getRichSessionImageUrl(att.absolutePath || "");
     const label = att.fileName || "image";
     return `
@@ -6401,7 +6474,6 @@ function renderRichSessionComposerAttachmentChips(activeSession) {
       </div>
     `;
   }).join("");
-  return `<div class="rich-session-composer-attachments">${tiles}</div>`;
 }
 
 function renderRichSessionSurface(activeSession) {
@@ -6602,6 +6674,18 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
     input.disabled = !canSend;
     input.placeholder = `Message ${activeSession?.providerLabel || "agent"}...`;
     syncRichSessionComposerHeight(input);
+  }
+
+  // Live-update the composer's image-attachment chip strip. Without this,
+  // a paste that successfully uploads still leaves the form looking empty
+  // because refreshRichSessionSurfaceUi() doesn't re-render the form
+  // wholesale — only the feed. Chip strip is a stable mount point now,
+  // we just refresh its innerHTML and toggle the empty/non-empty class.
+  const attachmentMount = document.querySelector("[data-rich-session-attachment-mount]");
+  if (attachmentMount instanceof HTMLElement) {
+    const attachments = getRichSessionComposerAttachments(activeSession?.id);
+    attachmentMount.innerHTML = renderRichSessionComposerAttachmentTilesHtml(attachments);
+    attachmentMount.classList.toggle("is-empty", !attachments.length);
   }
 
   // Update the persistent "agent is working" indicator without rebuilding it.
@@ -22318,7 +22402,7 @@ function renderVisualGameSessionDrawer(graph) {
           </div>
           ${renderRichSessionSurface(selectedSession)}
           <button class="jump-bottom-button ${selectedSession && state.terminalShowJumpToBottom ? "is-visible" : ""}" type="button" id="jump-to-bottom" aria-label="Jump to bottom" ${tooltipAttributes("Jump to bottom")} ${selectedSession ? "" : "disabled"}>
-            bottom
+            ↓ latest
           </button>
           <div class="empty-state ${selectedSession ? "hidden" : ""}" id="empty-state">
             <p class="empty-state-copy">session no longer available</p>
@@ -31870,7 +31954,7 @@ function renderTerminalPanel(activeSession) {
           </div>
           ${renderRichSessionSurface(activeSession)}
           <button class="jump-bottom-button ${activeSession && state.terminalShowJumpToBottom ? "is-visible" : ""}" type="button" id="jump-to-bottom" aria-label="Jump to bottom" ${tooltipAttributes("Jump to bottom")} ${activeSession ? "" : "disabled"}>
-            bottom
+            ↓ latest
           </button>
           <div class="empty-state ${activeSession ? "hidden" : ""}" id="empty-state">
             <p class="empty-state-copy">choose an agent, then start a session in the default folder</p>
@@ -40841,8 +40925,13 @@ function bindShellEvents() {
       if (!event.clipboardData) return;
       const files = getImageFilesFromClipboardData(event.clipboardData);
       if (!files.length) return;
+      // stopImmediatePropagation (not just stopPropagation) so the
+      // textarea-bound paste listener at the target node can't fire on
+      // the same image and double-upload. The textarea listener still
+      // runs for non-image paste cases (large text cap, image-placeholder
+      // text), it just yields the image path to this single handler.
       event.preventDefault();
-      event.stopPropagation();
+      event.stopImmediatePropagation();
       void attachRichSessionImageFiles(files, "paste");
     }, { capture: true });
   }

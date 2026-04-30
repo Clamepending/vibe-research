@@ -111,6 +111,21 @@ test("normaliseNarrativeEntry: mcp metadata requires both server and tool", () =
   }), /mcp\.tool is required/);
 });
 
+test("normaliseNarrativeEntry: preamble flag survives only when explicitly true", () => {
+  const flagged = normaliseNarrativeEntry({
+    id: "a1", kind: "assistant", text: "Let me check the file.", preamble: true,
+  });
+  assert.equal(flagged.preamble, true);
+
+  const unset = normaliseNarrativeEntry({ id: "a2", kind: "assistant", text: "hi" });
+  assert.equal(unset.preamble, undefined);
+
+  const truthy = normaliseNarrativeEntry({
+    id: "a3", kind: "assistant", text: "x", preamble: 1,
+  });
+  assert.equal(truthy.preamble, undefined, "non-strict-true is dropped");
+});
+
 test("normaliseNarrativeEntry: todos array carries content/activeForm/status", () => {
   const out = normaliseNarrativeEntry({
     id: "t1", kind: "tool", label: "TodoWrite",

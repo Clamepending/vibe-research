@@ -150,6 +150,14 @@ export function normaliseNarrativeEntry(rawEntry) {
     out.thinking = true;
   }
 
+  // boolean flag for "this assistant text was emitted alongside tool calls
+  // in the same message" — the model narrating what it's about to do, not
+  // a final answer addressed to the user. The renderer styles preamble
+  // entries subtly so the chat doesn't shout every internal step.
+  if (rawEntry.preamble === true) {
+    out.preamble = true;
+  }
+
   // boolean flag set when the visible text was clipped at the wire cap
   // (12K). Renderer shows a "truncated · full text in the transcript"
   // footer so the user knows there's more.

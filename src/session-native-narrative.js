@@ -913,6 +913,12 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
       const tokenSlug = (input) => String(input ?? "")
         .replace(/[^a-zA-Z0-9_-]/g, "")
         .slice(0, 24);
+      // Text blocks emitted alongside tool_use blocks are "preamble" — the
+      // model narrating what it's about to do ("Let me check…", "Now I'll
+      // run…"). The renderer styles those subtly so the chat doesn't
+      // shout every internal step. Pure-text messages (no tool_use) are
+      // the model's actual reply to the user and stay prominent.
+      const messageHasToolUse = content.some((item) => item?.type === "tool_use");
       let blockIndex = -1;
       for (const item of content) {
         blockIndex += 1;
@@ -924,6 +930,9 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
             text: item.text,
             timestamp: updatedAt,
           };
+          if (messageHasToolUse) {
+            assistantEntry.preamble = true;
+          }
           const imageRefs = extractImageRefsFromText(item.text);
           if (imageRefs.length) {
             assistantEntry.imageRefs = imageRefs;

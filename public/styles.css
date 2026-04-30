@@ -14854,6 +14854,43 @@ body.is-reordering-file-tabs {
   margin-top: 2px;
 }
 
+/* Preamble — assistant text emitted alongside tool calls in the same
+   message ("Let me check…", "Now I'll edit…"). Muted, smaller, italic-ish
+   so the user's eye skims past the narration and lands on the actual
+   tool calls and final reply. Same pattern as Claude.ai's UI: keep the
+   text, just stop shouting it. */
+.rich-session-entry.is-assistant.is-preamble .rich-session-entry-copy,
+.rich-session-entry.is-assistant.is-preamble .rich-session-entry-markdown,
+.rich-session-entry.is-assistant.is-preamble .rich-session-entry-markdown h1,
+.rich-session-entry.is-assistant.is-preamble .rich-session-entry-markdown h2,
+.rich-session-entry.is-assistant.is-preamble .rich-session-entry-markdown h3,
+.rich-session-entry.is-assistant.is-preamble .rich-session-entry-markdown h4,
+.rich-session-entry.is-assistant.is-preamble .rich-session-entry-markdown h5,
+.rich-session-entry.is-assistant.is-preamble .rich-session-entry-markdown h6,
+.rich-session-entry.is-assistant.is-preamble .rich-session-entry-markdown p,
+.rich-session-entry.is-assistant.is-preamble .rich-session-entry-markdown li {
+  color: rgba(244, 244, 242, 0.52);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+
+.rich-session-entry.is-assistant.is-preamble {
+  padding: 2px 12px;
+  gap: 0;
+}
+
+.rich-session-entry.is-assistant.is-preamble .rich-session-entry-markdown {
+  gap: 6px;
+}
+
+/* Hide the trailing timestamp tail on preamble entries — adding "1:25 AM"
+   under every internal narration line is exactly the noise we're trying
+   to remove. Direct-address replies still get their tail. */
+.rich-session-entry.is-assistant.is-preamble .rich-session-entry-tail {
+  display: none;
+}
+
 .rich-session-entry.is-user .rich-session-entry-copy {
   color: rgba(244, 244, 242, 0.78);
   font-size: 1rem;
@@ -15043,6 +15080,140 @@ body.is-reordering-file-tabs {
   50% {
     box-shadow: 0 0 0 5px rgba(255, 196, 92, 0.05);
   }
+}
+
+/* Compact tool rendering — Bash, Read, Grep, Glob, LS, WebFetch, WebSearch
+   collapse to a single dense row so a long exploration doesn't push the
+   assistant's reply off-screen. The shell-style "$" prefix or one-word tag
+   is just visual chrome; the command/path is the only prominent line.
+   Output preview shrinks to one line with an inline <details> expander. */
+.rich-session-entry.is-compact-tool {
+  padding: 4px 12px 4px 14px;
+  gap: 2px;
+  background: transparent;
+  border-left: 2px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0 8px 8px 0;
+}
+
+.rich-session-entry.is-compact-tool::before {
+  top: 9px;
+  left: -3px;
+  width: 5px;
+  height: 5px;
+}
+
+.rich-session-compact-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.8rem;
+  line-height: 1.42;
+}
+
+.rich-session-compact-prompt {
+  flex-shrink: 0;
+  color: rgba(120, 220, 160, 0.78);
+  font-weight: 600;
+  user-select: none;
+}
+
+.rich-session-compact-tag {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(244, 244, 242, 0.62);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.rich-session-compact-command {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: rgba(244, 244, 242, 0.84);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.8rem;
+  line-height: 1.42;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rich-session-compact-meta {
+  flex-shrink: 0;
+  color: rgba(244, 244, 242, 0.4);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.rich-session-compact-meta.is-error {
+  color: rgba(255, 159, 149, 0.92);
+}
+
+.rich-session-compact-meta.is-running {
+  color: rgba(255, 196, 92, 0.92);
+}
+
+.rich-session-compact-output {
+  margin: 1px 0 0 18px;
+  color: rgba(244, 244, 242, 0.42);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.rich-session-compact-output.is-single {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+details.rich-session-compact-output > summary {
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+details.rich-session-compact-output > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.rich-session-compact-output[open] > summary {
+  white-space: normal;
+}
+
+.rich-session-compact-output-toggle {
+  color: rgba(123, 195, 255, 0.65);
+}
+
+details.rich-session-compact-output[open] .rich-session-compact-output-toggle {
+  display: none;
+}
+
+.rich-session-compact-output-full {
+  margin: 6px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(8, 9, 11, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  color: rgba(244, 244, 242, 0.7);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
 }
 
 /* Pending assistant placeholder — explicit "thinking" text alongside the
@@ -15375,6 +15546,10 @@ body.is-reordering-file-tabs {
   flex-wrap: wrap;
   gap: 8px;
   padding: 0;
+}
+
+.rich-session-composer-attachments.is-empty {
+  display: none;
 }
 
 .rich-session-composer-chip {
@@ -15740,25 +15915,25 @@ body.is-reordering-file-tabs {
 
 .jump-bottom-button {
   position: absolute;
-  left: 16px;
+  left: 50%;
   right: auto;
-  bottom: 16px;
+  bottom: 24px;
   z-index: 30;
-  min-height: 40px;
-  padding: 0 14px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 999px;
   background: rgba(9, 11, 13, 0.92);
   color: var(--text);
   font-family: "IBM Plex Mono", monospace;
-  font-size: 0.74rem;
-  letter-spacing: 0.05em;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.34);
   opacity: 0;
   pointer-events: none;
   touch-action: manipulation;
-  transform: translateY(10px);
+  transform: translate(-50%, 10px);
   transition:
     opacity 140ms ease,
     transform 140ms ease,
@@ -15769,11 +15944,11 @@ body.is-reordering-file-tabs {
 .jump-bottom-button.is-visible {
   opacity: 1;
   pointer-events: auto;
-  transform: translateY(0);
+  transform: translate(-50%, 0);
 }
 
 .terminal-stack.is-rich-surface .jump-bottom-button {
-  bottom: 116px;
+  bottom: 132px;
 }
 
 .jump-bottom-button:hover {
@@ -16165,11 +16340,11 @@ select:disabled {
   }
 
   .jump-bottom-button {
-    left: 12px;
+    left: 50%;
     right: auto;
-    bottom: 12px;
-    min-height: 38px;
-    padding: 0 12px;
+    bottom: 18px;
+    min-height: 30px;
+    padding: 0 10px;
   }
 
   .toolbar-actions {
@@ -16649,9 +16824,9 @@ select:disabled {
   }
 
   .jump-bottom-button {
-    left: 10px;
+    left: 50%;
     right: auto;
-    bottom: 10px;
+    bottom: 14px;
   }
 
   .icon-button,
