@@ -9371,7 +9371,15 @@ function highlightCode(code, language = "text") {
     tokens[key] = html;
     return `%%RV_SYNTAX_${key}%%`;
   };
-  let output = escapeHtml(code);
+  // Strip ANSI from code-block content. The ESC byte is invisible in the
+  // browser but the SGR fragment (`[31m`) renders as visible junk. If a
+  // user pastes terminal output into a markdown code block, they get
+  // clean text, not "[31mError[0m" artifacts. We use stripAnsi (the
+  // CSI+OSC stripper from rich-session-helpers) — same semantics as the
+  // assistant-text path, just without the SGR-to-span conversion the
+  // chat surface does, since code blocks should be verbatim.
+  const cleanedCode = stripAnsi(String(code ?? ""));
+  let output = escapeHtml(cleanedCode);
 
   const protect = (pattern, className) => {
     output = output.replace(pattern, (match) => stash(`<span class="${className}">${match}</span>`));
@@ -40735,13 +40743,40 @@ function bindShellEvents() {
     }
 
     const clipboardText = getClipboardText(event.clipboardData);
-    if (!isImagePlaceholderPasteText(clipboardText)) {
+    if (isImagePlaceholderPasteText(clipboardText)) {
+      event.preventDefault();
+      event.stopPropagation();
+      void attachRichSessionImagePlaceholderPaste(clipboardText);
       return;
     }
 
-    event.preventDefault();
-    event.stopPropagation();
-    void attachRichSessionImagePlaceholderPaste(clipboardText);
+    // Cap massive paste content. The Claude API and provider transports
+    // have their own limits (typically 200K-1MB tokens), but a 10MB paste
+    // through a single user message is almost always a mistake (the user
+    // dragged a binary file, copied a whole logfile, etc). Truncating
+    // visibly with a warning beats silently sending and getting an
+    // opaque API error. The cap is generous (256K chars ≈ 64KB tokens)
+    // so legitimate "paste my log" use cases survive.
+    const COMPOSER_PASTE_CAP = 256 * 1024;
+    if (typeof clipboardText === "string" && clipboardText.length > COMPOSER_PASTE_CAP) {
+      event.preventDefault();
+      event.stopPropagation();
+      const input = event.currentTarget instanceof HTMLTextAreaElement ? event.currentTarget : null;
+      if (input) {
+        const before = input.value.slice(0, input.selectionStart || 0);
+        const after = input.value.slice(input.selectionEnd || input.value.length);
+        const truncated = clipboardText.slice(0, COMPOSER_PASTE_CAP);
+        input.value = `${before}${truncated}\n\n[…truncated ${(clipboardText.length - COMPOSER_PASTE_CAP).toLocaleString()} characters from paste; capped at ${COMPOSER_PASTE_CAP.toLocaleString()}]${after}`;
+        // Place cursor at the end of the inserted truncation marker.
+        const markerEnd = before.length + truncated.length + 80;
+        try { input.setSelectionRange(markerEnd, markerEnd); } catch { /* ignore */ }
+        syncRichSessionComposerHeight(input);
+        const activeSession = getActiveSession();
+        if (activeSession) {
+          setRichSessionComposerDraft(activeSession.id, input.value);
+        }
+      }
+    }
   });
 
   const richSurface = document.querySelector("#rich-session-surface");

@@ -190,12 +190,25 @@ test("native UI renders plan card, MCP badge, image strip, /login action, thinki
     browser = await chromium.launch({ executablePath, headless: true });
     const page = await browser.newPage();
     await page.goto(`${baseUrl}/?view=shell`, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector("#toggle-shell-surface-native", { timeout: 10_000 });
+    // The dev server's boot sequence has grown over time (settings,
+    // agent-town state, research brief queue) and the shell view can take
+    // 10-15s on a cold start. Use a generous timeout so the test isn't
+    // flaky on a slow build. Also: dump some diagnostic state if the
+    // selector still doesn't appear.
+    try {
+      await page.waitForSelector("#toggle-shell-surface-native", { timeout: 30_000 });
+    } catch (error) {
+      const diag = await page.evaluate(() => ({
+        bodyText: (document.body?.textContent || "").slice(0, 800),
+        sessions: document.querySelectorAll("[data-session-id]").length,
+        shellMount: Boolean(document.querySelector(".terminal-stack")),
+        setupScreen: Boolean(document.querySelector(".brain-setup-screen, .agent-setup-screen")),
+      }));
+      throw new Error(`shell view never mounted: ${JSON.stringify(diag)}`);
+    }
     await page.click("#toggle-shell-surface-native");
-    await page.waitForSelector(".rich-session-surface.is-active", { timeout: 5_000 });
-    // Wait for the plan card to appear — that's the most distinctive surface
-    // and also the last entry to render in our fixture.
-    await page.waitForSelector(".rich-session-plan-card", { timeout: 10_000 });
+    await page.waitForSelector(".rich-session-surface.is-active", { timeout: 10_000 });
+    await page.waitForSelector(".rich-session-plan-card", { timeout: 15_000 });
 
     const surfaces = await page.evaluate(() => {
       // Pending assistant: spinner + "is thinking…" copy.
@@ -362,6 +375,90 @@ test("Stream JSON viewer is reachable and shows the wire-format frames the rende
       return feed instanceof HTMLElement && feed.classList.contains("is-hidden");
     });
     assert.equal(feedHidden, true, "Native feed is hidden while Stream JSON is active");
+  } finally {
+    await browser?.close().catch(() => {});
+    await app.shutdown?.().catch(() => {});
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("native UI: code blocks containing ANSI escapes render clean (no [31m / [0m / 39m residue)", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable available for the ANSI-in-codeblock smoke.");
+    return;
+  }
+
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-ansi-codeblock-"));
+  const providers = [
+    { id: "claude", label: "Claude Code", available: true, command: "claude", launchCommand: "claude", defaultName: "Claude" },
+    { id: "shell", label: "Shell", available: true, command: null, launchCommand: null, defaultName: "Shell" },
+  ];
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, providers });
+  let browser = null;
+
+  try {
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceRootPath: workspaceDir, wikiPathConfigured: true }),
+    });
+
+    const session = app.sessionManager.buildSessionRecord({
+      id: "ansi-codeblock-session",
+      providerId: "claude",
+      providerLabel: "Claude Code",
+      name: "ANSI smoke",
+      cwd: workspaceDir,
+      status: "running",
+      streamMode: true,
+    });
+    app.sessionManager.sessions.set(session.id, session);
+
+    // Assistant entry whose markdown body contains a fenced code block
+    // with raw ANSI bytes — the kind of paste a user would do when they
+    // asked the agent to debug a coloured terminal output. The renderer
+    // should strip the bytes; the visible code should be clean.
+    const ESC = String.fromCharCode(0x1b);
+    const ansiCodeBlock = "Here's the failing output:\n\n```\n" +
+      `${ESC}[31mError:${ESC}[0m ${ESC}[33mwarning:${ESC}[39m something went wrong\n` +
+      `Stack trace:\n  at ${ESC}[36mfoo()${ESC}[0m\n` +
+      "```\n";
+    session.streamEntries = [
+      { id: "asst-codeblock", kind: "assistant", label: "Claude Code", text: ansiCodeBlock, seq: 1 },
+    ];
+    app.sessionManager.getSessionNarrative = async (id) => id === session.id ? {
+      providerBacked: true, providerId: "claude", providerLabel: "Claude Code",
+      sourceLabel: "test fixture", entries: session.streamEntries,
+    } : null;
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage();
+    await page.goto(`${baseUrl}/?view=shell`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#toggle-shell-surface-native", { timeout: 10_000 });
+    await page.click("#toggle-shell-surface-native");
+    await page.waitForSelector(".rich-session-entry.is-assistant pre code", { timeout: 10_000 });
+
+    const codeText = await page.evaluate(() => {
+      const codeEl = document.querySelector(".rich-session-entry.is-assistant pre code");
+      return codeEl ? codeEl.textContent || "" : "";
+    });
+
+    // ANSI bytes are gone, but the prose survives.
+    assert.match(codeText, /Error:/u, "Error: text in code block");
+    assert.match(codeText, /warning:/u, "warning: text in code block");
+    assert.match(codeText, /something went wrong/u);
+    assert.match(codeText, /at foo\(\)/u);
+
+    // No leaked SGR fragments.
+    assert.doesNotMatch(codeText, /\[31m/u, "no [31m residue");
+    assert.doesNotMatch(codeText, /\[0m/u, "no [0m residue");
+    assert.doesNotMatch(codeText, /\[33m/u, "no [33m residue");
+    assert.doesNotMatch(codeText, /\[36m/u, "no [36m residue");
+    assert.doesNotMatch(codeText, /\[39m/u, "no [39m residue");
+    // Raw ESC byte must be absent.
+    const ESCByte = String.fromCharCode(0x1b);
+    assert.equal(codeText.includes(ESCByte), false, "no raw ESC byte");
   } finally {
     await browser?.close().catch(() => {});
     await app.shutdown?.().catch(() => {});

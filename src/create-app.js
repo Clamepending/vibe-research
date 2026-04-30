@@ -6949,6 +6949,7 @@ export async function createVibeResearchApp({
     },
     server,
     sessionManager,
+    websocketServer,  // Exposed for integration tests of the heartbeat.
     ottoAuthService,
     videoMemoryService,
     relaunch: () => requestTerminate({ relaunch: true }),
