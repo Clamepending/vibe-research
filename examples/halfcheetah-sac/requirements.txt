@@ -1,0 +1,7 @@
+# Pinned for reproducibility. Loosen if you need a newer torch / gymnasium.
+gymnasium[mujoco]>=1.0.0
+mujoco>=3.0
+stable-baselines3>=2.3.0
+torch>=2.1
+numpy>=1.24,<2.0
+wandb>=0.18
