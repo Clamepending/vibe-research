@@ -2421,6 +2421,13 @@ const state = {
   nativeSessionStreamLog: {},
   nativeSessionStreamLogRenderFrame: null,
   richSessionComposerDrafts: {},
+  // Attachments queued in the composer, keyed by sessionId. Each entry:
+  // { id, absolutePath, fileName, source, sizeBytes, mimeType }. The
+  // composer renders a chip strip above the textarea so users see thumbnails
+  // instead of raw `Attached image: ![...](...)` markdown in their input.
+  // On send we append the markdown reference (so the agent still sees the
+  // path) and clear the queue.
+  richSessionComposerAttachments: {},
   richSessionInputBuffers: {},
   richSessionRecentInputs: {},
   // Pushback textarea drafts keyed by plan-card entry id. The textarea
@@ -5270,19 +5277,49 @@ async function attachRichSessionImageFiles(files, source) {
   try {
     const attachments = [];
     for (const file of imageFiles) {
-      attachments.push(await uploadTerminalImageAttachment(file, source));
+      const att = await uploadTerminalImageAttachment(file, source);
+      attachments.push({ ...att, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` });
     }
 
-    appendRichSessionComposerText(
-      state.activeSessionId,
-      attachments.map(formatTerminalImageAttachmentReference).join(" "),
-    );
+    // Store attachments separately from the textarea draft. The composer
+    // renders a chip strip with thumbnails above the textarea — the user
+    // sees the image, not raw `![](...)` markdown. On submit, we append
+    // the markdown reference to the outgoing message.
+    queueRichSessionComposerAttachments(state.activeSessionId, attachments);
     refreshRichSessionSurfaceUi();
     focusRichSessionComposer();
   } catch (error) {
     console.error("[vibe-research] rich session image attachment failed", error);
     window.alert(error.message || "Could not attach image.");
   }
+}
+
+function getRichSessionComposerAttachments(sessionId) {
+  const id = String(sessionId || "").trim();
+  return id ? (state.richSessionComposerAttachments[id] || []) : [];
+}
+
+function queueRichSessionComposerAttachments(sessionId, attachments) {
+  const id = String(sessionId || "").trim();
+  if (!id || !Array.isArray(attachments) || !attachments.length) return;
+  const current = state.richSessionComposerAttachments[id] || [];
+  state.richSessionComposerAttachments[id] = [
+    ...current,
+    ...attachments.filter((att) => att && att.absolutePath),
+  ].slice(-TERMINAL_ATTACHMENT_MAX_IMAGES);
+}
+
+function removeRichSessionComposerAttachment(sessionId, attachmentId) {
+  const id = String(sessionId || "").trim();
+  if (!id) return;
+  const current = state.richSessionComposerAttachments[id] || [];
+  state.richSessionComposerAttachments[id] = current.filter((att) => att.id !== attachmentId);
+}
+
+function clearRichSessionComposerAttachments(sessionId) {
+  const id = String(sessionId || "").trim();
+  if (!id) return;
+  delete state.richSessionComposerAttachments[id];
 }
 
 function getRichSessionNarrative(sessionId) {
@@ -5594,9 +5631,16 @@ function renderRichSessionPathLinks(text) {
 }
 
 function getRichSessionImageUrl(rawPath) {
-  return getRichSessionImageUrlPure(rawPath, {
-    workspaceRoot: normalizeWorkspaceRoot(state.filesRoot || state.defaultCwd || ""),
-  });
+  // Prefer the session's own cwd over the global workspace root: when an
+  // agent saves figures/loss.png inside its working directory, the
+  // workspace-relative path resolves against that cwd, not the user's
+  // wider Library root. Without this, an agent running in
+  // /home/user/proj-a referencing figures/x.png renders as a broken
+  // tile because /home/user/library/figures/x.png doesn't exist.
+  const activeSession = getActiveSession();
+  const sessionCwd = activeSession?.cwd || activeSession?.lastResolvedCwd || "";
+  const workspaceRoot = normalizeWorkspaceRoot(sessionCwd || state.filesRoot || state.defaultCwd || "");
+  return getRichSessionImageUrlPure(rawPath, { workspaceRoot });
 }
 
 // Single entry point for converting CLI text into safe-to-inject HTML.
@@ -6298,6 +6342,30 @@ function renderClaudePromptCard(prompt) {
   return "";
 }
 
+function renderRichSessionComposerAttachmentChips(activeSession) {
+  const attachments = getRichSessionComposerAttachments(activeSession?.id);
+  if (!attachments.length) return "";
+  const tiles = attachments.map((att) => {
+    const url = getRichSessionImageUrl(att.absolutePath || "");
+    const label = att.fileName || "image";
+    return `
+      <div class="rich-session-composer-chip" data-attachment-id="${escapeHtml(att.id)}">
+        ${url
+          ? `<img class="rich-session-composer-chip-thumb" src="${escapeHtml(url)}" alt="${escapeHtml(label)}" loading="lazy" decoding="async" />`
+          : `<span class="rich-session-composer-chip-icon" aria-hidden="true">🖼</span>`}
+        <span class="rich-session-composer-chip-label">${escapeHtml(label)}</span>
+        <button
+          class="rich-session-composer-chip-remove"
+          type="button"
+          data-rich-session-composer-attachment-remove="${escapeHtml(att.id)}"
+          aria-label="Remove attachment"
+        >×</button>
+      </div>
+    `;
+  }).join("");
+  return `<div class="rich-session-composer-attachments">${tiles}</div>`;
+}
+
 function renderRichSessionSurface(activeSession) {
   if (!isRichSessionSurfaceSupported(activeSession)) {
     return "";
@@ -6305,6 +6373,7 @@ function renderRichSessionSurface(activeSession) {
 
   const canSend = Boolean(activeSession && activeSession.status !== "exited");
   const draft = getRichSessionComposerDraft(activeSession?.id);
+  const attachmentChips = renderRichSessionComposerAttachmentChips(activeSession);
   const surfaceMode = getShellSurfaceMode(activeSession);
   const richActive = surfaceMode === "native";
   const streamLogActive = surfaceMode === "stream-json";
@@ -6326,6 +6395,7 @@ function renderRichSessionSurface(activeSession) {
       <form class="rich-session-composer" id="rich-session-form">
         <label class="sr-only" for="rich-session-input">Send input</label>
         <div class="rich-session-slash-menu" id="rich-session-slash-menu" role="listbox" aria-hidden="true"></div>
+        ${attachmentChips}
         <textarea
           class="rich-session-input"
           id="rich-session-input"
@@ -40703,7 +40773,17 @@ function bindShellEvents() {
       return;
     }
 
-    const value = input.value.replace(/\s+$/u, "");
+    let value = input.value.replace(/\s+$/u, "");
+    // Append any queued attachment references to the outgoing message so
+    // the agent sees the path. The chips above the textarea are the
+    // user-visible representation; the wire format is still the markdown
+    // reference (which the shaper extracts back into entry.imageRefs on
+    // the assistant side).
+    const attachments = getRichSessionComposerAttachments(activeSession.id);
+    if (attachments.length) {
+      const refs = attachments.map((att) => formatTerminalImageAttachmentReference(att)).join("\n");
+      value = value ? `${value}\n\n${refs}` : refs;
+    }
     if (!value) {
       return;
     }
@@ -40715,11 +40795,52 @@ function bindShellEvents() {
     }
 
     setRichSessionComposerDraft(activeSession.id, "");
+    clearRichSessionComposerAttachments(activeSession.id);
     input.value = "";
     syncRichSessionComposerHeight(input);
     scheduleRichSessionNarrativeRefresh(activeSession.id, { immediate: true });
     refreshRichSessionSurfaceUi({ scrollToBottom: true });
     focusRichSessionComposer();
+  });
+  // Remove-attachment chip clicks. Bubble up from any ✕ button in the
+  // composer chip strip; lookup the attachment id and drop it from state.
+  document.querySelector("#rich-session-form")?.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const removeBtn = target?.closest("[data-rich-session-composer-attachment-remove]");
+    if (!(removeBtn instanceof HTMLButtonElement)) return;
+    event.preventDefault();
+    const attachmentId = removeBtn.getAttribute("data-rich-session-composer-attachment-remove") || "";
+    const activeSession = getActiveSession();
+    if (activeSession && attachmentId) {
+      removeRichSessionComposerAttachment(activeSession.id, attachmentId);
+      refreshRichSessionSurfaceUi();
+    }
+  });
+  // Composer dead-zone fix. The composer is a grid with padding (12px 14px)
+  // and a 10px gap between the textarea and the foot row. Clicks landing
+  // on those padding/gap areas hit the form wrapper instead of the
+  // textarea — so the focus stays wherever it was, and the user types
+  // into a stale focus (or nothing happens). Forwarding mousedown to the
+  // textarea fixes the "I clicked the input box but nothing happens"
+  // bug. We use mousedown rather than click so the focus moves before
+  // the cursor anchors; we also skip when the click hits an interactive
+  // child (button, slash-menu item) so those still work normally.
+  document.querySelector("#rich-session-form")?.addEventListener("mousedown", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    // If the click hits the textarea, a button, or a slash-menu item, do
+    // nothing — those handle their own focus correctly.
+    if (target.closest(".rich-session-input, button, [role=\"option\"], [data-rich-slash-command], a")) {
+      return;
+    }
+    const input = document.querySelector("#rich-session-input");
+    if (input instanceof HTMLTextAreaElement && !input.disabled) {
+      event.preventDefault();
+      input.focus();
+      // Place caret at end so the user starts typing where they left off.
+      const end = input.value.length;
+      try { input.setSelectionRange(end, end); } catch { /* selection api may be unsupported */ }
+    }
   });
   document.querySelector("#rich-session-input")?.addEventListener("input", (event) => {
     const activeSession = getActiveSession();
@@ -42075,6 +42196,7 @@ function connectToSession(sessionId) {
       delete state.nativeSessionReducerState[payload.sessionId];
       state.nativeSessionReducerArmed.delete(payload.sessionId);
       delete state.nativeSessionStreamLog[payload.sessionId];
+      delete state.richSessionComposerAttachments[payload.sessionId];
       const visualSelectionPruned = pruneVisualGameSessionSelection();
       if (state.activeSessionId === payload.sessionId) {
         state.activeSessionId = state.sessions[0]?.id ?? null;

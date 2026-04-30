@@ -15258,6 +15258,90 @@ body.is-reordering-file-tabs {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
     0 18px 44px rgba(0, 0, 0, 0.24);
+  /* Cursor hint: clicking anywhere inside the composer should feel like
+     clicking the textarea. The mousedown handler in main.js redirects
+     focus to the textarea; this reinforces that visually. Buttons inside
+     reset their own cursor via .toolbar-control. */
+  cursor: text;
+}
+
+.rich-session-composer .toolbar-control,
+.rich-session-composer button,
+.rich-session-composer .rich-session-slash-menu-item {
+  cursor: pointer;
+}
+
+/* Attachment chip strip — sits above the textarea so the user sees image
+   thumbnails instead of raw markdown text in their input. Each chip has
+   a thumbnail (or fallback icon), the file name, and an ✕ remove button.
+   On submit the markdown reference is appended to the outgoing message
+   and the strip is cleared. */
+.rich-session-composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0;
+}
+
+.rich-session-composer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: default;
+  max-width: 280px;
+}
+
+.rich-session-composer-chip-thumb {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 6px;
+  display: block;
+}
+
+.rich-session-composer-chip-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+}
+
+.rich-session-composer-chip-label {
+  font-size: 0.86rem;
+  color: rgba(244, 244, 242, 0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+.rich-session-composer-chip-remove {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(244, 244, 242, 0.78);
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.rich-session-composer-chip-remove:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: rgba(244, 244, 242, 1);
 }
 
 .rich-session-input {
