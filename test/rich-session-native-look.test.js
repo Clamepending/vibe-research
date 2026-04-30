@@ -162,6 +162,15 @@ test("rich session native feed is clean even when the raw transcript is full of 
             outputPreview: "fatal: cannot lock ref 'HEAD' at projects/bidir-video-rl-bench/.git/HEAD",
             timestamp,
           },
+          // Auth failure — should produce an inline "Sign in" action button
+          // since the body says "Please run /login".
+          {
+            kind: "status",
+            label: "Error",
+            status: "error",
+            text: "authentication_failed\nPlease run /login · API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"Invalid authentication credentials\"}}",
+            timestamp,
+          },
           {
             kind: "assistant",
             label: "Claude Code",
@@ -202,6 +211,7 @@ test("rich session native feed is clean even when the raw transcript is full of 
       const todoBlock = document.querySelector(".rich-session-todo-block");
       const todoItems = todoBlock ? Array.from(todoBlock.querySelectorAll(".rich-session-todo-item")) : [];
       const monitorPills = Array.from(document.querySelectorAll("#rich-session-monitors .rich-session-monitor-pill"));
+      const slashAction = document.querySelector("[data-rich-session-slash-command]");
       return {
         feedText: feed?.textContent || "",
         toolCount: toolEntries.length,
@@ -214,6 +224,8 @@ test("rich session native feed is clean even when the raw transcript is full of 
         todoCount: todoItems.length,
         todoInProgressFirst: todoItems[0]?.classList.contains("is-in-progress") || false,
         monitorPillLabels: monitorPills.map((pill) => pill.textContent.trim()),
+        slashActionCommand: slashAction?.getAttribute("data-rich-session-slash-command") || "",
+        slashActionLabel: slashAction?.textContent?.trim() || "",
       };
     });
 
@@ -247,6 +259,35 @@ test("rich session native feed is clean even when the raw transcript is full of 
     // 6. File paths are linkified.
     assert.ok(summary.pathLinkCount >= 2, "expected file paths to be linkified");
     assert.match(summary.firstPathHref, /^[\w./-]+\.\w+$/);
+
+    // 7. The "Please run /login" auth_failed status entry produces an inline
+    //    "Sign in" action button bound to the /login slash command.
+    assert.equal(summary.slashActionCommand, "/login");
+    assert.match(summary.slashActionLabel, /sign\s*in/i);
+
+    // 8. Typing "/" in the composer surfaces the slash-command menu with
+    //    the matching commands; pressing Tab populates the textarea with
+    //    the highlighted command.
+    await page.click("#rich-session-input");
+    await page.keyboard.type("/lo");
+    await page.waitForSelector("#rich-session-slash-menu.is-active", { timeout: 5_000 });
+    const slashMenu = await page.evaluate(() => {
+      const menu = document.querySelector("#rich-session-slash-menu");
+      const items = menu ? Array.from(menu.querySelectorAll("[data-rich-slash-command]")) : [];
+      return {
+        visible: menu?.classList.contains("is-active") || false,
+        commands: items.map((item) => item.getAttribute("data-rich-slash-command")),
+        activeCommand: menu?.getAttribute("data-active-command") || "",
+      };
+    });
+    assert.equal(slashMenu.visible, true);
+    assert.ok(slashMenu.commands.includes("/login"), `expected /login in menu, got ${slashMenu.commands.join(",")}`);
+    assert.ok(slashMenu.commands.includes("/logout"), `expected /logout in menu, got ${slashMenu.commands.join(",")}`);
+    assert.equal(slashMenu.activeCommand, "/login");
+
+    await page.keyboard.press("Tab");
+    const inputAfterTab = await page.inputValue("#rich-session-input");
+    assert.equal(inputAfterTab, "/login ");
   } finally {
     await browser?.close().catch(() => {});
     await app.close();

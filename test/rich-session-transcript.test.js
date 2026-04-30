@@ -234,6 +234,41 @@ Continuing the analysis with the planned reruns.
   );
 });
 
+test("rich session transcript drops 'almost done thinking' / 'thought for Ns' redraw frames", () => {
+  // Real reproduction from the semantic-autogaze screenshot. Claude Code's
+  // TUI status row redraws the spinner-prefixed phase text many times per
+  // second; when the PTY captures a moment mid-redraw, the projected feed
+  // got "almost done thinking" repeated 7+ times with random glyph spacing.
+  // None of these phrases are real assistant content.
+  const transcript = `
+✶ almost done thinking · 4   almost done thinking ✚ * almost done thinking ✱ ✱ ✱ almost done thinking ✱ 5 ✱ almost done thinking *  almost done thinking ✚ · ✚ * ✱ almost done thinking 6 ✱ … ✱ almost done thinking s ✱ almost done thinking ✱ t * e … ✚ · g s almost done thinking 7 ✚ r t almost done thinking *  almost done thinking ✱ a e ✱ t g ✱ thought for 4s) r 5 ✱ ✱ S a 8 * l t 6 ✚ · V
+
+The actual assistant reply lands here.
+`;
+
+  assert.deepEqual(
+    splitRichSessionTranscriptBlocks(transcript, { maxBlocks: 10 }),
+    ["The actual assistant reply lands here."],
+  );
+});
+
+test("rich session transcript drops the 'to manage' / status-panel header that prefixes captured TUI panels", () => {
+  // Bottom-row hint from Claude Code's TUI ("↓ to manage") plus the active
+  // status-line text ("Generating clean train2017+LVIS targets...") leaked
+  // into a single block in the screenshot. They are pure UI chrome.
+  const transcript = `
+to manage
+   Generating clean train2017+LVIS targets... ↑
+
+Real reply continues.
+`;
+
+  assert.deepEqual(
+    splitRichSessionTranscriptBlocks(transcript, { maxBlocks: 10 }),
+    ["Real reply continues."],
+  );
+});
+
 test("rich session transcript drops the '2 shells, N' header that prefixes leaked TUI status panels", () => {
   // Matches the Snippet headers in the DSRL screenshot. The "2 shells, 1"
   // line is the Claude Code TUI footer counting active shells; it has no

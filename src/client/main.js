@@ -5418,13 +5418,30 @@ function renderRichSessionEntry(entry, index) {
     && entry.todos.length
     && (entry.label === "TodoWrite" || entry.label === "TaskUpdate");
 
+  // Detect a status entry whose body asks the user to run a CLI slash command
+  // (e.g. "Please run /login · API Error: 401 ..."). Render an inline action
+  // button next to the text so the user can run the command with one click
+  // instead of switching to the terminal tab and typing it.
+  const slashAction = kind === "status" || kind === "system"
+    ? extractRichSessionSlashAction(text)
+    : null;
+  const slashActionHtml = slashAction
+    ? `<div class="rich-session-entry-actions">
+        <button
+          class="primary-button rich-session-slash-action"
+          type="button"
+          data-rich-session-slash-command="${escapeHtml(slashAction.command)}"
+        >${escapeHtml(slashAction.label)}</button>
+      </div>`
+    : "";
+
   const bodyHtml = isThinking
     ? ""
     : isTodoEntry
     ? renderRichSessionTodoBody(entry.todos)
     : kind === "tool"
     ? `<pre class="rich-session-entry-pre">${body}</pre>${outputPreview}`
-    : `<div class="rich-session-entry-copy">${body}</div>`;
+    : `<div class="rich-session-entry-copy">${body}</div>${slashActionHtml}`;
 
   return `
     <article class="${entryClassName}" data-rich-session-entry="${index}">
@@ -5432,6 +5449,145 @@ function renderRichSessionEntry(entry, index) {
       ${bodyHtml}
     </article>
   `;
+}
+
+const RICH_SESSION_SLASH_COMMANDS = [
+  { command: "/login", label: "Sign in", hint: "Open Claude login flow", aliases: [/please\s+run\s+\/login/iu, /authentication[_\s]?(?:failed|error)/iu, /invalid\s+authentication\s+credentials/iu] },
+  { command: "/logout", label: "Sign out", hint: "Sign out of the current Claude account", aliases: [/please\s+run\s+\/logout/iu] },
+  { command: "/clear", label: "Clear context", hint: "Reset Claude's conversation memory", aliases: [/please\s+run\s+\/clear/iu] },
+  { command: "/compact", label: "Compact context", hint: "Compress prior turns", aliases: [/please\s+run\s+\/compact/iu] },
+  { command: "/model", label: "Pick a model", hint: "Switch the Claude model", aliases: [/please\s+run\s+\/model/iu] },
+  { command: "/help", label: "Help", hint: "Show available commands", aliases: [/please\s+run\s+\/help/iu] },
+  { command: "/resume", label: "Resume", hint: "Resume a previous Claude session", aliases: [/please\s+run\s+\/resume/iu] },
+];
+
+function refreshRichSessionSlashMenu(input) {
+  const menu = document.querySelector("#rich-session-slash-menu");
+  if (!(menu instanceof HTMLElement)) {
+    return;
+  }
+
+  const value = input instanceof HTMLTextAreaElement ? input.value : "";
+  const trimmed = value.trim();
+
+  if (!trimmed.startsWith("/") || /\s/.test(trimmed)) {
+    closeRichSessionSlashMenu();
+    return;
+  }
+
+  const query = trimmed.slice(1).toLowerCase();
+  const matches = RICH_SESSION_SLASH_COMMANDS.filter((entry) => (
+    !query || entry.command.slice(1).toLowerCase().startsWith(query)
+  ));
+
+  if (!matches.length) {
+    closeRichSessionSlashMenu();
+    return;
+  }
+
+  const previousSelection = menu.getAttribute("data-active-command") || "";
+  const stillVisible = matches.some((entry) => entry.command === previousSelection);
+  const activeCommand = stillVisible ? previousSelection : matches[0].command;
+
+  menu.setAttribute("aria-hidden", "false");
+  menu.classList.add("is-active");
+  menu.setAttribute("data-active-command", activeCommand);
+  menu.innerHTML = matches.map((entry) => `
+    <button
+      type="button"
+      class="rich-session-slash-menu-item ${entry.command === activeCommand ? "is-active" : ""}"
+      role="option"
+      aria-selected="${entry.command === activeCommand ? "true" : "false"}"
+      data-rich-slash-command="${escapeHtml(entry.command)}"
+    >
+      <span class="rich-session-slash-menu-command">${escapeHtml(entry.command)}</span>
+      <span class="rich-session-slash-menu-hint">${escapeHtml(entry.hint || "")}</span>
+    </button>
+  `).join("");
+}
+
+function closeRichSessionSlashMenu() {
+  const menu = document.querySelector("#rich-session-slash-menu");
+  if (!(menu instanceof HTMLElement)) {
+    return;
+  }
+  menu.classList.remove("is-active");
+  menu.setAttribute("aria-hidden", "true");
+  menu.removeAttribute("data-active-command");
+  menu.innerHTML = "";
+}
+
+function getActiveRichSessionSlashCommand() {
+  const menu = document.querySelector("#rich-session-slash-menu");
+  if (!(menu instanceof HTMLElement) || menu.getAttribute("aria-hidden") !== "false") {
+    return "";
+  }
+  return menu.getAttribute("data-active-command") || "";
+}
+
+function moveRichSessionSlashMenuSelection(direction) {
+  const menu = document.querySelector("#rich-session-slash-menu");
+  if (!(menu instanceof HTMLElement) || menu.getAttribute("aria-hidden") !== "false") {
+    return;
+  }
+  const items = Array.from(menu.querySelectorAll("[data-rich-slash-command]"));
+  if (!items.length) {
+    return;
+  }
+  const current = menu.getAttribute("data-active-command") || "";
+  const currentIndex = items.findIndex((item) => item.getAttribute("data-rich-slash-command") === current);
+  const nextIndex = (currentIndex + direction + items.length) % items.length;
+  const nextItem = items[nextIndex];
+  if (!(nextItem instanceof HTMLElement)) {
+    return;
+  }
+  const nextCommand = nextItem.getAttribute("data-rich-slash-command") || "";
+  menu.setAttribute("data-active-command", nextCommand);
+  for (const item of items) {
+    const isActive = item.getAttribute("data-rich-slash-command") === nextCommand;
+    item.classList.toggle("is-active", isActive);
+    item.setAttribute("aria-selected", isActive ? "true" : "false");
+  }
+}
+
+function sendRichSessionSlashCommand(command, { trigger = null } = {}) {
+  const value = String(command || "").trim();
+  if (!value || !value.startsWith("/")) {
+    return false;
+  }
+
+  const sent = sendTerminalInput(`${value}\r`, { queueIfDisconnected: true });
+  if (!sent) {
+    window.alert("That session is not connected yet. Switch to Terminal and try again.");
+    return false;
+  }
+
+  if (trigger instanceof HTMLButtonElement) {
+    trigger.setAttribute("disabled", "disabled");
+    trigger.classList.add("is-sending");
+  }
+
+  const activeSession = getActiveSession();
+  if (activeSession) {
+    scheduleRichSessionNarrativeRefresh(activeSession.id, { immediate: true });
+  }
+
+  return true;
+}
+
+function extractRichSessionSlashAction(text) {
+  const value = String(text || "");
+  if (!value) {
+    return null;
+  }
+
+  for (const entry of RICH_SESSION_SLASH_COMMANDS) {
+    if (entry.aliases?.some((pattern) => pattern.test(value))) {
+      return { command: entry.command, label: entry.label };
+    }
+  }
+
+  return null;
 }
 
 function renderRichSessionTodoBody(todos) {
@@ -5714,6 +5870,7 @@ function renderRichSessionSurface(activeSession) {
       </div>
       <form class="rich-session-composer" id="rich-session-form">
         <label class="sr-only" for="rich-session-input">Send input</label>
+        <div class="rich-session-slash-menu" id="rich-session-slash-menu" role="listbox" aria-hidden="true"></div>
         <textarea
           class="rich-session-input"
           id="rich-session-input"
@@ -5721,6 +5878,7 @@ function renderRichSessionSurface(activeSession) {
           placeholder="${escapeHtml(`Message ${activeSession?.providerLabel || "agent"}...`)}"
           ${canSend ? "" : "disabled"}
           spellcheck="true"
+          autocomplete="off"
         >${escapeHtml(draft)}</textarea>
         <div class="rich-session-composer-foot">
           <div class="rich-session-composer-actions">
@@ -38637,6 +38795,16 @@ function bindShellEvents() {
       return;
     }
 
+    const slashAction = target?.closest("[data-rich-session-slash-command]");
+    if (slashAction instanceof HTMLButtonElement) {
+      event.preventDefault();
+      const command = slashAction.getAttribute("data-rich-session-slash-command") || "";
+      if (command) {
+        sendRichSessionSlashCommand(command, { trigger: slashAction });
+      }
+      return;
+    }
+
     const button = target?.closest("[data-claude-prompt-send]");
     if (!(button instanceof HTMLElement)) return;
     event.preventDefault();
@@ -38721,9 +38889,52 @@ function bindShellEvents() {
 
     setRichSessionComposerDraft(activeSession.id, input.value);
     syncRichSessionComposerHeight(input);
+    refreshRichSessionSlashMenu(input);
   });
   document.querySelector("#rich-session-input")?.addEventListener("keydown", (event) => {
+    const input = event.currentTarget instanceof HTMLTextAreaElement ? event.currentTarget : null;
+    const slashMenu = document.querySelector("#rich-session-slash-menu");
+    const slashOpen = slashMenu?.getAttribute("aria-hidden") === "false";
+
+    if (slashOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      moveRichSessionSlashMenuSelection(event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+
+    if (slashOpen && event.key === "Tab") {
+      event.preventDefault();
+      const command = getActiveRichSessionSlashCommand();
+      if (command && input) {
+        input.value = `${command} `;
+        setRichSessionComposerDraft(getActiveSession()?.id || "", input.value);
+        closeRichSessionSlashMenu();
+      }
+      return;
+    }
+
+    if (slashOpen && event.key === "Escape") {
+      event.preventDefault();
+      closeRichSessionSlashMenu();
+      return;
+    }
+
     if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
+      return;
+    }
+
+    if (slashOpen) {
+      event.preventDefault();
+      const command = getActiveRichSessionSlashCommand();
+      if (command) {
+        sendRichSessionSlashCommand(command);
+        if (input) {
+          input.value = "";
+          setRichSessionComposerDraft(getActiveSession()?.id || "", "");
+          syncRichSessionComposerHeight(input);
+        }
+        closeRichSessionSlashMenu();
+      }
       return;
     }
 
@@ -38734,6 +38945,36 @@ function bindShellEvents() {
 
     event.preventDefault();
     form.requestSubmit();
+  });
+  document.querySelector("#rich-session-input")?.addEventListener("blur", () => {
+    // Keep the menu visible briefly so a click on a menu item still
+    // registers — closeRichSessionSlashMenu otherwise removes the option
+    // before the click handler runs. Two animation frames is enough.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (!(active instanceof Element) || !active.closest("#rich-session-slash-menu")) {
+        closeRichSessionSlashMenu();
+      }
+    }));
+  });
+  document.querySelector("#rich-session-slash-menu")?.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const item = target?.closest("[data-rich-slash-command]");
+    if (!(item instanceof HTMLElement)) {
+      return;
+    }
+    event.preventDefault();
+    const command = item.getAttribute("data-rich-slash-command") || "";
+    const input = document.querySelector("#rich-session-input");
+    if (command) {
+      sendRichSessionSlashCommand(command);
+      if (input instanceof HTMLTextAreaElement) {
+        input.value = "";
+        setRichSessionComposerDraft(getActiveSession()?.id || "", "");
+        syncRichSessionComposerHeight(input);
+      }
+      closeRichSessionSlashMenu();
+    }
   });
   document.querySelector("#rich-session-input")?.addEventListener("paste", (event) => {
     const files = getImageFilesFromClipboardData(event.clipboardData);

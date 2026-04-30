@@ -144,6 +144,11 @@ function isRichSessionTuiFooterLine(line) {
     // glyphs, ending with a counter that re-renders every frame.
     || /^[✦✶✻✧✩•◦*·]\s+.+(?:\.{3}|…)\s*\d+\s*[✦✶✻✧✩•◦*·]/u.test(trimmed)
     || /^[✦✶✻✧✩•◦*·][\s·*]*\d+\s+[✦✶✻✧✩•◦*·][\s·*].+(?:\.{3}|…)/u.test(trimmed)
+    // Claude Code's "↓ to manage" / "↑ to scroll" footer hints.
+    || /^(?:↑|↓)?\s*to\s+(?:manage|scroll|edit)\s*$/iu.test(trimmed)
+    // Standalone redraw frame of the spinner phrase (no leading prose).
+    || /^\s*[✦✶✻✧✩•◦*·]?\s*almost\s+done\s+thinking\b/iu.test(trimmed)
+    || /^\s*[✦✶✻✧✩•◦*·]?\s*thought\s+for\s+\d+\s*s\b/iu.test(trimmed)
   );
 }
 
@@ -398,6 +403,19 @@ function isRichSessionStartupNoiseBlock(block) {
     // a wall of partial titles and ☐/✓ glyphs, which is exactly the noise
     // shown in the DSRL screenshot.
     || /\b\d+\s+tasks?\s*\(\s*\d+\s+done\b/iu.test(normalizedBlock)
+    // Claude Code's status-row spinner phrases. The TUI animates them with
+    // a leading glyph + "almost done thinking" or "thought for Ns" + a
+    // counter; the same line gets captured 5–10× per second when the PTY
+    // is read mid-redraw. The phrase *itself* is a perfect signature.
+    || /\balmost\s+done\s+thinking\b/iu.test(normalizedBlock)
+    || /\bthought\s+for\s+\d+\s*s\b/iu.test(normalizedBlock)
+    // Claude Code's bottom-row "↓ to manage" / "↑ to scroll" hints.
+    || /^(?:↑|↓)?\s*to\s+(?:manage|scroll|edit)\s*$/iu.test(normalizedBlock)
+    // Status-line text inside Claude Code's "doing X..." pill: "Generating
+    // clean train2017+LVIS targets...". Anchored on the trailing ellipsis
+    // and absence of a sentence terminator so prose mentions of the same
+    // gerund still survive ("Generating the train2017 set is slow.").
+    || /^(?:↑|↓)?\s*[A-Z][\w-]+ing\b[^.!?]*\.{3}\s*[↑↓]?\s*$/u.test(normalizedBlock)
     || (
       /^gpt-[\w.-]+(?:\s+\w+)?\s+·\s+~?\//iu.test(normalizedBlock)
       && /\b(?:model|directory|cwd|workspace):\b/iu.test(normalizedBlock)

@@ -14465,6 +14465,92 @@ body.is-reordering-file-tabs {
   }
 }
 
+/* Inline action buttons on status entries — used to surface the Login /
+   Clear / Compact / Help button when the agent prints "Please run /xxx".
+   Sits flush right under the entry copy, styled like the existing primary
+   button but smaller. */
+.rich-session-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.rich-session-slash-action {
+  padding: 6px 14px;
+  font-size: 0.82rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.rich-session-slash-action.is-sending {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+/* Slash-command suggestion popup attached to the composer. Floats above
+   the textarea while the user is typing /xyz. */
+.rich-session-slash-menu {
+  display: none;
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: calc(100% - 8px);
+  margin-bottom: 8px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  background: rgba(28, 28, 32, 0.98);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  z-index: 30;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.rich-session-slash-menu.is-active {
+  display: grid;
+  gap: 2px;
+}
+
+.rich-session-composer {
+  position: relative;
+}
+
+.rich-session-slash-menu-item {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(244, 244, 242, 0.78);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rich-session-slash-menu-item:hover,
+.rich-session-slash-menu-item.is-active {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(244, 244, 242, 0.96);
+}
+
+.rich-session-slash-menu-command {
+  color: rgba(120, 188, 255, 0.86);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.rich-session-slash-menu-hint {
+  color: rgba(244, 244, 242, 0.5);
+  font-size: 0.78rem;
+}
+
 /* TodoWrite / TaskUpdate panels mirror Claude Code's TUI tasks list.
    Header is a one-line summary ("10 tasks (8 done, 1 in progress, 1 open)"),
    followed by a checklist where in-progress items get a filled red square,
