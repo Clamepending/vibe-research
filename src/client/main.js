@@ -6150,9 +6150,16 @@ function renderRichSessionOverviewCard(activeSession) {
   const workspaceName = getWorkspacePathLeafName(activeSession.cwd || "") || activeSession.cwd || state.defaultCwd;
   const narrative = getRichSessionNarrative(activeSession.id);
   const narrativeSource = narrative?.sourceLabel || "Loading native session…";
+  // Copy is mode-aware: stream-mode sessions don't have a Terminal tab
+  // so the "switch back to Terminal" line is a lie there. Direct users
+  // at the Stream JSON tab instead, which IS available.
+  const isStreamMode = Boolean(activeSession.streamMode);
+  const fallbackTabHint = isStreamMode
+    ? "Open Stream JSON to inspect the wire-format events."
+    : "Switch back to Terminal any time.";
   const narrativeCopy = narrative?.providerBacked
-    ? "Readable cards backed by provider session data. Switch back to Terminal any time."
-    : "Readable cards backed by Vibe Research's own native session events. Switch back to Terminal any time.";
+    ? `Readable cards backed by provider session data. ${fallbackTabHint}`
+    : `Readable cards backed by Vibe Research's own native session events. ${fallbackTabHint}`;
   return `
     <article class="rich-session-entry is-overview">
       <div class="rich-session-entry-kicker">
@@ -6392,34 +6399,57 @@ function renderRichSessionSurface(activeSession) {
       <div class="rich-session-monitors ${activeMonitors.length ? "is-active" : ""}" id="rich-session-monitors" aria-hidden="${activeMonitors.length ? "false" : "true"}">
         ${activeMonitors.map((m) => `<span class="rich-session-monitor-pill" title="${escapeHtml(m.tooltip)}"><span class="rich-session-monitor-dot" aria-hidden="true"></span>${escapeHtml(m.label)}</span>`).join("")}
       </div>
-      <form class="rich-session-composer" id="rich-session-form">
-        <label class="sr-only" for="rich-session-input">Send input</label>
-        <div class="rich-session-slash-menu" id="rich-session-slash-menu" role="listbox" aria-hidden="true"></div>
-        ${attachmentChips}
-        <textarea
-          class="rich-session-input"
-          id="rich-session-input"
-          rows="1"
-          placeholder="${escapeHtml(`Message ${activeSession?.providerLabel || "agent"}...`)}"
-          ${canSend ? "" : "disabled"}
-          spellcheck="true"
-          autocomplete="off"
-        >${escapeHtml(draft)}</textarea>
-        <div class="rich-session-composer-foot">
-          <div class="rich-session-composer-actions">
+      ${canSend ? `
+        <form class="rich-session-composer" id="rich-session-form">
+          <label class="sr-only" for="rich-session-input">Send input</label>
+          <div class="rich-session-slash-menu" id="rich-session-slash-menu" role="listbox" aria-hidden="true"></div>
+          ${attachmentChips}
+          <textarea
+            class="rich-session-input"
+            id="rich-session-input"
+            rows="1"
+            placeholder="${escapeHtml(`Message ${activeSession?.providerLabel || "agent"}...`)}"
+            spellcheck="true"
+            autocomplete="off"
+          >${escapeHtml(draft)}</textarea>
+          <div class="rich-session-composer-foot">
+            <div class="rich-session-composer-actions">
+              <button
+                class="primary-button toolbar-control rich-session-send"
+                type="submit"
+                id="rich-session-send"
+                data-terminal-control
+                aria-label="Send message"
+              >
+                ${renderIcon(ArrowUp)}
+              </button>
+            </div>
+          </div>
+        </form>
+      ` : `
+        <!--
+          Exited-session affordance. The textarea is useless for an
+          exited session, but a disabled textarea makes the user think
+          the UI is frozen ("I clicked the textbox but nothing
+          happens"). Replace it with a clear call-to-action: a
+          "Restart this session" button that creates a fresh session
+          in the same cwd / provider, plus a hint about why the old
+          one is gone.
+        -->
+        <div class="rich-session-composer rich-session-composer-exited" id="rich-session-composer-exited">
+          <div class="rich-session-exited-copy">
+            This session has exited. ${activeSession ? `Restart in <code>${escapeHtml(activeSession.cwd || "")}</code> to keep going.` : ""}
+          </div>
+          <div class="rich-session-exited-actions">
             <button
-              class="primary-button toolbar-control rich-session-send"
-              type="submit"
-              id="rich-session-send"
-              data-terminal-control
-              aria-label="Send message"
-              ${canSend ? "" : "disabled"}
-            >
-              ${renderIcon(ArrowUp)}
-            </button>
+              class="primary-button"
+              type="button"
+              id="rich-session-restart"
+              data-rich-session-restart
+            >Restart ${escapeHtml(activeSession?.providerLabel || "session")}</button>
           </div>
         </div>
-      </form>
+      `}
     </div>
   `;
 }
@@ -40436,6 +40466,31 @@ function bindShellEvents() {
       event.preventDefault();
       await finishAgentSetup();
     });
+  });
+
+  // Restart-session button on exited stream-mode sessions. Spawns a
+  // fresh session in the same cwd / provider as the dead one, then
+  // makes it active. Uses event delegation off document so the handler
+  // survives a re-render.
+  document.addEventListener("click", async (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const restart = target?.closest("[data-rich-session-restart]");
+    if (!(restart instanceof HTMLButtonElement)) return;
+    event.preventDefault();
+    const session = getActiveSession();
+    if (!session) return;
+    restart.setAttribute("disabled", "disabled");
+    restart.textContent = "Restarting…";
+    try {
+      await createSessionInFolder(session.cwd, {
+        providerId: session.providerId,
+        rememberProvider: false,
+      });
+    } catch (error) {
+      window.alert(error?.message || "Could not restart session.");
+      restart.removeAttribute("disabled");
+      restart.textContent = `Restart ${session.providerLabel || "session"}`;
+    }
   });
 
   document.querySelectorAll("[data-start-new-agent]").forEach((button) => {
