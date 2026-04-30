@@ -8685,7 +8685,7 @@ function getParentPathForDisplay(value) {
   return normalizedPath.slice(0, separatorIndex);
 }
 
-function sendTerminalInput(data, { queueIfDisconnected = false } = {}) {
+function sendTerminalInput(data, { queueIfDisconnected = false, attachments = null } = {}) {
   const text = String(data || "");
   if (!text) {
     return false;
@@ -8709,7 +8709,18 @@ function sendTerminalInput(data, { queueIfDisconnected = false } = {}) {
 
   hideTerminalTranscriptOverlay();
   trackGuidedOnboardingInputSafe(text);
-  state.websocket.send(JSON.stringify({ type: "input", data: text }));
+  // Forward attachment paths if provided. The server reads each file from
+  // disk and base64-encodes it into a Claude content block — the agent
+  // gets the actual image bytes instead of just the path string.
+  const message = { type: "input", data: text };
+  if (Array.isArray(attachments) && attachments.length) {
+    message.attachments = attachments.map((att) => ({
+      absolutePath: String(att.absolutePath || ""),
+      fileName: String(att.fileName || ""),
+      mimeType: String(att.mimeType || ""),
+    })).filter((att) => att.absolutePath);
+  }
+  state.websocket.send(JSON.stringify(message));
   scheduleTerminalTextareaReset();
   return true;
 }
@@ -40774,21 +40785,37 @@ function bindShellEvents() {
     }
 
     let value = input.value.replace(/\s+$/u, "");
-    // Append any queued attachment references to the outgoing message so
-    // the agent sees the path. The chips above the textarea are the
-    // user-visible representation; the wire format is still the markdown
-    // reference (which the shaper extracts back into entry.imageRefs on
-    // the assistant side).
+    // Pull queued attachments from state. Stream-mode sessions get
+    // structured image content blocks (the wire path: client → WS input
+    // {data, attachments[]} → server reads files → claude stream session
+    // sends a Claude content array with `{type: "image", source: {type:
+    // "base64", media_type, data}}`. That's what makes the agent
+    // actually SEE the image, not just a path string.
+    //
+    // PTY-backed sessions don't have the structured wire path, so we
+    // fall back to inlining the markdown reference into the message
+    // text — the agent reads the path and can open the file by hand.
     const attachments = getRichSessionComposerAttachments(activeSession.id);
-    if (attachments.length) {
+    const isStreamMode = Boolean(activeSession.streamMode);
+    if (attachments.length && !isStreamMode) {
       const refs = attachments.map((att) => formatTerminalImageAttachmentReference(att)).join("\n");
       value = value ? `${value}\n\n${refs}` : refs;
     }
-    if (!value) {
+    if (!value && !attachments.length) {
+      return;
+    }
+    // For stream-mode, send empty value with attachments still works
+    // (sendWithImages will produce an image-only content array). Default
+    // to a simple "look at this" prompt so the agent knows what to do.
+    const outgoing = value || (attachments.length ? "Take a look at this image." : "");
+    if (!outgoing) {
       return;
     }
 
-    const sent = sendTerminalInput(`${value}\r`, { queueIfDisconnected: true });
+    const sent = sendTerminalInput(`${outgoing}\r`, {
+      queueIfDisconnected: true,
+      attachments: isStreamMode && attachments.length ? attachments : null,
+    });
     if (!sent) {
       window.alert("That session is not connected yet.");
       return;

@@ -6869,7 +6869,15 @@ export async function createVibeResearchApp({
         const message = JSON.parse(String(payload));
 
         if (message.type === "input" && typeof message.data === "string") {
-          sessionManager.write(session.id, message.data);
+          // Optional attachments[] — each entry carries an absolutePath
+          // produced by the /api/attachments/images upload endpoint. The
+          // session manager forwards them to the stream session, which
+          // reads each file and base64-encodes it into the Claude
+          // user-message content array. Only stream-mode sessions
+          // exercise this path; PTY sessions ignore the attachments
+          // (typing the markdown reference is the legacy fallback).
+          const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+          sessionManager.write(session.id, message.data, { attachments });
           return;
         }
 

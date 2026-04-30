@@ -11,6 +11,7 @@
 
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
@@ -22,6 +23,22 @@ const DEFAULT_CLAUDE_BIN = (() => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   return path.resolve(here, "..", "bin", "claude");
 })();
+
+const IMAGE_MIME_BY_EXTENSION = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
+};
+
+function inferImageMimeType(absolutePath, declaredMime = "") {
+  const declared = String(declaredMime || "").trim().toLowerCase();
+  if (declared.startsWith("image/")) return declared;
+  const ext = path.extname(String(absolutePath || "")).toLowerCase();
+  return IMAGE_MIME_BY_EXTENSION[ext] || "image/png";
+}
 
 const DEFAULT_MAX_ENTRIES = 96;
 
@@ -152,6 +169,55 @@ export class ClaudeStreamSession extends EventEmitter {
         content: [{ type: "text", text: value }],
       },
     };
+    this._child.stdin.write(`${JSON.stringify(message)}\n`);
+    return true;
+  }
+
+  // Send a user message with one or more image attachments. Each
+  // attachment is a path on disk; the file gets read and base64-encoded
+  // into a Claude content block of `{type: "image", source: {type:
+  // "base64", media_type, data}}`. The wire shape Claude's stream-json
+  // input expects matches the one its assistant content uses, just
+  // inverted (user role).
+  //
+  // Failure modes are non-fatal: an unreadable file gets dropped with a
+  // console warning and the message goes through with the surviving
+  // attachments. If ALL attachments fail, the text-only fallback fires —
+  // user still sees their question land, just without the images.
+  async sendWithImages(text, attachments = []) {
+    if (!this._child || this.status !== "running") {
+      throw new Error(`ClaudeStreamSession ${this.sessionId} is not running`);
+    }
+    const value = String(text ?? "");
+    const list = Array.isArray(attachments) ? attachments : [];
+    if (!value.trim() && !list.length) {
+      return false;
+    }
+
+    const imageBlocks = [];
+    for (const att of list) {
+      const absolutePath = String(att?.absolutePath || att?.path || "").trim();
+      if (!absolutePath) continue;
+      try {
+        const bytes = await readFile(absolutePath);
+        const mime = inferImageMimeType(absolutePath, att?.mimeType);
+        imageBlocks.push({
+          type: "image",
+          source: { type: "base64", media_type: mime, data: bytes.toString("base64") },
+        });
+      } catch (error) {
+        console.warn(`[claude-stream-session] could not read attachment ${absolutePath}: ${error.message}`);
+      }
+    }
+
+    const content = [];
+    if (value.trim()) content.push({ type: "text", text: value });
+    content.push(...imageBlocks);
+    if (!content.length) {
+      return false;
+    }
+
+    const message = { type: "user", message: { role: "user", content } };
     this._child.stdin.write(`${JSON.stringify(message)}\n`);
     return true;
   }

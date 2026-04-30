@@ -3938,7 +3938,7 @@ export class SessionManager {
     setImmediate(sendNextChunk);
   }
 
-  write(sessionId, input) {
+  write(sessionId, input, options = {}) {
     const session = this.sessions.get(sessionId);
 
     if (!session || session.status === "exited") {
@@ -3946,7 +3946,7 @@ export class SessionManager {
     }
 
     if (session.streamSession) {
-      return this.writeToClaudeStreamSession(session, input);
+      return this.writeToClaudeStreamSession(session, input, options);
     }
 
     if (!session.pty) {
@@ -3960,7 +3960,7 @@ export class SessionManager {
     return this.performSessionWrite(session, input);
   }
 
-  writeToClaudeStreamSession(session, input) {
+  writeToClaudeStreamSession(session, input, { attachments = [] } = {}) {
     if (!session?.streamSession) {
       return false;
     }
@@ -3968,6 +3968,7 @@ export class SessionManager {
     const lines = session.streamInputBuffer.split(/\r\n?|\n/);
     session.streamInputBuffer = lines.pop() ?? "";
     let sentAny = false;
+    let firstLine = true;
     for (const rawLine of lines) {
       const line = rawLine.trim();
       if (!line) {
@@ -3992,9 +3993,29 @@ export class SessionManager {
       // mutates into the streaming reply, so there is no race to clear.
 
       try {
-        session.streamSession.send(line);
+        // Attachments ride on the FIRST line only — they're tied to the
+        // user's "what should we do with these images?" prompt. Subsequent
+        // lines (rare; happens when a user pastes multi-line text) go as
+        // plain text. sendWithImages is async because it reads file bytes;
+        // we fire-and-forget — errors land via the stderr/error events on
+        // the stream session and end up in the chat as status entries.
+        if (firstLine && Array.isArray(attachments) && attachments.length) {
+          session.streamSession.sendWithImages(line, attachments).catch((error) => {
+            console.warn(`[vibe-research] sendWithImages failed: ${error.message}`);
+            this.pushNativeNarrativeEntry(session, {
+              kind: "status",
+              label: "Error",
+              text: `Could not attach images: ${error.message}`,
+              timestamp: new Date().toISOString(),
+              meta: "stream-mode",
+            });
+          });
+        } else {
+          session.streamSession.send(line);
+        }
         session.streamWorking = true;
         sentAny = true;
+        firstLine = false;
       } catch (error) {
         this.pushNativeNarrativeEntry(session, {
           kind: "status",
