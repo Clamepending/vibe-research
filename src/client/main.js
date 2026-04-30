@@ -13086,6 +13086,20 @@ function renderAgentProfileAvatar(profile) {
     `;
   }
 
+  if (isClaudeCodeProviderAgent(profile)) {
+    return `
+      <span
+        class="agent-profile-avatar agent-profile-avatar-claudecode agent-profile-avatar-${escapeHtml(profile.statusClass || "read")}"
+        style="${escapeHtml(getAgentProfilePaletteStyle(profile))}"
+        aria-hidden="true"
+      >
+        <span class="agent-profile-avatar-backdrop"></span>
+        <span class="agent-profile-avatar-headshot">${renderClaudeCodeAvatarMarkup()}</span>
+        <span class="agent-profile-avatar-initials">${escapeHtml(profile.initials || "CC")}</span>
+      </span>
+    `;
+  }
+
   const hatKind = getOccupationHatKind({
     id: profile?.occupationId || "",
     label: profile?.occupationLabel || "",

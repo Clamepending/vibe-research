@@ -11941,6 +11941,16 @@ button.visual-town-building:focus-visible {
   transform-origin: center;
 }
 
+.session-profile-avatar .agent-profile-avatar-headshot {
+  width: 32px;
+  height: 32px;
+}
+
+.session-profile-avatar .agent-profile-avatar-headshot .claude-code-avatar {
+  width: 100%;
+  height: 100%;
+}
+
 .session-profile-avatar .agent-profile-avatar-initials {
   right: 5px;
   top: 4px;
@@ -13524,6 +13534,36 @@ button.visual-town-building:focus-visible {
 }
 
 .agent-profile-avatar-openclaw .agent-profile-avatar-initials {
+  display: none;
+}
+
+.agent-profile-avatar-claudecode {
+  background:
+    radial-gradient(circle at 50% 28%, rgba(255, 200, 162, 0.2), transparent 30%),
+    linear-gradient(180deg, rgba(215, 123, 74, 0.16), rgba(80, 40, 28, 0.1)),
+    #14100c;
+}
+
+.agent-profile-avatar-claudecode .agent-profile-avatar-backdrop {
+  background: linear-gradient(180deg, #d77b4a, #2f1815);
+  opacity: 0.55;
+}
+
+.agent-profile-avatar-headshot {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+}
+
+.agent-profile-avatar-headshot .claude-code-avatar {
+  width: 100%;
+  height: 100%;
+}
+
+.agent-profile-avatar-claudecode .agent-profile-avatar-initials {
   display: none;
 }
 
