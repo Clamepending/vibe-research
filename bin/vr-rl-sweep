@@ -35,6 +35,7 @@ import {
   renderRunsTsv,
 } from "../src/research/sweep.js";
 import { runPlannedRows, parseRunsTsv } from "../src/research/sweep-runner.js";
+import { pullWandbMetrics } from "../src/research/wandb-pull.js";
 import { readFile } from "node:fs/promises";
 
 function printHelp() {
@@ -58,6 +59,12 @@ Subcommands:
                   mean ± std across seeds, and the top-N cells. Useful
                   for the agent to check sweep state without parsing
                   the TSV by hand. --json prints full structured data.
+  wandb-pull <name> Back-fill mean_return from wandb summaries for
+                  rows whose launcher logged to wandb but didn't print
+                  the metric to stdout. Reads each row's wandb_url,
+                  GraphQL-fetches the run's summaryMetrics, writes
+                  back into mean_return. Idempotent (skips rows
+                  already filled unless --overwrite).
 
 Init options:
   --base <pairs>           Comma-separated base config: key=value,...
@@ -99,6 +106,13 @@ Summary options:
   --direction-lower        Sort cells by ascending mean_return (use when
                            the project's metric is "lower is better").
 
+Wandb-pull options:
+  --library <path>         Library root (defaults to cwd).
+  --sweep-name <slug>      Read projects/<name>/runs/<slug>.tsv.
+  --metric <key>           Wandb summary key to read (default "mean_return").
+  --overwrite              Refill rows that already have a mean_return
+                           value. Default: skip those rows.
+
 Common:
   --json                   Emit machine-readable summary on stdout.
 `);
@@ -125,6 +139,7 @@ function parseArgs(argv) {
     sweepName: "",
     top: undefined,
     directionLower: false,
+    overwrite: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -145,6 +160,7 @@ function parseArgs(argv) {
     if (arg === "--sweep-name") { options.sweepName = argv[++i] || ""; continue; }
     if (arg === "--top") { options.top = Number(argv[++i] || "5"); continue; }
     if (arg === "--direction-lower") { options.directionLower = true; continue; }
+    if (arg === "--overwrite") { options.overwrite = true; continue; }
     if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
     if (!options.subcommand) { options.subcommand = arg; continue; }
     if (!options.name) { options.name = arg; continue; }
@@ -412,6 +428,22 @@ function formatSummaryText(s) {
   return lines.join("\n");
 }
 
+async function runWandbPull(options) {
+  if (!options.name) throw new Error("project name is required");
+  const library = path.resolve(options.library);
+  const projectDir = path.join(library, "projects", options.name);
+  const runsTsvPath = options.sweepName
+    ? path.join(projectDir, "runs", `${options.sweepName}.tsv`)
+    : path.join(projectDir, "runs.tsv");
+
+  const result = await pullWandbMetrics({
+    runsTsvPath,
+    metric: options.metric || "mean_return",
+    overwrite: options.overwrite,
+  });
+  return result;
+}
+
 async function main() {
   let options;
   try {
@@ -425,7 +457,7 @@ async function main() {
     printHelp();
     process.exit(options.help ? 0 : 2);
   }
-  if (!["init", "run", "summary"].includes(options.subcommand)) {
+  if (!["init", "run", "summary", "wandb-pull"].includes(options.subcommand)) {
     process.stderr.write(`unknown subcommand: ${options.subcommand}\n`);
     printHelp();
     process.exit(2);
@@ -435,7 +467,8 @@ async function main() {
   try {
     if (options.subcommand === "init") summary = await runInit(options);
     else if (options.subcommand === "run") summary = await runRun(options);
-    else summary = await runSummary(options);
+    else if (options.subcommand === "summary") summary = await runSummary(options);
+    else summary = await runWandbPull(options);
   } catch (err) {
     process.stderr.write(`${err.message}\n`);
     process.exit(1);
@@ -452,8 +485,23 @@ async function main() {
   } else if (options.subcommand === "run") {
     process.stdout.write(`ran ${summary.ran} rows: ok=${summary.ok}, failed=${summary.failed}, skipped=${summary.skipped}\n`);
     process.stdout.write(`runs.tsv:    ${summary.runsTsv}\n`);
-  } else {
+  } else if (options.subcommand === "summary") {
     process.stdout.write(`${formatSummaryText(summary)}\n`);
+  } else {
+    // wandb-pull
+    process.stdout.write(`wandb-pull: ${summary.runsTsvPath}\n`);
+    process.stdout.write(`  pulled:  ${summary.pulled}\n`);
+    process.stdout.write(`  skipped: ${summary.skipped}\n`);
+    process.stdout.write(`  failed:  ${summary.failed}\n`);
+    if (summary.failed && summary.failures.length) {
+      process.stdout.write(`\n  failures:\n`);
+      for (const f of summary.failures.slice(0, 10)) {
+        process.stdout.write(`    ${f.name}: ${f.error}\n`);
+      }
+    }
+    if (!summary.apiKeyConfigured && summary.skipped + summary.failed > 0) {
+      process.stdout.write(`\n  hint: set WANDB_API_KEY env var if rows are erroring with auth\n`);
+    }
   }
   process.exit(summary.failed && summary.failed > 0 ? 1 : 0);
 }
