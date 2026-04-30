@@ -226,6 +226,48 @@ function normalizeOptionalPath(value, homeDir = os.homedir()) {
   return rawValue ? path.resolve(expandHomePath(rawValue, homeDir)) : "";
 }
 
+// Each alias maps a foreign absolute path prefix (e.g. `/home/agent/`) to
+// a local one (e.g. `/Users/me/synced/`). Both prefixes are forced to
+// trailing-slash form so a stray `/home/agent` can't translate
+// `/home/agentX/...` into `/Users/me/syncedX/...`.
+function normalizeImagePathAliases(value, homeDir = os.homedir()) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const ensureTrailingSlash = (raw) => {
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) {
+      return "";
+    }
+    const expanded = expandHomePath(trimmed, homeDir);
+    return expanded.endsWith("/") ? expanded : `${expanded}/`;
+  };
+
+  const seen = new Set();
+  const out = [];
+  for (const entry of value) {
+    const from = ensureTrailingSlash(entry?.from);
+    const toRaw = ensureTrailingSlash(entry?.to);
+    // `from` is opaque (a foreign-machine path that may not exist locally),
+    // but `to` MUST be an absolute local path for path.resolve below to
+    // produce a verifiable real-path target.
+    if (!from || !toRaw) {
+      continue;
+    }
+    const to = path.resolve(toRaw);
+    if (!path.isAbsolute(from) || !path.isAbsolute(to)) {
+      continue;
+    }
+    if (seen.has(from)) {
+      continue;
+    }
+    seen.add(from);
+    out.push({ from, to: to.endsWith("/") ? to : `${to}/` });
+  }
+  return out;
+}
+
 async function writeAtomic(filePath, payload) {
   const tempPath = `${filePath}.${randomUUID()}.tmp`;
   await mkdir(path.dirname(filePath), { recursive: true });
@@ -522,6 +564,16 @@ export class SettingsStore {
       agentAutomations: [],
       buildingAccessConfirmedIds: [],
       installedPluginIds: [],
+      // Maps foreign absolute path prefixes (e.g. an agent running on a
+      // Linux box, or in a container) to their local-machine equivalents
+      // so the chat's image renderer can resolve `/home/agent/figures/x.png`
+      // into `/Users/me/synced/figures/x.png` and still serve the file.
+      // Each entry: { from: "/foreign/prefix/", to: "/local/prefix/" }.
+      // Empty by default — only meaningful when an agent's filesystem
+      // doesn't match the user's, which is most common with sshfs / Syncthing
+      // / multi-machine setups. The /api/files/image-by-path endpoint is the
+      // only consumer; the editor-side workspace path code is unaffected.
+      imagePathAliases: [],
       preventSleepEnabled: true,
       // The Library is just a folder of markdown notes by default. Beginners
       // don't need a git history of every change unless they explicitly opt
@@ -1010,6 +1062,10 @@ export class SettingsStore {
         payload.buildingAccessConfirmedIds || defaults.buildingAccessConfirmedIds,
       ),
       installedPluginIds: normalizePluginIds(payload.installedPluginIds || defaults.installedPluginIds),
+      imagePathAliases: normalizeImagePathAliases(
+        payload.imagePathAliases ?? defaults.imagePathAliases,
+        this.homeDir,
+      ),
       preventSleepEnabled: normalizeBoolean(
         payload.preventSleepEnabled,
         defaults.preventSleepEnabled,

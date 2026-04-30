@@ -77,6 +77,7 @@ import { stepResearchAutopilot } from "./research/autopilot.js";
 import { compileBriefToQueue, updateResearchState } from "./research/brief.js";
 import { tickResearchOrchestrator } from "./research/orchestrator.js";
 import {
+  isImageFile,
   listWorkspaceEntries,
   readWorkspaceTextFile,
   resolveWorkspaceEntry,
@@ -6269,6 +6270,119 @@ export async function createVibeResearchApp({
         }
         response.status(error.statusCode || error.status || 500).json({
           error: error.message || "Unable to read requested attachment.",
+        });
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message });
+    }
+  });
+
+  // Serves an image referenced by an absolute path the chat can't resolve
+  // through /api/files/content. The chat receives messages from agents that
+  // may be running on a different machine (Linux box, container, sshfs
+  // mount) — their absolute paths don't match the user's local filesystem.
+  // The `imagePathAliases` setting maps a foreign prefix (e.g.
+  // /home/agent/) onto a local one (e.g. /Users/me/synced/) so we can find
+  // the file on disk and serve it inline.
+  //
+  // Security posture:
+  //   - only image extensions are served (no arbitrary file read)
+  //   - the resolved real path MUST live inside an alias `to` target or
+  //     a workspace root — symlinks that escape the whitelist are rejected
+  //   - aliases are configured by the user in settings.json; without them
+  //     the endpoint serves only paths already inside known workspace roots
+  app.get("/api/files/image-by-path", async (request, response) => {
+    try {
+      const rawPath = typeof request.query.path === "string" ? request.query.path : "";
+      if (!rawPath || !path.isAbsolute(rawPath)) {
+        response.status(400).json({ error: "absolute path query parameter is required" });
+        return;
+      }
+      if (!isImageFile(rawPath)) {
+        response.status(400).json({ error: "path is not an image" });
+        return;
+      }
+
+      const aliases = Array.isArray(settingsStore.settings.imagePathAliases)
+        ? settingsStore.settings.imagePathAliases
+        : [];
+
+      // Translate the foreign path through the first matching alias. If
+      // none matches we still try the path as-is — useful when the agent
+      // is on the same machine as the user and the file is just outside
+      // any workspace root.
+      let candidate = rawPath;
+      for (const alias of aliases) {
+        if (rawPath === alias.from.slice(0, -1) || rawPath.startsWith(alias.from)) {
+          const tail = rawPath.startsWith(alias.from) ? rawPath.slice(alias.from.length) : "";
+          candidate = path.resolve(alias.to, tail);
+          break;
+        }
+      }
+
+      // Build the whitelist of allowed real-path roots. Each alias `to`
+      // and the active workspace root + cwd are valid serving roots.
+      const whitelistRoots = [];
+      for (const alias of aliases) {
+        try {
+          whitelistRoots.push(await realpath(alias.to));
+        } catch {
+          // alias.to may not exist on this machine yet — skip silently
+          // rather than 500ing on a stale config entry.
+        }
+      }
+      try {
+        whitelistRoots.push(await realpath(settingsStore.settings.workspaceRootPath || cwd));
+      } catch {
+        // Workspace root must exist; if it doesn't this server is in a
+        // weird state already, but don't let it block alias-based paths.
+      }
+      try {
+        whitelistRoots.push(await realpath(cwd));
+      } catch {
+        // cwd is set at startup so this should always exist.
+      }
+
+      const resolvedPath = await realpath(candidate).catch((error) => {
+        if (error?.code === "ENOENT") {
+          throw buildHttpError("Image not found at the resolved path.", 404);
+        }
+        throw error;
+      });
+
+      const insideWhitelist = whitelistRoots.some((root) => {
+        if (!root) return false;
+        const rel = path.relative(root, resolvedPath);
+        return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+      });
+
+      if (!insideWhitelist) {
+        response.status(403).json({
+          error: "resolved path is outside the configured image roots",
+        });
+        return;
+      }
+
+      const stats = await stat(resolvedPath).catch((error) => {
+        if (error?.code === "ENOENT") {
+          throw buildHttpError("Image not found.", 404);
+        }
+        throw error;
+      });
+      if (!stats.isFile()) {
+        response.status(400).json({ error: "Requested path is not a file." });
+        return;
+      }
+
+      response.setHeader("Cache-Control", "public, max-age=300");
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      response.sendFile(resolvedPath, { dotfiles: "allow" }, (error) => {
+        if (!error || response.headersSent) {
+          if (error) response.destroy(error);
+          return;
+        }
+        response.status(error.statusCode || error.status || 500).json({
+          error: error.message || "Unable to read requested image.",
         });
       });
     } catch (error) {

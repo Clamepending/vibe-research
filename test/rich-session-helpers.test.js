@@ -226,11 +226,21 @@ test("image url: absolute path under attachments dir → /api/attachments/file (
   assert.equal(params.get("path"), "/var/state/attachments/sessions/abc/2026-04-29/img.png");
 });
 
-test("image url: absolute path outside workspace root AND not an attachment returns ''", () => {
-  // Renderer falls back to the path link instead of a broken <img>.
-  const url = getRichSessionImageUrl("/etc/passwd.png", {
+test("image url: absolute path outside workspace root falls through to /api/files/image-by-path", () => {
+  // The client doesn't know which paths the server will accept — the
+  // server applies the user's imagePathAliases and the whitelist check,
+  // so the client just hands over the absolute path. Server-side
+  // enforcement keeps `/etc/passwd.png`-style probes from succeeding.
+  const url = getRichSessionImageUrl("/home/agent/figures/x.png", {
     workspaceRoot: "/Users/me/proj",
   });
+  assert.match(url, /^\/api\/files\/image-by-path\?/);
+  const params = new URL(url, "http://x").searchParams;
+  assert.equal(params.get("path"), "/home/agent/figures/x.png");
+});
+
+test("image url: bare relative path with no workspace root still returns '' (nothing to anchor against)", () => {
+  const url = getRichSessionImageUrl("etc/passwd.png", { workspaceRoot: "" });
   assert.equal(url, "");
 });
 
