@@ -15499,6 +15499,44 @@ body.is-reordering-file-tabs {
   background: rgba(255, 255, 255, 0.06);
 }
 
+/* Exited-session composer. Replaces the disabled textarea + send button
+   with a clear restart affordance. Visual style matches the active
+   composer outline so the layout doesn't reflow. */
+.rich-session-composer-exited {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 14px;
+  align-items: center;
+  cursor: default;
+}
+
+.rich-session-exited-copy {
+  font-size: 0.92rem;
+  line-height: 1.45;
+  color: rgba(244, 244, 242, 0.7);
+}
+
+.rich-session-exited-copy code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.85rem;
+  color: rgba(244, 244, 242, 0.9);
+}
+
+.rich-session-exited-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rich-session-exited-actions .primary-button {
+  border-radius: 999px;
+  padding: 8px 14px;
+  white-space: nowrap;
+}
+
 .rich-session-composer .primary-button.rich-session-send {
   border-radius: 999px;
   background: #f3f1ee;
