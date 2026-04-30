@@ -63,6 +63,14 @@ const CORE_BUILDING_MANIFESTS = [
         { title: "Start a session", detail: "Agents can inspect repositories, issues, pull requests, and checks." },
       ],
     },
+    agentGuide: {
+      docs: [
+        { label: "GitHub CLI", url: "https://cli.github.com/manual/" },
+        { label: "Pull requests API", url: "https://docs.github.com/en/rest/pulls" },
+        { label: "Issues API", url: "https://docs.github.com/en/rest/issues" },
+        { label: "Actions checks API", url: "https://docs.github.com/en/rest/checks" },
+      ],
+    },
   },
   {
     id: "agent-inbox",
@@ -935,6 +943,13 @@ const CORE_BUILDING_MANIFESTS = [
         { title: "Pick labels", detail: "Keep mailbox labels and categories narrow enough for agents to reason about." },
       ],
     },
+    agentGuide: {
+      docs: [
+        { label: "Gmail API", url: "https://developers.google.com/gmail/api/guides" },
+        { label: "Messages reference", url: "https://developers.google.com/gmail/api/reference/rest/v1/users.messages" },
+        { label: "Gmail web", url: "https://mail.google.com/" },
+      ],
+    },
   },
   {
     id: "buildinghub",
@@ -1147,6 +1162,11 @@ const CORE_BUILDING_MANIFESTS = [
         { name: "VIBE_RESEARCH_BROWSER_USE_COMMAND", detail: "Canonical helper command for local agents." },
         { name: "VIBE_RESEARCH_BUILDING_GUIDES_DIR", detail: "Generated per-building guide directory." },
       ],
+      docs: [
+        { label: "Anthropic Console keys", url: "https://console.anthropic.com/settings/keys" },
+        { label: "browser-use repo", url: "https://github.com/browser-use/browser-use" },
+        { label: "OttoAuth dashboard", url: "https://ottoauth.vercel.app/dashboard" },
+      ],
     },
     onboarding: {
       setupSelector: ".browser-use-plugin-card",
@@ -1243,6 +1263,10 @@ const CORE_BUILDING_MANIFESTS = [
       env: [
         { name: "VIBE_RESEARCH_OTTOAUTH_COMMAND", detail: "Canonical helper command for local agents." },
         { name: "VIBE_RESEARCH_AGENT_CALLBACK_URL", detail: "Automatically passed by vr-ottoauth so OttoAuth services can send multi-turn updates back to this agent." },
+      ],
+      docs: [
+        { label: "OttoAuth dashboard", url: "https://ottoauth.vercel.app/dashboard" },
+        { label: "OttoAuth skill", url: "https://ottoauth.vercel.app/skill.md" },
       ],
     },
     onboarding: {
@@ -1461,6 +1485,10 @@ const CORE_BUILDING_MANIFESTS = [
       env: [
         { name: "VIBE_RESEARCH_VIDEOMEMORY_COMMAND", detail: "Canonical helper command for local agents." },
       ],
+      docs: [
+        { label: "Anthropic Console keys", url: "https://console.anthropic.com/settings/keys" },
+        { label: "Claude vision capabilities", url: "https://docs.claude.com/en/docs/build-with-claude/vision" },
+      ],
     },
     onboarding: {
       setupSelector: ".videomemory-plugin-card",
@@ -1547,6 +1575,13 @@ const CORE_BUILDING_MANIFESTS = [
         { title: "Reply from one session", detail: "Incoming email is routed into the dedicated AgentMail communications session." },
       ],
     },
+    agentGuide: {
+      docs: [
+        { label: "AgentMail docs", url: "https://docs.agentmail.to/" },
+        { label: "Send / receive API", url: "https://docs.agentmail.to/api-reference" },
+        { label: "Webhooks", url: "https://docs.agentmail.to/webhooks" },
+      ],
+    },
   },
   {
     id: "telegram",
@@ -1587,6 +1622,13 @@ const CORE_BUILDING_MANIFESTS = [
           completeWhen: { allConfigured: ["telegramBotTokenConfigured"] },
         },
         { title: "Reply from one session", detail: "Incoming Telegram messages are routed into the dedicated Telegram communications session." },
+      ],
+    },
+    agentGuide: {
+      docs: [
+        { label: "Bot API reference", url: "https://core.telegram.org/bots/api" },
+        { label: "BotFather", url: "https://telegram.me/botfather" },
+        { label: "sendMessage", url: "https://core.telegram.org/bots/api#sendmessage" },
       ],
     },
   },

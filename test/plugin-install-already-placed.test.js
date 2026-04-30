@@ -540,6 +540,41 @@ test("logoImage is stripped from community building manifests (CSS-injection mit
   assert.match(normalizer, /logoImage:\s*""/, "community manifests must zero out visual.logoImage");
 });
 
+test("user-facing buildings declare agentGuide.docs so the ready panel always shows quick-access doc links", async () => {
+  // The collapsed ready panel renders building-name + access label + doc
+  // links. Without agentGuide.docs the panel shows just the name — a UX
+  // regression for the "where do I find docs once installed?" question.
+  // This test pins the major user-facing buildings to a docs-present
+  // contract; if a future refactor wipes them out, this catches it.
+  const { BUILDING_CATALOG } = await import("../src/client/building-registry.js");
+
+  const userFacing = [
+    "github",
+    "gmail",
+    "google-calendar",
+    "google-drive",
+    "modal",
+    "zinc",
+    "wandb",
+    "ottoauth",
+    "browser-use",
+    "videomemory",
+    "agentmail",
+    "telegram",
+  ];
+
+  for (const id of userFacing) {
+    const b = BUILDING_CATALOG.find((x) => x.id === id);
+    assert.ok(b, `${id} must exist in the catalog`);
+    const docs = b.agentGuide?.docs;
+    assert.ok(Array.isArray(docs) && docs.length >= 1, `${id} must declare at least one agentGuide.docs entry so the ready panel has a doc shortcut`);
+    for (const doc of docs) {
+      assert.ok(typeof doc.label === "string" && doc.label.trim().length > 0, `${id} docs entry must have a non-empty label`);
+      assert.match(doc.url || "", /^https?:\/\//, `${id} docs entry must have an http(s) url, got: ${doc.url}`);
+    }
+  }
+});
+
 test("ready panel generalises across buildings: any system app or fully-configured building hits the collapsed view", async () => {
   // The user's ask was "make sure GitHub / Telegram / Gmail / GCal work
   // the same way." The check is generic by design — isPluginFullyReady
