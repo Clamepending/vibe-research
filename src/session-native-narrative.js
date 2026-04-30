@@ -6,7 +6,19 @@ import {
 } from "./client/rich-session-transcript.js";
 import { normaliseNarrativeEntry } from "./narrative-schema.js";
 
-const DEFAULT_MAX_ENTRIES = 96;
+// How many entries to keep in the visible narrative. The cap exists so
+// the wire-format snapshot stays bounded — without it, a multi-hour
+// session would blow up WebSocket frame sizes. We previously capped at
+// 96 entries, which translates to roughly 30 minutes of agent work; long
+// research sessions hit the cap and watched their early context vanish.
+//
+// Bumped to 400 (~2-3 hours of typical work). Worst-case wire payload at
+// 12K text-cap × 400 = 4.8 MB, but realistic average is closer to ~1 KB
+// per entry (most entries are status pills or short tool calls), so the
+// typical full snapshot is well under 500 KB. The right long-term fix is
+// paginated history (only the visible window is broadcast, older entries
+// fetched on scroll), but that's a separate change.
+const DEFAULT_MAX_ENTRIES = 400;
 const MAX_TEXT_LENGTH = 12_000;
 const MAX_INLINE_LENGTH = 320;
 const MAX_FILE_CACHE_ENTRIES = 48;
@@ -950,8 +962,16 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
         // instead of a generic tool row.
         const planText = extractPlanFromToolUse(item);
         if (planText) {
+          // ID must be stable across snapshot rebuilds: each rebuild walks
+          // the message log and re-derives entries, so any id that mixes in
+          // `entries.length + 1` (the position of the entry as it's pushed)
+          // shifts whenever entries before this point change. The diff
+          // broadcaster then treats it as remove+add and the client moves
+          // the entry to the bottom of the order — exactly the "TodoWrite
+          // overwrites text output" symptom the user reported. Claude's
+          // tool_use id is unique per call, so prefer it alone.
           const planEntry = {
-            id: makeEntryId("claude-plan", entries.length + 1, item.id || ""),
+            id: item.id ? `claude-plan-${item.id}` : makeEntryId("claude-plan", entries.length + 1),
             kind: "plan",
             label: "Plan",
             text: planText,
@@ -966,7 +986,11 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
 
         const mcp = parseMcpToolName(item.name);
         const toolEntry = {
-          id: makeEntryId("claude-tool", entries.length + 1, item.id || ""),
+          // Same stable-id rationale as the plan entry above. The Claude
+          // tool_use id is unique per tool call; using it alone (without
+          // the volatile entries.length index) keeps the id stable across
+          // snapshot rebuilds so the diff doesn't reshuffle the feed.
+          id: item.id ? `claude-tool-${item.id}` : makeEntryId("claude-tool", entries.length + 1),
           kind: "tool",
           label: mcp ? `${mcp.server}.${mcp.tool}` : (item.name || "Tool"),
           text: summarizeClaudeToolInput(item),

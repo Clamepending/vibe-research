@@ -2,9 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      `user-scalable=no` + `maximum-scale=1.0` previously blocked mobile
+      zoom AND broke desktop trackpad pinch on macOS — fixed/absolute
+      elements drift out of sync with the visually-zoomed content because
+      the browser still applies a visual-viewport zoom even when scaling
+      is "disabled". Letting the browser handle zoom naturally fixes the
+      "chat shifts to the corner when I pinch" bug and restores normal
+      accessibility zoom on mobile. The standard iOS auto-zoom-on-focus
+      foot-gun is mitigated by keeping textarea/input font-size >= 16px,
+      which is already the case across the app.
+    -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <title>Vibe Research</title>
     <style>

@@ -875,6 +875,106 @@ test("Claude narrative extracts slashAction from FULL error text BEFORE truncati
   assert.deepEqual(errorEntry.slashAction, { command: "/login", label: "Sign in" });
 });
 
+test("Claude narrative tool entry id stays stable across snapshot rebuilds even as message log grows", () => {
+  // Regression for the "TodoWrite overwrites text output / messes up
+  // chronology" bug. Tool entry ids previously included `entries.length+1`
+  // — the position of the tool entry as it was being pushed. Two
+  // snapshots of the SAME tool call (e.g. one before and one after a
+  // later message gets appended) would compute different lengths and
+  // produce different ids. The diff broadcaster then treated the call
+  // as remove+add and the client moved it to the bottom of the order,
+  // visually overwriting any text emitted after it.
+  const ts = "2026-04-30T12:00:00.000Z";
+  const initialLog = [
+    JSON.stringify({
+      timestamp: ts,
+      type: "assistant",
+      message: {
+        id: "msg_1",
+        role: "assistant",
+        content: [
+          { type: "text", text: "Let me check the file." },
+          { type: "tool_use", id: "toolu_todo_1", name: "TodoWrite", input: { todos: [{ content: "Task A", activeForm: "Doing A", status: "in_progress" }] } },
+        ],
+      },
+    }),
+  ].join("\n");
+
+  const before = buildClaudeNarrativeFromText(initialLog, { providerId: "claude", providerLabel: "Claude Code" });
+  const todoEntryBefore = before.entries.find((e) => e.kind === "tool" && Array.isArray(e.todos));
+  assert.ok(todoEntryBefore, "TodoWrite entry rendered in initial snapshot");
+
+  // Append later messages and rebuild — the same tool_use's id MUST be
+  // identical so the diff sees an in-place update, not remove+add.
+  const expandedLog = [
+    initialLog,
+    JSON.stringify({
+      timestamp: ts,
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "toolu_todo_1", content: "ok", is_error: false }],
+      },
+    }),
+    JSON.stringify({
+      timestamp: ts,
+      type: "assistant",
+      message: {
+        id: "msg_2",
+        role: "assistant",
+        content: [{ type: "text", text: "Done with task A. Moving on." }],
+      },
+    }),
+  ].join("\n");
+
+  const after = buildClaudeNarrativeFromText(expandedLog, { providerId: "claude", providerLabel: "Claude Code" });
+  const todoEntryAfter = after.entries.find((e) => e.kind === "tool" && Array.isArray(e.todos));
+  assert.ok(todoEntryAfter, "TodoWrite entry still present in expanded snapshot");
+  assert.equal(
+    todoEntryBefore.id,
+    todoEntryAfter.id,
+    "TodoWrite id must be stable across snapshot rebuilds — otherwise the diff broadcaster reshuffles the chat",
+  );
+
+  // Order check: the TodoWrite entry should come BEFORE the follow-up
+  // assistant text "Done with task A. Moving on.", not after.
+  const ids = after.entries.map((e) => e.id);
+  const todoIdx = ids.indexOf(todoEntryAfter.id);
+  const followupIdx = after.entries.findIndex((e) => e.kind === "assistant" && /Done with task A/.test(e.text));
+  assert.ok(todoIdx >= 0 && followupIdx > todoIdx, "TodoWrite must appear before later assistant text in the order");
+});
+
+test("Claude narrative plan entry (ExitPlanMode) id is stable across snapshot rebuilds", () => {
+  const ts = "2026-04-30T12:00:00.000Z";
+  const log = [
+    JSON.stringify({
+      timestamp: ts,
+      type: "assistant",
+      message: {
+        id: "msg_1",
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "toolu_plan_1", name: "ExitPlanMode", input: { plan: "Step 1\nStep 2" } },
+        ],
+      },
+    }),
+  ].join("\n");
+  const expanded = [
+    log,
+    JSON.stringify({
+      timestamp: ts,
+      type: "assistant",
+      message: { id: "msg_2", role: "assistant", content: [{ type: "text", text: "ok" }] },
+    }),
+  ].join("\n");
+  const before = buildClaudeNarrativeFromText(log, { providerId: "claude", providerLabel: "Claude" });
+  const after = buildClaudeNarrativeFromText(expanded, { providerId: "claude", providerLabel: "Claude" });
+  const planBefore = before.entries.find((e) => e.kind === "plan");
+  const planAfter = after.entries.find((e) => e.kind === "plan");
+  assert.ok(planBefore && planAfter);
+  assert.equal(planBefore.id, planAfter.id, "ExitPlanMode plan id stable across rebuilds");
+});
+
 test("Claude narrative attaches imageRefs only when user message used the explicit attachment markdown", () => {
   const timestamp = "2026-04-29T12:00:00.000Z";
   const text = [

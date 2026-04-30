@@ -2453,6 +2453,16 @@ const state = {
   // Plan cards whose pushback panel the user has expanded. Without this we'd
   // lose the open/closed state on every narrative-event re-render.
   richSessionPlanPushbackOpen: new Set(),
+  // Sticky plan/todo panel — shows the latest plan/task list above the
+  // composer so the user can see current progress while the chat scrolls.
+  // Per-session collapsed state so a user can dismiss it without losing
+  // it forever; it re-expands when a new plan or todo update arrives.
+  richSessionPlanPanelCollapsed: new Set(),
+  // Last (plan-entry-id, todo-entry-id) we showed in the panel — when these
+  // change (i.e. a NEW plan or todo update arrived), we auto-expand the
+  // panel even if the user had collapsed it. Avoids the "I collapsed it
+  // and now I never see updates" foot-gun.
+  richSessionPlanPanelLastSignature: {},
   richSessionRenderFrame: null,
   richSessionScrollToBottom: false,
   terminalComposing: false,
@@ -5804,7 +5814,7 @@ function renderRichSessionEntry(entry, index) {
       // alone. The entry mutates into the streamed reply on first delta.
       const providerLabel = (entry?.label || label || "Assistant").trim();
       return `
-        <article class="${entryClassName}" data-rich-session-entry="${index}">
+        <article class="${entryClassName}" data-rich-session-entry="${index}" data-entry-id="${escapeHtml(entry?.id || "")}">
           ${kickerHtml}
           <div class="rich-session-entry-copy is-pending-copy">${escapeHtml(`${providerLabel} is thinking…`)}</div>
         </article>
@@ -5819,7 +5829,7 @@ function renderRichSessionEntry(entry, index) {
       ? `<div class="rich-session-entry-truncated">⋯ truncated to ${TRUNCATION_CAP_FOR_DISPLAY.toLocaleString()} characters · the full reply is in the provider transcript</div>`
       : "";
     return `
-      <article class="${entryClassName}" data-rich-session-entry="${index}">
+      <article class="${entryClassName}" data-rich-session-entry="${index}" data-entry-id="${escapeHtml(entry?.id || "")}">
         ${renderRichSessionAssistantBody(text, entry)}
         ${truncatedHtml}
         ${meta ? `<div class="rich-session-entry-tail">${escapeHtml(meta)}</div>` : ""}
@@ -5846,7 +5856,7 @@ function renderRichSessionEntry(entry, index) {
     const pushbackDraft = planEntryId ? (state.richSessionPlanPushbackDrafts[planEntryId] || "") : "";
     const pushbackOpen = planEntryId && state.richSessionPlanPushbackOpen.has(planEntryId);
     return `
-      <article class="${entryClassName} rich-session-plan-card" data-rich-session-entry="${index}" data-plan-entry-id="${escapeHtml(planEntryId)}">
+      <article class="${entryClassName} rich-session-plan-card" data-rich-session-entry="${index}" data-entry-id="${escapeHtml(entry?.id || "")}" data-plan-entry-id="${escapeHtml(planEntryId)}">
         <div class="rich-session-entry-kicker">
           <span class="rich-session-entry-kicker-icon">${renderIcon(Waypoints, { className: "rich-session-entry-icon" })}</span>
           <span class="rich-session-entry-kicker-label">Proposed plan</span>
@@ -5977,7 +5987,7 @@ function renderRichSessionEntry(entry, index) {
         : `<div class="rich-session-compact-output is-single">${renderRichSessionInlineHtml(firstLine)}</div>`
       : "";
     return `
-      <article class="${compactClass}" data-rich-session-entry="${index}">
+      <article class="${compactClass}" data-rich-session-entry="${index}" data-entry-id="${escapeHtml(entry?.id || "")}">
         <div class="rich-session-compact-row">
           ${prefix}
           ${compactCommand}
@@ -6000,7 +6010,7 @@ function renderRichSessionEntry(entry, index) {
     : `<div class="rich-session-entry-copy">${body}</div>${slashActionHtml}`;
 
   return `
-    <article class="${entryClassName}" data-rich-session-entry="${index}">
+    <article class="${entryClassName}" data-rich-session-entry="${index}" data-entry-id="${escapeHtml(entry?.id || "")}">
       ${kickerHtml}
       ${bodyHtml}
     </article>
@@ -6180,6 +6190,155 @@ function sendRichSessionSlashCommand(command, { trigger = null, switchToTerminal
   }
 
   return true;
+}
+
+// Pick the latest TodoWrite/TaskUpdate entry — the one whose todos[] is
+// the agent's current plan-of-action. Walked back-to-front so we land on
+// the most recent. The chat feed still shows every TodoWrite tick for
+// audit; the panel just surfaces the latest snapshot at a glance.
+function getRichSessionLatestTodoEntry(narrative) {
+  const entries = Array.isArray(narrative?.entries) ? narrative.entries : [];
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (entry?.kind === "tool" && Array.isArray(entry?.todos) && entry.todos.length) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+// Pick the latest pending ExitPlanMode plan — the one the user still
+// needs to approve or push back on. Plans that have been resolved (i.e.
+// status moved past "pending") shouldn't pin to the panel anymore.
+function getRichSessionLatestPendingPlanEntry(narrative) {
+  const entries = Array.isArray(narrative?.entries) ? narrative.entries : [];
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (entry?.kind === "plan" && entry?.status !== "done" && entry?.status !== "error") {
+      return entry;
+    }
+  }
+  return null;
+}
+
+function summariseTodoCounts(todos) {
+  const counts = { completed: 0, in_progress: 0, pending: 0 };
+  for (const todo of (Array.isArray(todos) ? todos : [])) {
+    const status = String(todo?.status || "pending").toLowerCase();
+    if (status === "completed" || status === "done") counts.completed += 1;
+    else if (status === "in_progress" || status === "active") counts.in_progress += 1;
+    else counts.pending += 1;
+  }
+  return counts;
+}
+
+// Sticky panel above the composer — the agent's CURRENT state. Cursor /
+// Claude Code CLI both show this above the composer because users want
+// to know what the agent is doing without scrolling back through the
+// chat. The chat feed is still the audit trail (every plan and every
+// TodoWrite tick is preserved); this panel is just the latest projection.
+function renderRichSessionPlanPanel(activeSession) {
+  const narrative = getRichSessionNarrative(activeSession?.id);
+  const planEntry = getRichSessionLatestPendingPlanEntry(narrative);
+  const todoEntry = getRichSessionLatestTodoEntry(narrative);
+
+  // No plan or task list to show — render nothing (empty string lets the
+  // refresh helper toggle the mount visibility uniformly).
+  if (!planEntry && !todoEntry) return "";
+
+  const sessionId = activeSession?.id || "";
+  const signature = `${planEntry?.id || ""}|${todoEntry?.id || ""}`;
+  const lastSignature = sessionId ? state.richSessionPlanPanelLastSignature[sessionId] : "";
+  // When the visible plan/todo identity changes (new plan ID or new
+  // TodoWrite emission), auto-expand: the user wanted updates surfaced.
+  if (sessionId && lastSignature !== signature) {
+    state.richSessionPlanPanelLastSignature[sessionId] = signature;
+    state.richSessionPlanPanelCollapsed.delete(sessionId);
+  }
+  const collapsed = sessionId ? state.richSessionPlanPanelCollapsed.has(sessionId) : false;
+
+  // Header: "X of Y completed" when we have a todo list; else "Plan
+  // proposed" while waiting for plan approval.
+  let headerText = "";
+  if (todoEntry) {
+    const counts = summariseTodoCounts(todoEntry.todos);
+    const total = todoEntry.todos.length;
+    headerText = `${counts.completed} of ${total} ${total === 1 ? "task" : "tasks"} completed`;
+    if (counts.in_progress) headerText += ` · ${counts.in_progress} in progress`;
+  } else if (planEntry) {
+    headerText = "Plan proposed";
+  }
+
+  const collapseGlyph = collapsed ? "↙" : "↗";
+  const headerHtml = `
+    <header class="rich-session-plan-panel-header">
+      <span class="rich-session-plan-panel-icon" aria-hidden="true">⊟</span>
+      <span class="rich-session-plan-panel-title">${escapeHtml(headerText)}</span>
+      <button
+        class="rich-session-plan-panel-collapse"
+        type="button"
+        aria-label="${collapsed ? "Expand plan panel" : "Collapse plan panel"}"
+        data-rich-session-plan-panel-toggle
+      >${collapseGlyph}</button>
+    </header>
+  `;
+
+  if (collapsed) {
+    return `<section class="rich-session-plan-panel is-collapsed" id="rich-session-plan-panel">${headerHtml}</section>`;
+  }
+
+  let bodyHtml = "";
+  if (todoEntry) {
+    const total = todoEntry.todos.length;
+    const counts = summariseTodoCounts(todoEntry.todos);
+    const progressRatio = total ? counts.completed / total : 0;
+    const progressBarHtml = `
+      <div class="rich-session-plan-panel-progress" aria-hidden="true">
+        <div class="rich-session-plan-panel-progress-fill" style="width: ${(progressRatio * 100).toFixed(1)}%"></div>
+      </div>
+    `;
+    // Render the FULL list (the panel is the current state — truncating
+    // would defeat the point). Limit max-height via CSS instead so very
+    // long plans get a scrollbar inside the panel rather than cutting items.
+    const items = todoEntry.todos.map((todo, index) => {
+      const status = String(todo?.status || "pending").toLowerCase();
+      const isCompleted = status === "completed" || status === "done";
+      const isInProgress = status === "in_progress" || status === "active";
+      const stateClass = isCompleted ? "is-completed" : isInProgress ? "is-in-progress" : "is-pending";
+      const glyph = isCompleted ? "●" : isInProgress ? "◐" : "○";
+      const content = isInProgress && todo?.activeForm ? todo.activeForm : (todo?.content || todo?.activeForm || "");
+      return `
+        <li class="rich-session-plan-panel-task ${stateClass}">
+          <span class="rich-session-plan-panel-task-glyph" aria-hidden="true">${glyph}</span>
+          <span class="rich-session-plan-panel-task-index">${index + 1}.</span>
+          <span class="rich-session-plan-panel-task-text">${escapeHtml(String(content))}</span>
+        </li>
+      `;
+    }).join("");
+    bodyHtml += `
+      ${progressBarHtml}
+      <ol class="rich-session-plan-panel-tasks">${items}</ol>
+    `;
+  }
+
+  if (planEntry) {
+    // Pending plan that needs approval. Match the inline plan card's
+    // affordances (approve / push back) but compact — the inline card in
+    // the feed still has the full pushback affordance.
+    bodyHtml += `
+      <div class="rich-session-plan-panel-plan-cta">
+        <span class="rich-session-plan-panel-plan-label">Awaiting plan approval</span>
+        <a class="rich-session-plan-panel-plan-link" href="#" data-rich-session-plan-panel-jump="${escapeHtml(String(planEntry.id))}">Open plan card ↓</a>
+      </div>
+    `;
+  }
+
+  return `
+    <section class="rich-session-plan-panel" id="rich-session-plan-panel">
+      ${headerHtml}
+      <div class="rich-session-plan-panel-body">${bodyHtml}</div>
+    </section>
+  `;
 }
 
 function renderRichSessionTodoBody(todos) {
@@ -6514,6 +6673,7 @@ function renderRichSessionSurface(activeSession) {
       <div class="rich-session-monitors ${activeMonitors.length ? "is-active" : ""}" id="rich-session-monitors" aria-hidden="${activeMonitors.length ? "false" : "true"}">
         ${activeMonitors.map((m) => `<span class="rich-session-monitor-pill" title="${escapeHtml(m.tooltip)}"><span class="rich-session-monitor-dot" aria-hidden="true"></span>${escapeHtml(m.label)}</span>`).join("")}
       </div>
+      <div class="rich-session-plan-panel-mount" id="rich-session-plan-panel-mount" data-rich-session-plan-panel-mount>${renderRichSessionPlanPanel(activeSession)}</div>
       ${canSend ? `
         <form class="rich-session-composer" id="rich-session-form">
           <label class="sr-only" for="rich-session-input">Send input</label>
@@ -6598,6 +6758,45 @@ function refreshShellSurfaceToggleUi(activeSession = getActiveSession()) {
   }
 }
 
+// Pin a logical scroll position to a specific entry node so that a
+// subsequent feed rebuild (which happens on every narrative-event during
+// streaming) does not shift the user's view. Returns null when no entry
+// element is visible (e.g. the feed is empty).
+function captureRichSessionScrollAnchor(feed) {
+  if (!(feed instanceof HTMLElement)) return null;
+  const feedRect = feed.getBoundingClientRect();
+  const entries = feed.querySelectorAll("article[data-entry-id]");
+  for (const entry of entries) {
+    if (!(entry instanceof HTMLElement)) continue;
+    const id = entry.getAttribute("data-entry-id");
+    if (!id) continue;
+    const rect = entry.getBoundingClientRect();
+    // Pick the first entry whose bottom edge is at or below the feed
+    // viewport's top edge (i.e. visible or just below the fold). Anchoring
+    // to it keeps that entry at the same screen position after rebuild.
+    if (rect.bottom > feedRect.top + 1) {
+      return { entryId: id, offsetFromViewportTop: rect.top - feedRect.top };
+    }
+  }
+  return null;
+}
+
+function restoreRichSessionScrollAnchor(feed, anchor) {
+  if (!(feed instanceof HTMLElement) || !anchor?.entryId) return;
+  // Use attribute selector with quoted value — entry ids contain dashes
+  // and digits but never quotes, so escaping isn't strictly needed; the
+  // explicit quoting also documents the contract.
+  const entry = feed.querySelector(`article[data-entry-id="${anchor.entryId.replace(/"/g, '\\"')}"]`);
+  if (!(entry instanceof HTMLElement)) return;
+  const feedRect = feed.getBoundingClientRect();
+  const rect = entry.getBoundingClientRect();
+  const currentOffset = rect.top - feedRect.top;
+  // Shift scrollTop by exactly the difference between the anchor's old and
+  // new offset from the viewport top. This holds the anchor entry steady
+  // even as new entries are inserted below it.
+  feed.scrollTop = feed.scrollTop + (currentOffset - anchor.offsetFromViewportTop);
+}
+
 function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
   const activeSession = getActiveSession();
   const surfaceMode = getShellSurfaceMode(activeSession);
@@ -6637,8 +6836,16 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
   }
 
   const shouldStickToBottom = scrollToBottom || isRichSessionFeedAtBottom(feed);
-  const previousBottomOffset =
-    feed instanceof HTMLElement ? Math.max(0, feed.scrollHeight - feed.clientHeight - feed.scrollTop) : 0;
+  // Pre-rebuild scroll anchor. Anchoring to "distance from BOTTOM" (the
+  // previous behaviour) shifts the user's view every time a new entry is
+  // appended below — they end up dragged up while they're trying to read
+  // past output. Instead, find the top-most entry currently visible and
+  // remember its offset from the viewport top; after rebuild, shift
+  // scrollTop so that same entry stays at the same screen position.
+  // Append-only narrative + stable entry ids make this anchor robust.
+  const scrollAnchor = (!shouldStickToBottom && feed instanceof HTMLElement)
+    ? captureRichSessionScrollAnchor(feed)
+    : null;
 
   surface.classList.toggle("is-active", surfaceActive);
   surface.classList.toggle("is-stream-log", streamLogActive);
@@ -6652,8 +6859,8 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
       feed.innerHTML = renderRichSessionFeedHtml(activeSession);
       if (shouldStickToBottom) {
         feed.scrollTop = feed.scrollHeight;
-      } else {
-        feed.scrollTop = Math.max(0, feed.scrollHeight - feed.clientHeight - previousBottomOffset);
+      } else if (scrollAnchor) {
+        restoreRichSessionScrollAnchor(feed, scrollAnchor);
       }
     }
   }
@@ -6674,6 +6881,16 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
     input.disabled = !canSend;
     input.placeholder = `Message ${activeSession?.providerLabel || "agent"}...`;
     syncRichSessionComposerHeight(input);
+  }
+
+  // Live-update the sticky plan / todo panel above the composer. Same
+  // mount-point pattern as the chip strip — keep the wrapper stable in
+  // the DOM, swap its innerHTML when narrative changes. The panel is the
+  // current-state projection (latest plan + latest TodoWrite); the
+  // history of those events still lives in the chat feed.
+  const planPanelMount = document.querySelector("[data-rich-session-plan-panel-mount]");
+  if (planPanelMount instanceof HTMLElement) {
+    planPanelMount.innerHTML = renderRichSessionPlanPanel(activeSession);
   }
 
   // Live-update the composer's image-attachment chip strip. Without this,
@@ -40933,6 +41150,44 @@ function bindShellEvents() {
       event.preventDefault();
       event.stopImmediatePropagation();
       void attachRichSessionImageFiles(files, "paste");
+    }, { capture: true });
+  }
+
+  // Plan panel — collapse toggle and "open plan card" jump. Document-
+  // level delegation so the handler survives the panel-mount innerHTML
+  // swap that happens on every refresh.
+  if (!state.__richSessionPlanPanelBound) {
+    state.__richSessionPlanPanelBound = true;
+    document.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const toggle = target?.closest("[data-rich-session-plan-panel-toggle]");
+      if (toggle instanceof HTMLButtonElement) {
+        event.preventDefault();
+        const sid = getActiveSession()?.id;
+        if (sid) {
+          if (state.richSessionPlanPanelCollapsed.has(sid)) {
+            state.richSessionPlanPanelCollapsed.delete(sid);
+          } else {
+            state.richSessionPlanPanelCollapsed.add(sid);
+          }
+          refreshRichSessionSurfaceUi();
+        }
+        return;
+      }
+      const jumpLink = target?.closest("[data-rich-session-plan-panel-jump]");
+      if (jumpLink instanceof HTMLAnchorElement) {
+        event.preventDefault();
+        const entryId = jumpLink.getAttribute("data-rich-session-plan-panel-jump") || "";
+        if (!entryId) return;
+        const feed = document.querySelector("#rich-session-feed");
+        if (!(feed instanceof HTMLElement)) return;
+        const card = feed.querySelector(`article[data-entry-id="${entryId.replace(/"/g, '\\"')}"]`);
+        if (card instanceof HTMLElement) {
+          card.scrollIntoView({ behavior: "smooth", block: "center" });
+          card.classList.add("is-flash");
+          setTimeout(() => card.classList.remove("is-flash"), 1200);
+        }
+      }
     }, { capture: true });
   }
 

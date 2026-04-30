@@ -14341,6 +14341,189 @@ body.is-reordering-file-tabs {
   white-space: nowrap;
 }
 
+/* Sticky plan / todo panel — sits between the chat feed and the composer
+   so the agent's CURRENT plan stays visible while the chat scrolls.
+   Mirrors the panel pattern from Cursor and Claude Code's CLI: header
+   with progress text, progress bar, ordered task list (always full,
+   max-height capped so very long plans get an internal scroll). */
+.rich-session-plan-panel-mount {
+  padding: 0 max(18px, calc((100% - 1080px) / 2));
+}
+
+.rich-session-plan-panel-mount:empty {
+  display: none;
+}
+
+.rich-session-plan-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px 16px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(20, 22, 26, 0.78);
+  backdrop-filter: blur(8px);
+}
+
+.rich-session-plan-panel.is-collapsed {
+  gap: 0;
+  padding: 8px 14px;
+}
+
+.rich-session-plan-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rich-session-plan-panel-icon {
+  font-size: 1rem;
+  color: rgba(244, 244, 242, 0.66);
+  line-height: 1;
+}
+
+.rich-session-plan-panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: rgba(244, 244, 242, 0.88);
+  font-family: "Manrope", sans-serif;
+  font-size: 0.92rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rich-session-plan-panel-collapse {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(244, 244, 242, 0.55);
+  font-family: "Manrope", sans-serif;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.rich-session-plan-panel-collapse:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(244, 244, 242, 0.88);
+}
+
+.rich-session-plan-panel-progress {
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.rich-session-plan-panel-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, rgba(120, 220, 160, 0.92), rgba(123, 195, 255, 0.85));
+  transition: width 200ms ease;
+}
+
+.rich-session-plan-panel-tasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.rich-session-plan-panel-task {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  color: rgba(244, 244, 242, 0.86);
+  font-size: 0.92rem;
+  line-height: 1.42;
+}
+
+.rich-session-plan-panel-task-glyph {
+  flex-shrink: 0;
+  width: 14px;
+  color: rgba(244, 244, 242, 0.4);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.rich-session-plan-panel-task-index {
+  flex-shrink: 0;
+  color: rgba(244, 244, 242, 0.4);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.86rem;
+}
+
+.rich-session-plan-panel-task-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rich-session-plan-panel-task.is-completed .rich-session-plan-panel-task-glyph {
+  color: rgba(120, 220, 160, 0.92);
+}
+
+.rich-session-plan-panel-task.is-completed .rich-session-plan-panel-task-text {
+  color: rgba(244, 244, 242, 0.42);
+  text-decoration: line-through;
+  text-decoration-color: rgba(244, 244, 242, 0.22);
+}
+
+.rich-session-plan-panel-task.is-in-progress .rich-session-plan-panel-task-glyph {
+  color: rgba(255, 196, 92, 0.92);
+}
+
+.rich-session-plan-panel-task.is-in-progress .rich-session-plan-panel-task-text {
+  color: rgba(255, 234, 196, 0.92);
+  font-weight: 500;
+}
+
+.rich-session-plan-panel-task.is-pending .rich-session-plan-panel-task-text {
+  color: rgba(244, 244, 242, 0.74);
+}
+
+.rich-session-plan-panel-plan-cta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.86rem;
+}
+
+.rich-session-plan-panel-plan-label {
+  color: rgba(255, 196, 92, 0.92);
+  font-weight: 500;
+}
+
+.rich-session-plan-panel-plan-link {
+  color: rgba(123, 195, 255, 0.92);
+  text-decoration: none;
+}
+
+.rich-session-plan-panel-plan-link:hover {
+  text-decoration: underline;
+}
+
+/* Brief flash on a feed entry the panel jumped to — the user clicks
+   "Open plan card" and sees the card pulse so they can find it visually. */
+.rich-session-entry.is-flash {
+  animation: rich-session-flash 1.2s ease;
+}
+
+@keyframes rich-session-flash {
+  0% { background: rgba(123, 195, 255, 0.18); box-shadow: 0 0 0 6px rgba(123, 195, 255, 0.12); }
+  100% { background: transparent; box-shadow: 0 0 0 0 transparent; }
+}
+
 .rich-session-monitor-dot {
   width: 7px;
   height: 7px;
