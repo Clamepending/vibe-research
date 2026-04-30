@@ -2481,6 +2481,8 @@ const state = {
   lastUpdateError: null,
   systemMetrics: null,
   gpuOffLimits: [],
+  gpuManualReservations: [],
+  gpuForeignOccupied: [],
   systemMetricHistory: [],
   systemHistoryRange: "1h",
   systemHistoryMeta: null,
@@ -21168,11 +21170,14 @@ function renderDeviceCard(device) {
   ].filter(Boolean);
   const agentChips = renderGpuAgentChipsForDevice(device);
   const hasGpuIndex = Number.isInteger(device?.index);
+  const isManualReserved = hasGpuIndex && state.gpuManualReservations.includes(device.index);
+  const isForeignOccupied = hasGpuIndex && state.gpuForeignOccupied.includes(device.index);
   const isOffLimits = hasGpuIndex && state.gpuOffLimits.includes(device.index);
   const cardClasses = [
     "system-device-card",
     usedByUs ? "is-used-by-us" : "",
     isOffLimits ? "is-off-limits" : "",
+    isForeignOccupied && !isManualReserved ? "is-foreign-occupied" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -21180,9 +21185,24 @@ function renderDeviceCard(device) {
   const indexChip = hasGpuIndex
     ? `<em class="system-device-index" title="CUDA device index ${device.index}">GPU ${device.index}</em>`
     : "";
-  const reservedBadge = isOffLimits
-    ? `<span class="system-device-card-reserved-badge" title="Reserved for other cluster users — not visible to vibe-research agents">Reserved</span>`
+  // Three possible badges, in priority order: a GPU can be both reserved and
+  // foreign-occupied; we show the manual reservation in that case (it's the
+  // user's intentional choice, the foreign signal is implicit).
+  const otherUsersLabel = Array.isArray(device?.otherUsers)
+    ? device.otherUsers.filter(Boolean).join(", ")
     : "";
+  let badge = "";
+  if (isManualReserved) {
+    const title = isForeignOccupied
+      ? `Reserved by you (also currently in use by ${otherUsersLabel || "another user"})`
+      : "Reserved by you — not visible to vibe-research agents";
+    badge = `<span class="system-device-card-reserved-badge" title="${escapeHtml(title)}">Reserved</span>`;
+  } else if (isForeignOccupied) {
+    const title = otherUsersLabel
+      ? `In use by ${otherUsersLabel} — agents auto-back-off until they release this GPU`
+      : "In use by another user — agents auto-back-off until they release this GPU";
+    badge = `<span class="system-device-card-foreign-badge" title="${escapeHtml(title)}">In use by ${escapeHtml(otherUsersLabel || "another user")}</span>`;
+  }
 
   return `
     <article class="${cardClasses}"${indexAttr}>
@@ -21190,7 +21210,7 @@ function renderDeviceCard(device) {
         ${indexChip}<strong>${escapeHtml(device?.name || "Device")}</strong>
         <span>${escapeHtml(formatPercent(utilization))}</span>
       </div>
-      ${reservedBadge}
+      ${badge}
       ${renderMetricBar(utilization, usedByUs ? "is-device is-used-by-us" : "is-device")}
       ${agentChips}
       <p>${escapeHtml(detailParts.join(" · ") || "detected, but utilization is not exposed by this host")}</p>
@@ -35595,11 +35615,15 @@ function closeContextMenu() {
 
 async function setGpuOffLimitsAction(index, offLimits) {
   // Optimistic update so the right-click feels instant; reconcile on response.
-  const previous = state.gpuOffLimits.slice();
-  const next = new Set(previous);
-  if (offLimits) next.add(index);
-  else next.delete(index);
-  state.gpuOffLimits = [...next].sort((a, b) => a - b);
+  const prevManual = state.gpuManualReservations.slice();
+  const prevOff = state.gpuOffLimits.slice();
+  const nextManual = new Set(prevManual);
+  if (offLimits) nextManual.add(index);
+  else nextManual.delete(index);
+  state.gpuManualReservations = [...nextManual].sort((a, b) => a - b);
+  // Off-limits = manual ∪ foreign; recompute optimistically too.
+  const offSet = new Set([...state.gpuManualReservations, ...state.gpuForeignOccupied]);
+  state.gpuOffLimits = [...offSet].sort((a, b) => a - b);
   if (state.currentView === "system") {
     renderShell();
   }
@@ -35609,12 +35633,19 @@ async function setGpuOffLimitsAction(index, offLimits) {
       method: "POST",
       body: JSON.stringify({ index, offLimits }),
     });
-    state.gpuOffLimits = Array.isArray(payload?.gpuOffLimits)
-      ? payload.gpuOffLimits.filter((value) => Number.isInteger(value))
-      : state.gpuOffLimits;
+    if (Array.isArray(payload?.gpuOffLimits)) {
+      state.gpuOffLimits = payload.gpuOffLimits.filter((value) => Number.isInteger(value));
+    }
+    if (Array.isArray(payload?.gpuManualReservations)) {
+      state.gpuManualReservations = payload.gpuManualReservations.filter((value) => Number.isInteger(value));
+    }
+    if (Array.isArray(payload?.gpuForeignOccupied)) {
+      state.gpuForeignOccupied = payload.gpuForeignOccupied.filter((value) => Number.isInteger(value));
+    }
   } catch (error) {
     // Roll back on failure and surface the error.
-    state.gpuOffLimits = previous;
+    state.gpuManualReservations = prevManual;
+    state.gpuOffLimits = prevOff;
     window.alert(error?.message || "Could not update GPU restrictions.");
   } finally {
     if (state.currentView === "system") {
@@ -35623,29 +35654,36 @@ async function setGpuOffLimitsAction(index, offLimits) {
   }
 }
 
-function openGpuDeviceContextMenu(index, isOffLimits, x, y) {
+function openGpuDeviceContextMenu(index, x, y) {
   if (!Number.isInteger(index)) return;
-  openContextMenu(
-    [
-      isOffLimits
-        ? {
-            label: "Allow agents to use again",
-            icon: Cpu,
-            onClick: () => {
-              void setGpuOffLimitsAction(index, false);
-            },
-          }
-        : {
-            label: "Set as off-limits (reserve for others)",
-            icon: Trash2,
-            onClick: () => {
-              void setGpuOffLimitsAction(index, true);
-            },
-          },
-    ],
-    x,
-    y,
-  );
+  // Right-click only toggles MANUAL reservations. Foreign-occupied state is
+  // observed automatically and can't be toggled away — when the other user
+  // releases the GPU, the next sample lifts the restriction on its own.
+  const isManualReserved = state.gpuManualReservations.includes(index);
+  const isForeignOccupied = state.gpuForeignOccupied.includes(index);
+  const items = [];
+  if (isManualReserved) {
+    items.push({
+      label: isForeignOccupied
+        ? "Drop manual reservation (still in use by another user)"
+        : "Allow agents to use again",
+      icon: Cpu,
+      onClick: () => {
+        void setGpuOffLimitsAction(index, false);
+      },
+    });
+  } else {
+    items.push({
+      label: isForeignOccupied
+        ? "Pin as off-limits (already in use by another user)"
+        : "Set as off-limits (reserve for others)",
+      icon: Trash2,
+      onClick: () => {
+        void setGpuOffLimitsAction(index, true);
+      },
+    });
+  }
+  openContextMenu(items, x, y);
 }
 
 function installGpuDeviceContextMenu() {
@@ -35657,8 +35695,7 @@ function installGpuDeviceContextMenu() {
     const index = Number(indexAttr);
     if (!Number.isInteger(index)) return;
     event.preventDefault();
-    const isOffLimits = state.gpuOffLimits.includes(index);
-    openGpuDeviceContextMenu(index, isOffLimits, event.clientX, event.clientY);
+    openGpuDeviceContextMenu(index, event.clientX, event.clientY);
   });
 }
 
@@ -43910,6 +43947,12 @@ async function loadSystemMetrics({ forceRender = false } = {}) {
     state.systemMetrics = payload.system || null;
     state.gpuOffLimits = Array.isArray(payload.gpuOffLimits)
       ? payload.gpuOffLimits.filter((value) => Number.isInteger(value))
+      : [];
+    state.gpuManualReservations = Array.isArray(payload.gpuManualReservations)
+      ? payload.gpuManualReservations.filter((value) => Number.isInteger(value))
+      : [];
+    state.gpuForeignOccupied = Array.isArray(payload.gpuForeignOccupied)
+      ? payload.gpuForeignOccupied.filter((value) => Number.isInteger(value))
       : [];
     state.systemMetricsError = "";
     if (

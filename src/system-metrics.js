@@ -350,7 +350,8 @@ function parseProcessTable(stdout) {
   return String(stdout ?? "")
     .split(/\r?\n/)
     .map((line) => {
-      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+      // pid ppid user comm — user has no whitespace; comm captures the rest
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/);
       if (!match) {
         return null;
       }
@@ -358,7 +359,8 @@ function parseProcessTable(stdout) {
       return {
         pid: Number(match[1]),
         ppid: Number(match[2]),
-        command: match[3].trim(),
+        user: match[3],
+        command: match[4].trim(),
       };
     })
     .filter(Boolean);
@@ -366,7 +368,7 @@ function parseProcessTable(stdout) {
 
 async function readProcessTable({ execFile, timeoutMs }) {
   try {
-    const { stdout } = await runCommand(execFile, "ps", ["-eo", "pid=,ppid=,comm="], { timeoutMs });
+    const { stdout } = await runCommand(execFile, "ps", ["-eo", "pid=,ppid=,user=,comm="], { timeoutMs });
     return parseProcessTable(stdout);
   } catch {
     return [];
@@ -418,12 +420,27 @@ function createProcessOwnerResolver(processTable, agentProcessRoots) {
   };
 }
 
-function annotateNvidiaGpuProcesses({ agentProcessRoots = [], computeApps = [], nvidiaGpus = [], processTable = [] }) {
+function annotateNvidiaGpuProcesses({
+  agentProcessRoots = [],
+  computeApps = [],
+  nvidiaGpus = [],
+  processTable = [],
+  selfUsername = "",
+}) {
   if (!nvidiaGpus.length) {
     return [];
   }
 
   const resolveOwner = createProcessOwnerResolver(processTable, agentProcessRoots);
+  const userByPid = new Map(
+    (Array.isArray(processTable) ? processTable : [])
+      .map((entry) => {
+        const pid = normalizePid(entry?.pid);
+        if (!pid || !entry?.user) return null;
+        return [pid, String(entry.user)];
+      })
+      .filter(Boolean),
+  );
   const processesByGpuUuid = new Map();
 
   for (const app of computeApps) {
@@ -432,9 +449,18 @@ function annotateNvidiaGpuProcesses({ agentProcessRoots = [], computeApps = [], 
     }
 
     const owner = resolveOwner(app.pid);
+    const ownerUser = userByPid.get(Number(app.pid)) || "";
+    // "Foreign" = a different OS user. We trust UID-level ownership: if the
+    // process owner != the server's user, it's not us — even if vibe-research
+    // never spawned it. Empty selfUsername disables the check (used by tests
+    // that don't care about cross-user policy).
+    const ownedByOtherUser =
+      Boolean(selfUsername) && Boolean(ownerUser) && ownerUser !== selfUsername;
     const process = {
       ...app,
       ownedByUs: Boolean(owner),
+      ownerUser,
+      ownedByOtherUser,
       providerId: owner?.providerId || "",
       sessionId: owner?.sessionId || "",
     };
@@ -446,6 +472,13 @@ function annotateNvidiaGpuProcesses({ agentProcessRoots = [], computeApps = [], 
   return nvidiaGpus.map((gpu) => {
     const processes = gpu.uuid ? processesByGpuUuid.get(gpu.uuid) || [] : [];
     const ownedProcessCount = processes.filter((process) => process.ownedByUs).length;
+    const otherUsers = [
+      ...new Set(
+        processes
+          .filter((process) => process.ownedByOtherUser)
+          .map((process) => process.ownerUser),
+      ),
+    ];
 
     return {
       ...gpu,
@@ -453,11 +486,13 @@ function annotateNvidiaGpuProcesses({ agentProcessRoots = [], computeApps = [], 
       ownedProcessCount,
       processes: processes.slice(0, 8),
       usedByUs: ownedProcessCount > 0,
+      usedByOtherUser: otherUsers.length > 0,
+      otherUsers,
     };
   });
 }
 
-async function readNvidiaGpus({ agentProcessRoots = [], execFile, timeoutMs }) {
+async function readNvidiaGpus({ agentProcessRoots = [], execFile, selfUsername = "", timeoutMs }) {
   try {
     const { stdout } = await runCommand(
       execFile,
@@ -471,12 +506,20 @@ async function readNvidiaGpus({ agentProcessRoots = [], execFile, timeoutMs }) {
 
     const nvidiaGpus = parseNvidiaCsv(stdout);
     const computeApps = await readNvidiaComputeApps({ execFile, timeoutMs });
-    const processTable =
-      computeApps.length && normalizeAgentProcessRoots(agentProcessRoots).length
-        ? await readProcessTable({ execFile, timeoutMs })
-        : [];
+    // We need the process table whenever there are compute apps so we can map
+    // each pid to its owning user (for usedByOtherUser). Previously this only
+    // ran when vibe-research had session-spawned process roots to credit.
+    const processTable = computeApps.length
+      ? await readProcessTable({ execFile, timeoutMs })
+      : [];
 
-    return annotateNvidiaGpuProcesses({ agentProcessRoots, computeApps, nvidiaGpus, processTable });
+    return annotateNvidiaGpuProcesses({
+      agentProcessRoots,
+      computeApps,
+      nvidiaGpus,
+      processTable,
+      selfUsername,
+    });
   } catch {
     return [];
   }
@@ -710,9 +753,9 @@ async function readLinuxAccelerators({ readFile, readdir }) {
   );
 }
 
-async function readDevices({ agentProcessRoots, execFile, platform, readFile, readdir, timeoutMs }) {
+async function readDevices({ agentProcessRoots, execFile, platform, readFile, readdir, selfUsername, timeoutMs }) {
   const [nvidiaGpus, linuxDrmGpus, macGpus, macAccelerators, linuxAccelerators] = await Promise.all([
-    readNvidiaGpus({ agentProcessRoots, execFile, timeoutMs }),
+    readNvidiaGpus({ agentProcessRoots, execFile, selfUsername, timeoutMs }),
     platform === "linux" ? readLinuxDrmGpus({ readFile, readdir }) : [],
     platform === "darwin" ? readMacGpus({ execFile, timeoutMs }) : [],
     platform === "darwin" ? readMacAccelerators({ execFile, timeoutMs }) : [],
@@ -1122,6 +1165,13 @@ export async function collectSystemMetrics({
   projectStorageCache: projectStorageCacheOverride = projectStorageCache,
   projectStorageCacheMs = DEFAULT_PROJECT_STORAGE_CACHE_MS,
   projectStorageMaxRoots = DEFAULT_PROJECT_STORAGE_MAX_ROOTS,
+  selfUsername = (() => {
+    try {
+      return os.userInfo().username || "";
+    } catch {
+      return "";
+    }
+  })(),
   staleWhileRevalidate = false,
   wikiPath = "",
   wikiStorageCache: wikiStorageCacheOverride = wikiStorageCache,
@@ -1133,7 +1183,7 @@ export async function collectSystemMetrics({
     readStorage({ cwd, execFile, platform, timeoutMs }),
     readCpu({ cpus, sampleMs }),
     Promise.resolve(readMemory({ totalmem, freemem })),
-    readDevices({ agentProcessRoots, execFile, platform, readFile, readdir, timeoutMs }),
+    readDevices({ agentProcessRoots, execFile, platform, readFile, readdir, selfUsername, timeoutMs }),
     readWikiStorage({
       cache: wikiStorageCacheOverride,
       cacheMs: wikiStorageCacheMs,

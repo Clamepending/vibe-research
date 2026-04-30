@@ -10263,6 +10263,29 @@ button.visual-town-building:focus-visible {
   text-transform: uppercase;
 }
 
+/* Foreign-occupied: GPU is held by a process owned by another OS user.
+   Auto-detected — the card mutes too, but with a different (cooler) accent
+   so it visually distinguishes from a manual reservation. */
+.system-device-card.is-foreign-occupied {
+  opacity: 0.7;
+  border-color: rgba(120, 180, 255, 0.22);
+  background: rgba(120, 180, 255, 0.04);
+}
+
+.system-device-card-foreign-badge {
+  align-self: start;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 180, 255, 0.4);
+  background: rgba(120, 180, 255, 0.1);
+  color: rgba(180, 210, 255, 0.95);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .system-gpu-agent-chip-row {
   display: flex;
   flex-wrap: wrap;

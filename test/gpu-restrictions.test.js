@@ -93,3 +93,83 @@ test("write/read round-trip preserves the off-limits set", async () => {
     assert.deepEqual(await mod.readOffLimitsIndices(ALL), set);
   }
 });
+
+// ----- Manual reservations + derived-file split (new contract) ----------------
+
+async function readManualFile() {
+  return readFile(mod.getGpuManualReservationsFile(), "utf8").catch(() => "");
+}
+
+test("manual reservations file: round-trip", async () => {
+  await mod.writeManualReservations([4, 5], ALL);
+  assert.equal((await readManualFile()).trim(), "4,5");
+  assert.deepEqual(await mod.readManualReservations(ALL), [4, 5]);
+
+  await mod.writeManualReservations([], ALL);
+  assert.equal(await readManualFile(), "");
+  assert.deepEqual(await mod.readManualReservations(ALL), []);
+});
+
+test("manual reservations: indices outside known GPUs are dropped", async () => {
+  await mod.writeManualReservations([2, 99, -1, 1.5], ALL);
+  assert.deepEqual(await mod.readManualReservations(ALL), [2]);
+});
+
+test("derived file: union of manual + foreign", async () => {
+  // No manual, foreign on [4]: off-limits = [4]
+  await mod.writeManualReservations([], ALL);
+  await mod.writeDerivedVisibleFile({
+    allIndices: ALL,
+    manualOffLimits: [],
+    foreignOffLimits: [4],
+  });
+  assert.deepEqual(await mod.readOffLimitsIndices(ALL), [4]);
+
+  // Manual on [5], foreign on [4]: off-limits = [4, 5]
+  await mod.writeDerivedVisibleFile({
+    allIndices: ALL,
+    manualOffLimits: [5],
+    foreignOffLimits: [4],
+  });
+  assert.deepEqual(await mod.readOffLimitsIndices(ALL), [4, 5]);
+
+  // Same GPU manual AND foreign: counted once.
+  await mod.writeDerivedVisibleFile({
+    allIndices: ALL,
+    manualOffLimits: [4],
+    foreignOffLimits: [4],
+  });
+  assert.deepEqual(await mod.readOffLimitsIndices(ALL), [4]);
+
+  // All GPUs covered → "none" sentinel
+  await mod.writeDerivedVisibleFile({
+    allIndices: ALL,
+    manualOffLimits: [0, 1, 2],
+    foreignOffLimits: [3, 4, 5],
+  });
+  assert.deepEqual(await mod.readOffLimitsIndices(ALL), [0, 1, 2, 3, 4, 5]);
+
+  // Empty union → empty file (passthrough)
+  await mod.writeDerivedVisibleFile({
+    allIndices: ALL,
+    manualOffLimits: [],
+    foreignOffLimits: [],
+  });
+  assert.deepEqual(await mod.readOffLimitsIndices(ALL), []);
+});
+
+test("derived file does not include indices outside allIndices (stale GPUs)", async () => {
+  await mod.writeDerivedVisibleFile({
+    allIndices: [0, 1],
+    manualOffLimits: [99],
+    foreignOffLimits: [42],
+  });
+  assert.deepEqual(await mod.readOffLimitsIndices([0, 1]), []);
+});
+
+test("manual and derived files live at different paths", async () => {
+  assert.notEqual(
+    mod.getGpuRestrictionsControlFile(),
+    mod.getGpuManualReservationsFile(),
+  );
+});

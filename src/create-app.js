@@ -61,7 +61,12 @@ import { SleepPreventionService } from "./sleep-prevention.js";
 import { getVibeResearchStateDir, getVibeResearchSystemDir } from "./state-paths.js";
 import { collectSystemMetrics } from "./system-metrics.js";
 import { SystemMetricsHistoryStore } from "./system-metrics-history.js";
-import { readOffLimitsIndices, writeOffLimitsIndices } from "./gpu-restrictions.js";
+import {
+  readManualReservations,
+  readOffLimitsIndices,
+  writeDerivedVisibleFile,
+  writeManualReservations,
+} from "./gpu-restrictions.js";
 import { TailscaleServeManager } from "./tailscale-serve.js";
 import { PRODUCTION_TYPING_REFRESH_MS, TelegramService } from "./telegram-service.js";
 import { TwilioService } from "./twilio-service.js";
@@ -2680,6 +2685,17 @@ export async function createVibeResearchApp({
     if (!staleWhileRevalidate) {
       await systemMetricsHistoryStore.record(system, { force: forceHistory });
     }
+    // Refresh ~/.claude/visible-gpus.txt from the latest GPU process info so
+    // that the next agent Bash call automatically backs off any GPUs now held
+    // by another OS user (the union with the user's manual reservations is
+    // what the Bash hook reads). Cheap (one small atomic file write) and runs
+    // on every metrics collection — sampler, prewarm, and SWR GET alike.
+    try {
+      await syncDerivedGpuRestrictions(system);
+    } catch (error) {
+      // Non-fatal: log and let the request return what it has.
+      console.error("[vibe-research] gpu restrictions sync failed:", error?.message || error);
+    }
     return system;
   }
 
@@ -3511,19 +3527,41 @@ export async function createVibeResearchApp({
       .filter((value) => Number.isInteger(value));
   }
 
+  function extractForeignOccupiedGpuIndices(system) {
+    return (Array.isArray(system?.gpus) ? system.gpus : [])
+      .filter((gpu) => gpu?.usedByOtherUser && Number.isInteger(gpu?.index))
+      .map((gpu) => gpu.index);
+  }
+
+  // Recompute visible-gpus.txt from the manual reservations + the auto-detected
+  // foreign-user occupied GPUs in the latest sample. The Bash hook reads the
+  // resulting file. Surfaces { gpuOffLimits, gpuManualReservations,
+  // gpuForeignOccupied } for the caller to attach to a response.
+  async function syncDerivedGpuRestrictions(system) {
+    const allIndices = extractGpuIndices(system);
+    const gpuForeignOccupied = extractForeignOccupiedGpuIndices(system);
+    const gpuManualReservations = await readManualReservations(allIndices);
+    const gpuOffLimits = await writeDerivedVisibleFile({
+      allIndices,
+      manualOffLimits: gpuManualReservations,
+      foreignOffLimits: gpuForeignOccupied,
+    });
+    return { gpuOffLimits, gpuManualReservations, gpuForeignOccupied };
+  }
+
   app.get("/api/system", async (_request, response) => {
     try {
       // SWR: never block on storage `du`; serve cached/pending and let the
       // background sampler refill the cache.
       const system = await collectAndRecordSystemMetrics({ staleWhileRevalidate: true });
-      let gpuOffLimits = [];
+      let gpuState = { gpuOffLimits: [], gpuManualReservations: [], gpuForeignOccupied: [] };
       try {
-        gpuOffLimits = await readOffLimitsIndices(extractGpuIndices(system));
+        gpuState = await syncDerivedGpuRestrictions(system);
       } catch {
-        // Non-fatal: surface the system payload even if the control file is unreadable.
-        gpuOffLimits = [];
+        // Non-fatal: surface the system payload even if the control files
+        // are unreadable. Hook-side semantics fall back to "no restriction".
       }
-      response.json({ system, gpuOffLimits });
+      response.json({ system, ...gpuState });
     } catch (error) {
       response.status(500).json({ error: error.message || "Could not read system metrics." });
     }
@@ -3555,15 +3593,18 @@ export async function createVibeResearchApp({
         return;
       }
 
-      const current = new Set(await readOffLimitsIndices(allIndices));
+      // Toggle MANUAL reservations only. The auto (foreign-user) set is
+      // observed and applied on top of whatever the user manually sets.
+      const currentManual = new Set(await readManualReservations(allIndices));
       if (body.offLimits) {
-        current.add(index);
+        currentManual.add(index);
       } else {
-        current.delete(index);
+        currentManual.delete(index);
       }
+      await writeManualReservations([...currentManual], allIndices);
 
-      const gpuOffLimits = await writeOffLimitsIndices([...current], allIndices);
-      response.json({ gpuOffLimits });
+      const gpuState = await syncDerivedGpuRestrictions(system);
+      response.json(gpuState);
     } catch (error) {
       response
         .status(500)
