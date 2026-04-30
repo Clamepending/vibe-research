@@ -19781,6 +19781,9 @@ function renderAgentTownEvidenceLink(entry) {
   if (href) {
     return `<a class="agent-inbox-evidence-link" href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(text)}</a>`;
   }
+  if (pathLabel) {
+    return `<a class="agent-inbox-evidence-link rich-session-path-link" href="#" data-agent-town-evidence-path="${escapeHtml(pathLabel)}" data-rich-path="${escapeHtml(pathLabel)}" title="${escapeHtml(pathLabel)}">${escapeHtml(text)}</a>`;
+  }
   return `<span class="agent-inbox-evidence-link" title="${escapeHtml(pathLabel || label)}">${escapeHtml(text)}</span>`;
 }
 
@@ -34974,6 +34977,14 @@ function bindSessionEvents() {
       event.preventDefault();
       event.stopPropagation();
       openAgentTownActionHref(button.getAttribute("data-agent-town-action-open") || "");
+    });
+  });
+
+  document.querySelectorAll("[data-agent-town-evidence-path]").forEach((link) => {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void openRichSessionPath(link.getAttribute("data-agent-town-evidence-path") || "");
     });
   });
 

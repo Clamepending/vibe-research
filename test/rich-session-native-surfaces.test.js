@@ -280,6 +280,10 @@ test("native UI renders plan card, MCP badge, image strip, /login action, thinki
         actionCard?.querySelectorAll("button") || [],
         (button) => button.textContent?.trim() || "",
       );
+      const evidenceLink = actionCard?.querySelector(".agent-inbox-evidence-link");
+      const evidenceTagName = evidenceLink?.tagName || "";
+      const evidenceRichPath = evidenceLink?.getAttribute("data-rich-path") || "";
+      const evidenceOpenPath = evidenceLink?.getAttribute("data-agent-town-evidence-path") || "";
 
       // Surface toggle: native should be active, three buttons present
       // (Native | Terminal | Stream JSON).
@@ -302,6 +306,9 @@ test("native UI renders plan card, MCP badge, image strip, /login action, thinki
         slashLabel,
         actionTitle,
         actionButtons,
+        evidenceTagName,
+        evidenceRichPath,
+        evidenceOpenPath,
         toggleButtons,
       };
     });
@@ -336,6 +343,9 @@ test("native UI renders plan card, MCP badge, image strip, /login action, thinki
     assert.equal(surfaces.actionTitle, "Review latest cycle", "Agent Inbox card appears inside the chat feed");
     assert.ok(surfaces.actionButtons.includes("continue"), "chat card exposes continue choice");
     assert.ok(surfaces.actionButtons.includes("steer"), "chat card exposes steer choice");
+    assert.equal(surfaces.evidenceTagName, "A", "chat card evidence path renders as an anchor");
+    assert.equal(surfaces.evidenceRichPath, "projects/demo/results/cycle.md", "evidence link carries rich-session path metadata");
+    assert.equal(surfaces.evidenceOpenPath, "projects/demo/results/cycle.md", "evidence link carries Agent Inbox path metadata");
 
     await page.click('[data-rich-session-action-panel] [data-agent-town-action-resolve="chat-review-card"][data-agent-town-action-resolution="continued"]');
     await page.waitForFunction(async () => {
