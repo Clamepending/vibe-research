@@ -51,6 +51,7 @@ export class ClaudeStreamSession extends EventEmitter {
     env = process.env,
     maxEntries = DEFAULT_MAX_ENTRIES,
     allocateSeq = null,
+    bypassPermissions = true,
   } = {}) {
     super();
     this.sessionId = sessionId;
@@ -60,6 +61,13 @@ export class ClaudeStreamSession extends EventEmitter {
     this.extraArgs = Array.isArray(extraArgs) ? extraArgs : [];
     this.env = env;
     this.maxEntries = Math.max(1, Number(maxEntries) || DEFAULT_MAX_ENTRIES);
+    // Default ON to match the PTY launcher (which always passes
+    // --dangerously-skip-permissions). Without this, a stream-mode
+    // session is sandboxed to the cwd and can't read sibling project
+    // dirs (Library, other projects), which the user reported when
+    // asking the agent to look at a figure outside the session cwd.
+    // Toggleable per-session for paranoid users who want the prompts.
+    this.bypassPermissions = bypassPermissions !== false;
     // Caller-provided monotonic sequence allocator. Each new stream-entry
     // id gets one seq the first time we see it. The owner (SessionManager)
     // shares the counter with native entry pushes so we get a single
@@ -109,6 +117,7 @@ export class ClaudeStreamSession extends EventEmitter {
       "--verbose",
       "--include-partial-messages",
       "--session-id", this.sessionId,
+      ...(this.bypassPermissions ? ["--dangerously-skip-permissions"] : []),
       ...this.extraArgs,
     ];
 

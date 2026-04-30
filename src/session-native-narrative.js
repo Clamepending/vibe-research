@@ -881,14 +881,14 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
       const content = Array.isArray(payload.message?.content) ? payload.message.content : [];
       const thinkingText = extractClaudeThinkingText(content);
       const hasToolUse = content.some((item) => item?.type === "tool_use");
-      const assistantText = extractClaudeMessageText(content);
+      const hasAnyText = content.some((item) => item?.type === "text" && typeof item.text === "string" && item.text.trim());
       const placeholderThinking = thinkingText === "Claude is thinking...";
 
       // The empty thinking placeholder is just a spinner. When the same turn
       // already has a tool_use or visible assistant text, the Thinking entry
       // is redundant — the user can see the work. Only surface it when it is
       // actual reasoning content OR the only thing the turn produced so far.
-      if (thinkingText && (!placeholderThinking || (!hasToolUse && !assistantText))) {
+      if (thinkingText && (!placeholderThinking || (!hasToolUse && !hasAnyText))) {
         dedupePush(entries, {
           id: makeEntryId("claude-thinking", entries.length + 1),
           kind: "status",
@@ -899,22 +899,39 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
         }, maxEntries);
       }
 
-      if (assistantText) {
-        const assistantEntry = {
-          id: makeEntryId("claude-assistant", entries.length + 1),
-          kind: "assistant",
-          label: session.providerLabel || "Assistant",
-          text: assistantText,
-          timestamp: updatedAt,
-        };
-        const imageRefs = extractImageRefsFromText(assistantText);
-        if (imageRefs.length) {
-          assistantEntry.imageRefs = imageRefs;
-        }
-        dedupePush(entries, assistantEntry, maxEntries);
-      }
-
+      // Walk content[] in order and emit one entry per block. Claude
+      // commonly returns interleaved [text, tool_use, text, tool_use]
+      // sequences when the model thinks-then-tool-then-thinks; merging all
+      // text into one entry ahead of every tool entry (the previous
+      // behaviour) flattened that into [merged_text, tool, tool] which
+      // visually overlapped streaming text on top of tool cards. Per-block
+      // entries with stable ids derived from the canonical message id +
+      // block index keep the OpenCode-style "one card per content block"
+      // ordering and let the renderer's seq stamping preserve it.
+      const messageId = String(payload.message?.id || "");
+      const messageIdSlug = messageId || `m${entries.length + 1}`;
+      const tokenSlug = (input) => String(input ?? "")
+        .replace(/[^a-zA-Z0-9_-]/g, "")
+        .slice(0, 24);
+      let blockIndex = -1;
       for (const item of content) {
+        blockIndex += 1;
+        if (item?.type === "text" && typeof item.text === "string" && item.text.trim()) {
+          const assistantEntry = {
+            id: `claude-assistant-${tokenSlug(messageIdSlug)}-${blockIndex}`,
+            kind: "assistant",
+            label: session.providerLabel || "Assistant",
+            text: item.text,
+            timestamp: updatedAt,
+          };
+          const imageRefs = extractImageRefsFromText(item.text);
+          if (imageRefs.length) {
+            assistantEntry.imageRefs = imageRefs;
+          }
+          dedupePush(entries, assistantEntry, maxEntries);
+          continue;
+        }
+
         if (item?.type !== "tool_use") {
           continue;
         }

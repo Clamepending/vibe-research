@@ -5282,6 +5282,23 @@ async function attachRichSessionImagePlaceholderPaste(fallbackText) {
   refreshRichSessionSurfaceUi();
 }
 
+// Per-session memo so the document-level paste handler can know whether a
+// paste happened "inside" the rich-session surface even when the
+// textarea isn't the active element (e.g. the user clicked the chat
+// area first, then Cmd+V'd from the OS).
+function isPasteInRichSessionContext(eventTarget) {
+  const richSurface = document.querySelector("#rich-session-surface");
+  if (!(richSurface instanceof HTMLElement) || richSurface.classList.contains("is-hidden")) {
+    return false;
+  }
+  if (!richSurface.classList.contains("is-active")) {
+    return false;
+  }
+  const target = eventTarget instanceof Node ? eventTarget : null;
+  if (!target) return false;
+  return richSurface.contains(target);
+}
+
 async function attachRichSessionImageFiles(files, source) {
   const imageFiles = Array.from(files || []).filter(isImageFileLike).slice(0, TERMINAL_ATTACHMENT_MAX_IMAGES);
   if (!imageFiles.length) {
@@ -6399,7 +6416,19 @@ function renderRichSessionSurface(activeSession) {
   const richActive = surfaceMode === "native";
   const streamLogActive = surfaceMode === "stream-json";
   const surfaceActive = richActive || streamLogActive;
-  const isWorking = Boolean(activeSession?.streamWorking);
+  // Suppress the bottom "is working…" pill when a pending-assistant
+  // placeholder entry is rendered in the feed — the entry's own
+  // spinner already says "Claude Code is thinking…" and showing both
+  // produces the redundant "double thinking indicator" the user flagged.
+  // Once the assistant's first text-delta lands the placeholder
+  // mutates into streaming text and the bottom pill takes over as the
+  // long-tail "still working on this turn" signal.
+  const hasPendingAssistantEntry = (() => {
+    const narrative = getRichSessionNarrative(activeSession?.id);
+    const entries = Array.isArray(narrative?.entries) ? narrative.entries : [];
+    return entries.some((entry) => entry?.kind === "assistant" && !String(entry?.text || "").trim());
+  })();
+  const isWorking = Boolean(activeSession?.streamWorking) && !hasPendingAssistantEntry;
   const providerLabel = activeSession?.providerLabel || "Agent";
   const activeMonitors = getRichSessionActiveMonitors(activeSession);
   return `
@@ -6576,9 +6605,16 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
   }
 
   // Update the persistent "agent is working" indicator without rebuilding it.
+  // Suppress when a pending-assistant placeholder entry is in the feed —
+  // see renderRichSessionSurface for the rationale.
   const workingIndicator = document.querySelector("#rich-session-working");
   if (workingIndicator instanceof HTMLElement) {
-    const isWorking = Boolean(activeSession?.streamWorking);
+    const narrative = getRichSessionNarrative(activeSession?.id);
+    const entries = Array.isArray(narrative?.entries) ? narrative.entries : [];
+    const hasPendingAssistantEntry = entries.some(
+      (entry) => entry?.kind === "assistant" && !String(entry?.text || "").trim(),
+    );
+    const isWorking = Boolean(activeSession?.streamWorking) && !hasPendingAssistantEntry;
     workingIndicator.classList.toggle("is-active", isWorking);
     workingIndicator.setAttribute("aria-hidden", isWorking ? "false" : "true");
     const label = workingIndicator.querySelector("span:last-of-type");
@@ -40768,30 +40804,60 @@ function bindShellEvents() {
     });
   });
 
+  // Document-level paste handler for the rich-session surface. The
+  // textarea-specific handler (lower in this file) only fires when the
+  // textarea has focus; clicking on the chat surface first then Cmd+V
+  // used to drop the image silently because the textarea-bound listener
+  // was never invoked. This delegated capture-phase listener catches
+  // image pastes anywhere inside the surface and routes them to
+  // attachRichSessionImageFiles. Uses capture: true so it runs before
+  // the textarea-bound listener (which still wins when the textarea is
+  // the target — its event.preventDefault stops propagation).
+  //
+  // bindShellEvents runs many times during normal lifecycle (every
+  // render); guard so we only register the listener once.
+  if (!state.__richSessionDocumentPasteBound) {
+    state.__richSessionDocumentPasteBound = true;
+    document.addEventListener("paste", (event) => {
+      if (event.defaultPrevented) return;
+      if (!isPasteInRichSessionContext(event.target)) return;
+      if (!event.clipboardData) return;
+      const files = getImageFilesFromClipboardData(event.clipboardData);
+      if (!files.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void attachRichSessionImageFiles(files, "paste");
+    }, { capture: true });
+  }
+
   // Restart-session button on exited stream-mode sessions. Spawns a
   // fresh session in the same cwd / provider as the dead one, then
   // makes it active. Uses event delegation off document so the handler
-  // survives a re-render.
-  document.addEventListener("click", async (event) => {
-    const target = event.target instanceof Element ? event.target : null;
-    const restart = target?.closest("[data-rich-session-restart]");
-    if (!(restart instanceof HTMLButtonElement)) return;
-    event.preventDefault();
-    const session = getActiveSession();
-    if (!session) return;
-    restart.setAttribute("disabled", "disabled");
-    restart.textContent = "Restarting…";
-    try {
-      await createSessionInFolder(session.cwd, {
-        providerId: session.providerId,
-        rememberProvider: false,
-      });
-    } catch (error) {
-      window.alert(error?.message || "Could not restart session.");
-      restart.removeAttribute("disabled");
-      restart.textContent = `Restart ${session.providerLabel || "session"}`;
-    }
-  });
+  // survives a re-render. Same once-only guard as the paste handler
+  // above — bindShellEvents fires repeatedly.
+  if (!state.__richSessionDocumentRestartBound) {
+    state.__richSessionDocumentRestartBound = true;
+    document.addEventListener("click", async (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const restart = target?.closest("[data-rich-session-restart]");
+      if (!(restart instanceof HTMLButtonElement)) return;
+      event.preventDefault();
+      const session = getActiveSession();
+      if (!session) return;
+      restart.setAttribute("disabled", "disabled");
+      restart.textContent = "Restarting…";
+      try {
+        await createSessionInFolder(session.cwd, {
+          providerId: session.providerId,
+          rememberProvider: false,
+        });
+      } catch (error) {
+        window.alert(error?.message || "Could not restart session.");
+        restart.removeAttribute("disabled");
+        restart.textContent = `Restart ${session.providerLabel || "session"}`;
+      }
+    });
+  }
 
   document.querySelectorAll("[data-start-new-agent]").forEach((button) => {
     button.addEventListener("click", async (event) => {

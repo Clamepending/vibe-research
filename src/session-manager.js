@@ -192,6 +192,23 @@ function isClaudeStreamModeEnabled(env = process.env) {
   return !/^(?:0|false|off|no)$/i.test(value);
 }
 
+function isClaudeBypassPermissionsEnabled(env = process.env) {
+  // Bypass-permissions mode (--dangerously-skip-permissions) is ON by
+  // default for Claude stream-mode sessions. This mirrors what VR
+  // already does on the PTY path (see CLAUDE_SKIP_PERMISSIONS_ARG)
+  // and is what the user expects coming from the CLI. Opt-out via
+  // VIBE_RESEARCH_CLAUDE_BYPASS_PERMISSIONS=0 (or false / off / no).
+  const value = String(
+    env?.VIBE_RESEARCH_CLAUDE_BYPASS_PERMISSIONS
+      ?? env?.REMOTE_VIBES_CLAUDE_BYPASS_PERMISSIONS
+      ?? "",
+  ).trim();
+  if (!value) {
+    return true;
+  }
+  return !/^(?:0|false|off|no)$/i.test(value);
+}
+
 function isCodexStreamModeEnabled(env = process.env) {
   // Same opt-out semantics as Claude: stream mode (`codex exec --json`)
   // is the default so new Codex sessions get structured entries. Set
@@ -5754,6 +5771,13 @@ export class SessionManager {
       cwd: sessionCwd,
       env: sessionEnv,
       claudeBin,
+      // Match the PTY launcher's permission posture by default —
+      // VR has always run claude with --dangerously-skip-permissions
+      // because the agent needs to read sibling project dirs (Library,
+      // figures/, other projects). Opt-out via
+      // VIBE_RESEARCH_CLAUDE_BYPASS_PERMISSIONS=0 for paranoid users
+      // who want the per-tool approval prompts.
+      bypassPermissions: isClaudeBypassPermissionsEnabled(this.env),
       allocateSeq: () => {
         if (typeof session.entrySeqCounter !== "number") {
           session.entrySeqCounter = 0;

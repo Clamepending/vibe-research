@@ -643,6 +643,69 @@ test("extractPlanFromToolUse pulls the plan body from an ExitPlanMode tool_use",
   assert.equal(extractPlanFromToolUse(null), "");
 });
 
+test("Claude narrative emits one entry per content block in order (interleaved text + tool_use)", () => {
+  // Real Claude commonly returns content arrays like
+  // [text, tool_use, text, tool_use] when the model thinks-then-tool-
+  // then-thinks. Merging text into one entry ahead of every tool entry
+  // would visually overlap streaming text on top of tool cards. The
+  // shaper must walk content[] in order and emit one entry per block.
+  const timestamp = "2026-04-30T08:00:00.000Z";
+  const text = JSON.stringify({
+    timestamp,
+    type: "assistant",
+    message: {
+      id: "msg_1",
+      content: [
+        { type: "text", text: "First, let me check the readme." },
+        { type: "tool_use", id: "tool_a", name: "Grep", input: { pattern: "INSIGHTS" } },
+        { type: "text", text: "Found it. Now reading the project file." },
+        { type: "tool_use", id: "tool_b", name: "Read", input: { path: "README.md" } },
+      ],
+    },
+  });
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude" });
+  const order = narrative.entries.map((entry) => ({ kind: entry.kind, label: entry.label, text: entry.text }));
+
+  // Strict ordering: text₁, tool₁, text₂, tool₂.
+  assert.equal(order.length, 4);
+  assert.equal(order[0].kind, "assistant");
+  assert.match(order[0].text, /First, let me check/u);
+  assert.equal(order[1].kind, "tool");
+  assert.equal(order[1].label, "Grep");
+  assert.equal(order[2].kind, "assistant");
+  assert.match(order[2].text, /Found it/u);
+  assert.equal(order[3].kind, "tool");
+  assert.equal(order[3].label, "Read");
+});
+
+test("Claude narrative: tool emitted between two text blocks survives across re-parse (stable per-block ids)", () => {
+  // Re-parsing the same transcript should produce the same entries with
+  // the same ids — the WS push protocol relies on stable ids so re-runs
+  // mutate in place rather than appending duplicates.
+  const timestamp = "2026-04-30T08:00:00.000Z";
+  const text = JSON.stringify({
+    timestamp,
+    type: "assistant",
+    message: {
+      id: "msg_42",
+      content: [
+        { type: "text", text: "Block A." },
+        { type: "tool_use", id: "tool_x", name: "Read", input: { path: "x" } },
+        { type: "text", text: "Block B." },
+      ],
+    },
+  });
+
+  const first = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude" });
+  const second = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude" });
+  assert.deepEqual(
+    first.entries.map((e) => e.id),
+    second.entries.map((e) => e.id),
+    "ids must be deterministic across re-parses",
+  );
+});
+
 test("Claude narrative emits a `plan` entry for ExitPlanMode tool_use with the plan body", () => {
   const timestamp = "2026-04-29T12:00:00.000Z";
   const text = [
