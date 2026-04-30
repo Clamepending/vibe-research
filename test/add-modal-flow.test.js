@@ -141,6 +141,41 @@ test("clicking Add Modal flips modalEnabled and the 'Add Modal' button disappear
   }
 });
 
+test("POST /api/buildings/:id/install and /authenticate are rate-limited (CodeQL Missing-Rate-Limit guard)", async () => {
+  // Both endpoints spawn subprocesses (CLI installers, `modal token new
+  // --source web`, etc.). A loop bug in the client or any future
+  // exposure of these endpoints beyond localhost would be a denial-of-
+  // service vector. The rate limiter caps requests-per-minute at the
+  // value defined in BUILDING_INSTALL_RATE_LIMIT_MAX. Any 200 response
+  // mixed with a 429 response within the window proves the limit is
+  // active; we don't pin the exact constant so it can be tuned.
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vr-rate-limit-"));
+  const stateDir = path.join(tmp, ".vibe-research");
+  await mkdir(stateDir, { recursive: true });
+
+  const { app, baseUrl } = await startApp({ cwd: tmp, stateDir });
+  try {
+    let saw429 = false;
+    let saw200 = false;
+    // Hammer the authenticate endpoint with > BUILDING_INSTALL_RATE_LIMIT_MAX
+    // requests in quick succession. The limit is small (~12/minute) so 30
+    // sequential requests is well over the cap.
+    for (let i = 0; i < 30; i += 1) {
+      const res = await fetch(`${baseUrl}/api/buildings/modal/authenticate`, { method: "POST" });
+      if (res.status === 200) saw200 = true;
+      if (res.status === 429) {
+        saw429 = true;
+        break;
+      }
+    }
+    assert.ok(saw200, "at least one /authenticate request should succeed before the limiter fires");
+    assert.ok(saw429, "/authenticate must return 429 once BUILDING_INSTALL_RATE_LIMIT_MAX is exceeded");
+  } finally {
+    await app.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("POST /api/buildings/modal/authenticate exists and runs only the auth phase", async () => {
   // Server-API contract for the deferred auth flow. The endpoint must
   // exist and accept POST; calling it on Modal kicks off a job that runs

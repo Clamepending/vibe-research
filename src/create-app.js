@@ -99,6 +99,13 @@ const PROVIDER_INSTALL_MAX_BUFFER = Number(
 );
 const WIKI_CLONE_RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const WIKI_CLONE_RATE_LIMIT_MAX = 5;
+// POST /api/buildings/:id/install and .../authenticate spawn subprocesses
+// (CLI installers, browser-cli auth commands like `modal token new --source
+// web`) — every call burns local resources and can pop browser tabs.
+// Capping the rate prevents both accidental loops in client code and
+// trivial abuse if the surface ever ends up exposed beyond the local UI.
+const BUILDING_INSTALL_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const BUILDING_INSTALL_RATE_LIMIT_MAX = 12;
 const BUILDINGHUB_GITHUB_OAUTH_INTEGRATION_ID = "buildinghub";
 const BUILDINGHUB_GITHUB_OAUTH_START_PATH = "/buildinghub/auth/github/start";
 const BUILDINGHUB_GITHUB_OAUTH_CALLBACK_PATH = "/buildinghub/auth/github/callback";
@@ -1381,6 +1388,13 @@ export async function createVibeResearchApp({
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many Library clone requests. Try again shortly." },
+  });
+  const buildingInstallRateLimit = rateLimit({
+    windowMs: BUILDING_INSTALL_RATE_LIMIT_WINDOW_MS,
+    limit: BUILDING_INSTALL_RATE_LIMIT_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many install/authenticate requests. Try again shortly." },
   });
   const serverEnv = { ...process.env };
   const agentRunStore = new AgentRunStore({ stateDir });
@@ -2805,7 +2819,7 @@ export async function createVibeResearchApp({
     }
   });
 
-  app.post("/api/buildings/:buildingId/install", async (request, response) => {
+  app.post("/api/buildings/:buildingId/install", buildingInstallRateLimit, async (request, response) => {
     const buildingId = normalizeBuildingId(String(request.params.buildingId || ""));
     const building = BUILDING_CATALOG.find((entry) => entry.id === buildingId);
     if (!building) {
@@ -2842,7 +2856,7 @@ export async function createVibeResearchApp({
   // browser-CLI auth step to this endpoint so that placing the building
   // doesn't pop a sign-in tab unprompted; the UI surfaces an explicit
   // "Authenticate" button which POSTs here when the user is ready.
-  app.post("/api/buildings/:buildingId/authenticate", async (request, response) => {
+  app.post("/api/buildings/:buildingId/authenticate", buildingInstallRateLimit, async (request, response) => {
     const buildingId = normalizeBuildingId(String(request.params.buildingId || ""));
     const building = BUILDING_CATALOG.find((entry) => entry.id === buildingId);
     if (!building) {
