@@ -6033,6 +6033,56 @@ export async function createVibeResearchApp({
     }
   });
 
+  // Serves a previously-uploaded image attachment by absolute path. The
+  // native chat needs this to render dragged/pasted images inline as tiles
+  // — the attachment lives outside the workspace root (in the state dir),
+  // so the regular /api/files/content endpoint can't reach it.
+  // Path-traversal is blocked by requiring the resolved absolute path to
+  // sit under <stateDir>/<ATTACHMENTS_SUBDIR>.
+  app.get("/api/attachments/file", async (request, response) => {
+    try {
+      const rawPath = typeof request.query.path === "string" ? request.query.path : "";
+      if (!rawPath) {
+        response.status(400).json({ error: "path query parameter is required" });
+        return;
+      }
+
+      const attachmentsRoot = path.resolve(stateDir, ATTACHMENTS_SUBDIR);
+      const targetPath = path.resolve(rawPath);
+      const relative = path.relative(attachmentsRoot, targetPath);
+      if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+        response.status(400).json({ error: "path is not inside the attachments directory" });
+        return;
+      }
+
+      const stats = await stat(targetPath).catch((error) => {
+        if (error?.code === "ENOENT") {
+          throw buildHttpError("Attachment not found.", 404);
+        }
+        throw error;
+      });
+
+      if (!stats.isFile()) {
+        response.status(400).json({ error: "Requested path is not a file." });
+        return;
+      }
+
+      response.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      response.sendFile(targetPath, { dotfiles: "allow" }, (error) => {
+        if (!error || response.headersSent) {
+          if (error) response.destroy(error);
+          return;
+        }
+        response.status(error.statusCode || error.status || 500).json({
+          error: error.message || "Unable to read requested attachment.",
+        });
+      });
+    } catch (error) {
+      response.status(error.statusCode || 400).json({ error: error.message });
+    }
+  });
+
   app.post("/api/attachments/images", async (request, response) => {
     try {
       const sessionId = String(request.body?.sessionId || "").trim();

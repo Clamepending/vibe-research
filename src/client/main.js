@@ -5352,7 +5352,7 @@ const RICH_SESSION_INLINE_IMAGE_EXTENSIONS = /\.(?:png|jpe?g|gif|webp|bmp)\b/iu;
 //   * Workspace-relative: figures/foo.png, src/img/x.jpg
 //   * "Saved to <path>" style references that bash plot scripts tend to emit
 // Bare filenames like "foo.png" with no slash are skipped (too noisy).
-function extractRichSessionImageRefs(text) {
+function extractRichSessionImageRefs(text, { includeMarkdown = false } = {}) {
   const seen = new Set();
   const out = [];
   const source = String(text ?? "");
@@ -5360,25 +5360,43 @@ function extractRichSessionImageRefs(text) {
     return out;
   }
 
-  // Strip markdown image syntax first — those are handled by the markdown
-  // renderer's image() hook, no need to double-render.
-  const sanitized = source.replace(/!\[[^\]]*\]\([^)]+\)/gu, "");
-
-  const re = /(\/(?:[\w.@~+-]+(?:\s\w[\w.@~+-]*)*\/)+[\w.@~+-]+\.[A-Za-z0-9]{2,8}|(?:[\w.@~+-]+\/)+[\w.@~+-]+\.[A-Za-z0-9]{2,8})/gu;
-  for (const match of sanitized.matchAll(re)) {
-    const raw = String(match[1] || "");
-    let trimmed = raw;
+  const pushIfImage = (raw) => {
+    let trimmed = String(raw || "");
     while (trimmed.length && /[.,;:!?)\]]/u.test(trimmed[trimmed.length - 1])) {
       trimmed = trimmed.slice(0, -1);
     }
     if (!RICH_SESSION_INLINE_IMAGE_EXTENSIONS.test(trimmed)) {
-      continue;
+      return;
     }
     if (seen.has(trimmed)) {
-      continue;
+      return;
     }
     seen.add(trimmed);
     out.push(trimmed);
+  };
+
+  // Pull paths out of markdown image syntax explicitly when the caller asks
+  // for it. Used for user-message entries (which don't render markdown via
+  // the knowledge-base renderer) and for tool entries that paste in an
+  // attachment reference. Assistant entries skip this branch — the markdown
+  // renderer's image() hook produces an <img> directly, so re-extracting
+  // here would double-render the same figure.
+  if (includeMarkdown) {
+    for (const match of source.matchAll(/!\[[^\]]*\]\(<?([^)<>]+)>?\)/gu)) {
+      pushIfImage(match[1]);
+      if (out.length >= 4) {
+        return out;
+      }
+    }
+  }
+
+  // Strip markdown image syntax before scanning for plain paths so we don't
+  // double-extract a path that already appeared inside ![](...) above.
+  const sanitized = source.replace(/!\[[^\]]*\]\([^)]+\)/gu, "");
+
+  const re = /(\/(?:[\w.@~+-]+(?:\s\w[\w.@~+-]*)*\/)+[\w.@~+-]+\.[A-Za-z0-9]{2,8}|(?:[\w.@~+-]+\/)+[\w.@~+-]+\.[A-Za-z0-9]{2,8})/gu;
+  for (const match of sanitized.matchAll(re)) {
+    pushIfImage(match[1]);
     if (out.length >= 4) {
       break;
     }
@@ -5387,14 +5405,22 @@ function extractRichSessionImageRefs(text) {
   return out;
 }
 
-// Resolves an image path (absolute or workspace-relative) to a URL the
-// renderer can drop into <img src=...>. Absolute paths inside the active
-// workspace root convert to relative; paths outside the root return "" so
-// the renderer can fall back to the path link instead of a broken image.
+// Resolves an image path to a URL the renderer can drop into <img src=...>.
+// Three cases:
+//   1. Absolute path under the vibe-research attachments dir
+//      (e.g. drag/paste uploads) — route through /api/attachments/file.
+//   2. Absolute path inside the active workspace root, OR a workspace-
+//      relative path — route through /api/files/content.
+//   3. Anything else (absolute path outside both) → return "" and let the
+//      renderer fall back to the path link.
 function getRichSessionImageUrl(rawPath) {
   const trimmed = String(rawPath || "").trim();
   if (!trimmed) {
     return "";
+  }
+
+  if (trimmed.startsWith("/") && /\/attachments\/sessions\//u.test(trimmed)) {
+    return `/api/attachments/file?${new URLSearchParams({ path: trimmed }).toString()}`;
   }
 
   const root = normalizeWorkspaceRoot(state.filesRoot || state.defaultCwd || "");
@@ -5572,10 +5598,22 @@ function renderRichSessionEntry(entry, index) {
           return [];
         }
         const combined = `${text}\n${entry?.outputPreview || ""}`;
-        return extractRichSessionImageRefs(combined);
+        return extractRichSessionImageRefs(combined, { includeMarkdown: true });
       })()
     : [];
   const toolImageStripHtml = renderRichSessionImageStrip(toolImageRefs);
+
+  // User-message entries get an image strip when the message contains the
+  // attachment markdown the composer produces ("![dropped image: foo.png]
+  // (/abs/path/...)"). Restrict to that explicit syntax so paths the user
+  // merely *mentioned* in prose ("look at figures/x.png") don't auto-embed
+  // on a user bubble — only what they actually attached should appear as
+  // a tile.
+  const userImageRefs = kind === "user"
+    ? extractRichSessionImageRefs(text, { includeMarkdown: true })
+        .filter((value) => new RegExp(`!\\[[^\\]]*\\]\\(<?${value.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}>?\\)`).test(text))
+    : [];
+  const userImageStripHtml = renderRichSessionImageStrip(userImageRefs);
 
   const bodyHtml = isThinking
     ? ""
@@ -5583,6 +5621,8 @@ function renderRichSessionEntry(entry, index) {
     ? renderRichSessionTodoBody(entry.todos)
     : kind === "tool"
     ? `<pre class="rich-session-entry-pre">${body}</pre>${outputPreview}${toolImageStripHtml}`
+    : kind === "user"
+    ? `<div class="rich-session-entry-copy">${body}</div>${userImageStripHtml}`
     : `<div class="rich-session-entry-copy">${body}</div>${slashActionHtml}`;
 
   return `

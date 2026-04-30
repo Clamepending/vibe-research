@@ -103,7 +103,13 @@ test("rich session native feed is clean even when the raw transcript is full of 
           {
             kind: "user",
             label: "You",
-            text: "Run doctor and fix README placeholder rows for bidir-video-rl-bench.",
+            // Mirrors what the composer's drag/paste pipeline puts in the
+            // textarea: prose plus an "Attached image: ![alt](abs)" markdown
+            // reference. The renderer should turn the attachment into an
+            // inline tile on the user bubble — but should NOT auto-embed
+            // the bare path "figures/x.png" the user merely mentioned in
+            // prose (those only appear on assistant messages).
+            text: "Run doctor and fix README placeholder rows for bidir-video-rl-bench. Attached image: ![dropped image: hint.png](/tmp/attachments/sessions/rich-look-session/2026-04-29/hint-aa.png) Reference figures/baseline-curve.png too.",
             timestamp,
           },
           {
@@ -252,6 +258,13 @@ test("rich session native feed is clean even when the raw transcript is full of 
       const assistantImageTiles = assistantEntry
         ? Array.from(assistantEntry.querySelectorAll(".rich-session-image-tile"))
         : [];
+      const userEntry = entries.find((entry) => entry.classList.contains("is-user"));
+      const userImageTiles = userEntry
+        ? Array.from(userEntry.querySelectorAll(".rich-session-image-tile"))
+        : [];
+      const userImageEls = userEntry
+        ? Array.from(userEntry.querySelectorAll(".rich-session-image-tile img"))
+        : [];
       const greptoolEntry = toolEntries.find((entry) => /grep/i.test(entry.textContent || ""));
       const plotToolEntry = toolEntries.find((entry) => /plot_fid/i.test(entry.textContent || ""));
       const greptoolImageTiles = greptoolEntry
@@ -278,6 +291,9 @@ test("rich session native feed is clean even when the raw transcript is full of 
         assistantImagePaths: assistantImageTiles.map((tile) => tile.getAttribute("data-rich-path") || ""),
         plotToolImageCount: plotToolImageTiles.length,
         greptoolImageCount: greptoolImageTiles.length,
+        userImageCount: userImageTiles.length,
+        userImageSrc: userImageEls[0]?.getAttribute("src") || "",
+        userImageDataPath: userImageTiles[0]?.getAttribute("data-rich-path") || "",
       };
     });
 
@@ -357,6 +373,19 @@ test("rich session native feed is clean even when the raw transcript is full of 
       `expected the plot Bash tool to embed the saved figure, got ${summary.plotToolImageCount}`);
     assert.equal(summary.greptoolImageCount, 0,
       `expected grep output NOT to embed the figure, got ${summary.greptoolImageCount}`);
+
+    // 11. User-message attachments (drag/paste) render as a tile on the
+    //     user bubble. The attachment's absolute path is outside the
+    //     workspace root, so the tile's <img src> must route through the
+    //     /api/attachments/file endpoint, not /api/files/content. Bare
+    //     paths the user only mentioned in prose ("figures/baseline-curve
+    //     .png") must NOT auto-embed on a user message.
+    assert.equal(summary.userImageCount, 1,
+      `expected exactly 1 image tile under the user message (only the attached one), got ${summary.userImageCount}`);
+    assert.match(summary.userImageSrc, /^\/api\/attachments\/file\?path=/,
+      `attachment image must use /api/attachments/file, got ${summary.userImageSrc}`);
+    assert.equal(summary.userImageDataPath,
+      "/tmp/attachments/sessions/rich-look-session/2026-04-29/hint-aa.png");
   } finally {
     await browser?.close().catch(() => {});
     await app.close();
