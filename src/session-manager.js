@@ -5941,15 +5941,21 @@ export class SessionManager {
     });
 
     streamSession.on("entries", (entries) => {
-      // Merge-by-id rather than replace so resume-hydrated history
-      // (stamped with `resumed-` ids below) survives every new live event.
-      // Without this, the first live "entries" emission of a new turn
-      // would clobber the entire prior conversation we just spliced in.
+      // Resume-hydrated entries (stamped `resumed-*` below) must survive
+      // every new live event — they're our copy of the prior conversation
+      // and the live stream never re-emits them. Everything else from the
+      // live stream is authoritative and gets replaced wholesale: when
+      // ClaudeStreamSession promotes a transient `claude-partial-<msgId>`
+      // or `claude-pending-assistant` into a finalized assistant entry,
+      // the placeholder vanishes from `entries` and we want it gone here
+      // too. (PR #120 preserved any missing id, which left ghost
+      // "thinking…" spinners between every tool call.)
       const incoming = Array.isArray(entries) ? entries : [];
-      const incomingIds = new Set(incoming.map((entry) => entry?.id).filter(Boolean));
       const existing = Array.isArray(session.streamEntries) ? session.streamEntries : [];
-      const preserved = existing.filter((entry) => entry?.id && !incomingIds.has(entry.id));
-      session.streamEntries = [...preserved, ...incoming];
+      const preservedResumed = existing.filter(
+        (entry) => entry?.id && String(entry.id).startsWith("resumed-"),
+      );
+      session.streamEntries = [...preservedResumed, ...incoming];
       // Push narrative diffs over the WS so the client reducer applies
       // upserts/removes directly — no HTTP round-trip required. The legacy
       // session-meta broadcast still fires alongside (cheap; small payload)
