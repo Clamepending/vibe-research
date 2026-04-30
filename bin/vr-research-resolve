@@ -1,0 +1,146 @@
+#!/usr/bin/env node
+// vr-research-resolve — orchestrate loop step 9 in one call.
+//
+// Replaces the bash sequence:
+//   vr-research-leaderboard insert ... | jq .evicted.slug
+//   vr-research-active remove --slug X
+//   vr-research-queue add/remove/reprioritize ...   (per result-doc verbs)
+//   vr-research-log --event evicted --slug $EVICTED
+//   vr-research-log --event resolved+admitted --slug X --summary ... --link ...
+//
+// Usage:
+//   vr-research-resolve <project-dir> --slug v3-deeper-knob --event resolved \
+//     --commit https://github.com/example/x/commit/abc1234
+
+import path from "node:path";
+import process from "node:process";
+import { resolveMove } from "../src/research/resolve.js";
+
+function printHelp() {
+  process.stdout.write(`vr-research-resolve — orchestrate loop step 9
+
+Reads <project>/results/<slug>.md and applies the verdict end-to-end:
+  - LEADERBOARD insert (if admit decision says "insert at rank N")
+  - ACTIVE remove (always, tolerant if no row)
+  - QUEUE updates per the result doc's "Queue updates" section
+    (ADD / REMOVE / REPRIORITIZE verbs)
+  - LOG row for any rank-6 eviction
+  - LOG row for the move resolution
+
+Usage:
+  vr-research-resolve <project-dir> --slug <slug> --event <evt> [options]
+
+Required:
+  --slug <text>      The move slug (also the result-doc filename without .md).
+  --event <text>     Primary tag: resolved | falsified | abandoned. The
+                     "+admitted" suffix is auto-appended if the result
+                     doc's Decision line says "insert at rank N".
+
+Required if admitting:
+  --commit <url>     GitHub URL of the cycle commit (e.g. .../commit/abc).
+
+Optional overrides (auto-derived if omitted):
+  --summary <text>   LOG summary. Defaults to the first line of TAKEAWAY.
+  --score <text>     Leaderboard score cell. Defaults to "<mean> ± <std>
+                     across n=<seeds> seeds" from frontmatter.
+
+Common:
+  --json             Emit a structured \`steps\` array on stdout.
+  --help, -h         Show this message.
+
+Examples:
+  # Move resolved, admitted, beats rank 1, evicts rank 5:
+  vr-research-resolve projects/widget-tuning --slug v3-deeper-knob \\
+    --event resolved \\
+    --commit https://github.com/example/widget-tuning/commit/abc1234
+
+  # Move falsified (hypothesis missed by 3σ), no admission:
+  vr-research-resolve projects/widget-tuning --slug v5-aug-baseline \\
+    --event falsified
+`);
+}
+
+function parseArgs(argv) {
+  const opts = {
+    projectDir: "",
+    slug: "",
+    event: "",
+    summary: "",
+    score: "",
+    commit: "",
+    json: false,
+    help: false,
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
+    if (arg === "--json") { opts.json = true; continue; }
+    if (arg === "--slug") { opts.slug = argv[++i] || ""; continue; }
+    if (arg === "--event") { opts.event = argv[++i] || ""; continue; }
+    if (arg === "--summary") { opts.summary = argv[++i] || ""; continue; }
+    if (arg === "--score") { opts.score = argv[++i] || ""; continue; }
+    if (arg === "--commit") { opts.commit = argv[++i] || ""; continue; }
+    if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
+    if (!opts.projectDir) { opts.projectDir = arg; continue; }
+    throw new Error(`unexpected positional arg: ${arg}`);
+  }
+  return opts;
+}
+
+async function main() {
+  let opts;
+  try { opts = parseArgs(process.argv.slice(2)); }
+  catch (err) {
+    process.stderr.write(`${err.message}\n\n`);
+    printHelp();
+    process.exit(2);
+  }
+  if (opts.help) { printHelp(); process.exit(0); }
+
+  const errs = [];
+  if (!opts.projectDir) errs.push("project-dir positional argument is required");
+  if (!opts.slug) errs.push("--slug is required");
+  if (!opts.event) errs.push("--event is required");
+  if (errs.length) {
+    for (const e of errs) process.stderr.write(`${e}\n`);
+    process.exit(2);
+  }
+
+  const projectDir = path.resolve(opts.projectDir);
+  let result;
+  try {
+    result = await resolveMove({
+      projectDir,
+      slug: opts.slug,
+      event: opts.event,
+      summary: opts.summary,
+      score: opts.score,
+      commit: opts.commit,
+    });
+  } catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  }
+
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.exit(0);
+  }
+
+  process.stdout.write(`vr-research-resolve: ${opts.slug} → ${result.event}\n`);
+  for (const step of result.steps) {
+    const extra = [];
+    if (step.rank !== undefined) extra.push(`rank=${step.rank}`);
+    if (step.evicted) extra.push(`evicted=${step.evicted}`);
+    if (step.bumped) extra.push(`bumped=${step.bumped}`);
+    if (step.toRow) extra.push(`to-row=${step.toRow}`);
+    if (step.skipped) extra.push(`(${step.skipped})`);
+    if (step.event) extra.push(`event=${step.event}`);
+    if (step.slug && step.step !== "log.append" && step.step !== "queue.add") extra.push(`slug=${step.slug}`);
+    const tag = extra.length ? `  (${extra.join(", ")})` : "";
+    process.stdout.write(`  ${step.step}${tag}\n`);
+  }
+  process.exit(0);
+}
+
+main();
