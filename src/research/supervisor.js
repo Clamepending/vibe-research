@@ -39,6 +39,7 @@ function normalizeSupervisorCard(value = {}) {
     evidence: boundedText(input.evidence, 180),
     integrity: boundedText(input.integrity, 180),
     compute: boundedText(input.compute, 180),
+    continuity: boundedText(input.continuity, 220),
     stop: boundedText(input.stop, 180),
     preview: boundedText(input.preview, 240),
   };
@@ -102,6 +103,64 @@ function recommendationReason(report = {}) {
   return trimString(report?.recommendation?.reason);
 }
 
+function normalizeSupervisorRuntime(value = {}) {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const background = input.backgroundActivity && typeof input.backgroundActivity === "object" && !Array.isArray(input.backgroundActivity)
+    ? input.backgroundActivity
+    : {};
+  const activeBackgroundTasks = Math.max(
+    0,
+    Math.floor(Number(input.activeBackgroundTasks ?? background.activeCount) || 0),
+  );
+  const activeSubagents = Math.max(0, Math.floor(Number(input.activeSubagents) || 0));
+  const recentTraceHasMonitor = Boolean(input.recentTraceHasMonitor || input.monitorArmed || input.hasMonitor);
+  const recentTraceHasWakeup = Boolean(input.recentTraceHasWakeup || input.wakeupArmed || input.hasWakeup);
+  const hasContinuity = Boolean(input.hasContinuity || recentTraceHasMonitor || recentTraceHasWakeup);
+  const summaryParts = [
+    hasContinuity
+      ? [
+          recentTraceHasMonitor ? "monitor visible" : "",
+          recentTraceHasWakeup ? "wakeup visible" : "",
+        ].filter(Boolean).join(" and ") || "monitor/wakeup visible"
+      : "",
+    activeBackgroundTasks ? `${activeBackgroundTasks} background task${activeBackgroundTasks === 1 ? "" : "s"}` : "",
+    activeSubagents ? `${activeSubagents} active subagent${activeSubagents === 1 ? "" : "s"}` : "",
+    input.summary || input.monitorSummary || input.wakeupSummary || "",
+  ].filter(Boolean);
+  return {
+    activeBackgroundTasks,
+    activeSubagents,
+    recentTraceHasMonitor,
+    recentTraceHasWakeup,
+    hasContinuity,
+    summary: compactDirectiveText(summaryParts.join("; "), 220),
+  };
+}
+
+function observedAttachmentRuntime(attachment = {}) {
+  return attachment?.runtime || attachment?.sessionRuntime || {};
+}
+
+function actionNeedsContinuityReminder(action = "") {
+  const text = trimString(action).toLowerCase();
+  if (!text) return false;
+  if (/synth|review|brainstorm|brief|plan|fix|doctor|repair|enter-review/u.test(text)) return false;
+  return /continue|active|resume|run-next|run-sweep|sweep|experiment|hillclimb|rerun/u.test(text);
+}
+
+function continuityInstructionLine({ action = "", runtime = {} } = {}) {
+  const status = normalizeSupervisorRuntime(runtime);
+  if (status.hasContinuity) {
+    return `Continuity: monitor/wakeup visible${status.summary ? ` (${status.summary})` : ""}; keep the completion signal attached to any long-running work.`;
+  }
+  if (!actionNeedsContinuityReminder(action)) return "";
+  const backgroundCount = status.activeBackgroundTasks + status.activeSubagents;
+  const background = backgroundCount
+    ? ` ${status.summary} ${backgroundCount === 1 ? "is" : "are"} visible, but no monitor/wakeup is.`
+    : "";
+  return `Continuity: no active monitor/wakeup is visible.${background} Before leaving a long-running run, set a monitor, scheduled wakeup, or log watcher with a clear completion signal.`;
+}
+
 function directiveSignature({ event, action, report, reason }) {
   const rec = report?.recommendation || {};
   return [
@@ -133,6 +192,7 @@ function manualDirective(action, { attachment = {}, report = null } = {}) {
   const project = trimString(attachment?.projectName);
   const context = report?.projectContext || {};
   const objective = trimString(attachment?.objective) || trimString(context.goal);
+  const runtime = observedAttachmentRuntime(attachment);
   const projectPhrase = projectPhraseFor(project);
   const nextCommand = trimString(report?.nextCommand);
   const reason = recommendationReason(report);
@@ -157,6 +217,8 @@ function manualDirective(action, { attachment = {}, report = null } = {}) {
         context,
         reason,
         command: nextCommand,
+        action: "manual-continue",
+        runtime,
         focus: "Choose the smallest safe next step from ACTIVE or QUEUE, and do not start broad exploration until the durable state is inspected.",
       }),
       reason: "manual continue requested",
@@ -171,6 +233,8 @@ function manualDirective(action, { attachment = {}, report = null } = {}) {
         context,
         reason,
         command: nextCommand,
+        action: "manual-synthesize",
+        runtime,
         focus: "Produce a tight checkpoint: what changed since the last update, which evidence is complete or incomplete, current risks, qualitative sample/heatmap status, and the next recommended move.",
         finish: "Do not launch new experiments during the checkpoint; end with the recommendation, durable links, and any true human gate.",
       }),
@@ -186,6 +250,8 @@ function manualDirective(action, { attachment = {}, report = null } = {}) {
         context,
         reason,
         command: nextCommand,
+        action: "manual-brainstorm",
+        runtime,
         focus: "Brainstorm candidate directions from the latest positive and negative evidence, then select the smallest evidence-backed move whose result would change a decision.",
         finish: "Write or update the plan/brief with falsifiers, expected artifacts, and cost; ask for review before expensive execution if the choice is ambiguous.",
       }),
@@ -258,8 +324,11 @@ function operatingBrief({
   command = "",
   focus = "",
   finish = "",
+  action = "",
+  runtime = {},
 } = {}) {
   const stateLine = compactProjectStateLine(context);
+  const continuityLine = continuityInstructionLine({ action, runtime });
   const goal = trimString(context.goal);
   const objectiveText = trimString(objective);
   const goalLine = goal && goal !== objectiveText
@@ -282,6 +351,7 @@ function operatingBrief({
     lines.push(`Current routing signal${projectPhraseFor(project)}: ${reason}`);
   }
   lines.push(supervisorDecisionChecklistBlock());
+  if (continuityLine) lines.push(continuityLine);
   if (focus) {
     lines.push(`Next instruction: ${focus}`);
   }
@@ -327,7 +397,16 @@ function supervisorComputeLine(action = "") {
   return "Use idle GPUs for independent seeds, ablations, or sweeps; do not overlap conflicting cycles.";
 }
 
-function supervisorCardFromDirective({ action = "", reason = "", directiveText = "" } = {}) {
+function supervisorContinuityLine(action = "", runtime = {}) {
+  const line = continuityInstructionLine({ action, runtime });
+  if (line) return line.replace(/^Continuity:\s*/u, "");
+  const status = normalizeSupervisorRuntime(runtime);
+  return status.hasContinuity
+    ? `monitor/wakeup visible${status.summary ? ` (${status.summary})` : ""}`
+    : "No monitor/wakeup state required for this supervisory step.";
+}
+
+function supervisorCardFromDirective({ action = "", reason = "", directiveText = "", runtime = {} } = {}) {
   return normalizeSupervisorCard({
     label: "Evidence-first supervisor",
     mode: supervisorModeForAction(action),
@@ -336,9 +415,16 @@ function supervisorCardFromDirective({ action = "", reason = "", directiveText =
     evidence: supervisorEvidenceLine(action),
     integrity: "Audit trace/diffs for evaluator tampering, leakage, cherry-picking, stale artifacts, and unverified claims.",
     compute: supervisorComputeLine(action),
+    continuity: supervisorContinuityLine(action, runtime),
     stop: "Stop only for a true human gate, blocked state, or completed evidence-backed verdict.",
     preview: compactDirectiveText(directiveText, 220),
   });
+}
+
+function continuitySignaturePart(action = "", runtime = {}) {
+  const status = normalizeSupervisorRuntime(runtime);
+  if (status.hasContinuity) return "continuity-visible";
+  return actionNeedsContinuityReminder(action) ? "continuity-missing" : "";
 }
 
 function automaticDirective({ action, report, attachment }) {
@@ -348,6 +434,7 @@ function automaticDirective({ action, report, attachment }) {
   const project = trimString(attachment?.projectName);
   const context = report?.projectContext || {};
   const objective = trimString(attachment?.objective) || trimString(context.goal);
+  const runtime = observedAttachmentRuntime(attachment);
   const projectPhrase = projectPhraseFor(project);
   const nextCommand = trimString(report?.nextCommand);
 
@@ -360,6 +447,8 @@ function automaticDirective({ action, report, attachment }) {
         context,
         reason,
         command: nextCommand || `vr-research-doctor <project-dir>`,
+        action,
+        runtime,
         focus: "Do not start experiments while the project contract is corrupt; repair the README/LOG/result-doc shape first.",
         finish: "Re-run the doctor, commit/push the repair, then continue from the durable README/LOG state.",
       }),
@@ -376,6 +465,8 @@ function automaticDirective({ action, report, attachment }) {
         context,
         reason,
         command: nextCommand,
+        action,
+        runtime,
         focus: "If a cycle is already running, verify process/GPU/artifact state and wait or monitor rather than launching a conflicting cycle. If evidence is complete, finish the move with the registered verdict instead of drifting into new work.",
       }),
       reason: reason || "active move needs the next supervised step",
@@ -391,6 +482,8 @@ function automaticDirective({ action, report, attachment }) {
         context,
         reason,
         command: nextCommand,
+        action,
+        runtime,
         focus: "Create or resume the result doc before expensive work, move the row into ACTIVE, and make the pre-flight/falsifier explicit.",
       }),
       reason: reason || "queued move is ready to run",
@@ -406,6 +499,8 @@ function automaticDirective({ action, report, attachment }) {
         context,
         reason,
         command: nextCommand,
+        action,
+        runtime,
         focus: "Run the next runnable sweep row, preserve per-row artifacts and metrics, and do not collapse distinct recipes into one undocumented comparison.",
       }),
       reason: reason || "planned sweep has runnable rows",
@@ -421,6 +516,8 @@ function automaticDirective({ action, report, attachment }) {
         context,
         reason,
         command: nextCommand,
+        action,
+        runtime,
         focus: "Judge the latest result, distill what changed, identify failure modes and qualitative evidence, then propose the next move with a falsifier.",
         finish: "Write the review/brief update, surface the recommendation for approval if needed, and only then compile new QUEUE rows.",
       }),
@@ -437,6 +534,8 @@ function automaticDirective({ action, report, attachment }) {
         context,
         reason,
         command: nextCommand,
+        action,
+        runtime,
         focus: "Use the README, LOG, leaderboard, prior result docs, and current artifacts to propose one small next move with a falsifier before running it.",
         finish: "Save the brief, ask for review if the choice is material, and do not start experiments until the brief is fit to queue.",
       }),
@@ -453,6 +552,8 @@ function automaticDirective({ action, report, attachment }) {
         context,
         reason,
         command: nextCommand,
+        action,
+        runtime,
         focus: "Use the latest negative and positive evidence to propose a few candidate moves, then pick the smallest one that would change a decision.",
         finish: "Save the plan or brief, include falsifiers and expected artifacts, and ask for review before expensive execution if the choice is ambiguous.",
       }),
@@ -469,6 +570,8 @@ function automaticDirective({ action, report, attachment }) {
         context,
         reason,
         command: nextCommand,
+        action,
+        runtime,
         focus: "If it is already fit to run, compile it into QUEUE; otherwise tighten the question, grounding, expected artifact, and falsifier first.",
       }),
       reason: reason || "brief needs review before queueing",
@@ -486,6 +589,8 @@ function automaticDirective({ action, report, attachment }) {
           context,
           reason,
           command: nextCommand,
+          action,
+          runtime,
           focus: "Inspect the judge issues, run the narrowest confirming cycle, and keep the leaderboard unchanged until evidence is strong.",
         }),
         reason: reason || "judge recommends rerun",
@@ -500,6 +605,8 @@ function automaticDirective({ action, report, attachment }) {
           context,
           reason,
           command: nextCommand,
+          action,
+          runtime,
           focus: "Update the narrative, limitations, and durable project state according to the judge evidence before choosing new work.",
         }),
         reason: reason || "judge recommends synthesis",
@@ -514,6 +621,8 @@ function automaticDirective({ action, report, attachment }) {
           context,
           reason,
           command: nextCommand,
+          action,
+          runtime,
           focus: "Use judge output, negative results, leaderboard state, and qualitative artifact review to propose the smallest useful follow-up.",
         }),
         reason: reason || "judge recommends brainstorming",
@@ -528,6 +637,8 @@ function automaticDirective({ action, report, attachment }) {
           context,
           reason,
           command: nextCommand,
+          action,
+          runtime,
           focus: "Use the judge evidence to choose the next safe cycle and keep the result doc current.",
         }),
         reason: reason || "judge recommends continuing",
@@ -584,6 +695,7 @@ export function decideResearchSupervisorIntervention({
         action,
         reason: manual.reason,
         directiveText: manual.text,
+        runtime: observedAttachmentRuntime(attachment),
       });
       return {
         action: "directive",
@@ -637,7 +749,9 @@ export function decideResearchSupervisorIntervention({
     event: normalizedEvent,
     action: recAction,
     report: orchestratorReport,
-    reason: automatic.reason,
+    reason: [automatic.reason, continuitySignaturePart(recAction, observedAttachmentRuntime(attachment))]
+      .filter(Boolean)
+      .join("|"),
   });
   const allowRepeat = normalizedEvent.type === "recover-exited";
   if (!allowRepeat && signature && signature === state.lastDirectiveSignature) {
@@ -654,6 +768,7 @@ export function decideResearchSupervisorIntervention({
     action: recAction,
     reason: automatic.reason,
     directiveText: automatic.text,
+    runtime: observedAttachmentRuntime(attachment),
   });
 
   return {

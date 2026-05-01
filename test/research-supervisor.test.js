@@ -133,9 +133,12 @@ test("research supervisor emits immediate takeover directives and dedupes later 
   assert.match(first.directive.text, /idle GPUs busy only with independent seeds, ablations, or sweeps/);
   assert.match(first.directive.text, /literature review/);
   assert.match(first.directive.text, /send one concrete next instruction/i);
+  assert.match(first.directive.text, /no active monitor\/wakeup is visible/);
+  assert.match(first.directive.text, /set a monitor, scheduled wakeup, or log watcher/);
   assert.equal(first.card.mode, "experiment");
   assert.match(first.card.evidence, /pre-flight/);
   assert.match(first.card.compute, /idle GPUs/);
+  assert.match(first.card.continuity, /no active monitor\/wakeup is visible/);
 
   const supervisor = updateResearchSupervisorState(
     normalizeResearchSupervisorState(),
@@ -217,10 +220,11 @@ test("research supervisor compacts long objectives and keeps tactical priorities
   assert.match(decision.directive.text, /qualitative samples, heatmaps, or failure cases/);
   assert.match(decision.directive.text, /evaluator edits, leakage, cherry-picking/);
   assert.match(decision.directive.text, /idle GPUs busy only with independent seeds, ablations, or sweeps/);
+  assert.match(decision.directive.text, /no active monitor\/wakeup is visible/);
   assert.match(decision.directive.text, /literature review/);
   assert.match(decision.directive.text, /send one concrete next instruction/i);
   assert.equal(decision.card.mode, "continue");
-  assert.ok(decision.directive.text.length < 2100, `directive was too long: ${decision.directive.text.length}`);
+  assert.ok(decision.directive.text.length < 2300, `directive was too long: ${decision.directive.text.length}`);
 });
 
 test("research supervisor dedupes automatic directives by completed turn marker", () => {
@@ -280,7 +284,55 @@ test("research supervisor gives active-move execution briefs", () => {
   assert.match(decision.directive.text, /Resume the active research move v070/);
   assert.match(decision.directive.text, /If a cycle is already running/);
   assert.match(decision.directive.text, /Useful command path: vr-research-runner/);
+  assert.match(decision.directive.text, /no active monitor\/wakeup is visible/);
   assert.doesNotMatch(decision.directive.text, /Autopilot/i);
+});
+
+test("research supervisor notices monitor and wakeup continuity state", () => {
+  const noMonitor = decideResearchSupervisorIntervention({
+    attachment: attachment({
+      runtime: {
+        backgroundActivity: { active: true, activeCount: 2 },
+        activeBackgroundTasks: 2,
+        recentTraceHasMonitor: false,
+        recentTraceHasWakeup: false,
+      },
+    }),
+    event: { type: "agent-idle", source: "session" },
+    orchestratorReport: {
+      recommendation: {
+        action: "continue-active",
+        reason: "ACTIVE has v070; continue or finish that move before claiming another.",
+        slug: "v070",
+      },
+    },
+  });
+  assert.equal(noMonitor.shouldSend, true);
+  assert.match(noMonitor.directive.text, /2 background tasks? (?:is|are) visible, but no monitor\/wakeup is/);
+  assert.match(noMonitor.directive.text, /set a monitor, scheduled wakeup, or log watcher/);
+  assert.match(noMonitor.card.continuity, /2 background tasks?/);
+
+  const withMonitor = decideResearchSupervisorIntervention({
+    attachment: attachment({
+      runtime: {
+        recentTraceHasMonitor: true,
+        summary: "Monitor started for train.log",
+      },
+    }),
+    event: { type: "agent-idle", source: "session" },
+    orchestratorReport: {
+      recommendation: {
+        action: "continue-active",
+        reason: "ACTIVE has v070; continue or finish that move before claiming another.",
+        slug: "v070",
+      },
+    },
+  });
+  assert.equal(withMonitor.shouldSend, true);
+  assert.match(withMonitor.directive.text, /monitor\/wakeup visible/);
+  assert.match(withMonitor.directive.text, /Monitor started for train\.log/);
+  assert.doesNotMatch(withMonitor.directive.text, /no active monitor\/wakeup is visible/);
+  assert.match(withMonitor.card.continuity, /monitor\/wakeup visible/);
 });
 
 test("research supervisor gates missing project instead of messaging worker", () => {

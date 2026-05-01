@@ -1560,6 +1560,7 @@ function sanitizeChatAutopilotSupervisor(value) {
     evidence: String(rawCard.evidence || "").trim().slice(0, 180),
     integrity: String(rawCard.integrity || "").trim().slice(0, 180),
     compute: String(rawCard.compute || "").trim().slice(0, 180),
+    continuity: String(rawCard.continuity || "").trim().slice(0, 220),
     stop: String(rawCard.stop || "").trim().slice(0, 180),
     preview: String(rawCard.preview || "").trim().slice(0, 240),
   };
@@ -7771,6 +7772,7 @@ function summarizeChatAutopilotSupervisor(config = {}) {
         card.evidence ? `Evidence: ${card.evidence}` : "",
         card.integrity ? `Integrity: ${card.integrity}` : "",
         card.compute ? `Compute: ${card.compute}` : "",
+        card.continuity ? `Continuity: ${card.continuity}` : "",
         card.stop ? `Stop: ${card.stop}` : "",
       ].filter(Boolean).join("\n")
     : "";
@@ -7789,6 +7791,7 @@ function renderChatAutopilotSupervisorPolicy(supervisorSummary = {}) {
     card.evidence ? `Evidence: ${card.evidence}` : "",
     card.integrity ? `Integrity: ${card.integrity}` : "",
     card.compute ? `Compute: ${card.compute}` : "",
+    card.continuity ? `Continuity: ${card.continuity}` : "",
   ].filter(Boolean).join("\n");
   return `<span class="rich-session-autopilot-policy" data-chat-autopilot-policy title="${escapeHtml(title)}">evidence · integrity · compute</span>`;
 }

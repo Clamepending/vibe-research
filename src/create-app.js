@@ -8386,6 +8386,62 @@ export async function createVibeResearchApp({
     return session;
   }
 
+  function supervisorNarrativeEntryText(entry = {}) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "";
+    return [
+      entry.label,
+      entry.title,
+      entry.text,
+      entry.summary,
+      entry.command,
+      entry.outputPreview,
+      entry.statusText,
+      entry.meta,
+    ].map((value) => trimText(value)).filter(Boolean).join(" ");
+  }
+
+  function buildSupervisorRuntimeFromSession(session, narrative = null) {
+    const serialized = session ? sessionManager.serializeSession(session) : null;
+    const entries = Array.isArray(narrative?.entries) ? narrative.entries.slice(-48) : [];
+    const recentTrace = entries.map(supervisorNarrativeEntryText).filter(Boolean).join("\n").slice(-8_000);
+    const recentTraceHasMonitor = /\b(?:monitor\s+(?:started|armed|active|running|url|canvas|task)|log\s+watcher|watcher\s+(?:started|armed)|will\s+be\s+notified|tail\s+-f|tail\s+-F|monitor_url)\b/iu.test(recentTrace);
+    const recentTraceHasWakeup = /\b(?:scheduled\s+wake(?:up)?|wake\s+up|wakeup|wake\s+at|reminder\s+(?:set|created)|automation\s+created|resume\s+at)\b/iu.test(recentTrace);
+    const backgroundActivity = serialized?.backgroundActivity && typeof serialized.backgroundActivity === "object"
+      ? serialized.backgroundActivity
+      : { active: false, activeCount: 0, updatedAt: null };
+    const activeSubagents = Array.isArray(serialized?.subagents)
+      ? serialized.subagents.filter((subagent) => subagent?.status === "working").length
+      : 0;
+    const summary = [
+      recentTraceHasMonitor ? "recent trace has monitor" : "",
+      recentTraceHasWakeup ? "recent trace has wakeup" : "",
+      Number(backgroundActivity.activeCount) ? `${Number(backgroundActivity.activeCount)} background task${Number(backgroundActivity.activeCount) === 1 ? "" : "s"}` : "",
+      activeSubagents ? `${activeSubagents} active subagent${activeSubagents === 1 ? "" : "s"}` : "",
+    ].filter(Boolean).join("; ");
+    return {
+      sessionStatus: serialized?.status || "",
+      activityStatus: serialized?.activityStatus || "",
+      streamWorking: Boolean(serialized?.streamWorking),
+      backgroundActivity,
+      activeBackgroundTasks: Math.max(0, Math.floor(Number(backgroundActivity.activeCount) || 0)),
+      activeSubagents,
+      recentTraceHasMonitor,
+      recentTraceHasWakeup,
+      hasContinuity: Boolean(recentTraceHasMonitor || recentTraceHasWakeup),
+      summary,
+    };
+  }
+
+  async function getSupervisorRuntimeForSession(session) {
+    let narrative = null;
+    try {
+      narrative = await sessionManager.getSessionNarrative(session.id, { maxEntries: 64 });
+    } catch {
+      narrative = null;
+    }
+    return buildSupervisorRuntimeFromSession(session, narrative);
+  }
+
   function getAttachedResearchAutopilotJob(attachment) {
     const jobId = trimText(attachment?.jobId);
     return jobId ? researchAutopilotJobs.get(jobId) || null : null;
@@ -8585,7 +8641,7 @@ export async function createVibeResearchApp({
 
   app.post("/api/sessions/:sessionId/research-autopilot/supervisor/tick", async (request, response) => {
     try {
-      requireChatAutopilotSession(request.params.sessionId);
+      const session = requireChatAutopilotSession(request.params.sessionId);
       const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
         ? request.body
         : {};
@@ -8601,6 +8657,7 @@ export async function createVibeResearchApp({
 
       let orchestrator = null;
       let supervisorError = "";
+      const runtime = await getSupervisorRuntimeForSession(session);
       const driver = normalizeChatAutopilotDriver(current.driver, current.jobId ? "runner" : "session");
       const projectSupervisor = projectName ? getResearchProjectSupervisor(projectName) : null;
       const supervisorState = projectSupervisor?.state || current.supervisor;
@@ -8624,6 +8681,7 @@ export async function createVibeResearchApp({
         ...current,
         projectName,
         objective: trimText(body.objective) || current.objective,
+        runtime,
       };
       const decision = supervisorError
         ? {
@@ -8672,6 +8730,7 @@ export async function createVibeResearchApp({
         directive: decision.shouldSend ? decision.directive : null,
         attachment: serializeChatAutopilotAttachment(attachment),
         projectSupervisor: nextProjectSupervisor ? serializeResearchProjectSupervisor(nextProjectSupervisor) : null,
+        runtime,
         orchestrator: orchestrator
           ? {
               recommendation: orchestrator.recommendation,

@@ -128,11 +128,13 @@ test("same-chat supervisor Start creates project memory and queues takeover whil
     assert.match(uiState.policyTitle, /Evidence:/);
     assert.match(uiState.policyTitle, /Integrity:/);
     assert.match(uiState.policyTitle, /Compute:/);
+    assert.match(uiState.policyTitle, /Continuity:/);
     assert.match(uiState.queuedId, /^autopilot-/);
     assert.match(uiState.queuePreview, /Claim QUEUE row 1/);
     assert.equal(uiState.queueMeta, "supervisor next step - sends after current turn");
     assert.match(uiState.queuedText, /Claim QUEUE row 1 \(initial-research-loop\)/);
     assert.match(uiState.queuedText, /Use the project objective as the north star/);
+    assert.match(uiState.queuedText, /set a monitor, scheduled wakeup, or log watcher/);
     assert.doesNotMatch(uiState.queuedText, /Autopilot/i);
 
     const projectsResponse = await fetch(`${baseUrl}/api/research/projects`);

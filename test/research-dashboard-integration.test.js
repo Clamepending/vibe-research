@@ -636,9 +636,13 @@ test("chat research supervisor tick is silent on toggle and takes over on demand
     assert.match(takeoverBody.directive.text, /Goal: Find the prompt scaffold/);
     assert.match(takeoverBody.directive.text, /Benchmark: version v1, status active/);
     assert.match(takeoverBody.directive.text, /Supervisor policy:/);
+    assert.match(takeoverBody.directive.text, /no active monitor\/wakeup is visible/);
+    assert.match(takeoverBody.directive.text, /set a monitor, scheduled wakeup, or log watcher/);
     assert.equal(takeoverBody.decision.card.mode, "experiment");
     assert.match(takeoverBody.decision.card.integrity, /evaluator tampering/);
+    assert.match(takeoverBody.decision.card.continuity, /no active monitor\/wakeup is visible/);
     assert.doesNotMatch(takeoverBody.directive.text, /Autopilot/i);
+    assert.equal(takeoverBody.runtime.hasContinuity, false);
     assert.equal(takeoverBody.attachment.supervisor.interventionCount, 1);
     assert.equal(takeoverBody.projectSupervisor.projectName, "prose-style");
     assert.equal(takeoverBody.projectSupervisor.supervisor.interventionCount, 1);
@@ -1111,6 +1115,7 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(jsText, /Supervisor on/);
     assert.match(jsText, /data-chat-autopilot-policy/);
     assert.match(jsText, /evidence.*integrity.*compute/);
+    assert.match(jsText, /Continuity:/);
     assert.match(jsText, /Human driving/);
     assert.match(jsText, /agent stopped; ready to resume/);
     assert.match(jsText, /Resume/);
