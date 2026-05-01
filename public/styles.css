@@ -15566,6 +15566,54 @@ body.is-reordering-file-tabs {
   min-height: 18px;
 }
 
+/* Thinking entries with substantive reasoning text — Codex `reasoning`
+   items, future Claude reasoning content. Default is collapsed so the
+   chat stays scannable; click "show reasoning" to expand. */
+.rich-session-thinking-details {
+  margin: 4px 0 0 22px;
+  padding: 0;
+  font-family: "Manrope", sans-serif;
+}
+
+.rich-session-thinking-summary {
+  cursor: pointer;
+  list-style: none;
+  color: rgba(244, 244, 242, 0.4);
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.rich-session-thinking-summary::-webkit-details-marker {
+  display: none;
+}
+
+.rich-session-thinking-summary::before {
+  content: "▸ ";
+  display: inline-block;
+  width: 1ch;
+  color: rgba(244, 244, 242, 0.32);
+  transition: transform 0.12s ease;
+}
+
+.rich-session-thinking-details[open] .rich-session-thinking-summary::before {
+  content: "▾ ";
+}
+
+.rich-session-thinking-summary:hover {
+  color: rgba(244, 244, 242, 0.62);
+}
+
+.rich-session-thinking-text {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 2px solid rgba(244, 244, 242, 0.12);
+  color: rgba(244, 244, 242, 0.55);
+  font-size: 0.84rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 .rich-session-entry.is-tool .rich-session-entry-kicker-label,
 .rich-session-entry.is-status .rich-session-entry-kicker-label,
 .rich-session-entry.is-empty .rich-session-entry-kicker-label,

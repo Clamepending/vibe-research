@@ -6238,8 +6238,21 @@ function renderRichSessionEntry(entry, index) {
     `;
   }
 
+  // Thinking entries with substantive text (Codex `reasoning` items
+  // that ship a real summary; future Claude reasoning content too)
+  // get a collapsible details pane so the chat stays scannable but
+  // the reasoning is one click away. Empty/placeholder thinking
+  // entries keep the kicker-only treatment they had before — see
+  // isPlaceholderThinkingEntry for what gets filtered out earlier.
+  const thinkingBodyHtml = isThinking && text.trim()
+    ? `<details class="rich-session-thinking-details">
+         <summary class="rich-session-thinking-summary">show reasoning</summary>
+         <div class="rich-session-thinking-text">${body}</div>
+       </details>`
+    : "";
+
   const bodyHtml = isThinking
-    ? ""
+    ? thinkingBodyHtml
     : isTodoEntry
     ? renderRichSessionTodoBody(entry.todos)
     : kind === "tool"
@@ -22228,9 +22241,13 @@ function renderClaudeCodeAvatarMarkup() {
 }
 
 function renderCodexAvatarMarkup() {
+  // Path is /images/codex-logo.png — drop the OpenAI Codex brand mark
+  // PNG at public/images/codex-logo.png. The previous codex-headshot.png
+  // was a procedural cartoon that didn't match the rest of the
+  // brand-mark avatars (Claude, OpenClaw use real logos).
   return `
     <span class="codex-avatar" aria-hidden="true">
-      <img class="codex-avatar-img" src="/images/codex-headshot.png" alt="" />
+      <img class="codex-avatar-img" src="/images/codex-logo.png" alt="" />
     </span>
   `;
 }

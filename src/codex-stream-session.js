@@ -31,6 +31,87 @@ const DEFAULT_CODEX_BIN = (() => {
 
 const DEFAULT_MAX_ENTRIES = 96;
 
+// Pull whatever text-bearing fields a Codex `reasoning` item carries
+// (depends on the model + responses-API version). Returns "" when
+// the payload has no human-readable content; the caller treats that
+// as "skip this row" so we don't emit empty Thinking placeholders.
+// Mirrors the resume-time helper at session-native-narrative.js so
+// live and resumed Codex sessions surface reasoning identically.
+export function extractCodexReasoningText(item) {
+  if (!item || typeof item !== "object") return "";
+  const summary = Array.isArray(item.summary) ? item.summary : [];
+  const chunks = [];
+  for (const part of summary) {
+    if (typeof part === "string" && part.trim()) {
+      chunks.push(part);
+      continue;
+    }
+    if (part && typeof part === "object") {
+      if (typeof part.text === "string" && part.text.trim()) {
+        chunks.push(part.text);
+        continue;
+      }
+      if (typeof part.summary === "string" && part.summary.trim()) {
+        chunks.push(part.summary);
+      }
+    }
+  }
+  if (typeof item.text === "string" && item.text.trim()) {
+    chunks.push(item.text);
+  }
+  return chunks.join("\n\n").trim();
+}
+
+// Map a shell command line to the Claude-style tool label (Read /
+// Grep / Glob / Bash) so the renderer's compact-tool path picks the
+// matching badge and treatment. Codex emits everything as a generic
+// `command_execution` item; without this dispatch every shell call
+// would render as "Bash", losing the Read/Grep/Glob distinction the
+// rest of the chat surface uses.
+//
+// Heuristics — first executable token only, ignore flags:
+//   rg | grep | egrep | fgrep            → Grep
+//   cat | head | tail | bat | less | more (with a path arg) → Read
+//   find | fd | ls (with a glob arg)     → Glob
+//   anything else                        → Bash
+//
+// Pulled out as a pure module-level function so it has direct unit
+// tests in test/codex-stream-session.test.js.
+export function classifyShellCommandLabel(command) {
+  const text = String(command || "").trim();
+  if (!text) return "Bash";
+
+  // Strip a leading `sudo` / `time` / `env VAR=val` wrapper so e.g.
+  // `sudo cat /etc/hosts` still classifies as Read.
+  let working = text;
+  while (true) {
+    const wrapperMatch = working.match(/^(?:sudo|time|nohup|env(?:\s+\w+=\S+)*)\s+/u);
+    if (!wrapperMatch) break;
+    working = working.slice(wrapperMatch[0].length);
+  }
+
+  // First whitespace-delimited token — strip an optional path prefix
+  // (`/usr/bin/grep` → `grep`).
+  const firstToken = working.split(/\s+/u, 1)[0] || "";
+  const exe = firstToken.split("/").filter(Boolean).pop() || "";
+  const lowered = exe.toLowerCase();
+
+  if (/^(?:rg|grep|egrep|fgrep|ack|ag)$/u.test(lowered)) {
+    return "Grep";
+  }
+  if (/^(?:cat|head|tail|bat|less|more)$/u.test(lowered)) {
+    // Only call it Read when there's an actual path/file arg — `tail
+    // -f /var/log/foo` reads, but bare `cat` (rare) is just bash.
+    const restAfterExe = working.slice(firstToken.length).trim();
+    if (restAfterExe) return "Read";
+    return "Bash";
+  }
+  if (/^(?:find|fd|ls|tree)$/u.test(lowered)) {
+    return "Glob";
+  }
+  return "Bash";
+}
+
 export class CodexStreamSession extends EventEmitter {
   constructor({
     sessionId = randomUUID(),
@@ -267,30 +348,40 @@ export class CodexStreamSession extends EventEmitter {
       };
     }
     if (type === "reasoning") {
-      // Treat reasoning the same way as agent_message but mark as thinking.
-      // Codex emits this for visible reasoning blocks. We render it as a
-      // collapsible status entry rather than promoting to a separate
-      // thinking row (the indicator is already the empty assistant entry).
-      const text = String(item.text || item.summary || "").trim();
+      // Codex emits `reasoning` for visible reasoning blocks. Match
+      // Claude's wire shape so the renderer's thinking path picks it
+      // up: kind "status" + label "Thinking" + thinking:true. The
+      // renderer's body branch then wraps the text in a <details>
+      // collapsible so the chat stays scannable but the reasoning is
+      // one click away. Empty/whitespace summaries fall through to
+      // null (filtered out at the appendEntry boundary) — see #129
+      // for why we skip placeholder Thinking rows.
+      const text = extractCodexReasoningText(item);
       if (!text) return null;
       return {
         id,
         kind: "status",
-        label: "Reasoning",
+        label: "Thinking",
         text,
         timestamp: stamp,
-        meta: "codex-reasoning",
+        thinking: true,
       };
     }
     if (type === "command_execution") {
       const command = String(item.command || "").trim();
       const rawOutput = String(item.aggregated_output || "");
-      // Tool output can easily be tens of KB (file dumps, JSON arrays,
-      // grep across a tree). The chat shows it in a <pre> so an unbounded
-      // preview blows the whole turn out. Cap to ~1.2KB head + 400B tail
-      // and tell the user it was elided.
-      const previewLimit = 1200;
-      const tailLimit = 400;
+      // Tool output can be tens of KB (file dumps, JSON arrays, grep
+      // across a tree). The renderer's compact-tool path already wraps
+      // long output in a <details> element that stays collapsed until
+      // the user clicks "show more" — so we want to send MORE bytes
+      // than the previous 1.2K+400B cap, not fewer. Bump to 4K head +
+      // 1K tail (~5KB total) so substantive output survives, but keep
+      // the head/tail elision pattern so a 200KB log dump can't blow
+      // up the entry list. Matches the spirit of Claude's tool_result
+      // truncation cap (2.2KB; we go higher because the compact
+      // renderer's collapse hides the bulk by default).
+      const previewLimit = 4000;
+      const tailLimit = 1000;
       let outputPreview = rawOutput.trim();
       if (rawOutput.length > previewLimit + tailLimit + 80) {
         const head = rawOutput.slice(0, previewLimit).trimEnd();
@@ -300,10 +391,18 @@ export class CodexStreamSession extends EventEmitter {
       }
       const exitCode = item.exit_code;
       const status = completed ? (exitCode === 0 ? "done" : "error") : "running";
+      // Per-tool dispatch on the actual command so the renderer can
+      // pick the right badge / compact treatment instead of bucketing
+      // everything as "Bash". Keys off the first executable token,
+      // not flags — the renderer's isCompactToolEntry check at
+      // renderRichSessionEntry recognises Read/Grep/Glob and gives
+      // them the same compact one-line + expand affordance Claude's
+      // tool_use cards get.
+      const label = classifyShellCommandLabel(command);
       return {
         id,
         kind: "tool",
-        label: "Bash",
+        label,
         text: command,
         outputPreview,
         timestamp: stamp,
