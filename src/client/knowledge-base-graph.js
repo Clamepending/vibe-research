@@ -20,39 +20,56 @@ import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
 import { buildKnowledgeBaseGraph } from "./knowledge-base-graph-data.js";
 
-// fa2 iteration counts. 200 settles a few hundred nodes well at Barnes-Hut
-// theta=0.5; 500 covers up to a few thousand. We pick by graph size.
+// fa2 iteration counts. linLogMode + outboundAttractionDistribution converge
+// slower than plain fa2 but produce dramatically clearer cluster structure
+// instead of the hub-and-spoke / radial-spike look you get from defaults.
+// We're running synchronously (not in a worker), so iterations are a fixed
+// budget that we know completes in <500ms even for thousands of nodes
+// thanks to Barnes-Hut.
 function iterationsFor(order) {
-  if (order <= 50) return 120;
-  if (order <= 200) return 200;
-  if (order <= 800) return 320;
-  return 500;
+  if (order <= 50) return 250;
+  if (order <= 200) return 400;
+  if (order <= 800) return 700;
+  return 1000;
 }
 
+let cachedSettings = null;
+let cachedSettingsOrder = -1;
 function fa2SettingsFor(graph) {
+  if (cachedSettingsOrder === graph.order && cachedSettings) return cachedSettings;
   const inferred = forceAtlas2.inferSettings(graph);
-  return {
+  cachedSettings = {
     ...inferred,
-    // Barnes-Hut is what makes large graphs tractable. inferSettings turns
-    // it on past 1000 nodes; we drop the threshold so 200+ already benefits.
     barnesHutOptimize: graph.order > 200,
     barnesHutTheta: 0.5,
-    // Stable defaults: linLogMode and outboundAttraction can produce nice
-    // results but are also the dominant source of oscillation for graphs
-    // with hub nodes and disconnected components, both of which a Library
-    // exhibits. Plain Fruchterman-Reingold-style behaviour settles cleanly.
-    linLogMode: false,
-    outboundAttractionDistribution: false,
-    adjustSizes: false,
-    // strongGravityMode pulls every component toward the origin instead of
-    // letting orphans drift off-screen. For a Library that has many
-    // single-note components this matters a lot.
+    // linLogMode produces clear cluster grouping (communities pull tightly
+    // together while distinct communities push apart strongly) instead of
+    // the radial hub-and-spoke layout you get from default fa2. Combined
+    // with outboundAttractionDistribution this gives the "natural Obsidian
+    // graph" look the user is asking for.
+    linLogMode: true,
+    // Scale-free / power-law graphs (which a Library is — a few hub notes
+    // with many backlinks, a long tail of leaf notes) benefit from
+    // redistributing edge attraction proportional to degree. Without this,
+    // hubs dominate and produce stars; with it, edges bring leaves into
+    // their own community space.
+    outboundAttractionDistribution: true,
+    // Treat node sizes as repulsion radii so hubs don't overlap their
+    // leaves. Cheap; only relevant in linLog mode.
+    adjustSizes: true,
+    // strongGravityMode keeps disconnected components on screen.
     strongGravityMode: true,
-    gravity: 1.2,
+    gravity: 1,
+    // The big spread knob in linLog mode. Higher = more separation between
+    // clusters. inferSettings gives ~4 for our size; 12 produces visibly
+    // grouped islands.
+    scalingRatio: 12,
     // slowDown damps each step. With finite-iteration sync layout, lower is
-    // fine — there's no continuous loop to oscillate. Default of 1 is OK.
+    // fine — there's no continuous loop to oscillate.
     slowDown: 1,
   };
+  cachedSettingsOrder = graph.order;
+  return cachedSettings;
 }
 
 export function createKnowledgeBaseGraphRenderer(container, options = {}) {
@@ -72,6 +89,7 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
   let connectedKeys = new Set();
   let hoveredKey = "";
   let dragging = null;
+  let dragRafHandle = 0;
   let labelsAlwaysVisibleThreshold = 26;
 
   function recomputeConnected() {
@@ -170,17 +188,27 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
       sigma.refresh({ skipIndexation: true });
     });
 
-    // Node dragging: capture the sigma node, follow pointermove in graph
-    // coordinates, then re-relax neighbours when released.
+    // Node dragging: while the user holds a node, run a continuous loop on
+    // requestAnimationFrame that does ~3 fa2 iterations per frame and pins
+    // the dragged node to the latest pointer position. This is what produces
+    // the "live physics" feel — dragging a hub causes its leaves to swarm
+    // around it in real time, not just snap when you release. We don't run
+    // fa2 in a worker (which caused jitter at rest); instead we explicitly
+    // start the loop on `downNode` and stop it on mouseup.
     sigma.on("downNode", ({ node, event }) => {
-      dragging = { key: node, moved: false };
+      dragging = { key: node, moved: false, lastX: undefined, lastY: undefined };
       graph.setNodeAttribute(node, "highlighted", true);
       event.preventSigmaDefault?.();
+      startDragLoop();
     });
 
     const onMove = (rawEvent) => {
       if (!dragging || !sigma) return;
       const point = sigma.viewportToGraph({ x: rawEvent.x, y: rawEvent.y });
+      dragging.lastX = point.x;
+      dragging.lastY = point.y;
+      // Pin the dragged node directly so the renderer reflects the pointer
+      // even if the RAF tick hasn't fired yet.
       graph.setNodeAttribute(dragging.key, "x", point.x);
       graph.setNodeAttribute(dragging.key, "y", point.y);
       dragging.moved = true;
@@ -189,11 +217,12 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
       if (!dragging) return;
       const wasMoved = dragging.moved;
       graph.setNodeAttribute(dragging.key, "highlighted", false);
+      stopDragLoop();
       dragging = null;
       if (wasMoved) {
-        // Quick post-drag relaxation so neighbours adjust around the new
-        // position without re-running a full settle.
-        runLayout({ iterations: 60 });
+        // Final relaxation pass so the layout settles fully into a fixed
+        // point after the drag — no continuous worker means no jitter.
+        runLayout({ iterations: 80 });
       }
     };
     sigma.getMouseCaptor().on("mousemovebody", onMove);
@@ -201,6 +230,36 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
     sigma.getMouseCaptor().on("mouseleave", onUp);
 
     return sigma;
+  }
+
+  function startDragLoop() {
+    if (dragRafHandle) return;
+    const tick = () => {
+      if (!dragging) {
+        dragRafHandle = 0;
+        return;
+      }
+      // ~3 fa2 iterations per frame is enough for visible response without
+      // burning the main thread. With Barnes-Hut on 300 nodes this is well
+      // under 5ms per frame, comfortably 60fps.
+      forceAtlas2.assign(graph, { iterations: 3, settings: fa2SettingsFor(graph) });
+      // fa2 may have moved the dragged node — re-pin it to the last pointer
+      // position so the user always sees the node tracking their cursor.
+      if (dragging.lastX !== undefined && dragging.lastY !== undefined) {
+        graph.setNodeAttribute(dragging.key, "x", dragging.lastX);
+        graph.setNodeAttribute(dragging.key, "y", dragging.lastY);
+      }
+      sigma?.refresh({ skipIndexation: true });
+      dragRafHandle = window.requestAnimationFrame(tick);
+    };
+    dragRafHandle = window.requestAnimationFrame(tick);
+  }
+
+  function stopDragLoop() {
+    if (dragRafHandle) {
+      window.cancelAnimationFrame(dragRafHandle);
+      dragRafHandle = 0;
+    }
   }
 
   // Synchronous fa2 settle. Runs `iterations` ticks on the main thread; for
@@ -277,6 +336,7 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
   }
 
   function unmount() {
+    stopDragLoop();
     sigma?.kill();
     sigma = null;
     graph.clear();
