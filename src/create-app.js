@@ -1501,7 +1501,7 @@ export async function createVibeResearchApp({
   googleServiceFactory = null,
   wikiBackupServiceFactory = null,
   systemMetricsProvider = collectSystemMetrics,
-  systemMetricsSampleIntervalMs = 60_000,
+  systemMetricsSampleIntervalMs = 10_000,
   updateManager = new UpdateManager({ cwd, stateDir, port }),
   defaultSessionCwd = process.env.VIBE_RESEARCH_DEFAULT_CWD || process.env.REMOTE_VIBES_DEFAULT_CWD || "",
 } = {}) {

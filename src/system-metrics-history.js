@@ -10,7 +10,7 @@ const RANGE_WINDOWS_MS = {
   "1w": 7 * DAY_MS,
 };
 const DEFAULT_RETENTION_MS = RANGE_WINDOWS_MS["1w"];
-const DEFAULT_MIN_SAMPLE_INTERVAL_MS = 60_000;
+const DEFAULT_MIN_SAMPLE_INTERVAL_MS = 10_000;
 const DEFAULT_MAX_API_SAMPLES = 720;
 
 function finiteNumber(value) {
