@@ -507,6 +507,9 @@ test("chat research supervisor tick is silent on toggle and takes over on demand
       }),
     });
     assert.equal(save.status, 200);
+    const savedBody = await save.json();
+    assert.equal(savedBody.attachment.projectSupervisor.projectName, "prose-style");
+    assert.equal(savedBody.attachment.projectSupervisor.enabled, true);
 
     const toggleTick = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/tick`, {
       method: "POST",
@@ -586,6 +589,29 @@ test("chat research supervisor tick is silent on toggle and takes over on demand
     assert.match(manualBody.directive.text, /Synthesize the current research state/);
     assert.doesNotMatch(manualBody.directive.text, /Autopilot/i);
     assert.equal(manualBody.attachment.supervisor.interventionCount, 2);
+    assert.equal(manualBody.projectSupervisor.supervisor.interventionCount, 2);
+
+    const pauseFirst = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false, driver: "session" }),
+    });
+    assert.equal(pauseFirst.status, 200);
+    const afterPauseFirst = await fetch(`${baseUrl}/api/research/projects/prose-style/supervisor`);
+    assert.equal(afterPauseFirst.status, 200);
+    assert.equal((await afterPauseFirst.json()).supervisor.enabled, true);
+
+    const pauseSecond = await fetch(`${baseUrl}/api/sessions/${secondSession.id}/research-autopilot`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false, driver: "session" }),
+    });
+    assert.equal(pauseSecond.status, 200);
+    const afterPauseSecond = await fetch(`${baseUrl}/api/research/projects/prose-style/supervisor`);
+    assert.equal(afterPauseSecond.status, 200);
+    const pausedProjectSupervisor = await afterPauseSecond.json();
+    assert.equal(pausedProjectSupervisor.supervisor.enabled, false);
+    assert.equal(pausedProjectSupervisor.supervisor.supervisor.interventionCount, 2);
 
     const duplicateIdle = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/tick`, {
       method: "POST",
@@ -953,6 +979,7 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(jsText, /\/research-autopilot\/supervisor\/tick/);
     assert.match(jsText, /tickChatAutopilotSupervisor/);
     assert.match(jsText, /takeover/);
+    assert.match(jsText, /projectSupervisor/);
     assert.match(jsText, /research-autopilot-steer-form/);
     assert.match(jsText, /data-chat-autopilot-toggle/);
     assert.match(jsText, /getChatAutopilotInferredProjectName/);
@@ -963,6 +990,8 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(jsText, /driving this chat in the current agent context/);
     assert.match(jsText, /ready with project objective/);
     assert.match(jsText, /data-chat-autopilot-change-project/);
+    assert.match(jsText, /Project supervisor/);
+    assert.match(jsText, /Continue/);
     assert.match(jsText, /Plan next/);
     assert.match(jsText, /Summarize/);
     assert.match(jsText, /\/api\/research\/org-bench\/jobs/);
@@ -974,6 +1003,7 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(cssText, /research-autopilot-steer/);
     assert.match(cssText, /rich-session-autopilot/);
     assert.match(cssText, /rich-session-autopilot-project-pill/);
+    assert.match(cssText, /rich-session-autopilot-supervisor-pill/);
     assert.match(cssText, /research-org-bench-card/);
     assert.match(cssText, /research-bench-table/);
   });

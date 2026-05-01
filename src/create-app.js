@@ -7541,6 +7541,41 @@ export async function createVibeResearchApp({
     }
   }
 
+  async function syncResearchProjectSupervisorFromChatAttachments(projectName, { preferredAttachment = null } = {}) {
+    const cleanProjectName = trimText(projectName);
+    if (!cleanProjectName) return null;
+    const existing = getResearchProjectSupervisor(cleanProjectName);
+    const attachments = Array.from(chatAutopilotAttachments.values())
+      .filter((attachment) => attachment.projectName === cleanProjectName && attachment.driver === "session");
+    const sessionIds = normalizeResearchProjectSupervisorSessionIds(
+      attachments.map((attachment) => attachment.sessionId),
+      existing.sessionIds,
+    );
+    const enabledAttachments = attachments.filter((attachment) => attachment.enabled);
+    const preferredSessionId = trimText(preferredAttachment?.sessionId);
+    const preferredIsEnabled = Boolean(
+      preferredSessionId
+      && preferredAttachment?.enabled
+      && preferredAttachment?.driver === "session"
+      && preferredAttachment?.projectName === cleanProjectName
+    );
+    const primarySessionId = preferredIsEnabled
+      ? preferredSessionId
+      : sessionIds.includes(existing.primarySessionId)
+        ? existing.primarySessionId
+        : enabledAttachments[0]?.sessionId || sessionIds[0] || "";
+    const state = existing.state?.lastObservedAt || existing.state?.lastDirectiveAt
+      ? existing.state
+      : normalizeResearchSupervisorState(preferredAttachment?.supervisor || existing.state);
+    return setResearchProjectSupervisor(cleanProjectName, {
+      enabled: enabledAttachments.length > 0,
+      objective: trimText(preferredAttachment?.objective) || existing.objective,
+      primarySessionId,
+      sessionIds,
+      state,
+    });
+  }
+
   function getChatAutopilotAttachment(sessionId) {
     const sid = trimText(sessionId);
     if (!sid) return null;
@@ -7565,6 +7600,15 @@ export async function createVibeResearchApp({
       chatAutopilotAttachments.set(sid, next);
     }
     await saveChatAutopilotAttachments();
+    const projectNames = new Set([
+      previous.projectName,
+      next?.projectName,
+    ].map((name) => trimText(name)).filter(Boolean));
+    for (const projectName of projectNames) {
+      await syncResearchProjectSupervisorFromChatAttachments(projectName, {
+        preferredAttachment: next?.projectName === projectName ? next : null,
+      });
+    }
     return next || defaultChatAutopilotAttachment(sid);
   }
 

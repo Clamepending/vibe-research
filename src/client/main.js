@@ -1578,6 +1578,24 @@ function sanitizeChatAutopilotSupervisor(value) {
   };
 }
 
+function sanitizeChatAutopilotProjectSupervisor(value) {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const sessionIds = Array.isArray(input.sessionIds)
+    ? [...new Set(input.sessionIds.map((id) => String(id || "").trim()).filter(Boolean))].slice(-20)
+    : [];
+  const supervisor = sanitizeChatAutopilotSupervisor(input.supervisor || input.state);
+  return {
+    projectName: String(input.projectName || "").trim(),
+    enabled: Boolean(input.enabled),
+    objective: String(input.objective || "").trim().slice(0, 4_000),
+    primarySessionId: String(input.primarySessionId || "").trim(),
+    sessionIds,
+    createdAt: typeof input.createdAt === "string" ? input.createdAt : "",
+    updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : "",
+    supervisor,
+  };
+}
+
 function sanitizeChatAutopilotSession(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -1595,10 +1613,11 @@ function sanitizeChatAutopilotSession(value) {
   const updatedAt = typeof value.updatedAt === "string" ? value.updatedAt : "";
   const lastMessage = String(value.lastMessage || "").trim().slice(0, 4_000);
   const supervisor = sanitizeChatAutopilotSupervisor(value.supervisor);
+  const projectSupervisor = sanitizeChatAutopilotProjectSupervisor(value.projectSupervisor);
   if (!enabled && !projectName && !objective && !jobId && !statusText && !lastMessage && !supervisor.lastObservedAt && driver === "session") {
     return null;
   }
-  return { sessionId, enabled, projectName, objective, mode, driver, jobId, statusText, createdAt, updatedAt, lastMessage, supervisor };
+  return { sessionId, enabled, projectName, objective, mode, driver, jobId, statusText, createdAt, updatedAt, lastMessage, supervisor, projectSupervisor };
 }
 
 function loadChatAutopilotSessions() {
@@ -7372,6 +7391,7 @@ function getChatAutopilotSessionConfig(sessionId) {
       statusText: "",
       updatedAt: "",
       supervisor: sanitizeChatAutopilotSupervisor(),
+      projectSupervisor: sanitizeChatAutopilotProjectSupervisor(),
     };
   }
   const local = sanitizeChatAutopilotSession(state.chatAutopilotSessions[sid]) || {};
@@ -7389,6 +7409,7 @@ function getChatAutopilotSessionConfig(sessionId) {
     updatedAt: existing.updatedAt || "",
     lastMessage: existing.lastMessage || "",
     supervisor: sanitizeChatAutopilotSupervisor(existing.supervisor),
+    projectSupervisor: sanitizeChatAutopilotProjectSupervisor(existing.projectSupervisor),
   };
 }
 
@@ -7577,6 +7598,23 @@ function summarizeChatAutopilotObjective(value, limit = 96) {
   return text.length > limit ? `${text.slice(0, Math.max(0, limit - 3))}...` : text;
 }
 
+function summarizeChatAutopilotSupervisor(config = {}) {
+  const projectSupervisor = sanitizeChatAutopilotProjectSupervisor(config.projectSupervisor);
+  const supervisor = projectSupervisor.supervisor.lastObservedAt
+    ? projectSupervisor.supervisor
+    : sanitizeChatAutopilotSupervisor(config.supervisor);
+  const interventions = Math.max(0, Number(supervisor.interventionCount) || 0);
+  const chats = projectSupervisor.sessionIds.length;
+  const parts = ["Project supervisor"];
+  if (interventions) parts.push(`${interventions} directive${interventions === 1 ? "" : "s"}`);
+  if (chats) parts.push(`${chats} chat${chats === 1 ? "" : "s"}`);
+  if (!interventions && !chats) parts.push("ready");
+  return {
+    label: parts.join(" · "),
+    title: supervisor.lastDirectiveReason || supervisor.lastObservedEvent || "Project-scoped supervisor state for this research handoff.",
+  };
+}
+
 function renderChatAutopilotProjectOptions(config = {}, activeSession = getActiveSession()) {
   const selected = getChatAutopilotSelectedProjectName(config, activeSession);
   if (!state.researchAutopilot.projects.length) {
@@ -7609,6 +7647,7 @@ function renderRichSessionAutopilotPanel(activeSession) {
   const objective = getChatAutopilotDefaultObjective(config, activeSession);
   const objectiveSource = getChatAutopilotObjectiveSource(config, activeSession);
   const objectivePreview = summarizeChatAutopilotObjective(objective);
+  const supervisorSummary = summarizeChatAutopilotSupervisor(config);
   const pickerOpen = Boolean(state.chatAutopilotProjectPickerOpen[activeSession.id]) || !projectName;
   const title = enabled
     ? sessionDriver ? "Autopilot driving" : "Autopilot running"
@@ -7662,10 +7701,13 @@ function renderRichSessionAutopilotPanel(activeSession) {
           </button>
         `}
         ${showSteeringActions ? `
+          <span class="rich-session-autopilot-supervisor-pill" title="${escapeHtml(supervisorSummary.title)}">${escapeHtml(supervisorSummary.label)}</span>
+          <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="continue" title="Ask the project supervisor to take the next research step.">Continue</button>
           <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="brainstorm" title="Ask Autopilot to stop executing and propose the next research directions.">Plan next</button>
           <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="synthesize" title="Ask Autopilot to summarize findings, evidence, risks, and the recommended next move.">Summarize</button>
           <button class="rich-session-autopilot-action is-danger" type="button" data-chat-autopilot-action="pause" title="Pause the autonomous run attached to this chat.">Pause</button>
         ` : enabled ? `
+          <span class="rich-session-autopilot-supervisor-pill" title="${escapeHtml(supervisorSummary.title)}">${escapeHtml(supervisorSummary.label)}</span>
           <button class="rich-session-autopilot-action is-danger" type="button" data-chat-autopilot-action="pause" title="Turn Autopilot off for this chat.">Pause</button>
         ` : ""}
       </div>
@@ -44694,12 +44736,17 @@ function bindShellEvents() {
         }
         const config = getChatAutopilotSessionConfig(activeSession.id);
         if (isChatAutopilotSessionDriver(config)) {
+          const pendingText = action === "synthesize"
+            ? "preparing checkpoint"
+            : action === "brainstorm"
+              ? "preparing replan"
+              : "taking next step";
           void tickChatAutopilotSupervisor(activeSession, {
             type: "manual-action",
             action,
             source: "human",
           }, {
-            pendingText: action === "synthesize" ? "preparing checkpoint" : "preparing replan",
+            pendingText,
           });
           return;
         }
