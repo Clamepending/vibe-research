@@ -99,6 +99,22 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
   let dragRafHandle = 0;
   let labelsAlwaysVisibleThreshold = 26;
 
+  // Reveal animation state. We do an animated initial settle (RAF batches of
+  // fa2 iterations interleaved with refreshes so the user can see the
+  // layout converge instead of an ugly first paint) AND a BFS pop-in (each
+  // node only becomes visible when its turn in the BFS order arrives). Both
+  // run during the same animation window — by the time the last node pops
+  // in, the layout is settled and stable.
+  let revealAnimationHandle = 0;
+  let revealedNodes = new Set();
+  // When this is null, every node is treated as revealed (the post-animation
+  // steady state). When it's a Set, only nodes in the set render.
+  let revealMask = null;
+  // We only run the reveal on the FIRST non-trivial setData call within a
+  // single mount — subsequent re-renders from main.js (which fire often as
+  // the user navigates) just rebuild silently.
+  let hasPlayedReveal = false;
+
   function recomputeConnected() {
     connectedKeys = new Set();
     if (selectedKey && graph.hasNode(selectedKey)) {
@@ -119,6 +135,12 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
   // graphology data here; that way fa2 can keep its source of truth and we
   // just decorate.
   function nodeReducer(key, attrs) {
+    // Reveal mask: hide nodes that haven't popped in yet during the BFS
+    // initial-reveal animation. After the animation completes revealMask is
+    // nulled and every node renders normally.
+    if (revealMask && !revealMask.has(key)) {
+      return { ...attrs, hidden: true };
+    }
     const isSelected = key === selectedKey;
     const isHovered = key === hoveredKey;
     const isConnected = connectedKeys.has(key);
@@ -142,6 +164,13 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
 
   function edgeReducer(key, attrs) {
     const [source, target] = graph.extremities(key);
+    // During the BFS reveal, hide edges whose endpoints haven't popped in
+    // yet — without this, sigma would render dangling lines from invisible
+    // anchors (lines drawn from "hidden" nodes still render their start
+    // point at the hidden coordinate, which produces ghost stubs).
+    if (revealMask && (!revealMask.has(source) || !revealMask.has(target))) {
+      return { ...attrs, hidden: true };
+    }
     const touchesActive =
       source === selectedKey || target === selectedKey || source === hoveredKey || target === hoveredKey;
     return {
@@ -203,6 +232,12 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
     // fa2 in a worker (which caused jitter at rest); instead we explicitly
     // start the loop on `downNode` and stop it on mouseup.
     sigma.on("downNode", ({ node, event }) => {
+      // If the user grabs a node mid-reveal, finish the reveal immediately so
+      // the rest of the graph is visible while they drag.
+      if (revealAnimationHandle) {
+        cancelRevealAnimation();
+        sigma?.refresh({ skipIndexation: false });
+      }
       dragging = { key: node, moved: false, lastX: undefined, lastY: undefined };
       graph.setNodeAttribute(node, "highlighted", true);
       event.preventSigmaDefault?.();
@@ -270,14 +305,136 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
   }
 
   // Synchronous fa2 settle. Runs `iterations` ticks on the main thread; for
-  // a few hundred nodes with Barnes-Hut this is well under 200ms. Returns
-  // when the graph is settled — sigma re-renders once and the canvas goes
-  // idle (no continuous loop, no jitter).
+  // a few hundred nodes with Barnes-Hut this is well under 200ms. Used after
+  // drag for the post-release relaxation — for the FIRST settle on a fresh
+  // graph we use `runLayoutAnimated` instead so the user sees it converge.
   function runLayout({ iterations } = {}) {
     if (graph.order < 2) return;
     const iters = Number.isInteger(iterations) && iterations > 0 ? iterations : iterationsFor(graph.order);
     forceAtlas2.assign(graph, { iterations: iters, settings: fa2SettingsFor(graph) });
     sigma?.refresh({ skipIndexation: true });
+  }
+
+  // Pick a sensible BFS root for the reveal animation. We prefer the node
+  // most likely to be the "front door" of the Library, in priority order:
+  //   1. index.md (the conventional entry point)
+  //   2. the highest-degree node (de facto hub)
+  //   3. an arbitrary first node (last-resort fallback)
+  function pickBfsRoot() {
+    if (graph.hasNode("index.md")) return "index.md";
+    let best = null;
+    let bestDeg = -1;
+    graph.forEachNode((key) => {
+      const deg = graph.degree(key);
+      if (deg > bestDeg) {
+        bestDeg = deg;
+        best = key;
+      }
+    });
+    return best;
+  }
+
+  // Compute a BFS traversal order over the (possibly disconnected) graph.
+  // Each disconnected component contributes its own BFS, with components
+  // ordered by the highest-degree starting node first so the most "central"
+  // component appears earliest in the reveal.
+  function computeBfsOrder() {
+    const order = [];
+    const visited = new Set();
+    const start = pickBfsRoot();
+    const queue = start ? [start] : [];
+
+    function bfsFrom(seed) {
+      const q = [seed];
+      visited.add(seed);
+      while (q.length) {
+        const cur = q.shift();
+        order.push(cur);
+        for (const nb of graph.neighbors(cur)) {
+          if (!visited.has(nb)) {
+            visited.add(nb);
+            q.push(nb);
+          }
+        }
+      }
+    }
+
+    if (queue.length) bfsFrom(queue[0]);
+    // Pick up any nodes in disconnected components, starting each
+    // sub-component from its own highest-degree seed.
+    const remaining = [];
+    graph.forEachNode((key) => {
+      if (!visited.has(key)) remaining.push(key);
+    });
+    remaining.sort((a, b) => graph.degree(b) - graph.degree(a));
+    for (const seed of remaining) {
+      if (!visited.has(seed)) bfsFrom(seed);
+    }
+    return order;
+  }
+
+  // Animated initial settle + BFS reveal. Spreads the work over ~3 seconds
+  // of RAF ticks so:
+  //   - the user sees fa2 actually converge (instead of a synchronous block
+  //     followed by a snapped paint of the final state)
+  //   - nodes pop in one-by-one in BFS order from the hub, which gives the
+  //     graph a "growing from the seed" feel on first view
+  // Both effects share the same animation window — by the time the last
+  // node pops in, the layout has fully settled.
+  function runRevealAnimation() {
+    cancelRevealAnimation();
+    if (graph.order === 0) return;
+
+    const totalNodes = graph.order;
+    const totalIterations = iterationsFor(totalNodes);
+    // Target reveal duration. Capped because past 4s the user just wants
+    // the graph to be there.
+    const targetDurationMs = Math.min(3500, 1200 + totalNodes * 8);
+    const targetFrames = Math.max(20, Math.round(targetDurationMs / 16));
+    const nodesPerFrame = Math.max(1, Math.ceil(totalNodes / targetFrames));
+    // We use slightly fewer iterations during the reveal than the final
+    // budget so the layout still has visible motion late in the animation;
+    // a final post-reveal refresh is implicit (the loop just falls off).
+    const itersPerFrame = Math.max(2, Math.ceil(totalIterations / targetFrames));
+
+    const bfsOrder = computeBfsOrder();
+    revealedNodes = new Set();
+    revealMask = revealedNodes;
+    let nodeIdx = 0;
+    let iter = 0;
+
+    const tick = () => {
+      // Reveal next batch of nodes in BFS order.
+      for (let i = 0; i < nodesPerFrame && nodeIdx < bfsOrder.length; i += 1) {
+        revealedNodes.add(bfsOrder[nodeIdx++]);
+      }
+      // Run a chunk of fa2 so the layout visibly converges as nodes appear.
+      if (iter < totalIterations) {
+        const step = Math.min(itersPerFrame, totalIterations - iter);
+        forceAtlas2.assign(graph, { iterations: step, settings: fa2SettingsFor(graph) });
+        iter += step;
+      }
+      sigma?.refresh({ skipIndexation: true });
+
+      const done = nodeIdx >= bfsOrder.length && iter >= totalIterations;
+      if (done) {
+        revealMask = null;
+        revealAnimationHandle = 0;
+        sigma?.refresh({ skipIndexation: false });
+        sigma?.getCamera().animatedReset({ duration: 350 });
+      } else {
+        revealAnimationHandle = window.requestAnimationFrame(tick);
+      }
+    };
+    revealAnimationHandle = window.requestAnimationFrame(tick);
+  }
+
+  function cancelRevealAnimation() {
+    if (revealAnimationHandle) {
+      window.cancelAnimationFrame(revealAnimationHandle);
+      revealAnimationHandle = 0;
+    }
+    revealMask = null;
   }
 
   function setData({ nodes, edges, labelsAlwaysThreshold }) {
@@ -286,10 +443,6 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
     }
     const newGraph = buildKnowledgeBaseGraph(Array.isArray(nodes) ? nodes : [], Array.isArray(edges) ? edges : []);
     if (sigma) {
-      // Replace the graph underneath sigma. Sigma v3 holds onto the graph
-      // instance it was constructed with, so we clear + re-merge into the
-      // existing instance instead of recreating sigma (which would lose
-      // camera state).
       graph.clear();
       newGraph.forEachNode((key, attrs) => graph.addNode(key, attrs));
       newGraph.forEachEdge((_key, attrs, src, tgt) => graph.addEdge(src, tgt, attrs));
@@ -301,11 +454,18 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
     hoveredKey = hoveredKey && graph.hasNode(hoveredKey) ? hoveredKey : "";
     recomputeConnected();
 
-    // Settle the new layout, then fit the camera so the user sees the whole
-    // graph regardless of where fa2 ended up.
-    runLayout();
-    sigma?.refresh({ skipIndexation: false });
-    sigma?.getCamera().animatedReset({ duration: 0 });
+    // Run the BFS-reveal + animated-settle dance only on the FIRST data
+    // load within this mount. main.js calls setData on every render — most
+    // of those calls are no-ops or selection-only changes and re-running
+    // the reveal each time would be jarring.
+    if (!hasPlayedReveal && graph.order > 0) {
+      hasPlayedReveal = true;
+      runRevealAnimation();
+    } else {
+      // Subsequent updates: synchronous settle, no reveal.
+      runLayout();
+      sigma?.refresh({ skipIndexation: false });
+    }
   }
 
   function setSelected(path) {
@@ -329,21 +489,23 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
   }
 
   function pulse() {
-    // A "shake-out": slightly perturb every node, then re-settle. Without
-    // perturbation, fa2 starting from the previous fixed point would just
-    // sit there.
+    // Replays the reveal animation so the user sees the layout reform —
+    // nodes vanish, then BFS-pop-in while fa2 re-settles from a perturbed
+    // start. Cancels any in-flight reveal first so the button is always
+    // responsive.
+    cancelRevealAnimation();
     graph.forEachNode((key, attrs) => {
       const dx = (Math.random() - 0.5) * 30;
       const dy = (Math.random() - 0.5) * 30;
       graph.setNodeAttribute(key, "x", (attrs.x || 0) + dx);
       graph.setNodeAttribute(key, "y", (attrs.y || 0) + dy);
     });
-    runLayout();
-    sigma?.getCamera().animatedReset({ duration: 350 });
+    runRevealAnimation();
   }
 
   function unmount() {
     stopDragLoop();
+    cancelRevealAnimation();
     sigma?.kill();
     sigma = null;
     graph.clear();
@@ -351,6 +513,7 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
     selectedKey = "";
     hoveredKey = "";
     connectedKeys.clear();
+    hasPlayedReveal = false;
   }
 
   ensureSigma();
