@@ -572,6 +572,7 @@ const SESSION_READ_STORAGE_KEY = "vibe-research-session-read-at-v1";
 const COMPOSER_DRAFT_STORAGE_KEY = "vibe-research-composer-drafts-v1";
 const COMPOSER_QUEUE_STORAGE_KEY = "vibe-research-composer-queue-v1";
 const CHAT_AUTOPILOT_STORAGE_KEY = "vibe-research-chat-autopilot-v1";
+const CHAT_AUTOPILOT_DRIVERS = new Set(["session", "runner"]);
 const COMPOSER_QUEUE_MAX_ITEMS_PER_SESSION = 50;
 const LAYOUT_STORAGE_KEY = "vibe-research-layout-v1";
 const OPEN_FILE_TAB_ORDER_STORAGE_KEY = "vibe-research-open-file-tab-order-v1";
@@ -1555,14 +1556,16 @@ function sanitizeChatAutopilotSession(value) {
   const objective = String(value.objective || "").trim().slice(0, 4_000);
   const mode = RESEARCH_AUTOPILOT_MODES.some((entry) => entry.value === value.mode) ? value.mode : "auto";
   const jobId = String(value.jobId || "").trim();
+  const rawDriver = String(value.driver || "").trim().toLowerCase();
+  const driver = CHAT_AUTOPILOT_DRIVERS.has(rawDriver) ? rawDriver : (jobId ? "runner" : "session");
   const statusText = String(value.statusText || "").trim().slice(0, 400);
   const createdAt = typeof value.createdAt === "string" ? value.createdAt : "";
   const updatedAt = typeof value.updatedAt === "string" ? value.updatedAt : "";
   const lastMessage = String(value.lastMessage || "").trim().slice(0, 4_000);
-  if (!enabled && !projectName && !objective && !jobId && !statusText && !lastMessage) {
+  if (!enabled && !projectName && !objective && !jobId && !statusText && !lastMessage && driver === "session") {
     return null;
   }
-  return { sessionId, enabled, projectName, objective, mode, jobId, statusText, createdAt, updatedAt, lastMessage };
+  return { sessionId, enabled, projectName, objective, mode, driver, jobId, statusText, createdAt, updatedAt, lastMessage };
 }
 
 function loadChatAutopilotSessions() {
@@ -7330,6 +7333,7 @@ function getChatAutopilotSessionConfig(sessionId) {
       projectName: "",
       objective: "",
       mode: "auto",
+      driver: "session",
       jobId: "",
       statusText: "",
       updatedAt: "",
@@ -7343,6 +7347,7 @@ function getChatAutopilotSessionConfig(sessionId) {
     projectName: existing.projectName || "",
     objective: existing.objective || "",
     mode: existing.mode || "auto",
+    driver: existing.driver || (existing.jobId ? "runner" : "session"),
     jobId: existing.jobId || "",
     statusText: existing.statusText || "",
     createdAt: existing.createdAt || "",
@@ -7500,6 +7505,16 @@ function getChatAutopilotSelectedProjectName(config = {}, activeSession = getAct
   return getChatAutopilotInferredProjectName(activeSession, config);
 }
 
+function getChatAutopilotDriver(config = {}) {
+  const driver = String(config.driver || "").trim().toLowerCase();
+  if (CHAT_AUTOPILOT_DRIVERS.has(driver)) return driver;
+  return config.jobId ? "runner" : "session";
+}
+
+function isChatAutopilotSessionDriver(config = {}) {
+  return getChatAutopilotDriver(config) === "session";
+}
+
 function getChatAutopilotObjectiveSource(config = {}, activeSession = getActiveSession()) {
   const savedObjective = String(config.objective || "").trim();
   const projectName = getChatAutopilotSelectedProjectName(config, activeSession);
@@ -7551,7 +7566,8 @@ function renderRichSessionAutopilotPanel(activeSession) {
   const job = getChatAutopilotJob(config);
   const enabled = Boolean(config.enabled);
   const pending = getChatAutopilotPending(activeSession.id);
-  const running = isResearchAutopilotRunning(job);
+  const sessionDriver = isChatAutopilotSessionDriver(config);
+  const running = isResearchAutopilotRunning(job) || (enabled && sessionDriver && Boolean(activeSession.streamWorking));
   const projectName = getChatAutopilotSelectedProjectName(config, activeSession);
   const projectSource = getChatAutopilotProjectSource(activeSession, config);
   const objective = getChatAutopilotDefaultObjective(config, activeSession);
@@ -7559,10 +7575,16 @@ function renderRichSessionAutopilotPanel(activeSession) {
   const objectivePreview = summarizeChatAutopilotObjective(objective);
   const pickerOpen = Boolean(state.chatAutopilotProjectPickerOpen[activeSession.id]) || !projectName;
   const title = enabled
-    ? "Autopilot running"
+    ? sessionDriver ? "Autopilot driving" : "Autopilot running"
     : "Autopilot off";
   const status = pending
-    || (job
+    || (enabled && sessionDriver
+      ? activeSession.streamWorking
+        ? "driving this chat in the current agent context"
+        : objectivePreview
+          ? `ready in this chat: ${objectivePreview}`
+          : "waiting for a project objective"
+      : job
       ? `${job.status || "running"} · step ${job.stepCount || 0}/${job.maxSteps || "?"}${job.stopReason ? ` · ${job.stopReason}` : ""}`
       : enabled
         ? objectivePreview
@@ -7571,9 +7593,9 @@ function renderRichSessionAutopilotPanel(activeSession) {
         : "click to hand this chat to the research loop");
   const toggleTitle = enabled
     ? "Pause Autopilot for this chat."
-    : "Start Autopilot from the project's wiki objective, or resume the paused run attached to this chat.";
+    : "Let Autopilot drive this same chat from the project's wiki objective.";
   const showProjectPicker = !running && pickerOpen;
-  const showSteeringActions = enabled && job && !isResearchAutopilotTerminalStatus(job.status);
+  const showSteeringActions = enabled && (sessionDriver || (job && !isResearchAutopilotTerminalStatus(job.status)));
   const projectTitle = projectName
     ? `Autopilot will use ${projectName}${projectSource ? ` (${projectSource})` : ""}.${objectivePreview ? ` Objective: ${objectivePreview}` : ""} Click to change.`
     : "Choose the research project for this chat.";
@@ -38811,6 +38833,139 @@ function buildChatAutopilotStartBody(config, objective, options = {}) {
   };
 }
 
+function buildChatAutopilotSupervisorPrompt({ projectName = "", objective = "", mode = "auto" } = {}) {
+  const lines = [
+    "Autopilot is ON for this chat.",
+    "",
+    "Stay in this same session and take over scheduling the research loop from here. Do not fork context.",
+  ];
+  if (projectName) {
+    lines.push("", `Project: ${projectName}`);
+  }
+  if (objective) {
+    lines.push("", "Project objective from the wiki:", objective);
+  }
+  lines.push(
+    "",
+    `Mode: ${mode || "auto"}. Pick the next useful research action, run it, inspect the result, update durable project notes/results when appropriate, and keep going until I interrupt or a true human gate is required.`,
+    "Treat future human chat messages as steering. When uncertain, write a short checkpoint and propose the next move.",
+  );
+  return lines.join("\n");
+}
+
+function buildChatAutopilotPausePrompt() {
+  return [
+    "Autopilot is OFF for this chat.",
+    "",
+    "Stop proactively scheduling new work after your current action. Keep the same context and wait for my manual instructions or review.",
+  ].join("\n");
+}
+
+function buildChatAutopilotActionPrompt(action) {
+  if (action === "synthesize") {
+    return [
+      "Autopilot checkpoint request.",
+      "",
+      "Summarize the current research state for human review: objective, what changed, evidence/artifacts, risks, open gates, and your recommended next move. Keep it concise and actionable.",
+    ].join("\n");
+  }
+  if (action === "brainstorm") {
+    return [
+      "Autopilot replan request.",
+      "",
+      "Pause execution and propose the next research directions in this same chat. Give 2-4 candidate moves, the cheapest useful test for each, and your recommended next move.",
+    ].join("\n");
+  }
+  return [
+    "Autopilot continue request.",
+    "",
+    "Continue driving the research loop in this same chat. Pick the next useful action and proceed unless a true human gate is required.",
+  ].join("\n");
+}
+
+function sendChatAutopilotSupervisorMessage(activeSession, message, { pendingText = "queued autopilot handoff" } = {}) {
+  const sessionId = activeSession?.id || "";
+  const text = String(message || "").trim();
+  if (!sessionId || !text) return false;
+  if (activeSession.streamWorking) {
+    pushRichSessionComposerQueueItem(sessionId, {
+      id: `autopilot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      text,
+      attachments: null,
+      queuedAt: new Date().toISOString(),
+    });
+    setChatAutopilotPending(sessionId, pendingText);
+    refreshRichSessionSurfaceUi();
+    return true;
+  }
+  const sent = sendTerminalInput(`${text}\r`, { queueIfDisconnected: true });
+  if (sent) {
+    scheduleRichSessionNarrativeRefresh(sessionId, { immediate: true });
+    refreshRichSessionSurfaceUi({ scrollToBottom: true });
+  }
+  return sent;
+}
+
+async function startChatAutopilotSupervisorForSession(activeSession) {
+  const sessionId = activeSession?.id || "";
+  if (!sessionId) return null;
+  setChatAutopilotPending(sessionId, "starting same-chat autopilot");
+  refreshRichSessionSurfaceUi();
+  await ensureChatAutopilotResources();
+  const config = getChatAutopilotSessionConfig(sessionId);
+  const projectName = getChatAutopilotSelectedProjectName(config, activeSession);
+  const objective = getChatAutopilotDefaultObjective(config, activeSession);
+  const mode = config.mode || "auto";
+  if (!projectName || !objective) {
+    try {
+      return await updateChatAutopilotAttachment(activeSession.id, {
+        enabled: true,
+        driver: "session",
+        projectName,
+        objective,
+        mode,
+        jobId: "",
+        statusText: projectName
+          ? "add a project GOAL before starting autopilot"
+          : "choose a research project",
+      }, { render: false });
+    } finally {
+      setChatAutopilotPending(sessionId, "");
+      refreshRichSessionSurfaceUi();
+    }
+  }
+
+  const attachment = await updateChatAutopilotAttachment(activeSession.id, {
+    enabled: true,
+    driver: "session",
+    projectName,
+    objective,
+    mode,
+    jobId: "",
+    statusText: "driving this chat",
+  }, { render: false });
+  const sent = sendChatAutopilotSupervisorMessage(
+    activeSession,
+    buildChatAutopilotSupervisorPrompt({ projectName, objective, mode }),
+    { pendingText: "queued autopilot handoff after current turn" },
+  );
+  updateChatAutopilotSessionConfig(sessionId, {
+    ...getChatAutopilotSessionConfig(sessionId),
+    enabled: true,
+    driver: "session",
+    projectName,
+    objective,
+    mode,
+    jobId: "",
+    statusText: sent
+      ? activeSession.streamWorking ? "autopilot handoff queued" : "autopilot driving this chat"
+      : "autopilot ready; connect the session to send handoff",
+  });
+  setChatAutopilotPending(sessionId, "");
+  refreshRichSessionSurfaceUi();
+  return attachment;
+}
+
 async function startOrResumeChatAutopilotForSession(activeSession) {
   const sessionId = activeSession?.id || "";
   if (!sessionId) return null;
@@ -38818,11 +38973,15 @@ async function startOrResumeChatAutopilotForSession(activeSession) {
   refreshRichSessionSurfaceUi();
   await ensureChatAutopilotResources();
   const config = getChatAutopilotSessionConfig(sessionId);
+  if (isChatAutopilotSessionDriver(config)) {
+    return startChatAutopilotSupervisorForSession(activeSession);
+  }
   const job = getChatAutopilotJob(config);
   if (job && !isResearchAutopilotTerminalStatus(job.status)) {
     try {
       const attachment = await updateChatAutopilotAttachment(activeSession.id, {
         enabled: true,
+        driver: "runner",
         projectName: job.projectName || getChatAutopilotSelectedProjectName(config, activeSession),
         objective: job.objective || getChatAutopilotDefaultObjective(config, activeSession),
         mode: job.mode || config.mode || "auto",
@@ -38846,6 +39005,7 @@ async function startOrResumeChatAutopilotForSession(activeSession) {
     try {
       return await updateChatAutopilotAttachment(activeSession.id, {
         enabled: true,
+        driver: "runner",
         projectName,
         objective,
         mode: config.mode || "auto",
@@ -38901,6 +39061,7 @@ async function startChatAutopilotRun(activeSession, objective, options = {}) {
   const change = String(options.change || options.initialMessage || "").trim();
   const nextConfig = updateChatAutopilotSessionConfig(sessionId, {
     enabled: true,
+    driver: "runner",
     projectName,
     objective: runObjective,
     mode,
@@ -38919,6 +39080,7 @@ async function startChatAutopilotRun(activeSession, objective, options = {}) {
     const job = payload?.job || payload?.attachment?.job || null;
     updateChatAutopilotSessionConfig(sessionId, {
       enabled: true,
+      driver: "runner",
       projectName: payload?.attachment?.projectName || projectName,
       objective: payload?.attachment?.objective || runObjective,
       mode: payload?.attachment?.mode || mode,
@@ -38932,6 +39094,7 @@ async function startChatAutopilotRun(activeSession, objective, options = {}) {
   } catch (error) {
     updateChatAutopilotSessionConfig(sessionId, {
       enabled: true,
+      driver: "runner",
       projectName,
       objective: runObjective,
       mode,
@@ -39006,6 +39169,33 @@ async function stopChatAutopilotRun(activeSession) {
   const sessionId = activeSession?.id || "";
   if (!sessionId) return;
   const config = getChatAutopilotSessionConfig(sessionId);
+  if (isChatAutopilotSessionDriver(config)) {
+    updateChatAutopilotSessionConfig(sessionId, {
+      ...config,
+      enabled: false,
+      driver: "session",
+      jobId: "",
+      statusText: "manual mode; context preserved",
+    });
+    setChatAutopilotPending(sessionId, "switching to manual");
+    refreshRichSessionSurfaceUi();
+    sendChatAutopilotSupervisorMessage(activeSession, buildChatAutopilotPausePrompt(), {
+      pendingText: "queued manual handoff after current turn",
+    });
+    try {
+      await updateChatAutopilotAttachment(sessionId, {
+        ...getChatAutopilotSessionConfig(sessionId),
+        enabled: false,
+        driver: "session",
+        jobId: "",
+        statusText: "manual mode; context preserved",
+      }, { render: false });
+    } finally {
+      setChatAutopilotPending(sessionId, "");
+      refreshRichSessionSurfaceUi();
+    }
+    return;
+  }
   updateChatAutopilotSessionConfig(sessionId, { ...config, enabled: false, statusText: "autopilot off" });
   setChatAutopilotPending(sessionId, "pausing autopilot");
   refreshRichSessionSurfaceUi();
@@ -39033,6 +39223,27 @@ function handleChatAutopilotSubmittedMessage(activeSession, message) {
   if (!sessionId) return;
   const config = getChatAutopilotSessionConfig(sessionId);
   if (!config.enabled) return;
+  if (isChatAutopilotSessionDriver(config)) {
+    if (isChatAutopilotStopMessage(message)) {
+      void stopChatAutopilotRun(activeSession);
+      return;
+    }
+    updateChatAutopilotSessionConfig(sessionId, {
+      ...config,
+      driver: "session",
+      jobId: "",
+      lastMessage: message,
+      statusText: "human steering in same chat",
+    });
+    void updateChatAutopilotAttachment(sessionId, {
+      ...getChatAutopilotSessionConfig(sessionId),
+      driver: "session",
+      jobId: "",
+      lastMessage: message,
+      statusText: "human steering in same chat",
+    }, { render: false });
+    return;
+  }
   if (isChatAutopilotStopMessage(message)) {
     void stopChatAutopilotRun(activeSession);
     return;
@@ -44403,6 +44614,22 @@ function bindShellEvents() {
           void stopChatAutopilotRun(activeSession);
           return;
         }
+        const config = getChatAutopilotSessionConfig(activeSession.id);
+        if (isChatAutopilotSessionDriver(config)) {
+          const message = buildChatAutopilotActionPrompt(action);
+          sendChatAutopilotSupervisorMessage(activeSession, message, {
+            pendingText: action === "synthesize" ? "queued checkpoint after current turn" : "queued replan after current turn",
+          });
+          void updateChatAutopilotAttachment(activeSession.id, {
+            ...config,
+            enabled: true,
+            driver: "session",
+            jobId: "",
+            statusText: action === "synthesize" ? "checkpoint requested in chat" : "replan requested in chat",
+            lastMessage: message,
+          }, { render: false });
+          return;
+        }
         const message = action === "synthesize"
           ? "Synthesize the current autonomous research run for human review: summarize findings, evidence, risks, and recommended next move."
           : action === "brainstorm"
@@ -44432,6 +44659,7 @@ function bindShellEvents() {
         ...current,
         projectName: select.value,
         objective: shouldUseProjectGoal ? nextGoal : currentObjective,
+        jobId: isChatAutopilotSessionDriver(current) ? "" : current.jobId,
         statusText: select.value
           ? (shouldUseProjectGoal && nextGoal ? "ready with project objective" : `using ${select.value}`)
           : "choose a research project",

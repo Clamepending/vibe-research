@@ -399,6 +399,7 @@ test("session research autopilot attachment persists chat-native control state",
       body: JSON.stringify({
         enabled: true,
         projectName: "prose-style",
+        driver: "session",
         mode: "brainstorm",
         statusText: "send an objective to start autopilot",
       }),
@@ -408,6 +409,7 @@ test("session research autopilot attachment persists chat-native control state",
     assert.equal(saved.ok, true);
     assert.equal(saved.attachment.enabled, true);
     assert.equal(saved.attachment.projectName, "prose-style");
+    assert.equal(saved.attachment.driver, "session");
     assert.equal(saved.attachment.mode, "brainstorm");
 
     const getSaved = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot`);
@@ -435,6 +437,7 @@ test("session research autopilot attachment persists chat-native control state",
     assert.equal(started.ok, true);
     assert.equal(started.attachment.sessionId, session.id);
     assert.equal(started.attachment.enabled, true);
+    assert.equal(started.attachment.driver, "runner");
     assert.equal(started.attachment.jobId, started.job.id);
     assert.equal(started.attachment.job.id, started.job.id);
 
@@ -836,6 +839,9 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(jsText, /data-chat-autopilot-toggle/);
     assert.match(jsText, /getChatAutopilotInferredProjectName/);
     assert.match(jsText, /getChatAutopilotDefaultObjective/);
+    assert.match(jsText, /buildChatAutopilotSupervisorPrompt/);
+    assert.match(jsText, /Autopilot is ON for this chat/);
+    assert.match(jsText, /driving this chat in the current agent context/);
     assert.match(jsText, /ready with project objective/);
     assert.match(jsText, /data-chat-autopilot-change-project/);
     assert.match(jsText, /Plan next/);

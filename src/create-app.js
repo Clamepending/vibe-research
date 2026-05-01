@@ -7119,6 +7119,7 @@ export async function createVibeResearchApp({
   const RESEARCH_AUTOPILOT_STATUSES = new Set(["queued", "running", "stopping", "succeeded", "failed", "stopped"]);
   const RESEARCH_AUTOPILOT_MODES = new Set(["auto", "brainstorm", "experiment", "synthesize"]);
   const RESEARCH_AUTOPILOT_STOP_ACTIONS = new Set(["stop", "pause", "interrupt"]);
+  const CHAT_AUTOPILOT_DRIVERS = new Set(["session", "runner"]);
   const chatAutopilotAttachmentPath = path.join(stateDir, "research-chat-autopilot.json");
   const chatAutopilotAttachments = new Map();
 
@@ -7131,6 +7132,12 @@ export async function createVibeResearchApp({
   function normalizeResearchAutopilotMode(value) {
     const mode = trimText(value).toLowerCase();
     return RESEARCH_AUTOPILOT_MODES.has(mode) ? mode : "auto";
+  }
+
+  function normalizeChatAutopilotDriver(value, fallback = "session") {
+    const driver = trimText(value).toLowerCase();
+    if (CHAT_AUTOPILOT_DRIVERS.has(driver)) return driver;
+    return CHAT_AUTOPILOT_DRIVERS.has(fallback) ? fallback : "session";
   }
 
   function decisionForResearchAutopilotMode(mode) {
@@ -7290,6 +7297,7 @@ export async function createVibeResearchApp({
       projectName: "",
       objective: "",
       mode: "auto",
+      driver: "session",
       jobId: "",
       statusText: "",
       createdAt: "",
@@ -7306,13 +7314,16 @@ export async function createVibeResearchApp({
     if (!sid) return null;
     const createdAt = typeof value.createdAt === "string" ? value.createdAt : "";
     const updatedAt = typeof value.updatedAt === "string" ? value.updatedAt : "";
+    const jobId = trimText(value.jobId);
+    const driver = normalizeChatAutopilotDriver(value.driver, jobId ? "runner" : "session");
     return {
       sessionId: sid,
       enabled: Boolean(value.enabled),
       projectName: trimText(value.projectName),
       objective: trimText(value.objective).slice(0, 4_000),
       mode: normalizeResearchAutopilotMode(value.mode),
-      jobId: trimText(value.jobId),
+      driver,
+      jobId,
       statusText: trimText(value.statusText).slice(0, 400),
       createdAt,
       updatedAt,
@@ -7325,6 +7336,7 @@ export async function createVibeResearchApp({
       attachment?.enabled
       || attachment?.projectName
       || attachment?.objective
+      || attachment?.driver !== "session"
       || attachment?.jobId
       || attachment?.statusText
       || attachment?.lastMessage,
@@ -8052,6 +8064,7 @@ export async function createVibeResearchApp({
       projectName,
       objective,
       mode,
+      driver: "runner",
       jobId: activeJob.id,
       statusText: job ? "autopilot resumed" : "autopilot running",
       lastMessage: message || objective,
@@ -8121,6 +8134,7 @@ export async function createVibeResearchApp({
         projectName: body.projectName === undefined ? current.projectName : body.projectName,
         objective: body.objective === undefined ? current.objective : body.objective,
         mode: body.mode === undefined ? current.mode : body.mode,
+        driver: body.driver === undefined ? current.driver : body.driver,
         jobId: body.jobId === undefined ? current.jobId : body.jobId,
         statusText: body.statusText === undefined ? current.statusText : body.statusText,
         lastMessage: body.lastMessage === undefined ? current.lastMessage : body.lastMessage,
