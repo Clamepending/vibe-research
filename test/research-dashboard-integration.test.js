@@ -66,7 +66,7 @@ async function withLibraryServer(fn) {
   try {
     const started = await startApp({ cwd });
     app = started.app;
-    await fn({ baseUrl: started.baseUrl, libraryRoot });
+    await fn({ baseUrl: started.baseUrl, libraryRoot, app });
   } finally {
     if (app) await app.close();
     if (prevEnv === undefined) delete process.env.VIBE_RESEARCH_WORKSPACE_DIR;
@@ -739,6 +739,87 @@ test("chat research supervisor tick is silent on toggle and takes over on demand
     assert.ok(["directive", "silent", "human-gate"].includes(idleBody.decision.action));
     assert.equal(idleBody.attachment.driver, "session");
     assert.equal(idleBody.attachment.jobId, "");
+  });
+});
+
+test("chat research supervisor ignores its own continuity reminder until the worker arms a watcher", async () => {
+  await withLibraryServer(async ({ baseUrl, app }) => {
+    const sessionRes = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "shell", name: "Continuity canary chat" }),
+    });
+    assert.equal(sessionRes.status, 201);
+    const session = (await sessionRes.json()).session;
+
+    const save = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        projectName: "prose-style",
+        objective: "verify monitor continuity",
+        driver: "session",
+        mode: "auto",
+      }),
+    });
+    assert.equal(save.status, 200);
+
+    const takeoverTick = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/tick`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event: { type: "takeover", source: "session" } }),
+    });
+    assert.equal(takeoverTick.status, 200);
+    const takeoverBody = await takeoverTick.json();
+    assert.match(takeoverBody.directive.text, /set a monitor, scheduled wakeup, or log watcher/);
+    assert.equal(takeoverBody.runtime.hasContinuity, false);
+
+    const serverSession = app.sessionManager.getSession(session.id);
+    assert.ok(serverSession);
+    app.sessionManager.pushNativeNarrativeEntry(serverSession, {
+      kind: "user",
+      label: "You",
+      text: takeoverBody.directive.text,
+      timestamp: new Date().toISOString(),
+      meta: "queued-input",
+    });
+    const saveDirectiveAsLastMessage = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lastMessage: takeoverBody.directive.text }),
+    });
+    assert.equal(saveDirectiveAsLastMessage.status, 200);
+
+    const directiveEchoTick = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/tick`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event: { type: "agent-idle", source: "session", turnMarker: "directive-only" } }),
+    });
+    assert.equal(directiveEchoTick.status, 200);
+    const directiveEchoBody = await directiveEchoTick.json();
+    assert.equal(directiveEchoBody.runtime.hasContinuity, false);
+    assert.equal(directiveEchoBody.runtime.recentTraceHasMonitor, false);
+    assert.equal(directiveEchoBody.runtime.recentTraceHasWakeup, false);
+    assert.match(directiveEchoBody.decision.card.continuity, /no active monitor\/wakeup is visible/);
+
+    app.sessionManager.pushNativeNarrativeEntry(serverSession, {
+      kind: "assistant",
+      label: "Claude Code",
+      text: "Log watcher started: tail -F /tmp/fake-run.log. Completion signal is DONE fake-run-complete.",
+      timestamp: new Date().toISOString(),
+      meta: "completed",
+    });
+    const workerMonitorTick = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/tick`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event: { type: "agent-idle", source: "session", turnMarker: "worker-monitor" } }),
+    });
+    assert.equal(workerMonitorTick.status, 200);
+    const workerMonitorBody = await workerMonitorTick.json();
+    assert.equal(workerMonitorBody.runtime.hasContinuity, true);
+    assert.equal(workerMonitorBody.runtime.recentTraceHasMonitor, true);
+    assert.match(workerMonitorBody.decision.card.continuity, /monitor\/wakeup visible/);
   });
 });
 

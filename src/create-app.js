@@ -8386,6 +8386,31 @@ export async function createVibeResearchApp({
     return session;
   }
 
+  function normalizeSupervisorTraceText(value) {
+    return trimText(value).replace(/\s+/g, " ");
+  }
+
+  function normalizeSupervisorIgnoredTraceTexts(value = []) {
+    const values = Array.isArray(value) ? value : [value];
+    return values
+      .map(normalizeSupervisorTraceText)
+      .filter((text) => text.length >= 120)
+      .slice(0, 8);
+  }
+
+  function shouldIgnoreSupervisorNarrativeEntry(entry = {}, ignoredTexts = []) {
+    if (!ignoredTexts.length || !entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const entryText = normalizeSupervisorTraceText(entry.text);
+    if (entryText.length < 80) return false;
+    return ignoredTexts.some((ignored) => {
+      if (!ignored) return false;
+      return entryText === ignored
+        || entryText.startsWith(ignored)
+        || ignored.startsWith(entryText)
+        || entryText.includes(ignored.slice(0, 220));
+    });
+  }
+
   function supervisorNarrativeEntryText(entry = {}) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "";
     return [
@@ -8400,9 +8425,11 @@ export async function createVibeResearchApp({
     ].map((value) => trimText(value)).filter(Boolean).join(" ");
   }
 
-  function buildSupervisorRuntimeFromSession(session, narrative = null) {
+  function buildSupervisorRuntimeFromSession(session, narrative = null, { ignoreTexts = [] } = {}) {
     const serialized = session ? sessionManager.serializeSession(session) : null;
-    const entries = Array.isArray(narrative?.entries) ? narrative.entries.slice(-48) : [];
+    const ignoredTexts = normalizeSupervisorIgnoredTraceTexts(ignoreTexts);
+    const entries = (Array.isArray(narrative?.entries) ? narrative.entries.slice(-48) : [])
+      .filter((entry) => !shouldIgnoreSupervisorNarrativeEntry(entry, ignoredTexts));
     const recentTrace = entries.map(supervisorNarrativeEntryText).filter(Boolean).join("\n").slice(-8_000);
     const recentTraceHasMonitor = /\b(?:monitor\s+(?:started|armed|active|running|url|canvas|task)|log\s+watcher|watcher\s+(?:started|armed)|will\s+be\s+notified|tail\s+-f|tail\s+-F|monitor_url)\b/iu.test(recentTrace);
     const recentTraceHasWakeup = /\b(?:scheduled\s+wake(?:up)?|wake\s+up|wakeup|wake\s+at|reminder\s+(?:set|created)|automation\s+created|resume\s+at)\b/iu.test(recentTrace);
@@ -8432,14 +8459,14 @@ export async function createVibeResearchApp({
     };
   }
 
-  async function getSupervisorRuntimeForSession(session) {
+  async function getSupervisorRuntimeForSession(session, options = {}) {
     let narrative = null;
     try {
       narrative = await sessionManager.getSessionNarrative(session.id, { maxEntries: 64 });
     } catch {
       narrative = null;
     }
-    return buildSupervisorRuntimeFromSession(session, narrative);
+    return buildSupervisorRuntimeFromSession(session, narrative, options);
   }
 
   function getAttachedResearchAutopilotJob(attachment) {
@@ -8657,10 +8684,16 @@ export async function createVibeResearchApp({
 
       let orchestrator = null;
       let supervisorError = "";
-      const runtime = await getSupervisorRuntimeForSession(session);
       const driver = normalizeChatAutopilotDriver(current.driver, current.jobId ? "runner" : "session");
       const projectSupervisor = projectName ? getResearchProjectSupervisor(projectName) : null;
       const supervisorState = projectSupervisor?.state || current.supervisor;
+      const runtime = await getSupervisorRuntimeForSession(session, {
+        ignoreTexts: [
+          current.lastMessage,
+          current.supervisor?.lastDirectivePreview,
+          projectSupervisor?.state?.lastDirectivePreview,
+        ],
+      });
       if (current.enabled && driver === "session" && projectName) {
         try {
           const resolved = await resolveResearchProjectDir(projectName);
