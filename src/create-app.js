@@ -83,10 +83,12 @@ import { runResearchAutopilot, stepResearchAutopilot } from "./research/autopilo
 import { compileBriefToQueue, updateResearchState } from "./research/brief.js";
 import { tickResearchOrchestrator } from "./research/orchestrator.js";
 import {
+  ensureWorkspaceDirectory,
   isImageFile,
   listWorkspaceEntries,
   readWorkspaceTextFile,
   resolveWorkspaceEntry,
+  uploadWorkspaceFile,
   writeWorkspaceTextFile,
 } from "./workspace-files.js";
 
@@ -2780,6 +2782,104 @@ export async function createVibeResearchApp({
       response.json({ received: true });
     } catch (error) {
       response.status(error.statusCode || 400).json({ error: error.message || "Could not process Stripe webhook." });
+    }
+  });
+
+  // File upload route — registered BEFORE express.json so the body
+  // parser doesn't try to swallow the binary stream. The handler is the
+  // workspace-relative drop endpoint used by drag-and-drop in the file
+  // tree; `uploadWorkspaceFile` streams `request` directly into a temp
+  // file, enforces a max byte cap, and atomically renames into place.
+  app.post("/api/files/upload", async (request, response) => {
+    let streamReleased = false;
+    try {
+      const root =
+        typeof request.query.root === "string" && request.query.root
+          ? request.query.root
+          : cwd;
+      const relativePath =
+        typeof request.query.path === "string" ? request.query.path : "";
+      // Browsers can send the file name URL-encoded so non-ASCII names
+      // (emoji, CJK characters) survive the round-trip without us
+      // forcing a separate JSON header.
+      const rawName =
+        typeof request.query.name === "string" ? request.query.name : "";
+      let fileName = rawName;
+      try {
+        fileName = decodeURIComponent(rawName);
+      } catch {
+        // The browser shouldn't send invalid percent-encoding; if it
+        // does, fall back to the raw value so the sanitizer can decide.
+      }
+      const mimeType =
+        typeof request.query.type === "string" ? request.query.type : "";
+
+      const result = await uploadWorkspaceFile({
+        root,
+        relativePath,
+        fileName,
+        source: request,
+        fallbackCwd: cwd,
+        mimeType,
+      });
+      streamReleased = true;
+      response.status(201).json({ file: result });
+    } catch (error) {
+      if (!streamReleased) {
+        // Drain the request so the client sees the error response
+        // instead of "connection reset" mid-upload. Without this the
+        // browser's fetch promise sometimes rejects with a network
+        // error before reading the JSON body.
+        try {
+          request.unpipe();
+          request.resume();
+        } catch {
+          // best-effort drain
+        }
+      }
+      response
+        .status(error.statusCode || 400)
+        .json({ error: error.message || "Could not upload file." });
+    }
+  });
+
+  app.post("/api/files/folder", async (request, response) => {
+    // mkdir helper for nested folder drops. Body is small JSON so it's
+    // fine to register this AFTER express.json — but we want the same
+    // error/security shape as `/api/files/upload`, so co-locate them.
+    // We re-parse the JSON body manually here to avoid depending on
+    // route order.
+    try {
+      const chunks = [];
+      let totalBytes = 0;
+      const limitBytes = 64 * 1024;
+      for await (const chunk of request) {
+        totalBytes += chunk.length;
+        if (totalBytes > limitBytes) {
+          throw buildHttpError("Folder request body too large.", 413);
+        }
+        chunks.push(chunk);
+      }
+      const text = Buffer.concat(chunks).toString("utf8");
+      let body = {};
+      if (text.trim()) {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          throw buildHttpError("Folder request body is not valid JSON.", 400);
+        }
+      }
+      const result = await ensureWorkspaceDirectory({
+        root: typeof body.root === "string" && body.root ? body.root : cwd,
+        relativePath: typeof body.path === "string" ? body.path : "",
+        name: body.name,
+        fallbackCwd: cwd,
+      });
+      response.status(201).json({ folder: result });
+    } catch (error) {
+      response
+        .status(error.statusCode || 400)
+        .json({ error: error.message || "Could not create folder." });
     }
   });
 

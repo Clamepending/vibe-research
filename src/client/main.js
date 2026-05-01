@@ -9901,6 +9901,30 @@ function dataTransferHasImage(dataTransfer) {
   return Array.from(dataTransfer?.types || []).includes("Files");
 }
 
+// True when the dragged payload includes any file (Finder drag, image
+// paste, video, document...). Used by the file-tree drop target so we
+// only show the "drop here" highlight when there's actually something
+// to drop. Keep this distinct from `dataTransferHasImage` — the
+// terminal/chat surface only accepts images, the file tree accepts any
+// file.
+function dataTransferHasAnyFile(dataTransfer) {
+  if (!dataTransfer) {
+    return false;
+  }
+
+  // `types` is the only field that's reliably populated during dragover
+  // (items[].kind/type are blanked-out in some browsers until drop).
+  const types = Array.from(dataTransfer.types || []);
+  if (types.includes("Files")) {
+    return true;
+  }
+
+  // Fall back to items in case `types` is empty (some Safari builds).
+  return Array.from(dataTransfer.items || []).some(
+    (item) => item?.kind === "file",
+  );
+}
+
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -37968,6 +37992,555 @@ function bindFileTreeEvents() {
   });
 }
 
+// ─── File-tree drag-and-drop upload ─────────────────────────────────────
+// The user drags a file (or folder) from Finder onto a directory row in
+// the workspace file tree (#files-tree) or the per-project file tree
+// (.session-project-files-tree). The tree highlights the drop target on
+// dragover; on drop, we walk the dataTransfer payload, recurse into
+// folders via webkitGetAsEntry, mkdir the intermediate dirs server-side,
+// and POST each file as a raw stream to /api/files/upload.
+//
+// We bind ONCE at bootstrap time using event delegation. The file-tree
+// HTML is re-rendered frequently (`refreshFileTreeUi`,
+// `refreshSessionsList`) and per-element listeners would be wiped on
+// every redraw. Document-level delegation persists.
+
+const FILE_DROP_HIGHLIGHT_CLASS = "is-file-drop-target";
+const FILE_DROP_HIGHLIGHT_ROW_CLASS = "is-file-drop-row";
+const FILE_DROP_BUSY_CLASS = "is-file-drop-busy";
+let fileTreeDropHighlightStack = 0;
+const fileTreeDropHighlightedElements = new Set();
+let fileTreeDropInstalled = false;
+
+// Computes the (root, relativePath) pair the dragover/drop should
+// target, given an event whose target is somewhere inside the file
+// tree DOM. Three cases:
+//   - target is a directory row → drop INTO that directory
+//   - target is a file row      → drop into the file's PARENT directory
+//   - target is the tree blank  → drop into the tree root
+// Returns null if the event isn't inside any known file tree.
+function getFileTreeDropContext(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return null;
+
+  // Workspace file tree (top-level browser).
+  const workspaceTree = target.closest("#files-tree");
+  if (workspaceTree instanceof HTMLElement) {
+    const root = workspaceTree.dataset.filesRoot || state.filesRoot || "";
+    if (!root) return null;
+    const dirToggle = target.closest("[data-file-toggle]");
+    if (dirToggle instanceof HTMLElement) {
+      return {
+        root,
+        relativePath: normalizeFileTreePath(dirToggle.getAttribute("data-file-toggle") || ""),
+        rowElement: dirToggle,
+        treeContainer: workspaceTree,
+        scope: "workspace",
+      };
+    }
+    const fileOpen = target.closest("[data-file-open]");
+    if (fileOpen instanceof HTMLElement) {
+      const filePath = normalizeFileTreePath(fileOpen.getAttribute("data-file-open") || "");
+      const parent = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : "";
+      // When hovering over a file, the drop lands in the file's
+      // *containing folder*. Highlight that folder's row so the user
+      // sees a clear "this is the bar your file is going into".
+      const parentToggle = parent
+        ? workspaceTree.querySelector(`[data-file-toggle="${escapeFileTreeAttribute(parent)}"]`)
+        : null;
+      return {
+        root,
+        relativePath: parent,
+        rowElement:
+          parentToggle instanceof HTMLElement ? parentToggle : workspaceTree,
+        treeContainer: workspaceTree,
+        scope: "workspace",
+      };
+    }
+    return {
+      root,
+      relativePath: "",
+      rowElement: workspaceTree,
+      treeContainer: workspaceTree,
+      scope: "workspace",
+    };
+  }
+
+  // Per-project file tree in the sidebar.
+  const projectTree = target.closest("[data-project-file-tree-root]");
+  if (projectTree instanceof HTMLElement) {
+    const root = projectTree.getAttribute("data-project-file-tree-root") || "";
+    if (!root) return null;
+    const dirToggle = target.closest("[data-project-file-toggle]");
+    if (dirToggle instanceof HTMLElement) {
+      return {
+        root,
+        relativePath: normalizeFileTreePath(dirToggle.getAttribute("data-project-file-toggle") || ""),
+        rowElement: dirToggle,
+        treeContainer: projectTree,
+        scope: "project",
+      };
+    }
+    const fileOpen = target.closest("[data-project-file-open]");
+    if (fileOpen instanceof HTMLElement) {
+      const filePath = normalizeFileTreePath(fileOpen.getAttribute("data-project-file-open") || "");
+      const parent = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : "";
+      const parentToggle = parent
+        ? projectTree.querySelector(`[data-project-file-toggle="${escapeFileTreeAttribute(parent)}"]`)
+        : null;
+      return {
+        root,
+        relativePath: parent,
+        rowElement:
+          parentToggle instanceof HTMLElement ? parentToggle : projectTree,
+        treeContainer: projectTree,
+        scope: "project",
+      };
+    }
+    return {
+      root,
+      relativePath: "",
+      rowElement: projectTree,
+      treeContainer: projectTree,
+      scope: "project",
+    };
+  }
+
+  return null;
+}
+
+// Polyfill-light wrapper for CSS.escape so the file-tree query
+// selector survives slugs with special chars (spaces, dots, etc).
+// Named distinctly from the elsewhere-defined `cssEscape` (which is
+// a narrower quote/backslash escaper for inline style values) — we
+// need full attribute-selector quoting here.
+function escapeFileTreeAttribute(value) {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
+}
+
+function clearFileTreeDropHighlights() {
+  for (const element of fileTreeDropHighlightedElements) {
+    element.classList.remove(FILE_DROP_HIGHLIGHT_CLASS);
+    element.classList.remove(FILE_DROP_HIGHLIGHT_ROW_CLASS);
+  }
+  fileTreeDropHighlightedElements.clear();
+  fileTreeDropHighlightStack = 0;
+}
+
+function applyFileTreeDropHighlight(context) {
+  // Wipe stale row highlights first so the user always sees exactly
+  // one active drop target at a time.
+  for (const element of fileTreeDropHighlightedElements) {
+    element.classList.remove(FILE_DROP_HIGHLIGHT_ROW_CLASS);
+    element.classList.remove(FILE_DROP_HIGHLIGHT_CLASS);
+  }
+  fileTreeDropHighlightedElements.clear();
+
+  // Highlight ONLY the row the user is hovering — that's the "folder
+  // bar" they're aiming at. Don't outline the whole tree container,
+  // because that makes the entire sidebar look like a drop zone and
+  // hides which folder will actually receive the file. The container
+  // outline is only used as a fallback when the user is hovering
+  // empty tree space (root-of-workspace drop).
+  if (
+    context?.rowElement instanceof HTMLElement &&
+    context.rowElement !== context.treeContainer
+  ) {
+    context.rowElement.classList.add(FILE_DROP_HIGHLIGHT_ROW_CLASS);
+    fileTreeDropHighlightedElements.add(context.rowElement);
+    return;
+  }
+
+  if (context?.treeContainer instanceof HTMLElement) {
+    context.treeContainer.classList.add(FILE_DROP_HIGHLIGHT_CLASS);
+    fileTreeDropHighlightedElements.add(context.treeContainer);
+  }
+}
+
+// Recursively walks a FileSystemEntry (from webkitGetAsEntry). Returns
+// an array of `{ file, relativePath }` objects where relativePath is
+// the path WITHIN the dropped folder (empty for top-level files).
+async function readDataTransferEntry(entry, prefix = "") {
+  if (!entry) return [];
+
+  if (entry.isFile) {
+    const file = await new Promise((resolve, reject) => {
+      try {
+        entry.file(resolve, reject);
+      } catch (error) {
+        reject(error);
+      }
+    });
+    return [{ file, relativePath: prefix }];
+  }
+
+  if (entry.isDirectory) {
+    const reader = entry.createReader();
+    const out = [];
+    const subPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+
+    // readEntries returns up to 100 entries per call — keep calling
+    // until it returns an empty batch.
+    while (true) {
+      const batch = await new Promise((resolve, reject) => {
+        try {
+          reader.readEntries(resolve, reject);
+        } catch (error) {
+          reject(error);
+        }
+      });
+      if (!batch || batch.length === 0) break;
+      for (const child of batch) {
+        const more = await readDataTransferEntry(child, subPrefix);
+        for (const item of more) {
+          out.push(item);
+        }
+      }
+    }
+    return out;
+  }
+
+  return [];
+}
+
+// Pulls all files (recursively, respecting folder structure) out of a
+// DataTransfer. Falls back to dataTransfer.files when the browser
+// doesn't expose webkitGetAsEntry.
+async function collectDataTransferFiles(dataTransfer) {
+  if (!dataTransfer) return [];
+  const items = Array.from(dataTransfer.items || []);
+  const haveEntries = items.some(
+    (item) =>
+      typeof item?.webkitGetAsEntry === "function" || typeof item?.getAsEntry === "function",
+  );
+
+  if (haveEntries) {
+    const out = [];
+    for (const item of items) {
+      if (item?.kind !== "file") continue;
+      const entry =
+        typeof item.webkitGetAsEntry === "function"
+          ? item.webkitGetAsEntry()
+          : typeof item.getAsEntry === "function"
+            ? item.getAsEntry()
+            : null;
+      if (entry) {
+        try {
+          const harvested = await readDataTransferEntry(entry, "");
+          for (const file of harvested) out.push(file);
+        } catch (error) {
+          console.warn("[vibe-research] failed to walk dropped entry", error);
+          const fallbackFile = item.getAsFile();
+          if (fallbackFile) out.push({ file: fallbackFile, relativePath: "" });
+        }
+      } else {
+        const fallbackFile = item.getAsFile();
+        if (fallbackFile) out.push({ file: fallbackFile, relativePath: "" });
+      }
+    }
+    if (out.length) return out;
+  }
+
+  // Last-ditch fallback: top-level files only (no folder structure).
+  return Array.from(dataTransfer.files || []).map((file) => ({
+    file,
+    relativePath: "",
+  }));
+}
+
+async function ensureWorkspaceDirectoryClient(root, parentPath, name) {
+  const response = await fetch("/api/files/folder", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root, path: parentPath || "", name }),
+  });
+  if (!response.ok) {
+    let message = `Could not create folder "${name}"`;
+    try {
+      const data = await response.json();
+      if (data?.error) message = data.error;
+    } catch {
+      // Ignore JSON parse errors; surface the status text instead.
+    }
+    throw new Error(message);
+  }
+  const payload = await response.json().catch(() => ({}));
+  return payload.folder?.relativePath || (parentPath ? `${parentPath}/${name}` : name);
+}
+
+async function uploadFileToWorkspace({ root, relativePath, file }) {
+  const params = new URLSearchParams();
+  params.set("root", root);
+  if (relativePath) params.set("path", relativePath);
+  params.set("name", encodeURIComponent(file.name));
+  if (file.type) params.set("type", file.type);
+
+  const response = await fetch(`/api/files/upload?${params.toString()}`, {
+    method: "POST",
+    body: file,
+    // Pass through size so the server can short-circuit oversized
+    // uploads; the body itself is the file stream.
+    headers: file.size
+      ? { "Content-Length": String(file.size), "Content-Type": file.type || "application/octet-stream" }
+      : { "Content-Type": file.type || "application/octet-stream" },
+  });
+  if (!response.ok) {
+    let message = `Could not upload ${file.name}`;
+    try {
+      const data = await response.json();
+      if (data?.error) message = data.error;
+    } catch {
+      // Ignore JSON parse errors; surface the status code instead.
+    }
+    throw new Error(message);
+  }
+  const payload = await response.json().catch(() => ({}));
+  return payload.file || null;
+}
+
+// Joins POSIX-style relative paths defensively (the server uses
+// forward slashes regardless of host OS).
+function joinFileTreePath(parent, child) {
+  if (!parent) return child || "";
+  if (!child) return parent;
+  return `${parent}/${child}`;
+}
+
+async function processFileTreeDrop(context, dataTransfer) {
+  const collected = await collectDataTransferFiles(dataTransfer);
+  if (!collected.length) {
+    return { uploaded: 0, errors: ["No files found in the drop payload."] };
+  }
+
+  // Plan-then-execute. First create all unique sub-directories (depth-
+  // first) so that uploads can proceed in parallel without racing on
+  // mkdir for the same parent. Track which dir-paths we've already
+  // created so we don't redundantly POST /api/files/folder.
+  const ensuredDirectories = new Set();
+  const errors = [];
+  const successfulUploads = [];
+
+  // Discover every nested directory we need.
+  const dirsToCreate = new Set();
+  for (const item of collected) {
+    if (!item.relativePath) continue;
+    const segments = item.relativePath.split("/").filter(Boolean);
+    let cumulative = "";
+    for (const segment of segments) {
+      cumulative = joinFileTreePath(cumulative, segment);
+      dirsToCreate.add(cumulative);
+    }
+  }
+
+  // mkdir parents BEFORE children. Sorting by depth (number of
+  // slashes) gives a topological order.
+  const sortedDirs = Array.from(dirsToCreate).sort(
+    (a, b) => a.split("/").length - b.split("/").length,
+  );
+  for (const dirPath of sortedDirs) {
+    const slash = dirPath.lastIndexOf("/");
+    const parent = slash >= 0 ? dirPath.slice(0, slash) : "";
+    const name = slash >= 0 ? dirPath.slice(slash + 1) : dirPath;
+    const fullParent = joinFileTreePath(context.relativePath, parent);
+    try {
+      await ensureWorkspaceDirectoryClient(context.root, fullParent, name);
+      ensuredDirectories.add(joinFileTreePath(context.relativePath, dirPath));
+    } catch (error) {
+      errors.push(`mkdir ${dirPath}: ${error.message || error}`);
+    }
+  }
+
+  // Upload files. We could parallelize, but a serial loop keeps the
+  // server's disk and network easier to reason about for big videos —
+  // and matches the user's mental model of "drop, watch the bar
+  // crawl up".
+  for (const item of collected) {
+    const targetDir = joinFileTreePath(context.relativePath, item.relativePath || "");
+    try {
+      const result = await uploadFileToWorkspace({
+        root: context.root,
+        relativePath: targetDir,
+        file: item.file,
+      });
+      if (result) successfulUploads.push(result);
+    } catch (error) {
+      errors.push(`${item.file.name}: ${error.message || error}`);
+    }
+  }
+
+  return { uploaded: successfulUploads.length, errors, files: successfulUploads };
+}
+
+async function refreshFileTreeAfterUpload(context) {
+  if (context.scope === "workspace") {
+    // Refresh the dropped-into directory plus the root so newly-created
+    // subdirectories appear; keep the user's expansion state intact.
+    await loadFileTree(context.relativePath || "", { force: true });
+    if (context.relativePath) {
+      await loadFileTree("", { force: true });
+    }
+    refreshFileTreeUi();
+    return;
+  }
+  if (context.scope === "project") {
+    await loadProjectFileTree(context.root, context.relativePath || "", { force: true });
+    if (context.relativePath) {
+      await loadProjectFileTree(context.root, "", { force: true });
+    }
+    refreshSessionsList({ force: true });
+  }
+}
+
+function showFileTreeDropError(context, message) {
+  // Stamp a status line into the tree's status bar; falls back to
+  // window.alert if the container isn't available (e.g. drop fired
+  // after the user navigated away).
+  const text = String(message || "Upload failed").trim() || "Upload failed";
+  console.error("[vibe-research] file drop error:", text);
+  if (context?.scope === "workspace") {
+    state.fileTreeError = text;
+    refreshFileTreeUi();
+    return;
+  }
+  if (context?.scope === "project") {
+    if (!state.projectFileTreeErrors) state.projectFileTreeErrors = {};
+    state.projectFileTreeErrors[context.root] = text;
+    refreshSessionsList({ force: true });
+    return;
+  }
+  try {
+    window.alert(text);
+  } catch {
+    // ignore environments without alert (tests)
+  }
+}
+
+function installFileTreeDragAndDrop() {
+  if (fileTreeDropInstalled || typeof document === "undefined") {
+    return;
+  }
+  fileTreeDropInstalled = true;
+
+  // Drag entry/leave bookkeeping. The browser fires dragenter on every
+  // descendant, so we track a depth counter to know when the drag has
+  // truly exited the file tree.
+  document.addEventListener("dragenter", (event) => {
+    if (!dataTransferHasAnyFile(event.dataTransfer)) return;
+    const context = getFileTreeDropContext(event);
+    if (!context) {
+      // Outside the tree — clear any leftover highlight.
+      clearFileTreeDropHighlights();
+      return;
+    }
+    fileTreeDropHighlightStack += 1;
+    applyFileTreeDropHighlight(context);
+  });
+
+  document.addEventListener("dragover", (event) => {
+    if (!dataTransferHasAnyFile(event.dataTransfer)) return;
+    const context = getFileTreeDropContext(event);
+    if (!context) return;
+    event.preventDefault();
+    if (event.dataTransfer) {
+      try {
+        event.dataTransfer.dropEffect = "copy";
+      } catch {
+        // Some browsers throw if the drag source forbids copy; ignore.
+      }
+    }
+    applyFileTreeDropHighlight(context);
+  });
+
+  document.addEventListener("dragleave", (event) => {
+    // Browsers fire dragleave both when leaving a child element AND
+    // when leaving the tree entirely. The depth counter disambiguates.
+    if (fileTreeDropHighlightStack > 0) {
+      fileTreeDropHighlightStack -= 1;
+    }
+    if (fileTreeDropHighlightStack === 0) {
+      clearFileTreeDropHighlights();
+    }
+  });
+
+  document.addEventListener("drop", async (event) => {
+    if (!dataTransferHasAnyFile(event.dataTransfer)) return;
+    const context = getFileTreeDropContext(event);
+    if (!context) {
+      // Drop outside any tree but with files — let the browser do its
+      // default (which we prevent in dragover, so default is "do
+      // nothing"). Make sure to clear highlights either way.
+      clearFileTreeDropHighlights();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    clearFileTreeDropHighlights();
+
+    if (context.treeContainer instanceof HTMLElement) {
+      context.treeContainer.classList.add(FILE_DROP_BUSY_CLASS);
+    }
+
+    try {
+      const dataTransfer = event.dataTransfer;
+      const result = await processFileTreeDrop(context, dataTransfer);
+      await refreshFileTreeAfterUpload(context);
+
+      if (result.errors.length) {
+        showFileTreeDropError(
+          context,
+          `${result.uploaded} uploaded, ${result.errors.length} failed: ${result.errors[0]}`,
+        );
+      } else if (result.uploaded === 0) {
+        showFileTreeDropError(context, "No files were uploaded.");
+      } else {
+        // Clear stale error if the upload finally succeeded.
+        if (context.scope === "workspace") {
+          state.fileTreeError = "";
+          refreshFileTreeUi();
+        } else if (context.scope === "project") {
+          state.projectFileTreeErrors[context.root] = "";
+          refreshSessionsList({ force: true });
+        }
+      }
+    } catch (error) {
+      showFileTreeDropError(context, error?.message || "Upload failed.");
+    } finally {
+      if (context.treeContainer instanceof HTMLElement) {
+        context.treeContainer.classList.remove(FILE_DROP_BUSY_CLASS);
+      }
+    }
+  });
+
+  // Suppress the browser default of navigating to the dropped file
+  // when the drop happens outside any registered drop target. Without
+  // this, dropping in the page chrome (toolbar, sidebar header) would
+  // open the file in a new tab and unload our app.
+  window.addEventListener(
+    "dragover",
+    (event) => {
+      if (dataTransferHasAnyFile(event.dataTransfer)) {
+        event.preventDefault();
+      }
+    },
+    false,
+  );
+  window.addEventListener(
+    "drop",
+    (event) => {
+      if (
+        dataTransferHasAnyFile(event.dataTransfer) &&
+        !getFileTreeDropContext(event)
+      ) {
+        event.preventDefault();
+      }
+    },
+    false,
+  );
+}
+
 function refreshFileTreeUi() {
   const filesRootInput = document.querySelector("#files-root-input");
   const filesTree = document.querySelector("#files-tree");
@@ -44410,6 +44983,7 @@ async function bootstrapApp() {
     installDelayedTooltips();
     bindSelectableRefreshEvents();
     installGpuDeviceContextMenu();
+    installFileTreeDragAndDrop();
 
     if ("virtualKeyboard" in navigator) {
       navigator.virtualKeyboard.overlaysContent = false;
