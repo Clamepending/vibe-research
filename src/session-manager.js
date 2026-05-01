@@ -3908,6 +3908,21 @@ export class SessionManager {
       autoRenameEnabled: sourceSession.providerId !== "shell",
     });
 
+    // streamMode is an env-driven server-level config, not a per-session
+    // preference (same rationale as restoreSession). Without this,
+    // buildSessionRecord's default of streamMode=false leaves the fork
+    // in the PTY path even when the source session is a Claude/Codex
+    // stream-mode session — startSession would then spawn a raw CLI
+    // terminal instead of the rich chat surface, which is exactly what
+    // the source session was using.
+    if (isClaudeProviderId(provider.id)) {
+      forkSession.streamMode = isClaudeStreamModeEnabled(this.env);
+    } else if (provider.id === "codex") {
+      forkSession.streamMode = isCodexStreamModeEnabled(this.env);
+    } else {
+      forkSession.streamMode = false;
+    }
+
     this.sessions.set(forkSession.id, forkSession);
 
     try {
