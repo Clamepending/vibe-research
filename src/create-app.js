@@ -85,6 +85,11 @@ import { formatOrgBenchReport, runOrgBench } from "./research/org-bench.js";
 import { tickResearchOrchestrator } from "./research/orchestrator.js";
 import { parseProjectReadme } from "./research/project-readme.js";
 import {
+  decideResearchSupervisorIntervention,
+  normalizeResearchSupervisorState,
+  updateResearchSupervisorState,
+} from "./research/supervisor.js";
+import {
   createEmptyWorkspaceFile,
   ensureWorkspaceDirectory,
   isImageFile,
@@ -7303,6 +7308,7 @@ export async function createVibeResearchApp({
       createdAt: "",
       updatedAt: "",
       lastMessage: "",
+      supervisor: normalizeResearchSupervisorState(),
     };
   }
 
@@ -7316,6 +7322,7 @@ export async function createVibeResearchApp({
     const updatedAt = typeof value.updatedAt === "string" ? value.updatedAt : "";
     const jobId = trimText(value.jobId);
     const driver = normalizeChatAutopilotDriver(value.driver, jobId ? "runner" : "session");
+    const supervisor = normalizeResearchSupervisorState(value.supervisor);
     return {
       sessionId: sid,
       enabled: Boolean(value.enabled),
@@ -7328,6 +7335,7 @@ export async function createVibeResearchApp({
       createdAt,
       updatedAt,
       lastMessage: trimText(value.lastMessage).slice(0, 4_000),
+      supervisor,
     };
   }
 
@@ -7339,7 +7347,9 @@ export async function createVibeResearchApp({
       || attachment?.driver !== "session"
       || attachment?.jobId
       || attachment?.statusText
-      || attachment?.lastMessage,
+      || attachment?.lastMessage
+      || attachment?.supervisor?.lastObservedAt
+      || attachment?.supervisor?.lastDirectiveAt
     );
   }
 
@@ -8138,11 +8148,98 @@ export async function createVibeResearchApp({
         jobId: body.jobId === undefined ? current.jobId : body.jobId,
         statusText: body.statusText === undefined ? current.statusText : body.statusText,
         lastMessage: body.lastMessage === undefined ? current.lastMessage : body.lastMessage,
+        supervisor: body.supervisor === undefined ? current.supervisor : body.supervisor,
       });
       const serialized = serializeChatAutopilotAttachment(attachment);
       response.json({ ok: true, attachment: serialized, job: serialized.job });
     } catch (error) {
       response.status(error.statusCode || 500).json({ error: error.message || "Could not update chat autopilot." });
+    }
+  });
+
+  app.post("/api/sessions/:sessionId/research-autopilot/supervisor/tick", async (request, response) => {
+    try {
+      requireChatAutopilotSession(request.params.sessionId);
+      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+        ? request.body
+        : {};
+      const current = getChatAutopilotAttachment(request.params.sessionId);
+      const projectName = trimText(body.projectName) || current.projectName;
+      const event = body.event && typeof body.event === "object" && !Array.isArray(body.event)
+        ? body.event
+        : {
+            type: trimText(body.event || body.type || "tick"),
+            action: trimText(body.action),
+            source: trimText(body.source) || "chat",
+          };
+
+      let orchestrator = null;
+      let supervisorError = "";
+      const driver = normalizeChatAutopilotDriver(current.driver, current.jobId ? "runner" : "session");
+      if (current.enabled && driver === "session" && projectName) {
+        try {
+          const resolved = await resolveResearchProjectDir(projectName);
+          orchestrator = await tickResearchOrchestrator({
+            projectDir: resolved.projectDir,
+            apply: false,
+            askHuman: false,
+            waitHuman: false,
+            allowCrossVersion: Boolean(body.allowCrossVersion),
+            checkPaper: Boolean(body.checkPaper),
+          });
+        } catch (error) {
+          supervisorError = error.message || "could not inspect project state";
+        }
+      }
+
+      const observedAttachment = {
+        ...current,
+        projectName,
+        objective: trimText(body.objective) || current.objective,
+      };
+      const decision = supervisorError
+        ? {
+            action: "human-gate",
+            shouldSend: false,
+            reason: supervisorError,
+            event,
+            signature: `supervisor-error|${projectName}|${supervisorError}`.slice(0, 300),
+          }
+        : decideResearchSupervisorIntervention({
+            attachment: observedAttachment,
+            event,
+            orchestratorReport: orchestrator,
+            supervisorState: current.supervisor,
+          });
+      const supervisor = updateResearchSupervisorState(current.supervisor, decision, event);
+      const attachment = await setChatAutopilotAttachment(request.params.sessionId, {
+        ...current,
+        enabled: current.enabled,
+        driver,
+        projectName,
+        objective: observedAttachment.objective,
+        jobId: driver === "session" ? "" : current.jobId,
+        statusText: decision.shouldSend
+          ? "supervisor queued a directive"
+          : current.statusText || (current.enabled ? "supervisor listening" : ""),
+        lastMessage: trimText(body.observedMessage) || current.lastMessage,
+        supervisor,
+      });
+      response.json({
+        ok: true,
+        decision,
+        directive: decision.shouldSend ? decision.directive : null,
+        attachment: serializeChatAutopilotAttachment(attachment),
+        orchestrator: orchestrator
+          ? {
+              recommendation: orchestrator.recommendation,
+              counts: orchestrator.counts,
+              phase: orchestrator.phase,
+            }
+          : null,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 500).json({ error: error.message || "Could not tick chat autopilot supervisor." });
     }
   });
 

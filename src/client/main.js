@@ -1547,6 +1547,37 @@ function saveComposerQueue() {
   }
 }
 
+function sanitizeChatAutopilotSupervisor(value) {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const audit = Array.isArray(input.audit)
+    ? input.audit
+      .map((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+        return {
+          at: typeof entry.at === "string" ? entry.at : "",
+          event: String(entry.event || "").trim().slice(0, 80),
+          action: String(entry.action || "").trim().slice(0, 80),
+          reason: String(entry.reason || "").trim().slice(0, 500),
+          signature: String(entry.signature || "").trim().slice(0, 300),
+        };
+      })
+      .filter(Boolean)
+      .slice(-80)
+    : [];
+  return {
+    version: 1,
+    enabledAt: typeof input.enabledAt === "string" ? input.enabledAt : "",
+    updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : "",
+    lastObservedAt: typeof input.lastObservedAt === "string" ? input.lastObservedAt : "",
+    lastObservedEvent: String(input.lastObservedEvent || "").trim().slice(0, 80),
+    lastDirectiveAt: typeof input.lastDirectiveAt === "string" ? input.lastDirectiveAt : "",
+    lastDirectiveSignature: String(input.lastDirectiveSignature || "").trim().slice(0, 300),
+    lastDirectiveReason: String(input.lastDirectiveReason || "").trim().slice(0, 500),
+    interventionCount: Math.max(0, Math.floor(Number(input.interventionCount) || 0)),
+    audit,
+  };
+}
+
 function sanitizeChatAutopilotSession(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -1563,10 +1594,11 @@ function sanitizeChatAutopilotSession(value) {
   const createdAt = typeof value.createdAt === "string" ? value.createdAt : "";
   const updatedAt = typeof value.updatedAt === "string" ? value.updatedAt : "";
   const lastMessage = String(value.lastMessage || "").trim().slice(0, 4_000);
-  if (!enabled && !projectName && !objective && !jobId && !statusText && !lastMessage && driver === "session") {
+  const supervisor = sanitizeChatAutopilotSupervisor(value.supervisor);
+  if (!enabled && !projectName && !objective && !jobId && !statusText && !lastMessage && !supervisor.lastObservedAt && driver === "session") {
     return null;
   }
-  return { sessionId, enabled, projectName, objective, mode, driver, jobId, statusText, createdAt, updatedAt, lastMessage };
+  return { sessionId, enabled, projectName, objective, mode, driver, jobId, statusText, createdAt, updatedAt, lastMessage, supervisor };
 }
 
 function loadChatAutopilotSessions() {
@@ -2701,6 +2733,7 @@ const state = {
   chatAutopilotAttachmentLoaded: {},
   chatAutopilotProjectPickerOpen: {},
   chatAutopilotPending: {},
+  chatAutopilotSupervisorTicking: {},
   // Per-session previous streamWorking value, used to detect the
   // working→idle transition that triggers the queue flush.
   richSessionComposerQueueLastWorking: {},
@@ -7338,6 +7371,7 @@ function getChatAutopilotSessionConfig(sessionId) {
       jobId: "",
       statusText: "",
       updatedAt: "",
+      supervisor: sanitizeChatAutopilotSupervisor(),
     };
   }
   const local = sanitizeChatAutopilotSession(state.chatAutopilotSessions[sid]) || {};
@@ -7354,6 +7388,7 @@ function getChatAutopilotSessionConfig(sessionId) {
     createdAt: existing.createdAt || "",
     updatedAt: existing.updatedAt || "",
     lastMessage: existing.lastMessage || "",
+    supervisor: sanitizeChatAutopilotSupervisor(existing.supervisor),
   };
 }
 
@@ -7965,12 +8000,26 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
     const wasWorking = state.richSessionComposerQueueLastWorking[sid] === true;
     const nowWorking = Boolean(activeSession.streamWorking);
     state.richSessionComposerQueueLastWorking[sid] = nowWorking;
-    if (wasWorking && !nowWorking && getRichSessionComposerQueue(sid).length) {
+    const queuedMessages = getRichSessionComposerQueue(sid);
+    if (wasWorking && !nowWorking && queuedMessages.length) {
       // Defer to next tick so the UI paints the "idle" state before we
       // immediately send the next message — otherwise the activity strip
       // can flicker straight from "thinking…" into the new turn without
       // the user seeing the brief idle gap, which is disorienting.
       setTimeout(() => flushNextRichSessionComposerQueueItem(sid), 0);
+    } else if (wasWorking && !nowWorking) {
+      const config = getChatAutopilotSessionConfig(sid);
+      if (config.enabled && isChatAutopilotSessionDriver(config)) {
+        setTimeout(() => {
+          const session = state.sessions.find((entry) => entry.id === sid);
+          if (session && !session.streamWorking && !getRichSessionComposerQueue(sid).length) {
+            void tickChatAutopilotSupervisor(session, {
+              type: "agent-idle",
+              source: "session",
+            });
+          }
+        }, 0);
+      }
     }
   }
 
@@ -38854,28 +38903,6 @@ function buildChatAutopilotStartBody(config, objective, options = {}) {
   };
 }
 
-function buildChatAutopilotActionPrompt(action) {
-  if (action === "synthesize") {
-    return [
-      "Autopilot checkpoint request.",
-      "",
-      "Summarize the current research state for human review: objective, what changed, evidence/artifacts, risks, open gates, and your recommended next move. Keep it concise and actionable.",
-    ].join("\n");
-  }
-  if (action === "brainstorm") {
-    return [
-      "Autopilot replan request.",
-      "",
-      "Pause execution and propose the next research directions in this same chat. Give 2-4 candidate moves, the cheapest useful test for each, and your recommended next move.",
-    ].join("\n");
-  }
-  return [
-    "Autopilot continue request.",
-    "",
-    "Continue driving the research loop in this same chat. Pick the next useful action and proceed unless a true human gate is required.",
-  ].join("\n");
-}
-
 function sendChatAutopilotSupervisorMessage(activeSession, message, { pendingText = "queued supervisor message" } = {}) {
   const sessionId = activeSession?.id || "";
   const text = String(message || "").trim();
@@ -38897,6 +38924,64 @@ function sendChatAutopilotSupervisorMessage(activeSession, message, { pendingTex
     refreshRichSessionSurfaceUi({ scrollToBottom: true });
   }
   return sent;
+}
+
+async function tickChatAutopilotSupervisor(activeSession, event = {}, { pendingText = "", sendDirective = true } = {}) {
+  const sessionId = activeSession?.id || "";
+  if (!sessionId || state.chatAutopilotSupervisorTicking[sessionId]) return null;
+  const config = getChatAutopilotSessionConfig(sessionId);
+  if (!config.enabled || !isChatAutopilotSessionDriver(config)) return null;
+  state.chatAutopilotSupervisorTicking[sessionId] = true;
+  if (pendingText) {
+    setChatAutopilotPending(sessionId, pendingText);
+    refreshRichSessionSurfaceUi();
+  }
+  try {
+    const payload = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/research-autopilot/supervisor/tick`, {
+      method: "POST",
+      body: JSON.stringify({
+        event,
+        projectName: getChatAutopilotSelectedProjectName(config, activeSession),
+        objective: getChatAutopilotDefaultObjective(config, activeSession),
+      }),
+      timeoutMs: 30_000,
+    });
+    applyChatAutopilotAttachment(sessionId, payload);
+    const directiveText = String(payload?.directive?.text || "").trim();
+    if (sendDirective && payload?.decision?.shouldSend && directiveText) {
+      const sent = sendChatAutopilotSupervisorMessage(activeSession, directiveText, {
+        pendingText: event?.type === "agent-idle" ? "queued supervisor next step" : "queued supervisor message",
+      });
+      updateChatAutopilotSessionConfig(sessionId, {
+        ...getChatAutopilotSessionConfig(sessionId),
+        enabled: true,
+        driver: "session",
+        jobId: "",
+        statusText: sent ? "supervisor directive sent" : "supervisor directive ready",
+        lastMessage: directiveText,
+      });
+      if (sent) {
+        void updateChatAutopilotAttachment(sessionId, {
+          ...getChatAutopilotSessionConfig(sessionId),
+          statusText: "supervisor directive sent",
+          lastMessage: directiveText,
+        }, { render: false });
+      }
+    }
+    return payload;
+  } catch (error) {
+    updateChatAutopilotSessionConfig(sessionId, {
+      ...getChatAutopilotSessionConfig(sessionId),
+      statusText: error.message || "Could not inspect supervisor state.",
+    });
+    return null;
+  } finally {
+    delete state.chatAutopilotSupervisorTicking[sessionId];
+    if (pendingText) {
+      setChatAutopilotPending(sessionId, "");
+    }
+    refreshRichSessionSurfaceUi();
+  }
 }
 
 async function startChatAutopilotSupervisorForSession(activeSession) {
@@ -39225,6 +39310,10 @@ function handleChatAutopilotSubmittedMessage(activeSession, message) {
       lastMessage: message,
       statusText: "human steering in same chat",
     }, { render: false });
+    void tickChatAutopilotSupervisor(activeSession, {
+      type: "human-message",
+      source: "human",
+    }, { sendDirective: false });
     return;
   }
   if (isChatAutopilotStopMessage(message)) {
@@ -44599,18 +44688,13 @@ function bindShellEvents() {
         }
         const config = getChatAutopilotSessionConfig(activeSession.id);
         if (isChatAutopilotSessionDriver(config)) {
-          const message = buildChatAutopilotActionPrompt(action);
-          sendChatAutopilotSupervisorMessage(activeSession, message, {
-            pendingText: action === "synthesize" ? "queued checkpoint after current turn" : "queued replan after current turn",
+          void tickChatAutopilotSupervisor(activeSession, {
+            type: "manual-action",
+            action,
+            source: "human",
+          }, {
+            pendingText: action === "synthesize" ? "preparing checkpoint" : "preparing replan",
           });
-          void updateChatAutopilotAttachment(activeSession.id, {
-            ...config,
-            enabled: true,
-            driver: "session",
-            jobId: "",
-            statusText: action === "synthesize" ? "checkpoint requested in chat" : "replan requested in chat",
-            lastMessage: message,
-          }, { render: false });
           return;
         }
         const message = action === "synthesize"

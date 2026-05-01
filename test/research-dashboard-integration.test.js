@@ -485,6 +485,66 @@ test("session research autopilot attachment persists chat-native control state",
   });
 });
 
+test("chat research supervisor tick is silent on toggle and directive-based on demand", async () => {
+  await withLibraryServer(async ({ baseUrl }) => {
+    const sessionRes = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "shell", name: "Research chat" }),
+    });
+    assert.equal(sessionRes.status, 201);
+    const session = (await sessionRes.json()).session;
+
+    const save = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        projectName: "prose-style",
+        objective: "make prose more concise while preserving evidence",
+        driver: "session",
+        mode: "auto",
+      }),
+    });
+    assert.equal(save.status, 200);
+
+    const toggleTick = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/tick`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event: { type: "toggle-on", source: "human" } }),
+    });
+    assert.equal(toggleTick.status, 200);
+    const toggleBody = await toggleTick.json();
+    assert.equal(toggleBody.decision.action, "silent");
+    assert.equal(toggleBody.decision.shouldSend, false);
+    assert.equal(toggleBody.directive, null);
+
+    const manualTick = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/tick`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event: { type: "manual-action", action: "synthesize", source: "human" } }),
+    });
+    assert.equal(manualTick.status, 200);
+    const manualBody = await manualTick.json();
+    assert.equal(manualBody.decision.action, "directive");
+    assert.equal(manualBody.decision.shouldSend, true);
+    assert.match(manualBody.directive.text, /Synthesize the current research state/);
+    assert.doesNotMatch(manualBody.directive.text, /Autopilot/i);
+    assert.equal(manualBody.attachment.supervisor.interventionCount, 1);
+
+    const duplicateIdle = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/tick`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event: { type: "agent-idle", source: "session" } }),
+    });
+    assert.equal(duplicateIdle.status, 200);
+    const idleBody = await duplicateIdle.json();
+    assert.ok(["directive", "silent", "human-gate"].includes(idleBody.decision.action));
+    assert.equal(idleBody.attachment.driver, "session");
+    assert.equal(idleBody.attachment.jobId, "");
+  });
+});
+
 test("session research autopilot start falls back to the project GOAL", async () => {
   await withLibraryServer(async ({ baseUrl }) => {
     const sessionRes = await fetch(`${baseUrl}/api/sessions`, {
@@ -835,6 +895,8 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(jsText, /\/research-autopilot\/start/);
     assert.match(jsText, /\/research-autopilot\/steer/);
     assert.match(jsText, /\/research-autopilot\/stop/);
+    assert.match(jsText, /\/research-autopilot\/supervisor\/tick/);
+    assert.match(jsText, /tickChatAutopilotSupervisor/);
     assert.match(jsText, /research-autopilot-steer-form/);
     assert.match(jsText, /data-chat-autopilot-toggle/);
     assert.match(jsText, /getChatAutopilotInferredProjectName/);
