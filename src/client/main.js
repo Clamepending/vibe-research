@@ -547,6 +547,7 @@ const LIKELY_TEXT_FILENAMES = new Set([
   "readme.md",
 ]);
 const SESSION_READ_STORAGE_KEY = "vibe-research-session-read-at-v1";
+const COMPOSER_DRAFT_STORAGE_KEY = "vibe-research-composer-drafts-v1";
 const LAYOUT_STORAGE_KEY = "vibe-research-layout-v1";
 const OPEN_FILE_TAB_ORDER_STORAGE_KEY = "vibe-research-open-file-tab-order-v1";
 const SESSION_PROJECT_ORDER_STORAGE_KEY = "vibe-research-session-project-order-v1";
@@ -1422,6 +1423,35 @@ function saveSessionReadState() {
     window.localStorage.setItem(SESSION_READ_STORAGE_KEY, JSON.stringify(state.sessionReadAt));
   } catch {
     // Read state is a UI nicety; private browsing/storage failures should not block sessions.
+  }
+}
+
+// Composer drafts (per-session unsent textarea contents) survive page reloads,
+// browser tab discards, and quitting/reopening the desktop wrapper. Without
+// persistence, switching away from a tab long enough for the browser to evict
+// it loses everything the user typed.
+function loadComposerDrafts() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([sessionId, value]) => [String(sessionId || ""), String(value || "").slice(0, 20_000)])
+        .filter(([sessionId, value]) => sessionId && value),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function saveComposerDrafts() {
+  try {
+    window.localStorage.setItem(COMPOSER_DRAFT_STORAGE_KEY, JSON.stringify(state.richSessionComposerDrafts));
+  } catch {
+    // Drafts are a convenience; private browsing / quota errors must not break typing.
   }
 }
 
@@ -2470,7 +2500,7 @@ const state = {
   // mode pretty-prints this buffer.
   nativeSessionStreamLog: {},
   nativeSessionStreamLogRenderFrame: null,
-  richSessionComposerDrafts: {},
+  richSessionComposerDrafts: loadComposerDrafts(),
   // Per-session queue of messages the user submitted while the agent was
   // still working on the previous turn. Each entry: { id, text,
   // attachments, queuedAt }. Auto-flushed (oldest first) when the session
@@ -4008,8 +4038,19 @@ function installTerminalDisposalGuard() {
 }
 
 function syncViewportMetrics() {
+  // visualViewport.height is the visible (post-zoom) viewport. On mobile we
+  // want it because the on-screen keyboard slides it up and we need the
+  // layout to shrink with it. On a desktop browser, ctrl/cmd-zooming shrinks
+  // visualViewport.height while window.innerHeight stays the same — using
+  // visualViewport there causes the whole app grid (and the composer pinned
+  // to the bottom of it) to drift up the screen as you zoom in. Honour
+  // visualViewport only on coarse-pointer devices (touch); use innerHeight
+  // for desktop.
   const viewport = window.visualViewport;
-  const nextHeight = Math.max(320, Math.round(viewport?.height ?? window.innerHeight));
+  const baseHeight = isCoarsePointerDevice()
+    ? (viewport?.height ?? window.innerHeight)
+    : window.innerHeight;
+  const nextHeight = Math.max(320, Math.round(baseHeight));
   document.documentElement.style.setProperty("--app-height", `${nextHeight}px`);
 
   const previousHeight = state.lastVisualViewportHeight;
@@ -5315,11 +5356,19 @@ function setRichSessionComposerDraft(sessionId, value) {
 
   const nextValue = String(value || "").slice(0, 20_000);
   if (!nextValue) {
-    delete state.richSessionComposerDrafts[normalizedSessionId];
+    if (normalizedSessionId in state.richSessionComposerDrafts) {
+      delete state.richSessionComposerDrafts[normalizedSessionId];
+      saveComposerDrafts();
+    }
+    return;
+  }
+
+  if (state.richSessionComposerDrafts[normalizedSessionId] === nextValue) {
     return;
   }
 
   state.richSessionComposerDrafts[normalizedSessionId] = nextValue;
+  saveComposerDrafts();
 }
 
 // =====================================================================

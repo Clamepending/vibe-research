@@ -4168,11 +4168,22 @@ export class SessionManager {
       // user message timestamp is unambiguously earlier than any partial /
       // final assistant entry the stream emits afterwards.
       const userTimestamp = new Date().toISOString();
+      // Stream-mode attachments are sent to Claude as structured image
+      // content blocks (no markdown ref in the text), so the narrative
+      // shaper can't recover the original file paths from the transcript.
+      // Stash them on the user entry directly so the chat history shows the
+      // image tile strip alongside the prompt the user sent.
+      const userImageRefs = firstLine && Array.isArray(attachments) && attachments.length
+        ? attachments
+            .map((att) => String(att?.absolutePath || att?.path || "").trim())
+            .filter(Boolean)
+        : [];
       this.pushNativeNarrativeEntry(session, {
         kind: "user",
         label: "You",
         text: line,
         timestamp: userTimestamp,
+        imageRefs: userImageRefs.length ? userImageRefs : undefined,
       });
       session.lastPromptAt = userTimestamp;
 
@@ -4915,6 +4926,11 @@ export class SessionManager {
       outputPreview: normalizeNarrativeEventText(entry.outputPreview || "", 2_200),
       seq,
     };
+    if (Array.isArray(entry.imageRefs) && entry.imageRefs.length) {
+      normalizedEntry.imageRefs = entry.imageRefs
+        .map((ref) => String(ref || "").trim())
+        .filter(Boolean);
+    }
 
     const previousEntry = session.nativeNarrativeEntries[session.nativeNarrativeEntries.length - 1] || null;
     if (
