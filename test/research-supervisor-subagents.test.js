@@ -146,6 +146,10 @@ test("supervisor side history treats human chat as steering and worker/subagent 
       humanTick.body.attachment.supervisor.audit.slice(-1).map((entry) => [entry.event, entry.action]),
       [["human-message", "silent"]],
     );
+    assert.deepEqual(
+      humanTick.body.attachment.supervisor.thread.slice(-1).map((entry) => [entry.role, entry.kind, entry.text]),
+      [["human", "human-message", humanMessageText]],
+    );
 
     const subagentObservation = await postJson(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/tick`, {
       event: { type: "agent-idle", source: "subagent", turnMarker: "heatmap-review-paused" },
@@ -165,6 +169,13 @@ test("supervisor side history treats human chat as steering and worker/subagent 
       [
         ["human-message", "silent"],
         ["agent-idle", "directive"],
+      ],
+    );
+    assert.deepEqual(
+      subagentObservation.body.attachment.supervisor.thread.slice(-2).map((entry) => [entry.role, entry.kind]),
+      [
+        ["worker", "agent-idle"],
+        ["directive", "directive_sent"],
       ],
     );
 

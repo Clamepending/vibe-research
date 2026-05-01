@@ -757,6 +757,78 @@ test("chat research supervisor tick is silent on toggle and takes over on demand
   });
 });
 
+test("chat research supervisor side chat separates questions from worker directives", async () => {
+  await withLibraryServer(async ({ baseUrl }) => {
+    const sessionRes = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "shell", name: "Supervisor side chat" }),
+    });
+    assert.equal(sessionRes.status, 201);
+    const session = (await sessionRes.json()).session;
+
+    const save = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        projectName: "prose-style",
+        objective: "make prose more concise while preserving evidence",
+        driver: "session",
+        mode: "auto",
+      }),
+    });
+    assert.equal(save.status, 200);
+
+    const ask = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "ask",
+        message: "Should we ask the worker for lit review or ablations next?",
+      }),
+    });
+    assert.equal(ask.status, 200);
+    const askBody = await ask.json();
+    assert.equal(askBody.mode, "ask");
+    assert.equal(askBody.directive, null);
+    assert.match(askBody.reply, /Recommendation:/);
+    assert.match(askBody.reply, /Worker next:/);
+    assert.equal(askBody.attachment.supervisor.interventionCount, 0);
+    assert.deepEqual(
+      askBody.attachment.supervisor.thread.slice(-2).map((entry) => [entry.role, entry.kind, entry.title]),
+      [
+        ["human", "question", "You"],
+        ["supervisor", "answer", "Supervisor"],
+      ],
+    );
+
+    const directive = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "directive",
+        message: "Tell the worker to inspect qualitative heatmaps before spending more GPU.",
+      }),
+    });
+    assert.equal(directive.status, 200);
+    const directiveBody = await directive.json();
+    assert.equal(directiveBody.mode, "directive");
+    assert.match(directiveBody.directive.text, /Please prioritize:/);
+    assert.match(directiveBody.directive.text, /qualitative heatmaps/);
+    assert.doesNotMatch(directiveBody.directive.text, /\n/);
+    assert.equal(directiveBody.attachment.supervisor.interventionCount, 1);
+    assert.deepEqual(
+      directiveBody.attachment.supervisor.thread.slice(-3).map((entry) => [entry.role, entry.kind]),
+      [
+        ["human", "directive_request"],
+        ["supervisor", "decision"],
+        ["directive", "directive_sent"],
+      ],
+    );
+  });
+});
+
 test("chat research supervisor ignores its own continuity reminder until the worker arms a watcher", async () => {
   await withLibraryServer(async ({ baseUrl, app }) => {
     const sessionRes = await fetch(`${baseUrl}/api/sessions`, {
@@ -1189,7 +1261,9 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(jsText, /\/research-autopilot\/steer/);
     assert.match(jsText, /\/research-autopilot\/stop/);
     assert.match(jsText, /\/research-autopilot\/supervisor\/tick/);
+    assert.match(jsText, /\/research-autopilot\/supervisor\/chat/);
     assert.match(jsText, /tickChatAutopilotSupervisor/);
+    assert.match(jsText, /sendChatAutopilotSupervisorChat/);
     assert.match(jsText, /takeover/);
     assert.match(jsText, /projectSupervisor/);
     assert.match(jsText, /isSessionInputConnected/);
@@ -1212,6 +1286,9 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(jsText, /data-chat-autopilot-policy/);
     assert.match(jsText, /data-chat-autopilot-supervisor-history/);
     assert.match(jsText, /data-chat-autopilot-supervisor-drawer/);
+    assert.match(jsText, /data-chat-autopilot-supervisor-form/);
+    assert.match(jsText, /data-chat-autopilot-supervisor-submit/);
+    assert.match(jsText, /chatAutopilotSupervisorDrafts/);
     assert.match(jsText, /renderChatAutopilotSupervisorDrawer/);
     assert.match(jsText, /formatChatAutopilotSupervisorDirective/);
     assert.match(jsText, /evidence.*integrity.*compute/);
@@ -1245,6 +1322,8 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(cssText, /rich-session-autopilot-action\.is-primary/);
     assert.match(cssText, /rich-session-supervisor-drawer/);
     assert.match(cssText, /rich-session-supervisor-history/);
+    assert.match(cssText, /rich-session-supervisor-chat-log/);
+    assert.match(cssText, /rich-session-supervisor-composer/);
     assert.match(cssText, /research-org-bench-card/);
     assert.match(cssText, /research-bench-table/);
   });

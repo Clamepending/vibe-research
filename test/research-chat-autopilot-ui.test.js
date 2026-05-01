@@ -161,6 +161,60 @@ test("same-chat supervisor Start creates project memory and queues takeover whil
     assert.match(drawerState.history, /directive/);
     assert.equal(drawerState.expanded, "true");
 
+    await page.fill("[data-chat-autopilot-supervisor-input]", "Should I ask for qualitative heatmaps or ablations next?");
+    await page.click('[data-chat-autopilot-supervisor-submit="ask"]');
+    await page.waitForFunction(() => {
+      const text = Array.from(document.querySelectorAll(".rich-session-supervisor-message"))
+        .map((entry) => entry.textContent || "")
+        .join(" ");
+      return /qualitative heatmaps or ablations/i.test(text) && /Recommendation:/i.test(text);
+    }, null, { timeout: 20_000 });
+    const askState = await page.evaluate((sessionId) => {
+      const rawQueue = window.localStorage.getItem("vibe-research-composer-queue-v1") || "{}";
+      const queue = JSON.parse(rawQueue);
+      const items = Array.isArray(queue[sessionId]) ? queue[sessionId] : [];
+      return {
+        queueCount: items.length,
+        messages: Array.from(document.querySelectorAll(".rich-session-supervisor-message"))
+          .map((entry) => entry.textContent?.trim() || ""),
+      };
+    }, session.id);
+    assert.equal(askState.queueCount, 1);
+    assert.ok(askState.messages.some((text) => /Should I ask for qualitative heatmaps or ablations next\?/i.test(text)));
+    assert.ok(askState.messages.some((text) => /Recommendation:/i.test(text)));
+
+    await page.fill("[data-chat-autopilot-supervisor-input]", "Please tell the worker to inspect qualitative heatmaps before more GPU spend.");
+    await page.click('[data-chat-autopilot-supervisor-submit="directive"]');
+    await page.waitForFunction((sessionId) => {
+      const rawQueue = window.localStorage.getItem("vibe-research-composer-queue-v1") || "{}";
+      const queue = JSON.parse(rawQueue);
+      const items = Array.isArray(queue[sessionId]) ? queue[sessionId] : [];
+      const text = Array.from(document.querySelectorAll(".rich-session-supervisor-message"))
+        .map((entry) => entry.textContent || "")
+        .join(" ");
+      return items.length >= 2 && /Sent to worker|Directive sent/i.test(text);
+    }, session.id, { timeout: 20_000 });
+    const directiveState = await page.evaluate((sessionId) => {
+      const rawQueue = window.localStorage.getItem("vibe-research-composer-queue-v1") || "{}";
+      const queue = JSON.parse(rawQueue);
+      const items = Array.isArray(queue[sessionId]) ? queue[sessionId] : [];
+      return {
+        queueCount: items.length,
+        secondText: items[1]?.text || "",
+        secondMeta: Array.from(document.querySelectorAll(".rich-session-queue-meta"))
+          .map((entry) => entry.textContent?.trim() || "")[1] || "",
+        messages: Array.from(document.querySelectorAll(".rich-session-supervisor-message"))
+          .map((entry) => entry.textContent?.trim() || "")
+          .join(" "),
+      };
+    }, session.id);
+    assert.equal(directiveState.queueCount, 2);
+    assert.match(directiveState.secondText, /Please prioritize:/);
+    assert.match(directiveState.secondText, /qualitative heatmaps/);
+    assert.doesNotMatch(directiveState.secondText, /\n/);
+    assert.equal(directiveState.secondMeta, "supervisor queued - #2");
+    assert.match(directiveState.messages, /Sent to worker|Directive sent/i);
+
     const projectsResponse = await fetch(`${baseUrl}/api/research/projects`);
     assert.equal(projectsResponse.status, 200);
     const projectsPayload = await projectsResponse.json();
@@ -175,7 +229,7 @@ test("same-chat supervisor Start creates project memory and queues takeover whil
     assert.equal(attachmentPayload.attachment.enabled, true);
     assert.equal(attachmentPayload.attachment.driver, "session");
     assert.equal(attachmentPayload.attachment.projectName, projectName);
-    assert.match(attachmentPayload.attachment.lastMessage, /Claim QUEUE row 1/);
+    assert.match(attachmentPayload.attachment.lastMessage, /qualitative heatmaps/);
 
     session.status = "exited";
     session.streamWorking = false;

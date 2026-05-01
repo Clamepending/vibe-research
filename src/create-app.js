@@ -86,6 +86,7 @@ import { formatOrgBenchReport, runOrgBench } from "./research/org-bench.js";
 import { tickResearchOrchestrator } from "./research/orchestrator.js";
 import { parseProjectReadme } from "./research/project-readme.js";
 import {
+  appendResearchSupervisorThread,
   decideResearchSupervisorIntervention,
   normalizeResearchSupervisorState,
   updateResearchSupervisorState,
@@ -7408,6 +7409,7 @@ export async function createVibeResearchApp({
       || supervisor?.sessionIds?.length
       || supervisor?.state?.lastObservedAt
       || supervisor?.state?.lastDirectiveAt
+      || supervisor?.state?.thread?.length
     );
   }
 
@@ -7616,6 +7618,7 @@ export async function createVibeResearchApp({
       || attachment?.lastMessage
       || attachment?.supervisor?.lastObservedAt
       || attachment?.supervisor?.lastDirectiveAt
+      || attachment?.supervisor?.thread?.length
     );
   }
 
@@ -8469,6 +8472,62 @@ export async function createVibeResearchApp({
     return buildSupervisorRuntimeFromSession(session, narrative, options);
   }
 
+  function compactSupervisorChatText(value, limit = 900) {
+    const text = trimText(value).replace(/\s+/g, " ");
+    if (!text || text.length <= limit) return text;
+    return `${text.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
+  }
+
+  function supervisorRuntimeSummary(runtime = {}) {
+    const parts = [
+      runtime.hasContinuity ? "monitor/wakeup visible" : "",
+      runtime.activeBackgroundTasks ? `${runtime.activeBackgroundTasks} background task${runtime.activeBackgroundTasks === 1 ? "" : "s"}` : "",
+      runtime.activeSubagents ? `${runtime.activeSubagents} active subagent${runtime.activeSubagents === 1 ? "" : "s"}` : "",
+      runtime.streamWorking ? "worker currently running" : "",
+    ].filter(Boolean);
+    return parts.join("; ") || "no active monitor, background task, or subagent signal";
+  }
+
+  function supervisorRecommendationSummary(orchestrator = null) {
+    const rec = orchestrator?.recommendation || {};
+    return {
+      action: trimText(rec.action || "inspect"),
+      slug: trimText(rec.slug || rec.briefSlug || rec.recommendedMove || ""),
+      reason: trimText(rec.reason || "inspect durable state before choosing the next step"),
+    };
+  }
+
+  function buildSupervisorSideChatReply({ message = "", mode = "ask", projectName = "", orchestrator = null, runtime = {} } = {}) {
+    const rec = supervisorRecommendationSummary(orchestrator);
+    const action = rec.slug ? `${rec.action} (${rec.slug})` : rec.action;
+    const runtimeLine = supervisorRuntimeSummary(runtime);
+    const prefix = mode === "directive"
+      ? "I can send this to the worker as a concise directive."
+      : "I will keep this in the supervisor side chat unless you choose Tell worker.";
+    return compactSupervisorChatText([
+      prefix,
+      projectName ? `Project: ${projectName}.` : "",
+      `Recommendation: ${action}; ${rec.reason}.`,
+      `Continuity: ${runtimeLine}.`,
+      "I treat the session agent and subagents as observed worker output, while your messages remain the supervisory instruction source.",
+      message ? `Worker next: ${compactSupervisorChatText(message, 180)}.` : `Worker next: ${rec.reason}.`,
+    ].filter(Boolean).join(" "), 900);
+  }
+
+  function buildSupervisorSideChatDirective({ message = "", orchestrator = null, runtime = {} } = {}) {
+    const rec = supervisorRecommendationSummary(orchestrator);
+    const runtimeLine = supervisorRuntimeSummary(runtime);
+    const head = compactSupervisorChatText(message, 360) || "Continue from the current project state.";
+    const route = rec.slug ? `Current route: ${rec.action} ${rec.slug}; ${rec.reason}.` : `Current route: ${rec.action}; ${rec.reason}.`;
+    return compactSupervisorChatText([
+      `Please prioritize: ${head}`,
+      "First inspect README/ACTIVE/QUEUE/LOG, the result doc, recent commits, metrics, and qualitative artifacts.",
+      route,
+      `Continuity: ${runtimeLine}.`,
+      "Use idle GPUs/subagents only for independent, provenance-preserving work; audit shortcuts or stale artifacts; stop only for a true human gate.",
+    ].join(" "), 1_000);
+  }
+
   function getAttachedResearchAutopilotJob(attachment) {
     const jobId = trimText(attachment?.jobId);
     return jobId ? researchAutopilotJobs.get(jobId) || null : null;
@@ -8666,6 +8725,148 @@ export async function createVibeResearchApp({
     }
   });
 
+  app.post("/api/sessions/:sessionId/research-autopilot/supervisor/chat", async (request, response) => {
+    try {
+      const session = requireChatAutopilotSession(request.params.sessionId);
+      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+        ? request.body
+        : {};
+      const current = getChatAutopilotAttachment(request.params.sessionId);
+      const projectName = trimText(body.projectName) || current.projectName;
+      const objective = trimText(body.objective) || current.objective;
+      const message = compactSupervisorChatText(body.message || body.text || body.prompt || "", 2_000);
+      const mode = ["directive", "send", "tell-worker"].includes(trimText(body.mode).toLowerCase())
+        ? "directive"
+        : "ask";
+      if (!message) {
+        throw routeError("Supervisor message is required.", 400);
+      }
+
+      let orchestrator = null;
+      let supervisorError = "";
+      const driver = normalizeChatAutopilotDriver(current.driver, current.jobId ? "runner" : "session");
+      const projectSupervisor = projectName ? getResearchProjectSupervisor(projectName) : null;
+      const supervisorState = projectSupervisor?.state || current.supervisor;
+      const runtime = await getSupervisorRuntimeForSession(session, {
+        ignoreTexts: [
+          current.lastMessage,
+          current.supervisor?.lastDirectivePreview,
+          projectSupervisor?.state?.lastDirectivePreview,
+        ],
+      });
+      if (projectName) {
+        try {
+          const resolved = await resolveResearchProjectDir(projectName);
+          orchestrator = await tickResearchOrchestrator({
+            projectDir: resolved.projectDir,
+            apply: false,
+            askHuman: false,
+            waitHuman: false,
+            allowCrossVersion: Boolean(body.allowCrossVersion),
+            checkPaper: Boolean(body.checkPaper),
+          });
+        } catch (error) {
+          supervisorError = error.message || "could not inspect project state";
+        }
+      }
+
+      const reply = supervisorError
+        ? `I could not inspect the durable project state: ${supervisorError}`
+        : buildSupervisorSideChatReply({ message, mode, projectName, orchestrator, runtime });
+      const directiveText = mode === "directive" && !supervisorError
+        ? buildSupervisorSideChatDirective({ message, orchestrator, runtime })
+        : "";
+      const event = {
+        type: "supervisor-chat",
+        action: mode,
+        source: "human",
+      };
+      const card = {
+        label: "Supervisor side chat",
+        mode: mode === "directive" ? "route" : "review",
+        action: mode === "directive" ? "send directive" : "answer human",
+        reason: message,
+        evidence: "Answer from durable project state, worker trace, runtime, and recent artifacts.",
+        integrity: "Worker and subagent output are observations; human messages are supervisory input.",
+        compute: "Mention idle GPUs/subagents only when they are independent and provenance-preserving.",
+        continuity: supervisorRuntimeSummary(runtime),
+        stop: "Send one directive only when explicitly requested.",
+        preview: directiveText || reply,
+      };
+      const decision = {
+        action: directiveText ? "directive" : "silent",
+        shouldSend: Boolean(directiveText),
+        reason: directiveText ? "human asked supervisor to tell the worker" : "human asked supervisor side chat",
+        event,
+        signature: `supervisor-chat|${mode}|${projectName}|${message}`.slice(0, 300),
+        card,
+        directive: directiveText ? { source: "supervisor-chat", text: directiveText, card } : null,
+      };
+      const now = new Date();
+      let supervisor = appendResearchSupervisorThread(supervisorState, [
+        {
+          role: "human",
+          kind: mode === "directive" ? "directive_request" : "question",
+          title: "You",
+          text: message,
+          source: "human",
+        },
+        {
+          role: "supervisor",
+          kind: supervisorError ? "error" : mode === "directive" ? "decision" : "answer",
+          title: supervisorError ? "Supervisor blocked" : "Supervisor",
+          text: reply,
+          source: "supervisor",
+        },
+      ], { now });
+      supervisor = updateResearchSupervisorState(supervisor, decision, event, { now });
+
+      let nextProjectSupervisor = projectSupervisor;
+      if (projectName) {
+        const sessionIds = normalizeResearchProjectSupervisorSessionIds(
+          [...(projectSupervisor?.sessionIds || []), request.params.sessionId],
+        );
+        nextProjectSupervisor = await setResearchProjectSupervisor(projectName, {
+          enabled: current.enabled && driver === "session",
+          objective,
+          primarySessionId: request.params.sessionId,
+          sessionIds,
+          state: supervisor,
+        });
+      }
+      const attachment = await setChatAutopilotAttachment(request.params.sessionId, {
+        ...current,
+        enabled: current.enabled,
+        driver,
+        projectName,
+        objective,
+        jobId: driver === "session" ? "" : current.jobId,
+        statusText: directiveText ? "supervisor directive ready" : "supervisor answered",
+        lastMessage: current.lastMessage,
+        supervisor,
+      });
+      response.json({
+        ok: true,
+        mode,
+        reply,
+        directive: directiveText ? { text: directiveText, card } : null,
+        attachment: serializeChatAutopilotAttachment(attachment),
+        projectSupervisor: nextProjectSupervisor ? serializeResearchProjectSupervisor(nextProjectSupervisor) : null,
+        runtime,
+        orchestrator: orchestrator
+          ? {
+              recommendation: orchestrator.recommendation,
+              counts: orchestrator.counts,
+              phase: orchestrator.phase,
+              projectContext: orchestrator.projectContext,
+            }
+          : null,
+      });
+    } catch (error) {
+      response.status(error.statusCode || 500).json({ error: error.message || "Could not chat with supervisor." });
+    }
+  });
+
   app.post("/api/sessions/:sessionId/research-autopilot/supervisor/tick", async (request, response) => {
     try {
       const session = requireChatAutopilotSession(request.params.sessionId);
@@ -8674,13 +8875,17 @@ export async function createVibeResearchApp({
         : {};
       const current = getChatAutopilotAttachment(request.params.sessionId);
       const projectName = trimText(body.projectName) || current.projectName;
-      const event = body.event && typeof body.event === "object" && !Array.isArray(body.event)
+      const observedMessage = trimText(body.observedMessage || body.message || body.text);
+      let event = body.event && typeof body.event === "object" && !Array.isArray(body.event)
         ? body.event
         : {
             type: trimText(body.event || body.type || "tick"),
             action: trimText(body.action),
             source: trimText(body.source) || "chat",
           };
+      if (observedMessage && !(event && typeof event === "object" && !Array.isArray(event) && (event.message || event.observedMessage || event.text))) {
+        event = { ...event, message: observedMessage };
+      }
 
       let orchestrator = null;
       let supervisorError = "";
@@ -8754,7 +8959,7 @@ export async function createVibeResearchApp({
         statusText: decision.shouldSend
           ? "supervisor queued a directive"
           : current.statusText || (current.enabled ? "supervisor listening" : ""),
-        lastMessage: trimText(body.observedMessage) || current.lastMessage,
+        lastMessage: observedMessage || current.lastMessage,
         supervisor,
       });
       response.json({

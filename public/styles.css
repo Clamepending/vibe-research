@@ -15152,7 +15152,7 @@ body.is-reordering-file-tabs {
   bottom: 104px;
   z-index: 38;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   width: min(380px, calc(100% - 32px));
   min-height: 0;
   overflow: hidden;
@@ -15262,6 +15262,7 @@ body.is-reordering-file-tabs {
 
 .rich-session-supervisor-card p,
 .rich-session-supervisor-event p,
+.rich-session-supervisor-message p,
 .rich-session-supervisor-processing,
 .rich-session-supervisor-principles dd {
   margin: 0;
@@ -15307,6 +15308,63 @@ body.is-reordering-file-tabs {
   overflow: hidden;
 }
 
+.rich-session-supervisor-chat-log {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 12px;
+}
+
+.rich-session-supervisor-message {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.rich-session-supervisor-message.is-human {
+  border-color: rgba(123, 195, 255, 0.18);
+  background: rgba(123, 195, 255, 0.075);
+}
+
+.rich-session-supervisor-message.is-supervisor {
+  border-color: rgba(142, 210, 185, 0.16);
+  background: rgba(142, 210, 185, 0.065);
+}
+
+.rich-session-supervisor-message.is-directive {
+  border-color: rgba(255, 213, 128, 0.2);
+  background: rgba(255, 213, 128, 0.07);
+}
+
+.rich-session-supervisor-message.is-worker {
+  border-color: rgba(255, 255, 255, 0.075);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.rich-session-supervisor-message-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: rgba(244, 244, 242, 0.72);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.68rem;
+}
+
+.rich-session-supervisor-message-top time {
+  color: rgba(244, 244, 242, 0.44);
+  white-space: nowrap;
+}
+
+.rich-session-supervisor-empty {
+  padding: 12px;
+  color: rgba(244, 244, 242, 0.52);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 .rich-session-supervisor-section-title {
   padding: 10px 12px 0;
 }
@@ -15341,6 +15399,62 @@ body.is-reordering-file-tabs {
   color: rgba(244, 244, 242, 0.76);
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.7rem;
+}
+
+.rich-session-supervisor-history.is-audit {
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.rich-session-supervisor-composer {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.075);
+  background: rgba(13, 14, 16, 0.96);
+}
+
+.rich-session-supervisor-composer textarea {
+  width: 100%;
+  min-height: 58px;
+  max-height: 140px;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(244, 244, 242, 0.86);
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  padding: 9px 10px;
+}
+
+.rich-session-supervisor-composer textarea:focus {
+  outline: 2px solid rgba(142, 210, 185, 0.26);
+  outline-offset: 1px;
+}
+
+.rich-session-supervisor-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.rich-session-supervisor-composer-actions button {
+  min-height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(244, 244, 242, 0.74);
+  cursor: pointer;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.7rem;
+  padding: 0 10px;
+}
+
+.rich-session-supervisor-composer-actions button[data-chat-autopilot-supervisor-submit="directive"] {
+  border-color: rgba(142, 210, 185, 0.22);
+  background: rgba(142, 210, 185, 0.08);
+  color: rgba(224, 248, 237, 0.86);
 }
 
 /* Sticky plan / todo panel — sits between the chat feed and the composer

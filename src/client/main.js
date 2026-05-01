@@ -1579,6 +1579,26 @@ function sanitizeChatAutopilotSupervisor(value) {
       .filter(Boolean)
       .slice(-80)
     : [];
+  const thread = Array.isArray(input.thread)
+    ? input.thread
+      .map((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+        const title = String(entry.title || "").trim().slice(0, 120);
+        const text = String(entry.text || "").trim().slice(0, 2_000);
+        if (!title && !text) return null;
+        return {
+          id: String(entry.id || "").trim().slice(0, 100),
+          at: typeof entry.at === "string" ? entry.at : "",
+          role: String(entry.role || "state").trim().slice(0, 40),
+          kind: String(entry.kind || "event").trim().slice(0, 60),
+          title,
+          text,
+          source: String(entry.source || "").trim().slice(0, 80),
+        };
+      })
+      .filter(Boolean)
+      .slice(-160)
+    : [];
   return {
     version: 1,
     enabledAt: typeof input.enabledAt === "string" ? input.enabledAt : "",
@@ -1592,6 +1612,7 @@ function sanitizeChatAutopilotSupervisor(value) {
     lastDirectiveCard,
     interventionCount: Math.max(0, Math.floor(Number(input.interventionCount) || 0)),
     audit,
+    thread,
   };
 }
 
@@ -1631,7 +1652,7 @@ function sanitizeChatAutopilotSession(value) {
   const lastMessage = String(value.lastMessage || "").trim().slice(0, 4_000);
   const supervisor = sanitizeChatAutopilotSupervisor(value.supervisor);
   const projectSupervisor = sanitizeChatAutopilotProjectSupervisor(value.projectSupervisor);
-  if (!enabled && !projectName && !objective && !jobId && !statusText && !lastMessage && !supervisor.lastObservedAt && driver === "session") {
+  if (!enabled && !projectName && !objective && !jobId && !statusText && !lastMessage && !supervisor.lastObservedAt && !supervisor.thread.length && driver === "session") {
     return null;
   }
   return { sessionId, enabled, projectName, objective, mode, driver, jobId, statusText, createdAt, updatedAt, lastMessage, supervisor, projectSupervisor };
@@ -2770,6 +2791,8 @@ const state = {
   chatAutopilotAttachmentLoaded: {},
   chatAutopilotProjectPickerOpen: {},
   chatAutopilotSupervisorDrawerOpen: {},
+  chatAutopilotSupervisorDrafts: {},
+  chatAutopilotSupervisorSending: {},
   chatAutopilotPending: {},
   chatAutopilotSupervisorTicking: {},
   chatAutopilotAutoRecoveryLastAt: {},
@@ -7814,6 +7837,16 @@ function renderChatAutopilotSupervisorPolicy(supervisorSummary = {}) {
   return `<span class="rich-session-autopilot-policy" data-chat-autopilot-policy title="${escapeHtml(title)}">evidence · integrity · compute</span>`;
 }
 
+function chatAutopilotSupervisorRoleLabel(role = "", kind = "") {
+  const cleanRole = String(role || "").toLowerCase();
+  if (cleanRole === "human") return "You";
+  if (cleanRole === "worker") return "Worker observed";
+  if (cleanRole === "directive") return "Sent to worker";
+  if (cleanRole === "supervisor") return "Supervisor";
+  if (cleanRole === "state") return kind ? `State · ${kind}` : "State";
+  return cleanRole || "Event";
+}
+
 function renderChatAutopilotSupervisorDrawer(activeSession) {
   const sessionId = activeSession?.id || "";
   if (!sessionId) return "";
@@ -7822,11 +7855,15 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
   const { projectSupervisor, supervisor, scope } = getChatAutopilotSupervisorDisplayState(config);
   const card = supervisor.lastDirectiveCard || {};
   const auditRows = supervisor.audit.slice(-12).reverse();
+  const threadRows = supervisor.thread.slice(-80);
   const ticking = Boolean(state.chatAutopilotSupervisorTicking[sessionId]);
+  const sendingMode = String(state.chatAutopilotSupervisorSending[sessionId] || "");
   const pending = getChatAutopilotPending(sessionId);
   const enabled = Boolean(config.enabled && isChatAutopilotSessionDriver(config));
   const status = ticking
     ? "reviewing"
+    : sendingMode
+      ? sendingMode === "directive" ? "preparing directive" : "answering"
     : pending
       ? pending
       : enabled
@@ -7838,6 +7875,24 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
   const lastPreview = supervisor.lastDirectivePreview
     || (enabled ? "Waiting for the next worker pause before sending a directive." : "Supervisor is paused for this chat.");
   const decisionTitle = card.action || card.mode || (supervisor.lastDirectiveAt ? "last directive" : "ready");
+  const draft = String(state.chatAutopilotSupervisorDrafts[sessionId] || "");
+  const chatHistory = threadRows.length
+    ? threadRows.map((entry) => {
+      const role = String(entry.role || "state").toLowerCase();
+      const label = chatAutopilotSupervisorRoleLabel(role, entry.kind);
+      const title = role === "directive" ? label : (entry.title || label);
+      const timeLabel = relativeTimeAgo(entry.at) || formatRichSessionTimestamp(entry.at);
+      return `
+        <article class="rich-session-supervisor-message is-${escapeHtml(role)}">
+          <div class="rich-session-supervisor-message-top">
+            <span>${escapeHtml(title)}</span>
+            ${timeLabel ? `<time>${escapeHtml(timeLabel)}</time>` : ""}
+          </div>
+          ${entry.text ? `<p>${escapeHtml(entry.text)}</p>` : ""}
+        </article>
+      `;
+    }).join("")
+    : `<div class="rich-session-supervisor-empty">No side-chat yet. Ask the supervisor here without interrupting the worker.</div>`;
   const history = auditRows.length
     ? auditRows.map((entry) => {
       const eventLabel = [entry.event, entry.action].filter(Boolean).join(" · ") || "tick";
@@ -7887,10 +7942,28 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
           </section>
         ` : ""}
         <section class="rich-session-supervisor-history">
-          <div class="rich-session-supervisor-section-title">History</div>
+          <div class="rich-session-supervisor-section-title">Supervisor chat</div>
+          <div class="rich-session-supervisor-chat-log">${chatHistory}</div>
+        </section>
+        <section class="rich-session-supervisor-history is-audit">
+          <div class="rich-session-supervisor-section-title">Trace</div>
           <ol>${history}</ol>
         </section>
       </div>
+      <form class="rich-session-supervisor-composer" data-chat-autopilot-supervisor-form>
+        <label class="sr-only" for="chat-autopilot-supervisor-input">Ask supervisor</label>
+        <textarea
+          id="chat-autopilot-supervisor-input"
+          data-chat-autopilot-supervisor-input
+          rows="2"
+          placeholder="Ask supervisor without interrupting the worker..."
+          ${sendingMode ? "disabled" : ""}
+        >${escapeHtml(draft)}</textarea>
+        <div class="rich-session-supervisor-composer-actions">
+          <button type="submit" data-chat-autopilot-supervisor-submit="ask" ${sendingMode ? "disabled" : ""}>Ask</button>
+          <button type="submit" data-chat-autopilot-supervisor-submit="directive" ${sendingMode ? "disabled" : ""}>Tell worker</button>
+        </div>
+      </form>
     </aside>
   `;
 }
@@ -39348,6 +39421,67 @@ function sendChatAutopilotSupervisorMessage(activeSession, message, { pendingTex
   };
 }
 
+async function sendChatAutopilotSupervisorChat(activeSession, mode = "ask") {
+  const sessionId = activeSession?.id || "";
+  const requestedMode = mode === "directive" ? "directive" : "ask";
+  const message = String(state.chatAutopilotSupervisorDrafts[sessionId] || "").trim();
+  if (!sessionId || !message || state.chatAutopilotSupervisorSending[sessionId]) return null;
+  const config = getChatAutopilotSessionConfig(sessionId);
+  state.chatAutopilotSupervisorSending[sessionId] = requestedMode;
+  state.chatAutopilotSupervisorDrawerOpen[sessionId] = true;
+  setChatAutopilotPending(sessionId, requestedMode === "directive" ? "preparing supervisor directive" : "asking supervisor");
+  refreshRichSessionSurfaceUi();
+  try {
+    const payload = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/research-autopilot/supervisor/chat`, {
+      method: "POST",
+      body: JSON.stringify({
+        mode: requestedMode,
+        message,
+        projectName: getChatAutopilotSelectedProjectName(config, activeSession),
+        objective: getChatAutopilotDefaultObjective(config, activeSession),
+      }),
+      timeoutMs: 30_000,
+    });
+    applyChatAutopilotAttachment(sessionId, payload);
+    state.chatAutopilotSupervisorDrafts[sessionId] = "";
+
+    const directiveText = formatChatAutopilotSupervisorDirective(payload?.directive?.text);
+    if (requestedMode === "directive" && directiveText) {
+      const sendResult = sendChatAutopilotSupervisorMessage(activeSession, directiveText, {
+        pendingText: activeSession.streamWorking ? "queued supervisor directive" : "sending supervisor directive",
+      });
+      const statusText = sendResult.queued ? "supervisor directive queued" : "supervisor directive sent";
+      updateChatAutopilotSessionConfig(sessionId, {
+        ...getChatAutopilotSessionConfig(sessionId),
+        enabled: true,
+        driver: "session",
+        jobId: "",
+        statusText: sendResult.accepted ? statusText : "supervisor directive ready",
+        lastMessage: directiveText,
+      });
+      if (sendResult.accepted) {
+        void updateChatAutopilotAttachment(sessionId, {
+          ...getChatAutopilotSessionConfig(sessionId),
+          statusText,
+          lastMessage: directiveText,
+        }, { render: false });
+      }
+    }
+    return payload;
+  } catch (error) {
+    updateChatAutopilotSessionConfig(sessionId, {
+      ...getChatAutopilotSessionConfig(sessionId),
+      statusText: error.message || "Could not chat with supervisor.",
+    });
+    return null;
+  } finally {
+    delete state.chatAutopilotSupervisorSending[sessionId];
+    setChatAutopilotPending(sessionId, "");
+    state.chatAutopilotSupervisorDrawerOpen[sessionId] = true;
+    refreshRichSessionSurfaceUi();
+  }
+}
+
 function chatAutopilotAutoRecoveryKey(activeSession, config = {}) {
   const projectName = getChatAutopilotSelectedProjectName(config, activeSession);
   return [projectName, activeSession?.cwd || ""].filter(Boolean).join("|") || activeSession?.id || "";
@@ -39388,7 +39522,7 @@ function getChatAutopilotTurnMarker(activeSession) {
   ].filter(Boolean).join("|").slice(0, 120);
 }
 
-async function tickChatAutopilotSupervisor(activeSession, event = {}, { pendingText = "", sendDirective = true } = {}) {
+async function tickChatAutopilotSupervisor(activeSession, event = {}, { pendingText = "", sendDirective = true, observedMessage = "" } = {}) {
   const sessionId = activeSession?.id || "";
   if (!sessionId || state.chatAutopilotSupervisorTicking[sessionId]) return null;
   const config = getChatAutopilotSessionConfig(sessionId);
@@ -39406,6 +39540,7 @@ async function tickChatAutopilotSupervisor(activeSession, event = {}, { pendingT
       method: "POST",
       body: JSON.stringify({
         event: eventWithTurn,
+        observedMessage: observedMessage || eventWithTurn?.message || "",
         projectName: getChatAutopilotSelectedProjectName(config, activeSession),
         objective: getChatAutopilotDefaultObjective(config, activeSession),
       }),
@@ -39893,7 +40028,8 @@ function handleChatAutopilotSubmittedMessage(activeSession, message) {
     void tickChatAutopilotSupervisor(activeSession, {
       type: "human-message",
       source: "human",
-    }, { sendDirective: false });
+      message,
+    }, { sendDirective: false, observedMessage: message });
     return;
   }
   if (isChatAutopilotStopMessage(message)) {
@@ -45326,6 +45462,37 @@ function bindShellEvents() {
           pendingText: action === "synthesize" ? "asking for summary" : action === "brainstorm" ? "asking for next plan" : "steering autopilot",
         });
       }
+    }, { capture: true });
+
+    document.addEventListener("input", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const input = target?.closest("[data-chat-autopilot-supervisor-input]");
+      if (!(input instanceof HTMLTextAreaElement)) return;
+      const activeSession = getActiveSession();
+      if (!activeSession?.id) return;
+      state.chatAutopilotSupervisorDrafts[activeSession.id] = input.value;
+    }, { capture: true });
+
+    document.addEventListener("submit", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const form = target?.closest("[data-chat-autopilot-supervisor-form]");
+      if (!(form instanceof HTMLFormElement)) return;
+      event.preventDefault();
+      const activeSession = getActiveSession();
+      if (!activeSession?.id) return;
+      const input = form.querySelector("[data-chat-autopilot-supervisor-input]");
+      if (input instanceof HTMLTextAreaElement) {
+        state.chatAutopilotSupervisorDrafts[activeSession.id] = input.value;
+        if (!input.value.trim()) {
+          input.focus();
+          return;
+        }
+      }
+      const submitter = event.submitter instanceof HTMLElement ? event.submitter : document.activeElement;
+      const mode = submitter instanceof HTMLElement
+        ? submitter.getAttribute("data-chat-autopilot-supervisor-submit") || "ask"
+        : "ask";
+      void sendChatAutopilotSupervisorChat(activeSession, mode === "directive" ? "directive" : "ask");
     }, { capture: true });
 
     document.addEventListener("change", (event) => {

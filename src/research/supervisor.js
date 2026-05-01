@@ -1,4 +1,5 @@
 const MAX_AUDIT_EVENTS = 80;
+const MAX_THREAD_EVENTS = 160;
 
 function trimString(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -45,6 +46,45 @@ function normalizeSupervisorCard(value = {}) {
   };
 }
 
+function normalizeSupervisorThreadEntry(value = {}) {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const role = boundedText(input.role, 40) || "state";
+  const kind = boundedText(input.kind, 60) || "event";
+  const text = boundedText(input.text, 2_000);
+  const title = boundedText(input.title, 120);
+  const at = typeof input.at === "string" ? input.at : "";
+  if (!text && !title) return null;
+  return {
+    id: boundedText(input.id, 100),
+    at,
+    role,
+    kind,
+    title,
+    text,
+    source: boundedText(input.source, 80),
+  };
+}
+
+function supervisorThreadEntry({
+  at = "",
+  role = "state",
+  kind = "event",
+  title = "",
+  text = "",
+  source = "",
+} = {}) {
+  const normalized = normalizeSupervisorThreadEntry({
+    id: `sup-${Math.random().toString(36).slice(2, 10)}`,
+    at,
+    role,
+    kind,
+    title,
+    text,
+    source,
+  });
+  return normalized;
+}
+
 export function normalizeResearchSupervisorState(value = {}) {
   const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const audit = Array.isArray(input.audit)
@@ -62,6 +102,12 @@ export function normalizeResearchSupervisorState(value = {}) {
       .filter(Boolean)
       .slice(-MAX_AUDIT_EVENTS)
     : [];
+  const thread = Array.isArray(input.thread)
+    ? input.thread
+      .map(normalizeSupervisorThreadEntry)
+      .filter(Boolean)
+      .slice(-MAX_THREAD_EVENTS)
+    : [];
   return {
     version: 1,
     enabledAt: typeof input.enabledAt === "string" ? input.enabledAt : "",
@@ -75,6 +121,7 @@ export function normalizeResearchSupervisorState(value = {}) {
     lastDirectiveCard: normalizeSupervisorCard(input.lastDirectiveCard),
     interventionCount: Math.max(0, Math.floor(Number(input.interventionCount) || 0)),
     audit,
+    thread,
   };
 }
 
@@ -88,6 +135,7 @@ function normalizeSupervisorEvent(event = {}) {
     action: trimString(input.action).toLowerCase(),
     source: trimString(input.source || "chat").toLowerCase(),
     turnMarker: boundedText(input.turnMarker || input.turnId || input.observedTurn || "", 120),
+    message: boundedText(input.message || input.observedMessage || input.text || "", 2_000),
   };
 }
 
@@ -186,6 +234,26 @@ function automaticDirectiveSignature({ event, action, report, reason }) {
     report,
     reason,
   });
+}
+
+export function appendResearchSupervisorThread(previous = {}, entries = [], { now = new Date() } = {}) {
+  const at = isoNow(now);
+  const state = normalizeResearchSupervisorState(previous);
+  const normalizedEntries = (Array.isArray(entries) ? entries : [entries])
+    .map((entry) => normalizeSupervisorThreadEntry({
+      ...entry,
+      at: typeof entry?.at === "string" && entry.at ? entry.at : at,
+      id: entry?.id || `sup-${Date.parse(at) || Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    }))
+    .filter(Boolean);
+  if (!normalizedEntries.length) {
+    return state;
+  }
+  return {
+    ...state,
+    updatedAt: at,
+    thread: [...state.thread, ...normalizedEntries].slice(-MAX_THREAD_EVENTS),
+  };
 }
 
 function manualDirective(action, { attachment = {}, report = null } = {}) {
@@ -787,6 +855,38 @@ export function updateResearchSupervisorState(previous = {}, decision = {}, even
     reason: boundedText(decision.reason, 500),
     signature: boundedText(decision.signature, 300),
   };
+  const threadEntries = [];
+  if (normalizedEvent.type && !["toggle-on", "toggle-off", "supervisor-chat"].includes(normalizedEvent.type)) {
+    const isHuman = normalizedEvent.source === "human";
+    threadEntries.push(supervisorThreadEntry({
+      at,
+      role: isHuman ? "human" : "worker",
+      kind: normalizedEvent.type,
+      title: isHuman ? "Human action" : "Worker observed",
+      text: normalizedEvent.message || decision.reason || normalizedEvent.action || normalizedEvent.type,
+      source: normalizedEvent.source,
+    }));
+  }
+  if (decision.action === "human-gate" && decision.reason) {
+    threadEntries.push(supervisorThreadEntry({
+      at,
+      role: "supervisor",
+      kind: "gate",
+      title: "Supervisor gate",
+      text: decision.reason,
+      source: "supervisor",
+    }));
+  }
+  if (shouldSend) {
+    threadEntries.push(supervisorThreadEntry({
+      at,
+      role: "directive",
+      kind: "directive_sent",
+      title: decision.card?.action || decision.directive?.card?.action || "Directive sent",
+      text: decision.directive.text,
+      source: "supervisor",
+    }));
+  }
   return {
     ...state,
     enabledAt: state.enabledAt || at,
@@ -800,6 +900,7 @@ export function updateResearchSupervisorState(previous = {}, decision = {}, even
     lastDirectiveCard: shouldSend ? normalizeSupervisorCard(decision.card || decision.directive?.card) : state.lastDirectiveCard,
     interventionCount: state.interventionCount + (shouldSend ? 1 : 0),
     audit: [...state.audit, auditEntry].slice(-MAX_AUDIT_EVENTS),
+    thread: [...state.thread, ...threadEntries.filter(Boolean)].slice(-MAX_THREAD_EVENTS),
   };
 }
 
