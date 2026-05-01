@@ -7437,6 +7437,11 @@ function getResearchAutopilotProjectByName(name) {
   return state.researchAutopilot.projects.find((project) => project.name === target) || null;
 }
 
+function getResearchAutopilotProjectGoal(name) {
+  const project = getResearchAutopilotProjectByName(name);
+  return String(project?.goal || "").trim();
+}
+
 function findChatAutopilotProjectMatch(value) {
   const text = String(value || "").trim();
   if (!text) return "";
@@ -7495,6 +7500,32 @@ function getChatAutopilotSelectedProjectName(config = {}, activeSession = getAct
   return getChatAutopilotInferredProjectName(activeSession, config);
 }
 
+function getChatAutopilotObjectiveSource(config = {}, activeSession = getActiveSession()) {
+  const savedObjective = String(config.objective || "").trim();
+  const projectName = getChatAutopilotSelectedProjectName(config, activeSession);
+  const projectGoal = getResearchAutopilotProjectGoal(projectName);
+  if (savedObjective) return savedObjective === projectGoal ? "wiki" : "saved";
+  const job = getChatAutopilotJob(config);
+  if (job?.objective) return "active run";
+  if (projectGoal) return "wiki";
+  return "";
+}
+
+function getChatAutopilotDefaultObjective(config = {}, activeSession = getActiveSession()) {
+  const savedObjective = String(config.objective || "").trim();
+  if (savedObjective) return savedObjective;
+  const job = getChatAutopilotJob(config);
+  if (job?.objective) return String(job.objective || "").trim();
+  const projectName = getChatAutopilotSelectedProjectName(config, activeSession);
+  return getResearchAutopilotProjectGoal(projectName);
+}
+
+function summarizeChatAutopilotObjective(value, limit = 96) {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  if (!text) return "";
+  return text.length > limit ? `${text.slice(0, Math.max(0, limit - 3))}...` : text;
+}
+
 function renderChatAutopilotProjectOptions(config = {}, activeSession = getActiveSession()) {
   const selected = getChatAutopilotSelectedProjectName(config, activeSession);
   if (!state.researchAutopilot.projects.length) {
@@ -7523,6 +7554,9 @@ function renderRichSessionAutopilotPanel(activeSession) {
   const running = isResearchAutopilotRunning(job);
   const projectName = getChatAutopilotSelectedProjectName(config, activeSession);
   const projectSource = getChatAutopilotProjectSource(activeSession, config);
+  const objective = getChatAutopilotDefaultObjective(config, activeSession);
+  const objectiveSource = getChatAutopilotObjectiveSource(config, activeSession);
+  const objectivePreview = summarizeChatAutopilotObjective(objective);
   const pickerOpen = Boolean(state.chatAutopilotProjectPickerOpen[activeSession.id]) || !projectName;
   const title = enabled
     ? "Autopilot running"
@@ -7531,15 +7565,17 @@ function renderRichSessionAutopilotPanel(activeSession) {
     || (job
       ? `${job.status || "running"} · step ${job.stepCount || 0}/${job.maxSteps || "?"}${job.stopReason ? ` · ${job.stopReason}` : ""}`
       : enabled
-        ? "waiting for your research objective"
+        ? objectivePreview
+          ? `ready with ${objectiveSource === "wiki" ? "wiki" : "saved"} objective: ${objectivePreview}`
+          : "waiting for your research objective"
         : "click to hand this chat to the research loop");
   const toggleTitle = enabled
     ? "Pause Autopilot for this chat."
-    : "Turn on Autopilot. Your next chat message becomes the research objective.";
+    : "Turn on Autopilot. It will use the project's wiki objective unless you steer it.";
   const showProjectPicker = !running && pickerOpen;
   const showSteeringActions = enabled && job && !isResearchAutopilotTerminalStatus(job.status);
   const projectTitle = projectName
-    ? `Autopilot will use ${projectName}${projectSource ? ` (${projectSource})` : ""}. Click to change.`
+    ? `Autopilot will use ${projectName}${projectSource ? ` (${projectSource})` : ""}.${objectivePreview ? ` Objective: ${objectivePreview}` : ""} Click to change.`
     : "Choose the research project for this chat.";
   return `
     <section class="rich-session-autopilot ${enabled ? "is-enabled" : ""} ${running ? "is-running" : ""}" id="rich-session-autopilot" data-rich-session-autopilot-mount>
@@ -38500,6 +38536,9 @@ async function loadResearchAutopilotProjects({ render = true } = {}) {
     if (!state.researchAutopilot.projectName && projects[0]?.name) {
       state.researchAutopilot.projectName = projects[0].name;
     }
+    if (!state.researchAutopilot.objective && state.researchAutopilot.projectName) {
+      state.researchAutopilot.objective = getResearchAutopilotProjectGoal(state.researchAutopilot.projectName);
+    }
   } catch (error) {
     state.researchAutopilot.error = error.message || "Could not load research projects.";
   } finally {
@@ -38753,7 +38792,7 @@ async function updateChatAutopilotAttachment(sessionId, patch = {}, { render = t
   }
 }
 
-function buildChatAutopilotStartBody(config, objective) {
+function buildChatAutopilotStartBody(config, objective, options = {}) {
   const autopilot = state.researchAutopilot;
   return {
     objective,
@@ -38768,7 +38807,36 @@ function buildChatAutopilotStartBody(config, objective) {
     apply: autopilot.apply,
     askHuman: autopilot.askHuman,
     checkPaper: false,
+    change: options.change || "",
   };
+}
+
+async function enableChatAutopilotForSession(activeSession) {
+  const sessionId = activeSession?.id || "";
+  if (!sessionId) return null;
+  setChatAutopilotPending(sessionId, "loading project objective");
+  refreshRichSessionSurfaceUi();
+  await ensureChatAutopilotResources();
+  const config = getChatAutopilotSessionConfig(sessionId);
+  const projectName = getChatAutopilotSelectedProjectName(config, activeSession);
+  const objective = getChatAutopilotDefaultObjective(config, activeSession);
+  const statusText = objective
+    ? "ready with project objective"
+    : projectName
+      ? "waiting for your research objective"
+      : "choose a research project";
+  try {
+    return await updateChatAutopilotAttachment(activeSession.id, {
+      enabled: true,
+      projectName,
+      objective,
+      mode: config.mode || "auto",
+      statusText,
+    }, { render: false });
+  } finally {
+    setChatAutopilotPending(sessionId, "");
+    refreshRichSessionSurfaceUi();
+  }
 }
 
 async function startChatAutopilotRun(activeSession, objective, options = {}) {
@@ -38780,6 +38848,11 @@ async function startChatAutopilotRun(activeSession, objective, options = {}) {
 
   const current = getChatAutopilotSessionConfig(sessionId);
   const projectName = getChatAutopilotSelectedProjectName(current, activeSession);
+  const requestedObjective = String(objective || "").trim();
+  const defaultObjective = getChatAutopilotDefaultObjective(current, activeSession);
+  const runObjective = options.preferSavedObjective
+    ? (defaultObjective || requestedObjective)
+    : (requestedObjective || defaultObjective);
   if (!projectName) {
     updateChatAutopilotSessionConfig(sessionId, {
       enabled: true,
@@ -38789,12 +38862,23 @@ async function startChatAutopilotRun(activeSession, objective, options = {}) {
     refreshRichSessionSurfaceUi();
     return null;
   }
+  if (!runObjective) {
+    updateChatAutopilotSessionConfig(sessionId, {
+      enabled: true,
+      projectName,
+      statusText: "add an objective or a project GOAL before starting autopilot",
+    });
+    setChatAutopilotPending(sessionId, "");
+    refreshRichSessionSurfaceUi();
+    return null;
+  }
 
-  const mode = options.mode || inferChatAutopilotMode(objective, current.mode);
+  const mode = options.mode || inferChatAutopilotMode(runObjective, current.mode);
+  const change = String(options.change || options.initialMessage || "").trim();
   const nextConfig = updateChatAutopilotSessionConfig(sessionId, {
     enabled: true,
     projectName,
-    objective,
+    objective: runObjective,
     mode,
     statusText: "starting autopilot",
   }) || current;
@@ -38802,7 +38886,7 @@ async function startChatAutopilotRun(activeSession, objective, options = {}) {
     const payload = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/research-autopilot/start`, {
       method: "POST",
       body: JSON.stringify({
-        ...buildChatAutopilotStartBody({ ...nextConfig, mode }, objective),
+        ...buildChatAutopilotStartBody({ ...nextConfig, mode }, runObjective, { change }),
         projectName,
       }),
       timeoutMs: 30_000,
@@ -38812,7 +38896,7 @@ async function startChatAutopilotRun(activeSession, objective, options = {}) {
     updateChatAutopilotSessionConfig(sessionId, {
       enabled: true,
       projectName: payload?.attachment?.projectName || projectName,
-      objective: payload?.attachment?.objective || objective,
+      objective: payload?.attachment?.objective || runObjective,
       mode: payload?.attachment?.mode || mode,
       jobId: job?.id || "",
       statusText: payload?.attachment?.statusText || "autopilot running",
@@ -38825,7 +38909,7 @@ async function startChatAutopilotRun(activeSession, objective, options = {}) {
     updateChatAutopilotSessionConfig(sessionId, {
       enabled: true,
       projectName,
-      objective,
+      objective: runObjective,
       mode,
       statusText: error.message || "Could not start autopilot.",
     });
@@ -38843,7 +38927,12 @@ async function steerChatAutopilotRun(activeSession, message, options = {}) {
   const job = getChatAutopilotJob(config);
   if (!config.enabled) return null;
   if (!job || isResearchAutopilotTerminalStatus(job.status)) {
-    return startChatAutopilotRun(activeSession, message, options);
+    const defaultObjective = getChatAutopilotDefaultObjective(config, activeSession);
+    return startChatAutopilotRun(activeSession, defaultObjective || message, {
+      ...options,
+      initialMessage: defaultObjective ? message : "",
+      preferSavedObjective: Boolean(defaultObjective),
+    });
   }
 
   const mode = options.mode || inferChatAutopilotMode(message, config.mode);
@@ -44263,14 +44352,7 @@ function bindShellEvents() {
         if (config.enabled) {
           void stopChatAutopilotRun(activeSession);
         } else {
-          void updateChatAutopilotAttachment(activeSession.id, {
-            enabled: true,
-            projectName: getChatAutopilotSelectedProjectName(config, activeSession),
-            mode: config.mode || "auto",
-            statusText: "waiting for your research objective",
-          });
-          void ensureChatAutopilotResources().finally(() => refreshRichSessionSurfaceUi());
-          refreshRichSessionSurfaceUi();
+          void enableChatAutopilotForSession(activeSession);
           focusRichSessionComposer();
         }
         return;
@@ -44315,11 +44397,20 @@ function bindShellEvents() {
       if (!(select instanceof HTMLSelectElement)) return;
       const activeSession = getActiveSession();
       if (!activeSession?.id) return;
+      const current = getChatAutopilotSessionConfig(activeSession.id);
+      const previousProjectName = getChatAutopilotSelectedProjectName(current, activeSession);
+      const previousGoal = getResearchAutopilotProjectGoal(previousProjectName);
+      const nextGoal = getResearchAutopilotProjectGoal(select.value);
+      const currentObjective = String(current.objective || "").trim();
+      const shouldUseProjectGoal = !currentObjective || currentObjective === previousGoal;
       delete state.chatAutopilotProjectPickerOpen[activeSession.id];
       void updateChatAutopilotAttachment(activeSession.id, {
-        ...getChatAutopilotSessionConfig(activeSession.id),
+        ...current,
         projectName: select.value,
-        statusText: select.value ? `using ${select.value}` : "choose a research project",
+        objective: shouldUseProjectGoal ? nextGoal : currentObjective,
+        statusText: select.value
+          ? (shouldUseProjectGoal && nextGoal ? "ready with project objective" : `using ${select.value}`)
+          : "choose a research project",
       });
       refreshRichSessionSurfaceUi();
     });

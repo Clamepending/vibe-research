@@ -83,6 +83,7 @@ import { runResearchAutopilot, stepResearchAutopilot } from "./research/autopilo
 import { compileBriefToQueue, updateResearchState } from "./research/brief.js";
 import { formatOrgBenchReport, runOrgBench } from "./research/org-bench.js";
 import { tickResearchOrchestrator } from "./research/orchestrator.js";
+import { parseProjectReadme } from "./research/project-readme.js";
 import {
   createEmptyWorkspaceFile,
   ensureWorkspaceDirectory,
@@ -7435,6 +7436,27 @@ export async function createVibeResearchApp({
     return { libraryRoot, projectName: cleanName, projectDir };
   }
 
+  async function readResearchProjectGoal(projectDir) {
+    try {
+      const readme = await readFile(path.join(projectDir, "README.md"), "utf8");
+      return trimText(parseProjectReadme(readme).goal);
+    } catch {
+      return "";
+    }
+  }
+
+  async function withDefaultResearchObjective(projectDir, body = {}) {
+    const projectGoal = await readResearchProjectGoal(projectDir);
+    const objective = trimText(body.objective) || projectGoal;
+    const message = trimText(body.message || body.steering || body.note);
+    const change = trimText(body.change) || (message && message !== objective ? message : "");
+    return {
+      ...body,
+      objective,
+      change: change || body.change,
+    };
+  }
+
   function appendResearchAutopilotEvent(job, event = {}) {
     job.events.push({
       at: new Date().toISOString(),
@@ -7928,14 +7950,17 @@ export async function createVibeResearchApp({
   async function startSessionResearchAutopilot({ sessionId, request, body = {}, attachment = null }) {
     const projectNameInput = trimText(body.projectName) || attachment?.projectName || "";
     const { projectName, projectDir } = await resolveResearchProjectDir(projectNameInput);
+    const projectGoal = await readResearchProjectGoal(projectDir);
     const message = trimText(body.message || body.steering || body.note);
-    const objective = trimText(body.objective) || attachment?.objective || message;
+    const objective = trimText(body.objective) || attachment?.objective || projectGoal || message;
+    const change = trimText(body.change) || (message && message !== objective ? message : "");
     const mode = body.mode === undefined
       ? normalizeResearchAutopilotMode(attachment?.mode)
       : normalizeResearchAutopilotMode(body.mode);
     const jobBody = {
       ...body,
       objective,
+      change: change || body.change,
       mode,
       finishCanvasSessionId: body.finishCanvasSessionId || sessionId,
     };
@@ -8167,7 +8192,12 @@ export async function createVibeResearchApp({
         ? request.body
         : {};
       const { projectName, projectDir } = await resolveResearchProjectDir(request.params.name);
-      const job = startResearchAutopilotJob({ projectName, projectDir, body, request });
+      const job = startResearchAutopilotJob({
+        projectName,
+        projectDir,
+        body: await withDefaultResearchObjective(projectDir, body),
+        request,
+      });
       response.status(202).json({ ok: true, projectName, job: serializeResearchAutopilotJob(job) });
     } catch (error) {
       response.status(error.statusCode || 500).json({ error: error.message || "Could not start research autopilot." });

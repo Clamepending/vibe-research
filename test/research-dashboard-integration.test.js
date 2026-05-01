@@ -83,6 +83,7 @@ test("GET /api/research/projects returns the list with summary fields", async ()
 
     const prose = body.projects.find((p) => p.name === "prose-style");
     assert.equal(prose.criterionKind, "qualitative");
+    assert.equal(prose.goal, "Find the prompt scaffold that produces the most readable short-form answers.");
     assert.equal(prose.hasBenchmark, true);
     assert.equal(prose.benchmarkVersion, "v1");
     assert.equal(prose.leaderboardSize, 2);
@@ -95,6 +96,7 @@ test("GET /api/research/projects/<name> returns full detail with doctor result",
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.name, "prose-style");
+    assert.equal(body.goal, "Find the prompt scaffold that produces the most readable short-form answers.");
     assert.equal(body.rankingCriterion.kind, "qualitative");
     assert.equal(body.benchmark.version, "v1");
     assert.equal(body.benchmark.metrics[0].name, "readability");
@@ -292,6 +294,7 @@ test("POST /api/research/autopilot/jobs/<id>/stop interrupts background loop", a
     });
     assert.equal(start.status, 202);
     const started = await start.json();
+    assert.equal(started.job.objective, "Find the prompt scaffold that produces the most readable short-form answers.");
     const stop = await fetch(`${baseUrl}/api/research/autopilot/jobs/${started.job.id}/stop`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -476,6 +479,37 @@ test("session research autopilot attachment persists chat-native control state",
     const finalLoaded = await finalGet.json();
     assert.equal(finalLoaded.attachment.enabled, false);
     assert.equal(finalLoaded.attachment.jobId, started.job.id);
+  });
+});
+
+test("session research autopilot start falls back to the project GOAL", async () => {
+  await withLibraryServer(async ({ baseUrl }) => {
+    const sessionRes = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "shell", name: "Goal-backed research chat" }),
+    });
+    assert.equal(sessionRes.status, 201);
+    const session = (await sessionRes.json()).session;
+
+    const start = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectName: "prose-style",
+        message: "Start from the chat using the written project objective.",
+        mode: "experiment",
+        commandText: "node -e \"console.log('score=0.66')\"",
+        metricRegex: "score=([0-9.]+)",
+        maxSteps: 1,
+        intervalMs: 0,
+        checkPaper: false,
+      }),
+    });
+    assert.equal(start.status, 202);
+    const started = await start.json();
+    assert.equal(started.attachment.objective, "Find the prompt scaffold that produces the most readable short-form answers.");
+    assert.equal(started.job.objective, "Find the prompt scaffold that produces the most readable short-form answers.");
   });
 });
 
@@ -709,6 +743,8 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(jsText, /research-autopilot-steer-form/);
     assert.match(jsText, /data-chat-autopilot-toggle/);
     assert.match(jsText, /getChatAutopilotInferredProjectName/);
+    assert.match(jsText, /getChatAutopilotDefaultObjective/);
+    assert.match(jsText, /ready with project objective/);
     assert.match(jsText, /data-chat-autopilot-change-project/);
     assert.match(jsText, /Plan next/);
     assert.match(jsText, /Summarize/);
