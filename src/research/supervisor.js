@@ -226,14 +226,14 @@ function projectContractLines(context = {}, { objective = "" } = {}) {
   return lines;
 }
 
-function supervisorPriorityBlock() {
+function supervisorDecisionChecklistBlock() {
   return [
-    "Supervisor priorities:",
-    "- Reflect on qualitative results before spending more compute: inspect samples, failure cases, and heatmaps, not just aggregate metrics.",
-    "- For vision/video work, create or update heatmaps on validation photos/videos and identify where the model most needs improvement.",
-    "- Parallelize independent experiments across idle GPUs when provenance stays clean; keep each queued move or sibling recipe easy to compare.",
-    "- Step back for a lightweight literature/current-docs pass when the recipe, architecture, data, or benchmark choice is uncertain.",
-    "- Prefer ablations and small factorial studies that reveal which parts of the recipe are truly needed.",
+    "Supervisor decision checklist:",
+    "- First decide whether the qualitative evidence is current. If samples, failure cases, or heatmaps are missing/stale, ask the agent to generate and inspect them before choosing more compute.",
+    "- If qualitative results expose a failure mode, ask for targeted experiments or ablations; use idle GPUs for independent sibling runs only when provenance stays clean.",
+    "- If the recipe, architecture, data, or benchmark direction is uncertain, step back and request a lightweight literature/current-docs pass before expensive work.",
+    "- If several recipe pieces are entangled, prefer ablation or small factorial studies to learn which parts are truly needed.",
+    "- Send one concrete next instruction, not a bundle of every possible good idea; preserve branches, commands, artifacts, and result-doc state.",
   ].join("\n");
 }
 
@@ -265,7 +265,7 @@ function operatingBrief({
   if (focus) {
     lines.push(focus);
   }
-  lines.push(supervisorPriorityBlock());
+  lines.push(supervisorDecisionChecklistBlock());
   if (command) {
     lines.push(`Useful command path: ${command}`);
   }
@@ -273,7 +273,7 @@ function operatingBrief({
     [
       "Execution discipline:",
       "run one bounded step at a time; keep branch, commit, command, seed/config, artifact paths, and metrics attached;",
-      "when the evidence suggests a broader search, queue the ablations/sibling recipes explicitly instead of burying them in one undocumented run;",
+      "when the evidence suggests a broader search, queue sibling recipes or ablations explicitly instead of burying them in one undocumented run;",
       "do not corrupt the active move's provenance.",
     ].join(" "),
   );
@@ -625,6 +625,7 @@ export const __internal = {
   manualDirective,
   automaticDirective,
   operatingBrief,
+  supervisorDecisionChecklistBlock,
   normalizeSupervisorEvent,
   directiveSignature,
   automaticDirectiveSignature,

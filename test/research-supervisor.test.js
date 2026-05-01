@@ -124,11 +124,13 @@ test("research supervisor emits immediate takeover directives and dedupes later 
   assert.match(first.directive.text, /Latest log: 2026-04-28/);
   assert.match(first.directive.text, /Benchmark: version v1, status active/);
   assert.match(first.directive.text, /Use the project objective as the north star: Improve concise prose style/);
-  assert.match(first.directive.text, /Supervisor priorities:/);
-  assert.match(first.directive.text, /create or update heatmaps on validation photos\/videos/);
-  assert.match(first.directive.text, /Parallelize independent experiments across idle GPUs/);
+  assert.match(first.directive.text, /Supervisor decision checklist:/);
+  assert.match(first.directive.text, /qualitative evidence is current/);
+  assert.match(first.directive.text, /heatmaps are missing\/stale/);
+  assert.match(first.directive.text, /use idle GPUs for independent sibling runs/);
   assert.match(first.directive.text, /lightweight literature\/current-docs pass/);
-  assert.match(first.directive.text, /ablations and small factorial studies/);
+  assert.match(first.directive.text, /ablation or small factorial studies/);
+  assert.match(first.directive.text, /Send one concrete next instruction/);
 
   const supervisor = updateResearchSupervisorState(
     normalizeResearchSupervisorState(),
@@ -207,10 +209,12 @@ test("research supervisor compacts long objectives and keeps tactical priorities
   assert.match(decision.directive.text, /full text is in README/);
   assert.match(decision.directive.text, /Build a text-conditioned semantic patch-filter/);
   assert.doesNotMatch(decision.directive.text, /TAIL_SENTINEL_SHOULD_NOT_APPEAR_IN_DIRECTIVE/);
-  assert.match(decision.directive.text, /create or update heatmaps on validation photos\/videos/);
-  assert.match(decision.directive.text, /Parallelize independent experiments across idle GPUs/);
+  assert.match(decision.directive.text, /qualitative evidence is current/);
+  assert.match(decision.directive.text, /heatmaps are missing\/stale/);
+  assert.match(decision.directive.text, /use idle GPUs for independent sibling runs/);
   assert.match(decision.directive.text, /literature\/current-docs pass/);
-  assert.match(decision.directive.text, /ablations and small factorial studies/);
+  assert.match(decision.directive.text, /ablation or small factorial studies/);
+  assert.match(decision.directive.text, /Send one concrete next instruction/);
   assert.ok(decision.directive.text.length < 2600, `directive was too long: ${decision.directive.text.length}`);
 });
 
