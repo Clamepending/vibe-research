@@ -38833,34 +38833,6 @@ function buildChatAutopilotStartBody(config, objective, options = {}) {
   };
 }
 
-function buildChatAutopilotSupervisorPrompt({ projectName = "", objective = "", mode = "auto" } = {}) {
-  const lines = [
-    "Autopilot is ON for this chat.",
-    "",
-    "Stay in this same session and take over scheduling the research loop from here. Do not fork context.",
-  ];
-  if (projectName) {
-    lines.push("", `Project: ${projectName}`);
-  }
-  if (objective) {
-    lines.push("", "Project objective from the wiki:", objective);
-  }
-  lines.push(
-    "",
-    `Mode: ${mode || "auto"}. Pick the next useful research action, run it, inspect the result, update durable project notes/results when appropriate, and keep going until I interrupt or a true human gate is required.`,
-    "Treat future human chat messages as steering. When uncertain, write a short checkpoint and propose the next move.",
-  );
-  return lines.join("\n");
-}
-
-function buildChatAutopilotPausePrompt() {
-  return [
-    "Autopilot is OFF for this chat.",
-    "",
-    "Stop proactively scheduling new work after your current action. Keep the same context and wait for my manual instructions or review.",
-  ].join("\n");
-}
-
 function buildChatAutopilotActionPrompt(action) {
   if (action === "synthesize") {
     return [
@@ -38883,7 +38855,7 @@ function buildChatAutopilotActionPrompt(action) {
   ].join("\n");
 }
 
-function sendChatAutopilotSupervisorMessage(activeSession, message, { pendingText = "queued autopilot handoff" } = {}) {
+function sendChatAutopilotSupervisorMessage(activeSession, message, { pendingText = "queued supervisor message" } = {}) {
   const sessionId = activeSession?.id || "";
   const text = String(message || "").trim();
   if (!sessionId || !text) return false;
@@ -38909,7 +38881,7 @@ function sendChatAutopilotSupervisorMessage(activeSession, message, { pendingTex
 async function startChatAutopilotSupervisorForSession(activeSession) {
   const sessionId = activeSession?.id || "";
   if (!sessionId) return null;
-  setChatAutopilotPending(sessionId, "starting same-chat autopilot");
+  setChatAutopilotPending(sessionId, "enabling supervisor");
   refreshRichSessionSurfaceUi();
   await ensureChatAutopilotResources();
   const config = getChatAutopilotSessionConfig(sessionId);
@@ -38944,11 +38916,6 @@ async function startChatAutopilotSupervisorForSession(activeSession) {
     jobId: "",
     statusText: "driving this chat",
   }, { render: false });
-  const sent = sendChatAutopilotSupervisorMessage(
-    activeSession,
-    buildChatAutopilotSupervisorPrompt({ projectName, objective, mode }),
-    { pendingText: "queued autopilot handoff after current turn" },
-  );
   updateChatAutopilotSessionConfig(sessionId, {
     ...getChatAutopilotSessionConfig(sessionId),
     enabled: true,
@@ -38957,9 +38924,7 @@ async function startChatAutopilotSupervisorForSession(activeSession) {
     objective,
     mode,
     jobId: "",
-    statusText: sent
-      ? activeSession.streamWorking ? "autopilot handoff queued" : "autopilot driving this chat"
-      : "autopilot ready; connect the session to send handoff",
+    statusText: "supervisor on; context unchanged",
   });
   setChatAutopilotPending(sessionId, "");
   refreshRichSessionSurfaceUi();
@@ -39179,9 +39144,6 @@ async function stopChatAutopilotRun(activeSession) {
     });
     setChatAutopilotPending(sessionId, "switching to manual");
     refreshRichSessionSurfaceUi();
-    sendChatAutopilotSupervisorMessage(activeSession, buildChatAutopilotPausePrompt(), {
-      pendingText: "queued manual handoff after current turn",
-    });
     try {
       await updateChatAutopilotAttachment(sessionId, {
         ...getChatAutopilotSessionConfig(sessionId),

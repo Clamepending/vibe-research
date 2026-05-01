@@ -839,8 +839,9 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(jsText, /data-chat-autopilot-toggle/);
     assert.match(jsText, /getChatAutopilotInferredProjectName/);
     assert.match(jsText, /getChatAutopilotDefaultObjective/);
-    assert.match(jsText, /buildChatAutopilotSupervisorPrompt/);
-    assert.match(jsText, /Autopilot is ON for this chat/);
+    assert.match(jsText, /supervisor on; context unchanged/);
+    assert.doesNotMatch(jsText, /Autopilot is ON for this chat/);
+    assert.doesNotMatch(jsText, /Autopilot is OFF for this chat/);
     assert.match(jsText, /driving this chat in the current agent context/);
     assert.match(jsText, /ready with project objective/);
     assert.match(jsText, /data-chat-autopilot-change-project/);
