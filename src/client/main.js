@@ -2753,9 +2753,11 @@ const state = {
   chatAutopilotProjectPickerOpen: {},
   chatAutopilotPending: {},
   chatAutopilotSupervisorTicking: {},
+  chatAutopilotAutoRecoveryLastAt: {},
   // Per-session previous streamWorking value, used to detect the
   // working→idle transition that triggers the queue flush.
   richSessionComposerQueueLastWorking: {},
+  richSessionLastStatus: {},
   // Attachments queued in the composer, keyed by sessionId. Each entry:
   // { id, absolutePath, fileName, source, sizeBytes, mimeType }. The
   // composer renders a chip strip above the textarea so users see thumbnails
@@ -8076,7 +8078,10 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
     const sid = activeSession.id;
     const wasWorking = state.richSessionComposerQueueLastWorking[sid] === true;
     const nowWorking = Boolean(activeSession.streamWorking);
+    const previousStatus = state.richSessionLastStatus[sid] || "";
+    const nowStatus = String(activeSession.status || "");
     state.richSessionComposerQueueLastWorking[sid] = nowWorking;
+    state.richSessionLastStatus[sid] = nowStatus;
     const queuedMessages = getRichSessionComposerQueue(sid);
     if (wasWorking && !nowWorking && queuedMessages.length) {
       // Defer to next tick so the UI paints the "idle" state before we
@@ -8094,6 +8099,22 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
               type: "agent-idle",
               source: "session",
             });
+          }
+        }, 0);
+      }
+    }
+    if (previousStatus && previousStatus !== "exited" && nowStatus === "exited") {
+      const config = getChatAutopilotSessionConfig(sid);
+      if (
+        config.enabled
+        && isChatAutopilotSessionDriver(config)
+        && !queuedMessages.length
+        && claimChatAutopilotAutoRecovery(activeSession, config)
+      ) {
+        setTimeout(() => {
+          const session = state.sessions.find((entry) => entry.id === sid);
+          if (session?.status === "exited") {
+            void recoverChatAutopilotExitedSession(session, { action: "continue" });
           }
         }, 0);
       }
@@ -39025,6 +39046,21 @@ function sendChatAutopilotSupervisorMessage(activeSession, message, { pendingTex
     accepted: queueChatAutopilotSupervisorMessage(sessionId, text, pendingText),
     queued: true,
   };
+}
+
+function chatAutopilotAutoRecoveryKey(activeSession, config = {}) {
+  const projectName = getChatAutopilotSelectedProjectName(config, activeSession);
+  return [projectName, activeSession?.cwd || ""].filter(Boolean).join("|") || activeSession?.id || "";
+}
+
+function claimChatAutopilotAutoRecovery(activeSession, config = {}, cooldownMs = 60_000) {
+  const key = chatAutopilotAutoRecoveryKey(activeSession, config);
+  if (!key) return false;
+  const now = Date.now();
+  const lastAt = Number(state.chatAutopilotAutoRecoveryLastAt[key]) || 0;
+  if (lastAt && now - lastAt < cooldownMs) return false;
+  state.chatAutopilotAutoRecoveryLastAt[key] = now;
+  return true;
 }
 
 async function tickChatAutopilotSupervisor(activeSession, event = {}, { pendingText = "", sendDirective = true } = {}) {
