@@ -29,6 +29,21 @@ function compactDirectiveText(value, limit = 320) {
   return `${clipped}...`;
 }
 
+function normalizeSupervisorCard(value = {}) {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    label: boundedText(input.label || "Evidence-first supervisor", 80),
+    mode: boundedText(input.mode, 40),
+    action: boundedText(input.action, 80),
+    reason: boundedText(input.reason, 240),
+    evidence: boundedText(input.evidence, 180),
+    integrity: boundedText(input.integrity, 180),
+    compute: boundedText(input.compute, 180),
+    stop: boundedText(input.stop, 180),
+    preview: boundedText(input.preview, 240),
+  };
+}
+
 export function normalizeResearchSupervisorState(value = {}) {
   const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const audit = Array.isArray(input.audit)
@@ -55,6 +70,8 @@ export function normalizeResearchSupervisorState(value = {}) {
     lastDirectiveAt: typeof input.lastDirectiveAt === "string" ? input.lastDirectiveAt : "",
     lastDirectiveSignature: boundedText(input.lastDirectiveSignature, 300),
     lastDirectiveReason: boundedText(input.lastDirectiveReason, 500),
+    lastDirectivePreview: boundedText(input.lastDirectivePreview, 240),
+    lastDirectiveCard: normalizeSupervisorCard(input.lastDirectiveCard),
     interventionCount: Math.max(0, Math.floor(Number(input.interventionCount) || 0)),
     audit,
   };
@@ -206,35 +223,30 @@ function benchmarkLine(benchmark) {
   return [`Benchmark: ${head || "declared"}`, metrics, datasets].filter(Boolean).join("; ");
 }
 
-function projectContractLines(context = {}, { objective = "" } = {}) {
-  const lines = [];
-  const goal = trimString(context.goal);
-  const objectiveText = trimString(objective);
-  if (goal && !(goal === objectiveText && goal.length > 220)) {
-    lines.push(`Goal: ${compactDirectiveText(goal, 280)}`);
-  }
-  if (context.rankingCriterion) lines.push(`Ranking: ${context.rankingCriterion}`);
-  if (Array.isArray(context.successCriteria) && context.successCriteria.length) {
-    lines.push(`Success criteria: ${compactDirectiveText(context.successCriteria.join(" | "), 320)}`);
-  }
-  if (context.activeHead) lines.push(`Active: ${context.activeHead}`);
-  if (context.queueHead) lines.push(`Queue head: ${context.queueHead}`);
-  if (context.leaderboardHead) lines.push(`Leaderboard head: ${context.leaderboardHead}`);
-  if (context.latestLog) lines.push(`Latest log: ${context.latestLog}`);
-  const bench = benchmarkLine(context.benchmark);
-  if (bench) lines.push(bench);
-  return lines;
-}
-
 function supervisorDecisionChecklistBlock() {
   return [
-    "Supervisor decision checklist:",
-    "- First decide whether the qualitative evidence is current. If samples, failure cases, or heatmaps are missing/stale, ask the agent to generate and inspect them before choosing more compute.",
-    "- If qualitative results expose a failure mode, ask for targeted experiments or ablations; use idle GPUs for independent sibling runs only when provenance stays clean.",
-    "- If the recipe, architecture, data, or benchmark direction is uncertain, step back and request a lightweight literature/current-docs pass before expensive work.",
-    "- If several recipe pieces are entangled, prefer ablation or small factorial studies to learn which parts are truly needed.",
-    "- Send one concrete next instruction, not a bundle of every possible good idea; preserve branches, commands, artifacts, and result-doc state.",
+    "Supervisor policy:",
+    "- Evidence: require current metrics plus qualitative samples, heatmaps, or failure cases before spending more compute.",
+    "- Integrity: audit the recent trace for evaluator edits, leakage, cherry-picking, stale artifacts, and unverifiable numbers.",
+    "- Compute: keep idle GPUs busy only with independent seeds, ablations, or sweeps that preserve provenance.",
+    "- Priority: choose the current bottleneck: monitor, diagnose, ablate, sweep, literature review, synthesize, or human gate.",
+    "- Communication: send one concrete next instruction with the artifact and stop condition.",
   ].join("\n");
+}
+
+function compactProjectStateLine(context = {}) {
+  const pieces = [
+    context.activeHead ? `Active: ${context.activeHead}` : "",
+    context.queueHead ? `Queue: ${context.queueHead}` : "",
+    context.latestLog ? `Latest: ${context.latestLog}` : "",
+    context.benchmark?.exists
+      ? `Benchmark: ${[
+          context.benchmark.version ? `version ${context.benchmark.version}` : "",
+          context.benchmark.status ? `status ${context.benchmark.status}` : "",
+        ].filter(Boolean).join(", ") || "declared"}`
+      : "",
+  ].filter(Boolean);
+  return compactDirectiveText(pieces.join(" | "), 520);
 }
 
 function operatingBrief({
@@ -247,38 +259,86 @@ function operatingBrief({
   focus = "",
   finish = "",
 } = {}) {
+  const stateLine = compactProjectStateLine(context);
+  const goal = trimString(context.goal);
+  const objectiveText = trimString(objective);
+  const goalLine = goal && goal !== objectiveText
+    ? `Goal: ${compactDirectiveText(goal, 260)}`
+    : "";
+  const rankingLine = context.rankingCriterion
+    ? `Ranking: ${compactDirectiveText(context.rankingCriterion, 220)}`
+    : "";
+  const successLine = Array.isArray(context.successCriteria) && context.successCriteria.length
+    ? `Success: ${compactDirectiveText(context.successCriteria.join(" | "), 240)}`
+    : "";
   const lines = [
     headline,
-    [
-      "First inspect the durable project state:",
-      "README, ACTIVE, QUEUE, LOG, current result doc, recent commits, and recent artifacts.",
-      objectiveSentence(objective),
-    ].join(" "),
+    `First inspect the durable project state and recent trace/artifacts: README, ACTIVE, QUEUE, LOG, result doc, commits, metrics, and qualitative outputs. ${objectiveSentence(objective)}`,
   ];
-  const contract = projectContractLines(context, { objective });
-  if (contract.length) {
-    lines.push(["Project contract:", ...contract.map((line) => `- ${line}`)].join("\n"));
-  }
+  if (goalLine) lines.push(goalLine);
+  if (stateLine) lines.push(`State: ${stateLine}`);
+  if (rankingLine || successLine) lines.push([rankingLine, successLine].filter(Boolean).join("\n"));
   if (reason) {
     lines.push(`Current routing signal${projectPhraseFor(project)}: ${reason}`);
   }
-  if (focus) {
-    lines.push(focus);
-  }
   lines.push(supervisorDecisionChecklistBlock());
-  if (command) {
-    lines.push(`Useful command path: ${command}`);
+  if (focus) {
+    lines.push(`Next instruction: ${focus}`);
   }
-  lines.push(
-    [
-      "Execution discipline:",
-      "run one bounded step at a time; keep branch, commit, command, seed/config, artifact paths, and metrics attached;",
-      "when the evidence suggests a broader search, queue sibling recipes or ablations explicitly instead of burying them in one undocumented run;",
-      "do not corrupt the active move's provenance.",
-    ].join(" "),
-  );
-  lines.push(finish || "After the step, update the result doc and paper/canvas if relevant, run the project doctor, commit/push durable state, and stop only for a true human gate.");
+  if (command) lines.push(`Useful command path: ${compactDirectiveText(command, 340)}`);
+  lines.push(`Stop condition: ${finish || "Update durable state after the bounded step, run the project doctor when state changed, commit/push if relevant, and stop only for a true human gate."}`);
   return lines.join("\n\n");
+}
+
+function supervisorModeForAction(action = "") {
+  const text = trimString(action).toLowerCase();
+  if (/fix|doctor|repair/u.test(text)) return "repair";
+  if (/synth|review|judge|checkpoint|enter-review/u.test(text)) return "review";
+  if (/brainstorm|brief|plan/u.test(text)) return "plan";
+  if (/sweep|run-next|experiment|hillclimb/u.test(text)) return "experiment";
+  if (/continue|active|resume/u.test(text)) return "continue";
+  return "route";
+}
+
+function supervisorActionLabel(action = "") {
+  const mode = supervisorModeForAction(action);
+  if (mode === "repair") return "repair integrity";
+  if (mode === "review") return "synthesize evidence";
+  if (mode === "plan") return "choose next move";
+  if (mode === "experiment") return /sweep/u.test(action) ? "run clean sweep" : "run bounded cycle";
+  if (mode === "continue") return "continue active move";
+  return "route next step";
+}
+
+function supervisorEvidenceLine(action = "") {
+  const mode = supervisorModeForAction(action);
+  if (mode === "review") return "Compare current metrics with qualitative artifacts before changing direction.";
+  if (mode === "plan") return "If artifacts are stale, ask for samples or heatmaps before proposing more compute.";
+  if (mode === "experiment") return "Confirm pre-flight, falsifier, and expected artifacts before launch.";
+  if (mode === "continue") return "Check whether the running cycle already has enough metrics or qualitative evidence.";
+  return "Require current quantitative and qualitative evidence before steering.";
+}
+
+function supervisorComputeLine(action = "") {
+  const mode = supervisorModeForAction(action);
+  if (mode === "review" || mode === "repair") return "Avoid new GPU work until the state or verdict is clean.";
+  if (mode === "plan") return "Queue parallel work only after the bottleneck is explicit.";
+  if (/sweep/u.test(action)) return "Use parallel rows only when each has separate artifacts and provenance.";
+  return "Use idle GPUs for independent seeds, ablations, or sweeps; do not overlap conflicting cycles.";
+}
+
+function supervisorCardFromDirective({ action = "", reason = "", directiveText = "" } = {}) {
+  return normalizeSupervisorCard({
+    label: "Evidence-first supervisor",
+    mode: supervisorModeForAction(action),
+    action: supervisorActionLabel(action),
+    reason,
+    evidence: supervisorEvidenceLine(action),
+    integrity: "Audit trace/diffs for evaluator tampering, leakage, cherry-picking, stale artifacts, and unverified claims.",
+    compute: supervisorComputeLine(action),
+    stop: "Stop only for a true human gate, blocked state, or completed evidence-backed verdict.",
+    preview: compactDirectiveText(directiveText, 220),
+  });
 }
 
 function automaticDirective({ action, report, attachment }) {
@@ -514,10 +574,16 @@ export function decideResearchSupervisorIntervention({
       report: orchestratorReport,
     });
     if (manual) {
+      const action = `manual-${normalizedEvent.action}`;
       const signature = directiveSignature({
         event: normalizedEvent,
-        action: `manual-${normalizedEvent.action}`,
+        action,
         reason: manual.reason,
+      });
+      const card = supervisorCardFromDirective({
+        action,
+        reason: manual.reason,
+        directiveText: manual.text,
       });
       return {
         action: "directive",
@@ -525,9 +591,11 @@ export function decideResearchSupervisorIntervention({
         reason: manual.reason,
         event: normalizedEvent,
         signature,
+        card,
         directive: {
           source: "supervisor",
           text: manual.text,
+          card,
         },
       };
     }
@@ -582,15 +650,23 @@ export function decideResearchSupervisorIntervention({
     };
   }
 
+  const card = supervisorCardFromDirective({
+    action: recAction,
+    reason: automatic.reason,
+    directiveText: automatic.text,
+  });
+
   return {
     action: "directive",
     shouldSend: true,
     reason: automatic.reason,
     event: normalizedEvent,
     signature,
+    card,
     directive: {
       source: "supervisor",
       text: automatic.text,
+      card,
     },
   };
 }
@@ -616,6 +692,8 @@ export function updateResearchSupervisorState(previous = {}, decision = {}, even
     lastDirectiveAt: shouldSend ? at : state.lastDirectiveAt,
     lastDirectiveSignature: shouldSend ? boundedText(decision.signature, 300) : state.lastDirectiveSignature,
     lastDirectiveReason: shouldSend ? boundedText(decision.reason, 500) : state.lastDirectiveReason,
+    lastDirectivePreview: shouldSend ? compactDirectiveText(decision.directive?.text, 220) : state.lastDirectivePreview,
+    lastDirectiveCard: shouldSend ? normalizeSupervisorCard(decision.card || decision.directive?.card) : state.lastDirectiveCard,
     interventionCount: state.interventionCount + (shouldSend ? 1 : 0),
     audit: [...state.audit, auditEntry].slice(-MAX_AUDIT_EVENTS),
   };
@@ -626,6 +704,8 @@ export const __internal = {
   automaticDirective,
   operatingBrief,
   supervisorDecisionChecklistBlock,
+  supervisorCardFromDirective,
+  supervisorModeForAction,
   normalizeSupervisorEvent,
   directiveSignature,
   automaticDirectiveSignature,

@@ -1549,6 +1549,20 @@ function saveComposerQueue() {
 
 function sanitizeChatAutopilotSupervisor(value) {
   const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const rawCard = input.lastDirectiveCard && typeof input.lastDirectiveCard === "object" && !Array.isArray(input.lastDirectiveCard)
+    ? input.lastDirectiveCard
+    : {};
+  const lastDirectiveCard = {
+    label: String(rawCard.label || "").trim().slice(0, 80),
+    mode: String(rawCard.mode || "").trim().slice(0, 40),
+    action: String(rawCard.action || "").trim().slice(0, 80),
+    reason: String(rawCard.reason || "").trim().slice(0, 240),
+    evidence: String(rawCard.evidence || "").trim().slice(0, 180),
+    integrity: String(rawCard.integrity || "").trim().slice(0, 180),
+    compute: String(rawCard.compute || "").trim().slice(0, 180),
+    stop: String(rawCard.stop || "").trim().slice(0, 180),
+    preview: String(rawCard.preview || "").trim().slice(0, 240),
+  };
   const audit = Array.isArray(input.audit)
     ? input.audit
       .map((entry) => {
@@ -1573,6 +1587,8 @@ function sanitizeChatAutopilotSupervisor(value) {
     lastDirectiveAt: typeof input.lastDirectiveAt === "string" ? input.lastDirectiveAt : "",
     lastDirectiveSignature: String(input.lastDirectiveSignature || "").trim().slice(0, 300),
     lastDirectiveReason: String(input.lastDirectiveReason || "").trim().slice(0, 500),
+    lastDirectivePreview: String(input.lastDirectivePreview || "").trim().slice(0, 240),
+    lastDirectiveCard,
     interventionCount: Math.max(0, Math.floor(Number(input.interventionCount) || 0)),
     audit,
   };
@@ -7745,12 +7761,36 @@ function summarizeChatAutopilotSupervisor(config = {}) {
     : sanitizeChatAutopilotSupervisor(config.supervisor);
   const interventions = Math.max(0, Number(supervisor.interventionCount) || 0);
   const chats = projectSupervisor.sessionIds.length;
-  const parts = [interventions ? `${interventions} move${interventions === 1 ? "" : "s"}` : "ready"];
+  const card = supervisor.lastDirectiveCard || {};
+  const hasCard = Boolean(card.action || card.mode || card.preview);
+  const parts = [hasCard ? (card.action || card.mode || "supervising") : interventions ? `${interventions} move${interventions === 1 ? "" : "s"}` : "ready"];
   if (chats > 1) parts.push(`${chats} chats`);
+  const cardTitle = hasCard
+    ? [
+        card.label || "Evidence-first supervisor",
+        card.evidence ? `Evidence: ${card.evidence}` : "",
+        card.integrity ? `Integrity: ${card.integrity}` : "",
+        card.compute ? `Compute: ${card.compute}` : "",
+        card.stop ? `Stop: ${card.stop}` : "",
+      ].filter(Boolean).join("\n")
+    : "";
   return {
     label: parts.join(" · "),
-    title: supervisor.lastDirectiveReason || supervisor.lastObservedEvent || "Project-scoped supervisor state for this research handoff.",
+    title: cardTitle || supervisor.lastDirectiveReason || supervisor.lastObservedEvent || "Project-scoped supervisor state for this research handoff.",
+    card: hasCard ? card : null,
   };
+}
+
+function renderChatAutopilotSupervisorPolicy(supervisorSummary = {}) {
+  const card = supervisorSummary.card;
+  if (!card) return "";
+  const title = [
+    card.preview ? `Last directive: ${card.preview}` : "",
+    card.evidence ? `Evidence: ${card.evidence}` : "",
+    card.integrity ? `Integrity: ${card.integrity}` : "",
+    card.compute ? `Compute: ${card.compute}` : "",
+  ].filter(Boolean).join("\n");
+  return `<span class="rich-session-autopilot-policy" data-chat-autopilot-policy title="${escapeHtml(title)}">evidence · integrity · compute</span>`;
 }
 
 function renderChatAutopilotProjectOptions(config = {}, activeSession = getActiveSession()) {
@@ -7870,12 +7910,14 @@ function renderRichSessionAutopilotPanel(activeSession) {
         `}
         ${showSteeringActions ? `
           <span class="rich-session-autopilot-supervisor-pill" title="${escapeHtml(supervisorSummary.title)}">${escapeHtml(supervisorSummary.label)}</span>
+          ${renderChatAutopilotSupervisorPolicy(supervisorSummary)}
           <button class="rich-session-autopilot-action is-primary" type="button" data-chat-autopilot-action="continue" title="${escapeHtml(nextActionTitle)}" ${actionDisabled}>${escapeHtml(nextActionLabel)}</button>
           <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="brainstorm" title="Ask the supervisor to pause execution and propose next directions." ${actionDisabled}>Replan</button>
           <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="synthesize" title="Ask the supervisor for a checkpoint summary, evidence, risks, and recommendation." ${actionDisabled}>Checkpoint</button>
           <button class="rich-session-autopilot-action is-danger" type="button" data-chat-autopilot-action="pause" title="Pause the autonomous run attached to this chat." ${actionDisabled}>Pause</button>
         ` : enabled ? `
           <span class="rich-session-autopilot-supervisor-pill" title="${escapeHtml(supervisorSummary.title)}">${escapeHtml(supervisorSummary.label)}</span>
+          ${renderChatAutopilotSupervisorPolicy(supervisorSummary)}
           <button class="rich-session-autopilot-action is-danger" type="button" data-chat-autopilot-action="pause" title="Turn Autopilot off for this chat." ${actionDisabled}>Pause</button>
         ` : ""}
       </div>

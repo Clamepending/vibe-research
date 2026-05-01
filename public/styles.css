@@ -15035,7 +15035,8 @@ body.is-reordering-file-tabs {
 .rich-session-autopilot-toggle,
 .rich-session-autopilot-action,
 .rich-session-autopilot-project-pill,
-.rich-session-autopilot-supervisor-pill {
+.rich-session-autopilot-supervisor-pill,
+.rich-session-autopilot-policy {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -15082,6 +15083,17 @@ body.is-reordering-file-tabs {
   border-color: rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.028);
   color: rgba(244, 244, 242, 0.62);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.rich-session-autopilot-policy {
+  max-width: 240px;
+  padding: 0 10px;
+  border-color: rgba(142, 210, 185, 0.13);
+  background: rgba(142, 210, 185, 0.055);
+  color: rgba(224, 248, 237, 0.68);
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: default;
@@ -18929,6 +18941,11 @@ select:disabled {
   }
 
   .rich-session-autopilot-supervisor-pill {
+    max-width: none;
+    flex: 1 1 100%;
+  }
+
+  .rich-session-autopilot-policy {
     max-width: none;
     flex: 1 1 100%;
   }

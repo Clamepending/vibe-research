@@ -632,9 +632,12 @@ test("chat research supervisor tick is silent on toggle and takes over on demand
     assert.equal(takeoverBody.decision.action, "directive");
     assert.equal(takeoverBody.decision.shouldSend, true);
     assert.match(takeoverBody.directive.text, /Claim QUEUE row 1/);
-    assert.match(takeoverBody.directive.text, /Project contract:/);
+    assert.match(takeoverBody.directive.text, /State:/);
     assert.match(takeoverBody.directive.text, /Goal: Find the prompt scaffold/);
     assert.match(takeoverBody.directive.text, /Benchmark: version v1, status active/);
+    assert.match(takeoverBody.directive.text, /Supervisor policy:/);
+    assert.equal(takeoverBody.decision.card.mode, "experiment");
+    assert.match(takeoverBody.decision.card.integrity, /evaluator tampering/);
     assert.doesNotMatch(takeoverBody.directive.text, /Autopilot/i);
     assert.equal(takeoverBody.attachment.supervisor.interventionCount, 1);
     assert.equal(takeoverBody.projectSupervisor.projectName, "prose-style");
@@ -691,10 +694,11 @@ test("chat research supervisor tick is silent on toggle and takes over on demand
     assert.equal(manualBody.decision.action, "directive");
     assert.equal(manualBody.decision.shouldSend, true);
     assert.match(manualBody.directive.text, /Synthesize the current research state/);
-    assert.match(manualBody.directive.text, /Project contract:/);
+    assert.match(manualBody.directive.text, /State:/);
     assert.match(manualBody.directive.text, /Goal: Find the prompt scaffold/);
-    assert.match(manualBody.directive.text, /Queue head: v3-fewshot/);
+    assert.match(manualBody.directive.text, /Queue: v3-fewshot/);
     assert.match(manualBody.directive.text, /qualitative sample\/heatmap status/);
+    assert.equal(manualBody.decision.card.mode, "review");
     assert.doesNotMatch(manualBody.directive.text, /Autopilot/i);
     assert.equal(manualBody.attachment.supervisor.interventionCount, 2);
     assert.equal(manualBody.projectSupervisor.supervisor.interventionCount, 2);
@@ -1105,6 +1109,8 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.doesNotMatch(jsText, /ready with project objective/);
     assert.match(jsText, /data-chat-autopilot-change-project/);
     assert.match(jsText, /Supervisor on/);
+    assert.match(jsText, /data-chat-autopilot-policy/);
+    assert.match(jsText, /evidence.*integrity.*compute/);
     assert.match(jsText, /Human driving/);
     assert.match(jsText, /agent stopped; ready to resume/);
     assert.match(jsText, /Resume/);
@@ -1130,6 +1136,7 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(cssText, /rich-session-autopilot/);
     assert.match(cssText, /rich-session-autopilot-project-pill/);
     assert.match(cssText, /rich-session-autopilot-supervisor-pill/);
+    assert.match(cssText, /rich-session-autopilot-policy/);
     assert.match(cssText, /rich-session-autopilot-action\.is-primary/);
     assert.match(cssText, /research-org-bench-card/);
     assert.match(cssText, /research-bench-table/);

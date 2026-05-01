@@ -54,10 +54,12 @@ test("research supervisor emits opaque directives on manual actions", () => {
   assert.equal(decision.action, "directive");
   assert.equal(decision.shouldSend, true);
   assert.match(decision.directive.text, /Synthesize the current research state/);
-  assert.match(decision.directive.text, /Project contract:/);
+  assert.match(decision.directive.text, /State:/);
   assert.match(decision.directive.text, /Goal: Find the prompt scaffold/);
-  assert.match(decision.directive.text, /Queue head: baseline/);
+  assert.match(decision.directive.text, /Queue: baseline/);
   assert.match(decision.directive.text, /qualitative sample\/heatmap status/);
+  assert.equal(decision.card.mode, "review");
+  assert.match(decision.card.integrity, /evaluator tampering/);
   assert.doesNotMatch(decision.directive.text, /Autopilot/i);
 });
 
@@ -81,8 +83,9 @@ test("research supervisor routes manual continue through project recommendation"
   assert.equal(decision.shouldSend, true);
   assert.match(decision.reason, /manual continue requested/);
   assert.match(decision.directive.text, /Resume the active research move v070/);
-  assert.match(decision.directive.text, /Project contract:/);
+  assert.match(decision.directive.text, /State:/);
   assert.match(decision.directive.text, /Active: v070/);
+  assert.equal(decision.card.action, "continue active move");
 });
 
 test("research supervisor emits immediate takeover directives and dedupes later idle checks", () => {
@@ -117,20 +120,22 @@ test("research supervisor emits immediate takeover directives and dedupes later 
   assert.equal(first.shouldSend, true);
   assert.match(first.directive.text, /Claim QUEUE row 1/);
   assert.match(first.directive.text, /First inspect the durable project state/);
-  assert.match(first.directive.text, /Project contract:/);
+  assert.match(first.directive.text, /State:/);
   assert.match(first.directive.text, /Goal: Find the prompt scaffold/);
   assert.match(first.directive.text, /Ranking: qualitative: readability/);
-  assert.match(first.directive.text, /Queue head: baseline/);
-  assert.match(first.directive.text, /Latest log: 2026-04-28/);
+  assert.match(first.directive.text, /Queue: baseline/);
+  assert.match(first.directive.text, /Latest: 2026-04-28/);
   assert.match(first.directive.text, /Benchmark: version v1, status active/);
   assert.match(first.directive.text, /Use the project objective as the north star: Improve concise prose style/);
-  assert.match(first.directive.text, /Supervisor decision checklist:/);
-  assert.match(first.directive.text, /qualitative evidence is current/);
-  assert.match(first.directive.text, /heatmaps are missing\/stale/);
-  assert.match(first.directive.text, /use idle GPUs for independent sibling runs/);
-  assert.match(first.directive.text, /lightweight literature\/current-docs pass/);
-  assert.match(first.directive.text, /ablation or small factorial studies/);
-  assert.match(first.directive.text, /Send one concrete next instruction/);
+  assert.match(first.directive.text, /Supervisor policy:/);
+  assert.match(first.directive.text, /qualitative samples, heatmaps, or failure cases/);
+  assert.match(first.directive.text, /evaluator edits, leakage, cherry-picking/);
+  assert.match(first.directive.text, /idle GPUs busy only with independent seeds, ablations, or sweeps/);
+  assert.match(first.directive.text, /literature review/);
+  assert.match(first.directive.text, /send one concrete next instruction/i);
+  assert.equal(first.card.mode, "experiment");
+  assert.match(first.card.evidence, /pre-flight/);
+  assert.match(first.card.compute, /idle GPUs/);
 
   const supervisor = updateResearchSupervisorState(
     normalizeResearchSupervisorState(),
@@ -177,7 +182,7 @@ test("research supervisor falls back to the project goal when no chat objective 
   assert.equal(decision.action, "directive");
   assert.equal(decision.shouldSend, true);
   assert.match(decision.directive.text, /Use the project objective as the north star: Use the wiki goal/);
-  assert.match(decision.directive.text, /Goal: Use the wiki goal as the supervisor north star/);
+  assert.match(decision.directive.text, /State: Queue: baseline/);
 });
 
 test("research supervisor compacts long objectives and keeps tactical priorities", () => {
@@ -209,13 +214,13 @@ test("research supervisor compacts long objectives and keeps tactical priorities
   assert.match(decision.directive.text, /full text is in README/);
   assert.match(decision.directive.text, /Build a text-conditioned semantic patch-filter/);
   assert.doesNotMatch(decision.directive.text, /TAIL_SENTINEL_SHOULD_NOT_APPEAR_IN_DIRECTIVE/);
-  assert.match(decision.directive.text, /qualitative evidence is current/);
-  assert.match(decision.directive.text, /heatmaps are missing\/stale/);
-  assert.match(decision.directive.text, /use idle GPUs for independent sibling runs/);
-  assert.match(decision.directive.text, /literature\/current-docs pass/);
-  assert.match(decision.directive.text, /ablation or small factorial studies/);
-  assert.match(decision.directive.text, /Send one concrete next instruction/);
-  assert.ok(decision.directive.text.length < 2600, `directive was too long: ${decision.directive.text.length}`);
+  assert.match(decision.directive.text, /qualitative samples, heatmaps, or failure cases/);
+  assert.match(decision.directive.text, /evaluator edits, leakage, cherry-picking/);
+  assert.match(decision.directive.text, /idle GPUs busy only with independent seeds, ablations, or sweeps/);
+  assert.match(decision.directive.text, /literature review/);
+  assert.match(decision.directive.text, /send one concrete next instruction/i);
+  assert.equal(decision.card.mode, "continue");
+  assert.ok(decision.directive.text.length < 2100, `directive was too long: ${decision.directive.text.length}`);
 });
 
 test("research supervisor dedupes automatic directives by completed turn marker", () => {

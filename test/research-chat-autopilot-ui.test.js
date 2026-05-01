@@ -106,11 +106,15 @@ test("same-chat supervisor Start creates project memory and queues takeover whil
       const first = items[0] || null;
       const status = document.querySelector(".rich-session-autopilot-status")?.textContent?.trim() || "";
       const projectLabel = document.querySelector(".rich-session-autopilot-project-pill")?.textContent?.trim() || "";
+      const policyLabel = document.querySelector("[data-chat-autopilot-policy]")?.textContent?.trim() || "";
+      const policyTitle = document.querySelector("[data-chat-autopilot-policy]")?.getAttribute("title") || "";
       const queuePreview = document.querySelector(".rich-session-queue-text")?.textContent?.trim() || "";
       const queueMeta = document.querySelector(".rich-session-queue-meta")?.textContent?.trim() || "";
       return {
         status,
         projectLabel,
+        policyLabel,
+        policyTitle,
         queuePreview,
         queueMeta,
         queuedId: first?.id || "",
@@ -120,6 +124,10 @@ test("same-chat supervisor Start creates project memory and queues takeover whil
 
     assert.match(uiState.status, /supervisor next step queued/);
     assert.match(uiState.projectLabel, /vibe-research-chat-supervisor/);
+    assert.equal(uiState.policyLabel, "evidence · integrity · compute");
+    assert.match(uiState.policyTitle, /Evidence:/);
+    assert.match(uiState.policyTitle, /Integrity:/);
+    assert.match(uiState.policyTitle, /Compute:/);
     assert.match(uiState.queuedId, /^autopilot-/);
     assert.match(uiState.queuePreview, /Claim QUEUE row 1/);
     assert.equal(uiState.queueMeta, "supervisor next step - sends after current turn");
