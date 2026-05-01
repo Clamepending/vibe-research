@@ -27,10 +27,14 @@ import { buildKnowledgeBaseGraph } from "./knowledge-base-graph-data.js";
 // budget that we know completes in <500ms even for thousands of nodes
 // thanks to Barnes-Hut.
 function iterationsFor(order) {
-  if (order <= 50) return 250;
-  if (order <= 200) return 400;
-  if (order <= 800) return 700;
-  return 1000;
+  // linLog + outboundAttraction + adjustSizes converge slower than plain
+  // fa2; for the "grouped islands" look the user wants, we need to let it
+  // really cook. These budgets are sub-second even at 1k nodes thanks to
+  // Barnes-Hut, since we're synchronous and compute-bound.
+  if (order <= 50) return 400;
+  if (order <= 200) return 700;
+  if (order <= 800) return 1100;
+  return 1600;
 }
 
 let cachedSettings = null;
@@ -57,16 +61,22 @@ function fa2SettingsFor(graph) {
     // Treat node sizes as repulsion radii so hubs don't overlap their
     // leaves. Cheap; only relevant in linLog mode.
     adjustSizes: true,
-    // strongGravityMode keeps disconnected components on screen.
+    // strongGravity with low magnitude: just enough to keep stray components
+    // on screen, not enough to compress everything into a dense central
+    // ball. The user explicitly asked for "grouped clusters not spikeyness"
+    // so we let clusters drift apart.
     strongGravityMode: true,
-    gravity: 1,
+    gravity: 0.3,
     // The big spread knob in linLog mode. Higher = more separation between
-    // clusters. inferSettings gives ~4 for our size; 12 produces visibly
-    // grouped islands.
-    scalingRatio: 12,
-    // slowDown damps each step. With finite-iteration sync layout, lower is
-    // fine — there's no continuous loop to oscillate.
-    slowDown: 1,
+    // clusters. We push hard here (was 12 → 18) so clusters land as
+    // distinct islands instead of overlapping spokes around shared hubs.
+    scalingRatio: 18,
+    // slowDown damps each step. linLog with high scalingRatio takes large
+    // initial steps; bumping slowDown stabilizes the trajectory and avoids
+    // overshoot. With finite-iteration sync layout there's no continuous
+    // loop to oscillate, but a moderate slowDown still produces a visibly
+    // smoother final layout.
+    slowDown: 4,
   };
   cachedSettingsOrder = graph.order;
   return cachedSettings;
