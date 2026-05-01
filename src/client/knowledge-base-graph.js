@@ -61,21 +61,18 @@ function fa2SettingsFor(graph) {
     // Treat node sizes as repulsion radii so hubs don't overlap their
     // leaves. Cheap; only relevant in linLog mode.
     adjustSizes: true,
-    // strongGravity with low magnitude: just enough to keep stray components
-    // on screen, not enough to compress everything into a dense central
-    // ball. The user explicitly asked for "grouped clusters not spikeyness"
-    // so we let clusters drift apart.
-    strongGravityMode: true,
-    gravity: 0.3,
-    // The big spread knob in linLog mode. Higher = more separation between
-    // clusters. We push hard here (was 12 → 18) so clusters land as
-    // distinct islands instead of overlapping spokes around shared hubs.
-    scalingRatio: 18,
-    // slowDown damps each step. linLog with high scalingRatio takes large
-    // initial steps; bumping slowDown stabilizes the trajectory and avoids
-    // overshoot. With finite-iteration sync layout there's no continuous
-    // loop to oscillate, but a moderate slowDown still produces a visibly
-    // smoother final layout.
+    // Plain (non-strong) gravity at low magnitude: just enough to catch
+    // stray orphan components, not enough to compress the whole graph into
+    // a dense central ball. strongGravity was driving everything to the
+    // origin and squashing cluster separation no matter how hard we pushed
+    // scalingRatio. The camera fit-to-extent at end-of-settle handles
+    // anything that drifts off the default viewport.
+    strongGravityMode: false,
+    gravity: 0.05,
+    // The spread knob. With strong-gravity off and gravity low, this
+    // dominates the equilibrium distance between clusters. 25 produces
+    // visibly separated cluster islands at our typical Library scale.
+    scalingRatio: 25,
     slowDown: 4,
   };
   cachedSettingsOrder = graph.order;
