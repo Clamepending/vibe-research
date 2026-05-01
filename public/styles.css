@@ -11817,12 +11817,21 @@ button.visual-town-building:focus-visible {
   display: grid;
   place-items: center;
   padding: 24px;
-  z-index: 20;
+  /* Must clear .rich-session-surface (z-index: 24) and other in-page
+     stacking layers (provider picker 35, knowledge popover 40-43,
+     mobile sidebar 50, agent-canvas 90). The folder picker is the
+     only consumer of this class — the previous z-index of 20 let
+     the chat surface render on top of the picker's right half,
+     making the path display + Choose-folder button unclickable
+     (looked like a UI freeze). Stays below the 9999/10000 tier
+     (tooltips, context menus, tutorial overlay) which should
+     correctly float above the modal. */
+  z-index: 100;
 }
 
 .prompt-modal {
   position: relative;
-  z-index: 21;
+  z-index: 101;
   width: min(760px, 100%);
   max-height: min(88vh, 960px);
   display: grid;
