@@ -548,6 +548,8 @@ const LIKELY_TEXT_FILENAMES = new Set([
 ]);
 const SESSION_READ_STORAGE_KEY = "vibe-research-session-read-at-v1";
 const COMPOSER_DRAFT_STORAGE_KEY = "vibe-research-composer-drafts-v1";
+const COMPOSER_QUEUE_STORAGE_KEY = "vibe-research-composer-queue-v1";
+const COMPOSER_QUEUE_MAX_ITEMS_PER_SESSION = 50;
 const LAYOUT_STORAGE_KEY = "vibe-research-layout-v1";
 const OPEN_FILE_TAB_ORDER_STORAGE_KEY = "vibe-research-open-file-tab-order-v1";
 const SESSION_PROJECT_ORDER_STORAGE_KEY = "vibe-research-session-project-order-v1";
@@ -1452,6 +1454,71 @@ function saveComposerDrafts() {
     window.localStorage.setItem(COMPOSER_DRAFT_STORAGE_KEY, JSON.stringify(state.richSessionComposerDrafts));
   } catch {
     // Drafts are a convenience; private browsing / quota errors must not break typing.
+  }
+}
+
+// Queued messages (submitted while the agent was still streaming the
+// previous turn) live in state.richSessionComposerQueue keyed by sessionId.
+// They auto-flush on the working→idle transition. Without persistence, a
+// reload between submit and flush silently drops the user's message —
+// which is what just happened to the user. Mirror the draft persistence:
+// load on init, save on every mutation, gracefully ignore quota errors.
+function sanitizeQueuedAttachment(att) {
+  if (!att || typeof att !== "object") return null;
+  const absolutePath = String(att.absolutePath || "").trim();
+  if (!absolutePath) return null;
+  return {
+    id: String(att.id || ""),
+    absolutePath,
+    fileName: String(att.fileName || ""),
+    source: String(att.source || ""),
+    sizeBytes: Number.isFinite(att.sizeBytes) ? att.sizeBytes : 0,
+    mimeType: String(att.mimeType || ""),
+  };
+}
+
+function sanitizeQueuedItem(item) {
+  if (!item || typeof item !== "object") return null;
+  const id = String(item.id || "").trim();
+  const text = String(item.text || "").slice(0, 20_000);
+  const attachmentsInput = Array.isArray(item.attachments) ? item.attachments : null;
+  const attachments = attachmentsInput
+    ? attachmentsInput.map(sanitizeQueuedAttachment).filter(Boolean)
+    : null;
+  if (!id) return null;
+  if (!text && !(attachments && attachments.length)) return null;
+  const queuedAt = typeof item.queuedAt === "string" ? item.queuedAt : new Date().toISOString();
+  return { id, text, attachments: attachments && attachments.length ? attachments : null, queuedAt };
+}
+
+function loadComposerQueue() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(COMPOSER_QUEUE_STORAGE_KEY) || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const result = {};
+    for (const [rawSessionId, rawList] of Object.entries(parsed)) {
+      const sessionId = String(rawSessionId || "").trim();
+      if (!sessionId || !Array.isArray(rawList)) continue;
+      const items = rawList
+        .map(sanitizeQueuedItem)
+        .filter(Boolean)
+        .slice(0, COMPOSER_QUEUE_MAX_ITEMS_PER_SESSION);
+      if (items.length) result[sessionId] = items;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function saveComposerQueue() {
+  try {
+    window.localStorage.setItem(COMPOSER_QUEUE_STORAGE_KEY, JSON.stringify(state.richSessionComposerQueue));
+  } catch {
+    // Same reasoning as drafts: persistence is best-effort.
   }
 }
 
@@ -2505,8 +2572,10 @@ const state = {
   // still working on the previous turn. Each entry: { id, text,
   // attachments, queuedAt }. Auto-flushed (oldest first) when the session
   // transitions from streamWorking=true to false. The user can edit
-  // (restore to composer) or delete any pending entry.
-  richSessionComposerQueue: {},
+  // (restore to composer) or delete any pending entry. Persisted to
+  // localStorage so a reload between submit and flush doesn't silently
+  // eat the message.
+  richSessionComposerQueue: loadComposerQueue(),
   // Per-session previous streamWorking value, used to detect the
   // working→idle transition that triggers the queue flush.
   richSessionComposerQueueLastWorking: {},
@@ -5392,6 +5461,7 @@ function pushRichSessionComposerQueueItem(sessionId, item) {
     state.richSessionComposerQueue[sid] = [];
   }
   state.richSessionComposerQueue[sid].push(item);
+  saveComposerQueue();
 }
 
 function shiftRichSessionComposerQueue(sessionId) {
@@ -5400,6 +5470,7 @@ function shiftRichSessionComposerQueue(sessionId) {
   if (!Array.isArray(list) || !list.length) return null;
   const item = list.shift();
   if (!list.length) delete state.richSessionComposerQueue[sid];
+  saveComposerQueue();
   return item;
 }
 
@@ -5410,6 +5481,7 @@ function unshiftRichSessionComposerQueueItem(sessionId, item) {
     state.richSessionComposerQueue[sid] = [];
   }
   state.richSessionComposerQueue[sid].unshift(item);
+  saveComposerQueue();
 }
 
 function removeRichSessionComposerQueueItem(sessionId, itemId) {
@@ -5420,6 +5492,7 @@ function removeRichSessionComposerQueueItem(sessionId, itemId) {
   if (index < 0) return null;
   const [removed] = list.splice(index, 1);
   if (!list.length) delete state.richSessionComposerQueue[sid];
+  saveComposerQueue();
   return removed || null;
 }
 
@@ -44135,6 +44208,10 @@ function connectToSession(sessionId) {
       state.nativeSessionReducerArmed.delete(payload.sessionId);
       delete state.nativeSessionStreamLog[payload.sessionId];
       delete state.richSessionComposerAttachments[payload.sessionId];
+      if (state.richSessionComposerQueue[payload.sessionId]) {
+        delete state.richSessionComposerQueue[payload.sessionId];
+        saveComposerQueue();
+      }
       const visualSelectionPruned = pruneVisualGameSessionSelection();
       if (state.activeSessionId === payload.sessionId) {
         state.activeSessionId = state.sessions[0]?.id ?? null;
