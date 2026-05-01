@@ -15,6 +15,20 @@ function boundedText(value, limit) {
   return text.length > limit ? text.slice(0, limit) : text;
 }
 
+function compactDirectiveText(value, limit = 320) {
+  const text = trimString(value);
+  if (!text || text.length <= limit) return text;
+  const slice = text.slice(0, Math.max(0, limit - 3));
+  const breakAt = Math.max(
+    slice.lastIndexOf(". "),
+    slice.lastIndexOf("; "),
+    slice.lastIndexOf(" | "),
+    slice.lastIndexOf(" "),
+  );
+  const clipped = breakAt > limit * 0.55 ? slice.slice(0, breakAt).trim() : slice.trim();
+  return `${clipped}...`;
+}
+
 export function normalizeResearchSupervisorState(value = {}) {
   const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const audit = Array.isArray(input.audit)
@@ -169,9 +183,12 @@ function projectPhraseFor(project) {
 }
 
 function objectiveSentence(objective) {
-  return objective
-    ? `Use the project objective as the north star: ${objective}`
-    : "Infer the objective from the project README before acting.";
+  const text = trimString(objective);
+  if (!text) return "Infer the objective from the project README before acting.";
+  if (text.length <= 220) {
+    return `Use the project objective as the north star: ${text}`;
+  }
+  return `Use the project objective as the north star (full text is in README): ${compactDirectiveText(text, 260)}`;
 }
 
 function benchmarkLine(benchmark) {
@@ -189,12 +206,16 @@ function benchmarkLine(benchmark) {
   return [`Benchmark: ${head || "declared"}`, metrics, datasets].filter(Boolean).join("; ");
 }
 
-function projectContractLines(context = {}) {
+function projectContractLines(context = {}, { objective = "" } = {}) {
   const lines = [];
-  if (context.goal) lines.push(`Goal: ${context.goal}`);
+  const goal = trimString(context.goal);
+  const objectiveText = trimString(objective);
+  if (goal && !(goal === objectiveText && goal.length > 220)) {
+    lines.push(`Goal: ${compactDirectiveText(goal, 280)}`);
+  }
   if (context.rankingCriterion) lines.push(`Ranking: ${context.rankingCriterion}`);
   if (Array.isArray(context.successCriteria) && context.successCriteria.length) {
-    lines.push(`Success criteria: ${context.successCriteria.join(" | ")}`);
+    lines.push(`Success criteria: ${compactDirectiveText(context.successCriteria.join(" | "), 320)}`);
   }
   if (context.activeHead) lines.push(`Active: ${context.activeHead}`);
   if (context.queueHead) lines.push(`Queue head: ${context.queueHead}`);
@@ -203,6 +224,17 @@ function projectContractLines(context = {}) {
   const bench = benchmarkLine(context.benchmark);
   if (bench) lines.push(bench);
   return lines;
+}
+
+function supervisorPriorityBlock() {
+  return [
+    "Supervisor priorities:",
+    "- Reflect on qualitative results before spending more compute: inspect samples, failure cases, and heatmaps, not just aggregate metrics.",
+    "- For vision/video work, create or update heatmaps on validation photos/videos and identify where the model most needs improvement.",
+    "- Parallelize independent experiments across idle GPUs when provenance stays clean; keep each queued move or sibling recipe easy to compare.",
+    "- Step back for a lightweight literature/current-docs pass when the recipe, architecture, data, or benchmark choice is uncertain.",
+    "- Prefer ablations and small factorial studies that reveal which parts of the recipe are truly needed.",
+  ].join("\n");
 }
 
 function operatingBrief({
@@ -223,7 +255,7 @@ function operatingBrief({
       objectiveSentence(objective),
     ].join(" "),
   ];
-  const contract = projectContractLines(context);
+  const contract = projectContractLines(context, { objective });
   if (contract.length) {
     lines.push(["Project contract:", ...contract.map((line) => `- ${line}`)].join("\n"));
   }
@@ -233,6 +265,7 @@ function operatingBrief({
   if (focus) {
     lines.push(focus);
   }
+  lines.push(supervisorPriorityBlock());
   if (command) {
     lines.push(`Useful command path: ${command}`);
   }
@@ -240,8 +273,8 @@ function operatingBrief({
     [
       "Execution discipline:",
       "run one bounded step at a time; keep branch, commit, command, seed/config, artifact paths, and metrics attached;",
-      "when the move has visual outputs, inspect representative project photos/videos, samples, and heatmaps instead of trusting aggregate metrics alone;",
-      "use idle GPUs or sibling runs only when they are separate queued moves or clearly documented sibling recipes, and do not corrupt the active move's provenance.",
+      "when the evidence suggests a broader search, queue the ablations/sibling recipes explicitly instead of burying them in one undocumented run;",
+      "do not corrupt the active move's provenance.",
     ].join(" "),
   );
   lines.push(finish || "After the step, update the result doc and paper/canvas if relevant, run the project doctor, commit/push durable state, and stop only for a true human gate.");
