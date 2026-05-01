@@ -6185,9 +6185,16 @@ function renderRichSessionEntry(entry, index) {
   // label collapses into a tiny prefix glyph, the command/path is the only
   // prominent line, and the output preview shrinks to a one-line summary
   // with status meta on the right.
+  // File-mutation labels (Write/Edit/Delete/MultiEdit) join the compact
+  // path so multi-file patches render as a scannable stack of one-line
+  // rows instead of a wall of `<pre>` blocks. For Codex's file_change
+  // items the body is just the path, so this is pure win; for Claude's
+  // Edit/Write tool_use the structured input was already being
+  // summarised to a one-liner by summarizeClaudeToolInput, so the
+  // compact path looks the same but loses the per-entry padding.
   const isCompactToolEntry = kind === "tool"
     && !isTodoEntry
-    && /^(?:Bash|Read|Grep|Glob|LS|WebFetch|WebSearch)$/i.test(String(entry?.label || ""));
+    && /^(?:Bash|Read|Grep|Glob|LS|WebFetch|WebSearch|Write|Edit|MultiEdit|Delete)$/i.test(String(entry?.label || ""));
   if (isCompactToolEntry) {
     const compactClass = [
       "rich-session-entry",

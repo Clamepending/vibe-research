@@ -281,6 +281,35 @@ export class CodexStreamSession extends EventEmitter {
       this._pendingThinking = false;
     } else if (event?.type === "turn.completed") {
       this._pendingThinking = false;
+      // Surface token usage as a quiet status row at the end of the
+      // turn. Schema: { usage: { input_tokens, cached_input_tokens,
+      // output_tokens, reasoning_output_tokens } }. The previous
+      // implementation dropped this entirely; users had no visibility
+      // into per-turn cost. Cached tokens are surfaced inline when
+      // non-zero so prompt-caching wins are visible.
+      const usage = event.usage || {};
+      const inputTokens = Number(usage.input_tokens || 0);
+      const cachedTokens = Number(usage.cached_input_tokens || 0);
+      const outputTokens = Number(usage.output_tokens || 0);
+      const reasoningTokens = Number(usage.reasoning_output_tokens || 0);
+      const totalTokens = inputTokens + outputTokens + reasoningTokens;
+      if (totalTokens > 0) {
+        const parts = [`${totalTokens.toLocaleString()} tokens`];
+        const detailBits = [];
+        if (inputTokens) detailBits.push(`in ${inputTokens.toLocaleString()}`);
+        if (cachedTokens) detailBits.push(`cached ${cachedTokens.toLocaleString()}`);
+        if (outputTokens) detailBits.push(`out ${outputTokens.toLocaleString()}`);
+        if (reasoningTokens) detailBits.push(`reasoning ${reasoningTokens.toLocaleString()}`);
+        const detail = detailBits.length ? ` (${detailBits.join(", ")})` : "";
+        this._appendEntry({
+          id: `codex-usage-${turnIndex}`,
+          kind: "status",
+          label: "Usage",
+          text: `${parts[0]}${detail}`,
+          timestamp: stamp,
+          meta: "codex-usage",
+        });
+      }
     } else if (event?.type === "turn.failed" || event?.type === "error") {
       this._pendingThinking = false;
       const rawMessage = event.error?.message || event.message || "Codex turn failed";
@@ -317,16 +346,22 @@ export class CodexStreamSession extends EventEmitter {
     if (!item || typeof item !== "object" || !item.id) {
       return;
     }
-    const key = `codex-${turnIndex}-${item.id}`;
-    const existing = this._allEntries.find((entry) => entry.id === key);
-    const built = this._buildEntryForItem(key, item, stamp, completed);
+    const baseKey = `codex-${turnIndex}-${item.id}`;
+    const built = this._buildEntryForItem(baseKey, item, stamp, completed);
     if (!built) {
       return;
     }
-    if (existing) {
-      Object.assign(existing, built, { id: key });
-    } else {
-      this._appendEntry(built);
+    // file_change items expand into one entry per file (mirrors Claude's
+    // per-file Edit/Write rows). Everything else returns a single entry.
+    const built_list = Array.isArray(built) ? built : [built];
+    for (const entry of built_list) {
+      if (!entry?.id) continue;
+      const existing = this._allEntries.find((existingEntry) => existingEntry.id === entry.id);
+      if (existing) {
+        Object.assign(existing, entry);
+      } else {
+        this._appendEntry(entry);
+      }
     }
   }
 
@@ -411,31 +446,214 @@ export class CodexStreamSession extends EventEmitter {
       };
     }
     if (type === "file_change") {
-      const summary = String(item.summary || item.path || "file change").trim();
-      return {
-        id,
-        kind: "tool",
-        label: "Edit",
-        text: summary,
-        timestamp: stamp,
-        meta: baseMeta,
-        status: completed ? "done" : "running",
-      };
+      // Schema: { changes: [{path, kind: "add"|"delete"|"update"}], status }
+      // The previous implementation read item.summary / item.path which
+      // don't exist in the upstream schema (codex-rs/exec/src/exec_events.rs
+      // FileChangeItem) — every file change rendered as the literal
+      // string "file change" with no useful info. Now we expand into one
+      // entry per file so the renderer's compact-tool path gives each
+      // its own Add/Delete/Update badge, mirroring how Claude renders
+      // per-file Edit/Write tool_use rows.
+      const changes = Array.isArray(item.changes) ? item.changes : [];
+      const status = completed
+        ? (String(item.status || "").toLowerCase() === "failed" ? "error" : "done")
+        : "running";
+      if (!changes.length) {
+        return {
+          id,
+          kind: "tool",
+          label: "Edit",
+          text: "file change (no paths reported)",
+          timestamp: stamp,
+          meta: baseMeta,
+          status,
+        };
+      }
+      return changes.map((change, fileIdx) => {
+        const path = String(change?.path || "(unknown)").trim();
+        const kind = String(change?.kind || "update").toLowerCase();
+        // Map kind -> Claude-style label so the renderer's tool-label
+        // dispatch gives each its visual treatment. "Write" for new
+        // files, "Edit" for updates (existing convention), and a
+        // dedicated "Delete" badge — none of the existing label
+        // dispatch recognises Delete as a known label, so it'll fall
+        // back to the generic tool styling, which is fine.
+        const label = kind === "add" ? "Write" : kind === "delete" ? "Delete" : "Edit";
+        return {
+          id: `${id}::${fileIdx}`,
+          kind: "tool",
+          label,
+          text: path,
+          timestamp: stamp,
+          meta: baseMeta,
+          status,
+        };
+      });
     }
     if (type === "mcp_tool_call") {
+      // Schema: { server, tool, arguments, result: { content, structured_content }, error, status }
+      // The previous implementation read item.tool / item.input — server
+      // wasn't surfaced (so the renderer's MCP badge at main.js:6027
+      // never fired) and result.content was thrown away (so the user
+      // never saw what the MCP call returned).
+      const server = String(item.server || "").trim();
       const tool = String(item.tool || item.name || "MCP").trim() || "MCP";
-      const text = String(item.input || item.arguments || "").trim();
+      const args = item.arguments;
+      const text = typeof args === "string"
+        ? args.trim()
+        : args && typeof args === "object"
+        ? JSON.stringify(args)
+        : "";
+      const failed = String(item.status || "").toLowerCase() === "failed";
+      const errorMessage = String(item.error?.message || "").trim();
+      // Concatenate text content blocks from result.content. Each block
+      // is an MCP content shape — we surface { type: "text", text } and
+      // ignore image/resource blocks here (those need separate rendering
+      // we don't have hooks for yet). structured_content is a JSON dump
+      // fallback so the user at least sees the payload.
+      const resultContent = Array.isArray(item.result?.content) ? item.result.content : [];
+      const textBlocks = [];
+      for (const block of resultContent) {
+        if (!block || typeof block !== "object") continue;
+        if (block.type === "text" && typeof block.text === "string") {
+          textBlocks.push(block.text);
+        }
+      }
+      const structured = item.result?.structured_content;
+      let outputPreview = "";
+      if (failed && errorMessage) {
+        outputPreview = `Error: ${errorMessage}`;
+      } else if (textBlocks.length) {
+        outputPreview = textBlocks.join("\n\n").trim();
+      } else if (structured !== undefined && structured !== null) {
+        try {
+          outputPreview = typeof structured === "string"
+            ? structured
+            : JSON.stringify(structured, null, 2);
+        } catch {
+          outputPreview = String(structured);
+        }
+      }
+      // Cap MCP output the same way command_execution caps it; same
+      // rationale (renderer's <details> collapse keeps long output
+      // out of view by default).
+      if (outputPreview.length > 5000) {
+        const head = outputPreview.slice(0, 4000).trimEnd();
+        const tail = outputPreview.slice(-1000).trimStart();
+        const elided = outputPreview.length - 4000 - 1000;
+        outputPreview = `${head}\n\n… (${elided.toLocaleString()} more chars elided) …\n\n${tail}`;
+      }
       return {
         id,
         kind: "tool",
         label: tool,
         text,
+        outputPreview: outputPreview || undefined,
+        timestamp: stamp,
+        meta: baseMeta,
+        status: completed ? (failed ? "error" : "done") : "running",
+        // Structured field the renderer reads to attach the MCP server
+        // badge (main.js:6027). Without this, mcp_tool_call entries
+        // looked like generic tool entries with no server attribution.
+        ...(server ? { mcp: { server, tool } } : {}),
+      };
+    }
+    if (type === "todo_list") {
+      // Schema: { items: [{text, completed}] }
+      // Renderer at main.js:6121 detects label === "TodoWrite" + a
+      // todos array and renders the compact "N tasks: x done · y open"
+      // tick — same audit row Claude's TodoWrite uses. Codex's todo
+      // schema only carries {text, completed:bool} (no in_progress
+      // concept), so map completed -> "completed", else "pending".
+      const items = Array.isArray(item.items) ? item.items : [];
+      const todos = items.map((todo) => ({
+        text: String(todo?.text || "").trim(),
+        status: todo?.completed ? "completed" : "pending",
+      })).filter((todo) => todo.text);
+      if (!todos.length) return null;
+      const summary = `${todos.length} task${todos.length === 1 ? "" : "s"}`;
+      return {
+        id,
+        kind: "tool",
+        label: "TodoWrite",
+        text: summary,
+        todos,
         timestamp: stamp,
         meta: baseMeta,
         status: completed ? "done" : "running",
       };
     }
-    // Unknown item type — render generically
+    if (type === "web_search") {
+      // Schema: { id, query, action }
+      // Renderer's compact-tool path already recognises "WebSearch" as
+      // a known label (main.js:6190 isCompactToolEntry regex), so this
+      // gets the same one-line + badge treatment as a Bash/Read row.
+      const query = String(item.query || "").trim();
+      const actionType = item.action && typeof item.action === "object"
+        ? String(item.action.type || "").trim()
+        : "";
+      return {
+        id,
+        kind: "tool",
+        label: "WebSearch",
+        text: query || "(no query)",
+        timestamp: stamp,
+        meta: actionType || baseMeta,
+        status: completed ? "done" : "running",
+      };
+    }
+    if (type === "collab_tool_call") {
+      // Schema: { tool: SpawnAgent|SendInput|Wait|CloseAgent,
+      //           sender_thread_id, receiver_thread_ids, prompt,
+      //           agents_states, status }
+      // Codex's subagent system. Render as a Task-like row with the
+      // collab tool action as the label and the prompt as the text.
+      // Status reflects the SpawnAgent/etc lifecycle.
+      const collabTool = String(item.tool || "collab").trim() || "collab";
+      // Prettier label per tool: SpawnAgent -> "Spawn agent",
+      // SendInput -> "Send input", etc. Renderer-side we treat this
+      // generically (no compact-tool dispatch); it gets the standard
+      // tool entry styling.
+      const labelMap = {
+        spawn_agent: "Spawn agent",
+        send_input: "Send input",
+        wait: "Wait",
+        close_agent: "Close agent",
+      };
+      const label = labelMap[collabTool.toLowerCase()] || collabTool;
+      const prompt = String(item.prompt || "").trim();
+      const receivers = Array.isArray(item.receiver_thread_ids) ? item.receiver_thread_ids : [];
+      const text = prompt || (receivers.length ? `→ ${receivers.length} agent${receivers.length === 1 ? "" : "s"}` : label);
+      const failed = String(item.status || "").toLowerCase() === "failed";
+      return {
+        id,
+        kind: "tool",
+        label,
+        text,
+        timestamp: stamp,
+        meta: baseMeta,
+        status: completed ? (failed ? "error" : "done") : "running",
+      };
+    }
+    if (type === "error") {
+      // Item-level error (distinct from the top-level `error` event).
+      // Schema: { message }. Surface as a status row with error styling
+      // so it's visually distinct from successful items.
+      const message = String(item.message || "").trim() || "Codex item error";
+      return {
+        id,
+        kind: "status",
+        label: "Error",
+        text: message,
+        timestamp: stamp,
+        meta: "codex-item-error",
+        status: "error",
+      };
+    }
+    // Unknown item type — render generically. Future Codex versions
+    // may add new item types; surfacing them as a small status row
+    // (rather than dropping them) gives us a visible signal that
+    // something new arrived without crashing the renderer.
     return {
       id,
       kind: "status",

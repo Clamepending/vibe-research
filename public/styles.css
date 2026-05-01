@@ -15943,6 +15943,61 @@ details.rich-session-compact-output[open] .rich-session-compact-output-toggle {
   overflow-y: auto;
 }
 
+/* File mutation labels (Codex file_change items, Claude Edit/Write
+   tool_use) get a color-coded left rule + tag so multi-file patches
+   are scannable at a glance: green = create (additive), amber =
+   modify, red = delete (destructive). The tag color matches the rule
+   so the eye picks up the kind from either side of the row. */
+.rich-session-entry.is-compact-tool.is-tool-write {
+  border-left-color: rgba(120, 220, 160, 0.55);
+}
+.rich-session-entry.is-compact-tool.is-tool-write .rich-session-compact-tag {
+  background: rgba(120, 220, 160, 0.16);
+  color: rgba(160, 240, 190, 0.95);
+}
+.rich-session-entry.is-compact-tool.is-tool-edit,
+.rich-session-entry.is-compact-tool.is-tool-multiedit {
+  border-left-color: rgba(255, 196, 92, 0.45);
+}
+.rich-session-entry.is-compact-tool.is-tool-edit .rich-session-compact-tag,
+.rich-session-entry.is-compact-tool.is-tool-multiedit .rich-session-compact-tag {
+  background: rgba(255, 196, 92, 0.14);
+  color: rgba(255, 218, 140, 0.95);
+}
+.rich-session-entry.is-compact-tool.is-tool-delete {
+  border-left-color: rgba(255, 159, 149, 0.55);
+}
+.rich-session-entry.is-compact-tool.is-tool-delete .rich-session-compact-tag {
+  background: rgba(255, 159, 149, 0.16);
+  color: rgba(255, 192, 184, 0.95);
+}
+
+/* WebSearch / WebFetch get a discreet blue accent so search/fetch
+   activity is visible without competing with file ops. */
+.rich-session-entry.is-compact-tool.is-tool-websearch,
+.rich-session-entry.is-compact-tool.is-tool-webfetch {
+  border-left-color: rgba(123, 195, 255, 0.45);
+}
+.rich-session-entry.is-compact-tool.is-tool-websearch .rich-session-compact-tag,
+.rich-session-entry.is-compact-tool.is-tool-webfetch .rich-session-compact-tag {
+  background: rgba(123, 195, 255, 0.14);
+  color: rgba(166, 215, 255, 0.95);
+}
+
+/* Codex per-turn token usage (turn.completed.usage) renders as a
+   quiet status row at the end of a turn — barely visible by default,
+   useful when the user goes looking for "how much did that turn
+   cost". Scoped via the entry id prefix CodexStreamSession assigns
+   (codex-usage-<turnIdx>). The Manrope font + low-contrast color
+   matches Claude's model-usage activity strip. */
+.rich-session-entry.is-status[data-entry-id^="codex-usage-"] {
+  opacity: 0.55;
+  font-size: 0.78rem;
+}
+.rich-session-entry.is-status[data-entry-id^="codex-usage-"] .rich-session-entry-kicker-label {
+  color: rgba(123, 195, 255, 0.65);
+}
+
 /* Pending assistant placeholder — explicit "thinking" text alongside the
    spinner kicker so the user can never miss the loading state. */
 .rich-session-entry.is-pending .is-pending-copy {
