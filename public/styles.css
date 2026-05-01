@@ -3434,7 +3434,12 @@ input[readonly][data-folder-picker-target] {
   gap: 8px;
 }
 
-.plugin-onboarding-actions [data-agent-town-action-shortcut]::after {
+.plugin-onboarding-actions [data-agent-town-action-ask-why-shortcut] {
+  gap: 8px;
+}
+
+.plugin-onboarding-actions [data-agent-town-action-shortcut]::after,
+.plugin-onboarding-actions [data-agent-town-action-ask-why-shortcut]::after {
   content: attr(data-agent-town-action-shortcut);
   display: inline-flex;
   align-items: center;
@@ -3448,6 +3453,10 @@ input[readonly][data-folder-picker-target] {
   color: rgba(238, 243, 248, 0.64);
   font-size: 0.72em;
   line-height: 1;
+}
+
+.plugin-onboarding-actions [data-agent-town-action-ask-why-shortcut]::after {
+  content: attr(data-agent-town-action-ask-why-shortcut);
 }
 
 /* Collapsed view shown when a building is fully installed + verified.

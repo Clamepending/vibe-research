@@ -300,6 +300,14 @@ test("native UI renders plan card, MCP badge, image strip, /login action, chat d
           title: button.getAttribute("title") || "",
         }),
       );
+      const askWhyButton = actionCard?.querySelector("[data-agent-town-action-ask-why]");
+      const askWhyShortcut = askWhyButton
+        ? {
+            key: askWhyButton.getAttribute("data-agent-town-action-ask-why-shortcut") || "",
+            aria: askWhyButton.getAttribute("aria-keyshortcuts") || "",
+            title: askWhyButton.getAttribute("title") || "",
+          }
+        : null;
       const evidenceLink = actionCard?.querySelector(".agent-inbox-evidence-link");
       const evidenceTagName = evidenceLink?.tagName || "";
       const evidenceRichPath = evidenceLink?.getAttribute("data-rich-path") || "";
@@ -332,6 +340,7 @@ test("native UI renders plan card, MCP badge, image strip, /login action, chat d
         researchFields,
         actionButtons,
         actionShortcuts,
+        askWhyShortcut,
         evidenceTagName,
         evidenceRichPath,
         evidenceOpenPath,
@@ -387,12 +396,18 @@ test("native UI renders plan card, MCP badge, image strip, /login action, chat d
       ],
       "chat review choices expose number-key shortcuts",
     );
+    assert.deepEqual(
+      surfaces.askWhyShortcut,
+      { key: "?", aria: "?", title: "Press ? to ask why" },
+      "chat ask-why button exposes a keyboard shortcut",
+    );
     assert.equal(surfaces.actionBeforePlan, true, "chat decisions are hoisted before the transcript");
     assert.equal(surfaces.evidenceTagName, "A", "chat card evidence path renders as an anchor");
     assert.equal(surfaces.evidenceRichPath, "projects/demo/results/cycle.md", "evidence link carries rich-session path metadata");
     assert.equal(surfaces.evidenceOpenPath, "projects/demo/results/cycle.md", "evidence link carries Agent Inbox path metadata");
 
-    await page.click('[data-rich-session-action-panel] [data-agent-town-action-ask-why="chat-review-card"]');
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.keyboard.press("Shift+/");
     const askWhyDraft = await page.locator("#rich-session-input").inputValue();
     assert.match(askWhyDraft, /explain the reasoning behind the review card "Review cycle 1: chat-review"/u);
     assert.match(askWhyDraft, /Available decisions: continue, steer/u);

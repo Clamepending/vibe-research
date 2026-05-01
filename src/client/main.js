@@ -19947,6 +19947,9 @@ function renderResearchAskWhyButton(item) {
       class="ghost-button toolbar-control"
       type="button"
       data-agent-town-action-ask-why="${escapeHtml(item.id)}"
+      data-agent-town-action-ask-why-shortcut="?"
+      aria-keyshortcuts="?"
+      title="Press ? to ask why"
     >ask why</button>
   `;
 }
@@ -34884,12 +34887,14 @@ function ensureRichSessionActionShortcutListener() {
 }
 
 function handleRichSessionActionShortcutKeydown(event) {
+  const isChoiceShortcut = /^[1-9]$/u.test(event.key);
+  const isAskWhyShortcut = event.key === "?" || (event.key === "/" && event.shiftKey);
   if (
     event.defaultPrevented
       || event.metaKey
       || event.ctrlKey
       || event.altKey
-      || !/^[1-9]$/u.test(event.key)
+      || (!isChoiceShortcut && !isAskWhyShortcut)
       || state.currentView !== "shell"
   ) {
     return;
@@ -34910,16 +34915,22 @@ function handleRichSessionActionShortcutKeydown(event) {
     return;
   }
 
-  const shortcutButton = Array.from(
-    actionPanel.querySelectorAll("[data-agent-town-action-shortcut]"),
-  ).find((button) => (
-    button instanceof HTMLButtonElement
-      && button.getAttribute("data-agent-town-action-shortcut") === event.key
-      && !button.disabled
-      && button.getClientRects().length > 0
-  ));
+  const shortcutButton = isAskWhyShortcut
+    ? actionPanel.querySelector("[data-agent-town-action-ask-why-shortcut]")
+    : Array.from(
+        actionPanel.querySelectorAll("[data-agent-town-action-shortcut]"),
+      ).find((button) => (
+        button instanceof HTMLButtonElement
+          && button.getAttribute("data-agent-town-action-shortcut") === event.key
+          && !button.disabled
+          && button.getClientRects().length > 0
+      ));
 
-  if (!(shortcutButton instanceof HTMLButtonElement)) {
+  if (
+    !(shortcutButton instanceof HTMLButtonElement)
+      || shortcutButton.disabled
+      || shortcutButton.getClientRects().length === 0
+  ) {
     return;
   }
 
