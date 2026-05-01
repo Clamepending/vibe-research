@@ -18349,7 +18349,7 @@ function renderAgentCredentialsSettingsPanel() {
       <span class="main-search-kind">agent credentials</span>
       <strong>Model Provider Keys</strong>
       <p>Saved keys are injected into newly started agent terminals and kept out of API responses.</p>
-      <form class="settings-form agent-credentials-form" id="agent-credentials-form">
+      <form class="settings-form agent-credentials-form" id="agent-credentials-form" method="post" action="javascript:void(0)">
         <label class="field-label" for="agent-anthropic-api-key">Anthropic API key</label>
         <input
           class="file-root-input"
@@ -43215,6 +43215,7 @@ function bindShellEvents() {
       renderShell();
     }
   });
+  bindAgentCredentialsForm();
   bindBrowserUseForm();
   bindOttoAuthForm();
   bindCommunicationsForm();
