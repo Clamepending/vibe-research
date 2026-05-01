@@ -33491,7 +33491,7 @@ function renderShell() {
           </section>
 
           <section class="sidebar-section">
-            <div class="section-head">
+            <div class="section-head" data-workspace-files-header>
               <span>files</span>
               <div class="section-actions">
                 <button class="ghost-button files-root-reset" type="button" id="auto-files-root" aria-label="Use automatic files root" ${tooltipAttributes("Use automatic files root")} ${state.filesRootOverride ? "" : "disabled"}>auto</button>
@@ -35275,6 +35275,13 @@ function bindSessionEvents() {
       const root = button.getAttribute("data-session-project-files-toggle") || "";
       toggleProjectFileTreeOpen(root);
     });
+    button.addEventListener("contextmenu", (event) => {
+      const root = button.getAttribute("data-session-project-files-toggle") || "";
+      if (!root) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openProjectFileTreeRootContextMenu(root, event.clientX, event.clientY);
+    });
   });
 
   document.querySelectorAll("[data-project-file-toggle]").forEach((button) => {
@@ -36472,8 +36479,9 @@ function openGlobalFileContextMenu({ relativePath, isDirectory, mode }, x, y) {
   openContextMenu(items, x, y);
 }
 
-// Right-click on the file tree's empty space: only the workspace root
-// is in scope, so the menu only offers create-here actions.
+// Right-click on the file tree's empty space (and on the "files"
+// section header in the workspace pane): only the workspace root is
+// in scope, so the menu only offers create-here actions.
 function openWorkspaceFileTreeRootContextMenu(x, y) {
   if (!state.filesRoot) return;
   openContextMenu(
@@ -36496,6 +36504,53 @@ function openWorkspaceFileTreeRootContextMenu(x, y) {
     x,
     y,
   );
+}
+
+// Right-click on the per-project "Files" header in the sidebar:
+// scaffold a file or folder at THIS project's workspace root.
+function openProjectFileTreeRootContextMenu(root, x, y) {
+  if (!root) return;
+  openContextMenu(
+    [
+      {
+        label: "New File",
+        icon: FilePlus,
+        onClick: () => {
+          void createProjectFileInDir(root, "");
+        },
+      },
+      {
+        label: "New Folder",
+        icon: FolderPlus,
+        onClick: () => {
+          void createProjectFolderInDir(root, "");
+        },
+      },
+    ],
+    x,
+    y,
+  );
+}
+
+// Document-level installer for the workspace pane "files" header
+// right-click. The header HTML is re-rendered on every refresh, so we
+// bind once at boot via event delegation rather than per-element. The
+// per-project "Files" toggle in the sidebar uses per-button binding
+// inside bindEvents (see installSessionsListEvents); this installer
+// only handles the workspace pane.
+function installWorkspaceFilesHeaderContextMenu() {
+  document.addEventListener("contextmenu", (event) => {
+    if (!(event.target instanceof Element)) return;
+    const header = event.target.closest("[data-workspace-files-header]");
+    if (!header) return;
+    // Don't hijack right-clicks on the header's interactive controls
+    // (auto / refresh buttons) — the user expects the browser default
+    // there, not our create menu.
+    if (event.target.closest("button, input, a, .file-root-form")) return;
+    if (!state.filesRoot) return;
+    event.preventDefault();
+    openWorkspaceFileTreeRootContextMenu(event.clientX, event.clientY);
+  });
 }
 
 function refreshSessionsList({ force = false, bindEvents = true } = {}) {
@@ -45629,6 +45684,7 @@ async function bootstrapApp() {
     installDelayedTooltips();
     bindSelectableRefreshEvents();
     installGpuDeviceContextMenu();
+    installWorkspaceFilesHeaderContextMenu();
     installFileTreeDragAndDrop();
 
     if ("virtualKeyboard" in navigator) {
