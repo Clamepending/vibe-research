@@ -7699,6 +7699,7 @@ function renderRichSessionAutopilotPanel(activeSession) {
   const nextActionTitle = sessionExited && sessionDriver
     ? "Start a fresh chat in the same folder and let the supervisor continue."
     : "Ask the supervisor to take the next research step.";
+  const actionDisabled = pending ? "disabled" : "";
   return `
     <section class="rich-session-autopilot ${enabled ? "is-enabled" : ""} ${running ? "is-running" : ""}" id="rich-session-autopilot" data-rich-session-autopilot-mount>
       <div class="rich-session-autopilot-main">
@@ -7727,13 +7728,13 @@ function renderRichSessionAutopilotPanel(activeSession) {
         `}
         ${showSteeringActions ? `
           <span class="rich-session-autopilot-supervisor-pill" title="${escapeHtml(supervisorSummary.title)}">${escapeHtml(supervisorSummary.label)}</span>
-          <button class="rich-session-autopilot-action is-primary" type="button" data-chat-autopilot-action="continue" title="${escapeHtml(nextActionTitle)}">${escapeHtml(nextActionLabel)}</button>
-          <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="brainstorm" title="Ask the supervisor to pause execution and propose next directions.">Plan</button>
-          <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="synthesize" title="Ask the supervisor for a checkpoint summary, evidence, risks, and recommendation.">Review</button>
-          <button class="rich-session-autopilot-action is-danger" type="button" data-chat-autopilot-action="pause" title="Pause the autonomous run attached to this chat.">Pause</button>
+          <button class="rich-session-autopilot-action is-primary" type="button" data-chat-autopilot-action="continue" title="${escapeHtml(nextActionTitle)}" ${actionDisabled}>${escapeHtml(nextActionLabel)}</button>
+          <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="brainstorm" title="Ask the supervisor to pause execution and propose next directions." ${actionDisabled}>Plan</button>
+          <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="synthesize" title="Ask the supervisor for a checkpoint summary, evidence, risks, and recommendation." ${actionDisabled}>Review</button>
+          <button class="rich-session-autopilot-action is-danger" type="button" data-chat-autopilot-action="pause" title="Pause the autonomous run attached to this chat." ${actionDisabled}>Pause</button>
         ` : enabled ? `
           <span class="rich-session-autopilot-supervisor-pill" title="${escapeHtml(supervisorSummary.title)}">${escapeHtml(supervisorSummary.label)}</span>
-          <button class="rich-session-autopilot-action is-danger" type="button" data-chat-autopilot-action="pause" title="Turn Autopilot off for this chat.">Pause</button>
+          <button class="rich-session-autopilot-action is-danger" type="button" data-chat-autopilot-action="pause" title="Turn Autopilot off for this chat." ${actionDisabled}>Pause</button>
         ` : ""}
       </div>
     </section>
