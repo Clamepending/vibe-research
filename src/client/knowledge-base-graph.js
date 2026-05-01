@@ -1,29 +1,59 @@
 // WebGL renderer for the Library graph view.
 //
-// Replaces the previous SVG + custom O(n²) force simulation with:
-//   - sigma.js for WebGL rendering (1 draw call per frame; scales to ~100k+
-//     nodes at 60fps without blocking the main thread)
-//   - graphology as the in-memory graph data structure (sigma reads from it)
-//   - graphology-layout-forceatlas2 running in a Web Worker for layout, with
-//     Barnes-Hut O(n log n) approximation auto-enabled past ~500 nodes
+// Renders via sigma.js (1 draw call per frame on a WebGL canvas) and lays
+// the graph out with graphology-layout-forceatlas2 (Barnes-Hut O(n log n))
+// running synchronously for a finite number of iterations.
+//
+// We deliberately do NOT run fa2 in a worker / continuous mode. fa2 in
+// supervisor mode keeps writing micro-displacements forever, which sigma
+// re-renders, producing visible jitter. Synchronous-with-finite-iterations
+// settles the layout to a fixed point in one shot, sigma renders the
+// settled state, and the GPU goes idle. The user can re-energize via
+// `pulse()` (drag, button) and we run another finite settle.
 //
 // The module is mounted by main.js after the graph card is rendered. main.js
-// keeps owning the source-of-truth `state.knowledgeBase.graphLayout` data; this
-// module just consumes it via `setData`.
+// keeps owning the source-of-truth `state.knowledgeBase.graphLayout` data;
+// this module just consumes it via `setData`.
 
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
-import FA2LayoutSupervisor from "graphology-layout-forceatlas2/worker.js";
 import Sigma from "sigma";
 import { buildKnowledgeBaseGraph } from "./knowledge-base-graph-data.js";
 
-// How long the layout worker is allowed to run after a data change before we
-// stop driving it. Sigma still renders smoothly while it's running; stopping
-// just keeps the GPU + main thread idle once the graph has visually settled.
-const LAYOUT_RUN_MS = 6000;
-// On a `pulse()` we kick the worker for a fresh shake-out, even if it had
-// previously settled.
-const LAYOUT_PULSE_MS = 4000;
+// fa2 iteration counts. 200 settles a few hundred nodes well at Barnes-Hut
+// theta=0.5; 500 covers up to a few thousand. We pick by graph size.
+function iterationsFor(order) {
+  if (order <= 50) return 120;
+  if (order <= 200) return 200;
+  if (order <= 800) return 320;
+  return 500;
+}
+
+function fa2SettingsFor(graph) {
+  const inferred = forceAtlas2.inferSettings(graph);
+  return {
+    ...inferred,
+    // Barnes-Hut is what makes large graphs tractable. inferSettings turns
+    // it on past 1000 nodes; we drop the threshold so 200+ already benefits.
+    barnesHutOptimize: graph.order > 200,
+    barnesHutTheta: 0.5,
+    // Stable defaults: linLogMode and outboundAttraction can produce nice
+    // results but are also the dominant source of oscillation for graphs
+    // with hub nodes and disconnected components, both of which a Library
+    // exhibits. Plain Fruchterman-Reingold-style behaviour settles cleanly.
+    linLogMode: false,
+    outboundAttractionDistribution: false,
+    adjustSizes: false,
+    // strongGravityMode pulls every component toward the origin instead of
+    // letting orphans drift off-screen. For a Library that has many
+    // single-note components this matters a lot.
+    strongGravityMode: true,
+    gravity: 1.2,
+    // slowDown damps each step. With finite-iteration sync layout, lower is
+    // fine — there's no continuous loop to oscillate. Default of 1 is OK.
+    slowDown: 1,
+  };
+}
 
 export function createKnowledgeBaseGraphRenderer(container, options = {}) {
   if (!(container instanceof HTMLElement)) {
@@ -38,8 +68,6 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
 
   let graph = new Graph({ multi: false, allowSelfLoops: false, type: "undirected" });
   let sigma = null;
-  let supervisor = null;
-  let supervisorTimeout = 0;
   let selectedKey = "";
   let connectedKeys = new Set();
   let hoveredKey = "";
@@ -62,18 +90,21 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
     }
   }
 
-  // sigma reducers — called per-render frame, returning the visual attrs for
-  // each node/edge. We do NOT mutate the underlying graphology data here; that
-  // way the layout worker keeps its source of truth and we just decorate.
+  // sigma reducers — called per-render frame. We do NOT mutate the underlying
+  // graphology data here; that way fa2 can keep its source of truth and we
+  // just decorate.
   function nodeReducer(key, attrs) {
     const isSelected = key === selectedKey;
     const isHovered = key === hoveredKey;
     const isConnected = connectedKeys.has(key);
     const totalNodes = graph.order;
     const labelAlwaysOn = totalNodes <= labelsAlwaysVisibleThreshold;
-    const showLabel = labelAlwaysOn || isSelected || isHovered || isConnected;
+    // Labels: only the directly active node(s) get a label by default, even
+    // when "connected" highlighting is on. Showing labels for the entire
+    // 1-hop neighbourhood floods the canvas at hub nodes.
+    const showLabel = labelAlwaysOn || isSelected || isHovered;
     const baseSize = Number(attrs.size) || 5;
-    const size = isSelected ? baseSize * 1.55 : isHovered ? baseSize * 1.3 : isConnected ? baseSize * 1.15 : baseSize;
+    const size = isSelected ? baseSize * 1.55 : isHovered ? baseSize * 1.3 : isConnected ? baseSize * 1.12 : baseSize;
     return {
       ...attrs,
       label: showLabel ? attrs.title : "",
@@ -108,9 +139,13 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
       labelColor: { color: "rgba(232, 236, 240, 0.95)" },
       labelSize: 11,
       labelWeight: "500",
-      labelDensity: 0.9,
-      labelGridCellSize: 90,
-      labelRenderedSizeThreshold: 4,
+      // labelDensity controls how aggressively sigma decimates labels in the
+      // current viewport. Lower = fewer overlapping labels.
+      labelDensity: 0.6,
+      labelGridCellSize: 130,
+      // Only render labels for nodes that occupy at least this many pixels;
+      // tiny nodes never get labels in a packed view.
+      labelRenderedSizeThreshold: 6,
       zIndex: true,
       allowInvalidContainer: false,
     });
@@ -136,13 +171,10 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
     });
 
     // Node dragging: capture the sigma node, follow pointermove in graph
-    // coordinates (viewportToGraph), fix the node so the layout worker doesn't
-    // fight us until we release. Mirrors the previous SVG drag UX.
+    // coordinates, then re-relax neighbours when released.
     sigma.on("downNode", ({ node, event }) => {
       dragging = { key: node, moved: false };
       graph.setNodeAttribute(node, "highlighted", true);
-      // Suspend layout while dragging so positions don't fight the pointer.
-      supervisor?.stop();
       event.preventSigmaDefault?.();
     });
 
@@ -159,11 +191,10 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
       graph.setNodeAttribute(dragging.key, "highlighted", false);
       dragging = null;
       if (wasMoved) {
-        // Suppress the click that follows a drag-up.
-        // (sigma fires clickNode after mouseup; the dragging guard handles it.)
+        // Quick post-drag relaxation so neighbours adjust around the new
+        // position without re-running a full settle.
+        runLayout({ iterations: 60 });
       }
-      // Resume the layout briefly so neighbors re-relax around the new spot.
-      kickLayout(LAYOUT_PULSE_MS / 2);
     };
     sigma.getMouseCaptor().on("mousemovebody", onMove);
     sigma.getMouseCaptor().on("mouseup", onUp);
@@ -172,40 +203,15 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
     return sigma;
   }
 
-  function kickLayout(durationMs) {
+  // Synchronous fa2 settle. Runs `iterations` ticks on the main thread; for
+  // a few hundred nodes with Barnes-Hut this is well under 200ms. Returns
+  // when the graph is settled — sigma re-renders once and the canvas goes
+  // idle (no continuous loop, no jitter).
+  function runLayout({ iterations } = {}) {
     if (graph.order < 2) return;
-    if (supervisorTimeout) {
-      window.clearTimeout(supervisorTimeout);
-      supervisorTimeout = 0;
-    }
-    if (!supervisor) {
-      const inferred = forceAtlas2.inferSettings(graph);
-      supervisor = new FA2LayoutSupervisor(graph, {
-        settings: {
-          ...inferred,
-          // Barnes-Hut is what makes >500 nodes tractable. inferSettings
-          // already enables it past a threshold; we pin it on for safety.
-          barnesHutOptimize: graph.order > 200,
-          barnesHutTheta: 0.5,
-          // A bit more breathing room than fa2 defaults so dense graphs don't
-          // collapse into a single hairball.
-          gravity: 1,
-          scalingRatio: 8,
-          slowDown: 4,
-          // linLogMode produces clearer cluster separation for node-link
-          // graphs that have natural communities (project groups in our
-          // case).
-          linLogMode: true,
-          outboundAttractionDistribution: false,
-          adjustSizes: false,
-        },
-      });
-    }
-    if (!supervisor.isRunning()) supervisor.start();
-    supervisorTimeout = window.setTimeout(() => {
-      supervisor?.stop();
-      supervisorTimeout = 0;
-    }, Math.max(500, durationMs));
+    const iters = Number.isInteger(iterations) && iterations > 0 ? iterations : iterationsFor(graph.order);
+    forceAtlas2.assign(graph, { iterations: iters, settings: fa2SettingsFor(graph) });
+    sigma?.refresh({ skipIndexation: true });
   }
 
   function setData({ nodes, edges, labelsAlwaysThreshold }) {
@@ -214,12 +220,13 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
     }
     const newGraph = buildKnowledgeBaseGraph(Array.isArray(nodes) ? nodes : [], Array.isArray(edges) ? edges : []);
     if (sigma) {
-      // Replace graphology underneath sigma. Sigma v3 owns the graph instance
-      // it was constructed with; the cleanest swap is to clear+merge so we
-      // don't have to recreate sigma (which would lose camera state).
+      // Replace the graph underneath sigma. Sigma v3 holds onto the graph
+      // instance it was constructed with, so we clear + re-merge into the
+      // existing instance instead of recreating sigma (which would lose
+      // camera state).
       graph.clear();
       newGraph.forEachNode((key, attrs) => graph.addNode(key, attrs));
-      newGraph.forEachEdge((key, attrs, src, tgt) => graph.addEdge(src, tgt, attrs));
+      newGraph.forEachEdge((_key, attrs, src, tgt) => graph.addEdge(src, tgt, attrs));
     } else {
       graph = newGraph;
       ensureSigma();
@@ -227,13 +234,12 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
     selectedKey = selectedKey && graph.hasNode(selectedKey) ? selectedKey : "";
     hoveredKey = hoveredKey && graph.hasNode(hoveredKey) ? hoveredKey : "";
     recomputeConnected();
+
+    // Settle the new layout, then fit the camera so the user sees the whole
+    // graph regardless of where fa2 ended up.
+    runLayout();
     sigma?.refresh({ skipIndexation: false });
-    // Restart layout for the new data.
-    if (supervisor) {
-      supervisor.kill();
-      supervisor = null;
-    }
-    kickLayout(LAYOUT_RUN_MS);
+    sigma?.getCamera().animatedReset({ duration: 0 });
   }
 
   function setSelected(path) {
@@ -252,24 +258,25 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
   function focus(path) {
     if (!sigma || !path || !graph.hasNode(path)) return false;
     const attrs = graph.getNodeAttributes(path);
-    sigma.getCamera().animate(
-      { x: attrs.x, y: attrs.y, ratio: 0.45 },
-      { duration: 400 },
-    );
+    sigma.getCamera().animate({ x: attrs.x, y: attrs.y, ratio: 0.45 }, { duration: 400 });
     return true;
   }
 
   function pulse() {
-    kickLayout(LAYOUT_PULSE_MS);
+    // A "shake-out": slightly perturb every node, then re-settle. Without
+    // perturbation, fa2 starting from the previous fixed point would just
+    // sit there.
+    graph.forEachNode((key, attrs) => {
+      const dx = (Math.random() - 0.5) * 30;
+      const dy = (Math.random() - 0.5) * 30;
+      graph.setNodeAttribute(key, "x", (attrs.x || 0) + dx);
+      graph.setNodeAttribute(key, "y", (attrs.y || 0) + dy);
+    });
+    runLayout();
+    sigma?.getCamera().animatedReset({ duration: 350 });
   }
 
   function unmount() {
-    if (supervisorTimeout) {
-      window.clearTimeout(supervisorTimeout);
-      supervisorTimeout = 0;
-    }
-    supervisor?.kill();
-    supervisor = null;
     sigma?.kill();
     sigma = null;
     graph.clear();
