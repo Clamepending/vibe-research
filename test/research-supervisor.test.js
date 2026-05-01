@@ -66,6 +66,10 @@ test("research supervisor emits immediate takeover directives and dedupes later 
   assert.equal(first.action, "directive");
   assert.equal(first.shouldSend, true);
   assert.match(first.directive.text, /Claim QUEUE row 1/);
+  assert.match(first.directive.text, /First inspect the durable project state/);
+  assert.match(first.directive.text, /Use the project objective as the north star: Improve concise prose style/);
+  assert.match(first.directive.text, /representative project photos\/videos, samples, and heatmaps/);
+  assert.match(first.directive.text, /idle GPUs or sibling runs/);
 
   const supervisor = updateResearchSupervisorState(
     normalizeResearchSupervisorState(),
@@ -91,6 +95,27 @@ test("research supervisor emits immediate takeover directives and dedupes later 
   assert.equal(recovered.action, "directive");
   assert.equal(recovered.shouldSend, true);
   assert.match(recovered.directive.text, /Claim QUEUE row 1/);
+});
+
+test("research supervisor gives active-move execution briefs", () => {
+  const decision = decideResearchSupervisorIntervention({
+    attachment: attachment(),
+    event: { type: "agent-idle", source: "session" },
+    orchestratorReport: {
+      recommendation: {
+        action: "continue-active",
+        reason: "ACTIVE has v070; continue or finish that move before claiming another.",
+        slug: "v070",
+      },
+      nextCommand: "vr-research-runner /tmp/project cycle --slug v070 --command <experiment-command>",
+    },
+  });
+  assert.equal(decision.action, "directive");
+  assert.equal(decision.shouldSend, true);
+  assert.match(decision.directive.text, /Resume the active research move v070/);
+  assert.match(decision.directive.text, /If a cycle is already running/);
+  assert.match(decision.directive.text, /Useful command path: vr-research-runner/);
+  assert.doesNotMatch(decision.directive.text, /Autopilot/i);
 });
 
 test("research supervisor gates missing project instead of messaging worker", () => {

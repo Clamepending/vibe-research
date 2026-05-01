@@ -128,60 +128,175 @@ function manualDirective(action) {
   return null;
 }
 
+function projectPhraseFor(project) {
+  return project ? ` for ${project}` : "";
+}
+
+function objectiveSentence(objective) {
+  return objective
+    ? `Use the project objective as the north star: ${objective}`
+    : "Infer the objective from the project README before acting.";
+}
+
+function operatingBrief({
+  headline,
+  project = "",
+  objective = "",
+  reason = "",
+  command = "",
+  focus = "",
+  finish = "",
+} = {}) {
+  const lines = [
+    headline,
+    [
+      "First inspect the durable project state:",
+      "README, ACTIVE, QUEUE, LOG, current result doc, recent commits, and recent artifacts.",
+      objectiveSentence(objective),
+    ].join(" "),
+  ];
+  if (reason) {
+    lines.push(`Current routing signal${projectPhraseFor(project)}: ${reason}`);
+  }
+  if (focus) {
+    lines.push(focus);
+  }
+  if (command) {
+    lines.push(`Useful command path: ${command}`);
+  }
+  lines.push(
+    [
+      "Execution discipline:",
+      "run one bounded step at a time; keep branch, commit, command, seed/config, artifact paths, and metrics attached;",
+      "when the move has visual outputs, inspect representative project photos/videos, samples, and heatmaps instead of trusting aggregate metrics alone;",
+      "use idle GPUs or sibling runs only when they are separate queued moves or clearly documented sibling recipes, and do not corrupt the active move's provenance.",
+    ].join(" "),
+  );
+  lines.push(finish || "After the step, update the result doc and paper/canvas if relevant, run the project doctor, commit/push durable state, and stop only for a true human gate.");
+  return lines.join("\n\n");
+}
+
 function automaticDirective({ action, report, attachment }) {
   const rec = report?.recommendation || {};
   const reason = recommendationReason(report);
   const slug = projectSlugFromRecommendation(rec);
   const project = trimString(attachment?.projectName);
   const objective = trimString(attachment?.objective);
-  const projectPhrase = project ? ` for ${project}` : "";
-  const objectivePhrase = objective ? ` Use the project objective as the north star: ${objective}` : "";
+  const projectPhrase = projectPhraseFor(project);
+  const nextCommand = trimString(report?.nextCommand);
 
   if (action === "fix-doctor" || action === "orchestrator-fix-doctor") {
     return {
-      text: `Before doing new research${projectPhrase}, fix the blocking project-integrity issue: ${reason}. Then re-run the relevant check and continue from the durable README/LOG state.`,
+      text: operatingBrief({
+        headline: `Before doing new research${projectPhrase}, fix the blocking project-integrity issue.`,
+        project,
+        objective,
+        reason,
+        command: nextCommand || `vr-research-doctor <project-dir>`,
+        focus: "Do not start experiments while the project contract is corrupt; repair the README/LOG/result-doc shape first.",
+        finish: "Re-run the doctor, commit/push the repair, then continue from the durable README/LOG state.",
+      }),
       reason: reason || "doctor reported a blocking issue",
     };
   }
 
   if (action === "continue-active" || action === "orchestrator-continue-active") {
     return {
-      text: `Resume the active research move${slug ? ` ${slug}` : ""}${projectPhrase}. Inspect the result doc and recent artifacts, run the next tight cycle or finish the move if the evidence is complete.${objectivePhrase}`,
+      text: operatingBrief({
+        headline: `Resume the active research move${slug ? ` ${slug}` : ""}${projectPhrase}.`,
+        project,
+        objective,
+        reason,
+        command: nextCommand,
+        focus: "If a cycle is already running, verify process/GPU/artifact state and wait or monitor rather than launching a conflicting cycle. If evidence is complete, finish the move with the registered verdict instead of drifting into new work.",
+      }),
       reason: reason || "active move needs the next supervised step",
     };
   }
 
   if (action === "run-next" || action === "orchestrator-run-next") {
     return {
-      text: `Claim QUEUE row 1${slug ? ` (${slug})` : ""}${projectPhrase} and run one bounded research cycle. Keep provenance attached, update the result doc, and stop only for a true human gate.${objectivePhrase}`,
+      text: operatingBrief({
+        headline: `Claim QUEUE row 1${slug ? ` (${slug})` : ""}${projectPhrase} and run one bounded research cycle.`,
+        project,
+        objective,
+        reason,
+        command: nextCommand,
+        focus: "Create or resume the result doc before expensive work, move the row into ACTIVE, and make the pre-flight/falsifier explicit.",
+      }),
       reason: reason || "queued move is ready to run",
     };
   }
 
   if (action === "run-sweep" || action === "orchestrator-run-sweep") {
     return {
-      text: `Continue the planned sweep${projectPhrase}. Run the next bounded row, preserve artifacts and metrics, and summarize only if the sweep reaches a review gate.`,
+      text: operatingBrief({
+        headline: `Continue the planned sweep${projectPhrase}.`,
+        project,
+        objective,
+        reason,
+        command: nextCommand,
+        focus: "Run the next runnable sweep row, preserve per-row artifacts and metrics, and do not collapse distinct recipes into one undocumented comparison.",
+      }),
       reason: reason || "planned sweep has runnable rows",
     };
   }
 
   if (action === "enter-review" || action === "orchestrator-enter-review") {
     return {
-      text: `The experiment queue is exhausted${projectPhrase}. Enter review mode, judge the latest result, distill what changed, and propose the next move before launching new work.`,
+      text: operatingBrief({
+        headline: `The experiment queue is exhausted${projectPhrase}; enter review mode before launching new work.`,
+        project,
+        objective,
+        reason,
+        command: nextCommand,
+        focus: "Judge the latest result, distill what changed, identify failure modes and qualitative evidence, then propose the next move with a falsifier.",
+        finish: "Write the review/brief update, surface the recommendation for approval if needed, and only then compile new QUEUE rows.",
+      }),
       reason: reason || "project should transition into review",
     };
   }
 
   if (action === "create-brief" || action === "orchestrator-create-brief") {
     return {
-      text: `Create a grounded research brief${projectPhrase}. Use the project objective, README, LOG, leaderboard, and recent artifacts; propose one small next move with a falsifier before running it.${objectivePhrase}`,
+      text: operatingBrief({
+        headline: `Create a grounded research brief${projectPhrase}.`,
+        project,
+        objective,
+        reason,
+        command: nextCommand,
+        focus: "Use the README, LOG, leaderboard, prior result docs, and current artifacts to propose one small next move with a falsifier before running it.",
+        finish: "Save the brief, ask for review if the choice is material, and do not start experiments until the brief is fit to queue.",
+      }),
       reason: reason || "project needs a brief before experiments",
+    };
+  }
+
+  if (action === "brainstorm" || action === "orchestrator-brainstorm") {
+    return {
+      text: operatingBrief({
+        headline: `Brainstorm the next research directions${projectPhrase}.`,
+        project,
+        objective,
+        reason,
+        command: nextCommand,
+        focus: "Use the latest negative and positive evidence to propose a few candidate moves, then pick the smallest one that would change a decision.",
+        finish: "Save the plan or brief, include falsifiers and expected artifacts, and ask for review before expensive execution if the choice is ambiguous.",
+      }),
+      reason: reason || "project needs planning before experiments",
     };
   }
 
   if (action === "review-brief" || action === "orchestrator-review-brief") {
     return {
-      text: `Review the existing brief${slug ? ` ${slug}` : ""}${projectPhrase}. If it is already fit to run, compile it into QUEUE; otherwise tighten the question, grounding, and expected artifact first.`,
+      text: operatingBrief({
+        headline: `Review the existing brief${slug ? ` ${slug}` : ""}${projectPhrase}.`,
+        project,
+        objective,
+        reason,
+        command: nextCommand,
+        focus: "If it is already fit to run, compile it into QUEUE; otherwise tighten the question, grounding, expected artifact, and falsifier first.",
+      }),
       reason: reason || "brief needs review before queueing",
     };
   }
@@ -190,25 +305,53 @@ function automaticDirective({ action, report, attachment }) {
     const judgeAction = action.replace(/^orchestrator-judge-/u, "").replace(/^judge-/u, "");
     if (judgeAction === "rerun") {
       return {
-        text: `The latest result needs a rerun or noise check${projectPhrase}. Inspect the judge issues, run the narrowest confirming cycle, and keep the leaderboard unchanged until evidence is strong.`,
+        text: operatingBrief({
+          headline: `The latest result needs a rerun or noise check${projectPhrase}.`,
+          project,
+          objective,
+          reason,
+          command: nextCommand,
+          focus: "Inspect the judge issues, run the narrowest confirming cycle, and keep the leaderboard unchanged until evidence is strong.",
+        }),
         reason: reason || "judge recommends rerun",
       };
     }
     if (judgeAction === "synthesize") {
       return {
-        text: `Synthesize the latest judged result${projectPhrase}. Update the narrative, limitations, and durable project state according to the judge evidence before choosing new work.`,
+        text: operatingBrief({
+          headline: `Synthesize the latest judged result${projectPhrase}.`,
+          project,
+          objective,
+          reason,
+          command: nextCommand,
+          focus: "Update the narrative, limitations, and durable project state according to the judge evidence before choosing new work.",
+        }),
         reason: reason || "judge recommends synthesis",
       };
     }
     if (judgeAction === "brainstorm") {
       return {
-        text: `Plan the next research move${projectPhrase}. Use the judge output, negative results, and leaderboard state to propose the smallest useful follow-up.`,
+        text: operatingBrief({
+          headline: `Plan the next research move${projectPhrase}.`,
+          project,
+          objective,
+          reason,
+          command: nextCommand,
+          focus: "Use judge output, negative results, leaderboard state, and qualitative artifact review to propose the smallest useful follow-up.",
+        }),
         reason: reason || "judge recommends brainstorming",
       };
     }
     if (judgeAction === "continue") {
       return {
-        text: `Continue the active research thread${projectPhrase}. Use the judge evidence to choose the next safe cycle and keep the result doc current.`,
+        text: operatingBrief({
+          headline: `Continue the active research thread${projectPhrase}.`,
+          project,
+          objective,
+          reason,
+          command: nextCommand,
+          focus: "Use the judge evidence to choose the next safe cycle and keep the result doc current.",
+        }),
         reason: reason || "judge recommends continuing",
       };
     }
@@ -360,6 +503,7 @@ export function updateResearchSupervisorState(previous = {}, decision = {}, even
 export const __internal = {
   manualDirective,
   automaticDirective,
+  operatingBrief,
   normalizeSupervisorEvent,
   directiveSignature,
   automaticDirectiveSignature,
