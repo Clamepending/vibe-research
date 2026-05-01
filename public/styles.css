@@ -14488,6 +14488,40 @@ body.is-reordering-file-tabs {
   background: rgba(106, 227, 198, 0.06);
 }
 
+/* File-tree drag-and-drop upload feedback. The folder row currently
+ * under the cursor lights up unmistakably so the user sees exactly
+ * which directory will receive the drop — a bright tint, a left
+ * accent bar, and a subtle outline. We deliberately do NOT outline
+ * the whole tree container during a row hover; outlining the whole
+ * panel made the sidebar look like a single coarse drop zone, which
+ * was confusing. The container outline only shows when the user is
+ * over empty tree space (drop-at-root case) so they still get
+ * feedback the drop is accepted. */
+.is-file-drop-row {
+  background: rgba(106, 227, 198, 0.28) !important;
+  color: #f4fbf9 !important;
+  border-radius: 6px;
+  outline: 2px solid rgba(106, 227, 198, 0.85);
+  outline-offset: -1px;
+  box-shadow: inset 3px 0 0 rgba(106, 227, 198, 1);
+  position: relative;
+  z-index: 1;
+}
+
+.file-tree.is-file-drop-target,
+.session-project-files-tree.is-file-drop-target {
+  outline: 2px dashed rgba(106, 227, 198, 0.78);
+  outline-offset: -3px;
+  background: rgba(106, 227, 198, 0.06);
+}
+
+.file-tree.is-file-drop-busy,
+.session-project-files-tree.is-file-drop-busy {
+  outline: 2px solid rgba(124, 231, 240, 0.6);
+  outline-offset: -3px;
+  cursor: progress;
+}
+
 .terminal-transcript-scroll {
   display: none;
   grid-area: 1 / 1;
