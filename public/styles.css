@@ -14979,6 +14979,111 @@ body.is-reordering-file-tabs {
   white-space: nowrap;
 }
 
+.rich-session-autopilot-mount {
+  padding: 0 max(18px, calc((100% - 1080px) / 2));
+}
+
+.rich-session-autopilot-mount:empty {
+  display: none;
+}
+
+.rich-session-autopilot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 12px;
+  background: rgba(20, 22, 26, 0.68);
+  backdrop-filter: blur(8px);
+}
+
+.rich-session-autopilot.is-enabled {
+  border-color: rgba(124, 231, 240, 0.22);
+  background: rgba(33, 54, 58, 0.58);
+}
+
+.rich-session-autopilot.is-running {
+  border-color: rgba(120, 220, 160, 0.28);
+}
+
+.rich-session-autopilot-main,
+.rich-session-autopilot-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rich-session-autopilot-toggle,
+.rich-session-autopilot-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(244, 244, 242, 0.86);
+  cursor: pointer;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.rich-session-autopilot-toggle {
+  padding: 0 11px;
+}
+
+.rich-session-autopilot-action {
+  padding: 0 9px;
+  color: rgba(244, 244, 242, 0.72);
+}
+
+.rich-session-autopilot-action.is-danger {
+  color: #ffb3ad;
+}
+
+.rich-session-autopilot-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(244, 244, 242, 0.38);
+}
+
+.rich-session-autopilot.is-enabled .rich-session-autopilot-dot {
+  background: #7ce7f0;
+  box-shadow: 0 0 0 4px rgba(124, 231, 240, 0.11);
+}
+
+.rich-session-autopilot.is-running .rich-session-autopilot-dot {
+  background: #78dca0;
+  box-shadow: 0 0 0 4px rgba(120, 220, 160, 0.12);
+}
+
+.rich-session-autopilot-status {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(244, 244, 242, 0.64);
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rich-session-autopilot-project {
+  max-width: 230px;
+  min-height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  background: rgba(10, 12, 14, 0.78);
+  color: rgba(244, 244, 242, 0.78);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.7rem;
+}
+
 /* Sticky plan / todo panel — sits between the chat feed and the composer
    so the agent's CURRENT plan stays visible while the chat scrolls.
    Mirrors the panel pattern from Cursor and Claude Code's CLI: header
@@ -18735,6 +18840,33 @@ select:disabled {
   .rich-session-plan-panel-mount {
     padding-left: max(12px, calc(var(--safe-left) + 8px));
     padding-right: max(12px, calc(var(--safe-right) + 8px));
+  }
+
+  .rich-session-autopilot-mount {
+    padding-left: max(12px, calc(var(--safe-left) + 8px));
+    padding-right: max(12px, calc(var(--safe-right) + 8px));
+  }
+
+  .rich-session-autopilot {
+    grid-template-columns: 1fr;
+    gap: 7px;
+    padding: 8px 10px;
+    border-radius: 12px;
+    background: rgba(20, 22, 26, 0.94);
+  }
+
+  .rich-session-autopilot-main,
+  .rich-session-autopilot-actions {
+    width: 100%;
+  }
+
+  .rich-session-autopilot-status {
+    font-size: 0.78rem;
+  }
+
+  .rich-session-autopilot-project {
+    max-width: none;
+    flex: 1 1 auto;
   }
 
   .rich-session-plan-panel {

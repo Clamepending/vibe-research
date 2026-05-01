@@ -571,6 +571,7 @@ const LIKELY_TEXT_FILENAMES = new Set([
 const SESSION_READ_STORAGE_KEY = "vibe-research-session-read-at-v1";
 const COMPOSER_DRAFT_STORAGE_KEY = "vibe-research-composer-drafts-v1";
 const COMPOSER_QUEUE_STORAGE_KEY = "vibe-research-composer-queue-v1";
+const CHAT_AUTOPILOT_STORAGE_KEY = "vibe-research-chat-autopilot-v1";
 const COMPOSER_QUEUE_MAX_ITEMS_PER_SESSION = 50;
 const LAYOUT_STORAGE_KEY = "vibe-research-layout-v1";
 const OPEN_FILE_TAB_ORDER_STORAGE_KEY = "vibe-research-open-file-tab-order-v1";
@@ -1541,6 +1542,51 @@ function saveComposerQueue() {
     window.localStorage.setItem(COMPOSER_QUEUE_STORAGE_KEY, JSON.stringify(state.richSessionComposerQueue));
   } catch {
     // Same reasoning as drafts: persistence is best-effort.
+  }
+}
+
+function sanitizeChatAutopilotSession(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const enabled = Boolean(value.enabled);
+  const projectName = String(value.projectName || "").trim();
+  const objective = String(value.objective || "").trim().slice(0, 4_000);
+  const mode = RESEARCH_AUTOPILOT_MODES.some((entry) => entry.value === value.mode) ? value.mode : "auto";
+  const jobId = String(value.jobId || "").trim();
+  const statusText = String(value.statusText || "").trim().slice(0, 400);
+  const updatedAt = typeof value.updatedAt === "string" ? value.updatedAt : "";
+  if (!enabled && !projectName && !objective && !jobId) {
+    return null;
+  }
+  return { enabled, projectName, objective, mode, jobId, statusText, updatedAt };
+}
+
+function loadChatAutopilotSessions() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(CHAT_AUTOPILOT_STORAGE_KEY) || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    const result = {};
+    for (const [rawSessionId, rawConfig] of Object.entries(parsed)) {
+      const sessionId = String(rawSessionId || "").trim();
+      const config = sanitizeChatAutopilotSession(rawConfig);
+      if (sessionId && config) {
+        result[sessionId] = config;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function saveChatAutopilotSessions() {
+  try {
+    window.localStorage.setItem(CHAT_AUTOPILOT_STORAGE_KEY, JSON.stringify(state.chatAutopilotSessions));
+  } catch {
+    // Autopilot attachment state is convenience state; the server remains authoritative for jobs.
   }
 }
 
@@ -2642,6 +2688,8 @@ const state = {
   // localStorage so a reload between submit and flush doesn't silently
   // eat the message.
   richSessionComposerQueue: loadComposerQueue(),
+  chatAutopilotSessions: loadChatAutopilotSessions(),
+  chatAutopilotPending: {},
   // Per-session previous streamWorking value, used to detect the
   // working→idle transition that triggers the queue flush.
   richSessionComposerQueueLastWorking: {},
@@ -7267,6 +7315,156 @@ function renderRichSessionQueueStrip(activeSession) {
   return `<div class="rich-session-queue ${items.length ? "" : "is-empty"}" id="rich-session-queue" data-rich-session-queue-mount aria-label="Queued messages">${renderRichSessionQueueStripHtml(activeSession)}</div>`;
 }
 
+function getChatAutopilotSessionConfig(sessionId) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) {
+    return {
+      enabled: false,
+      projectName: "",
+      objective: "",
+      mode: "auto",
+      jobId: "",
+      statusText: "",
+      updatedAt: "",
+    };
+  }
+  const existing = sanitizeChatAutopilotSession(state.chatAutopilotSessions[sid]) || {};
+  return {
+    enabled: Boolean(existing.enabled),
+    projectName: existing.projectName || state.researchAutopilot.projectName || getResearchAutopilotSelectedProject(),
+    objective: existing.objective || "",
+    mode: existing.mode || "auto",
+    jobId: existing.jobId || "",
+    statusText: existing.statusText || "",
+    updatedAt: existing.updatedAt || "",
+  };
+}
+
+function updateChatAutopilotSessionConfig(sessionId, patch = {}) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return null;
+  const next = sanitizeChatAutopilotSession({
+    ...getChatAutopilotSessionConfig(sid),
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  });
+  if (!next) {
+    delete state.chatAutopilotSessions[sid];
+  } else {
+    state.chatAutopilotSessions[sid] = next;
+  }
+  saveChatAutopilotSessions();
+  return next;
+}
+
+function getChatAutopilotPending(sessionId) {
+  return String(state.chatAutopilotPending[String(sessionId || "")] || "");
+}
+
+function setChatAutopilotPending(sessionId, value = "") {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return;
+  const text = String(value || "");
+  if (text) state.chatAutopilotPending[sid] = text;
+  else delete state.chatAutopilotPending[sid];
+}
+
+function getChatAutopilotJob(config = {}) {
+  const jobId = String(config.jobId || "").trim();
+  if (!jobId) return null;
+  if (state.researchAutopilot.job?.id === jobId) return state.researchAutopilot.job;
+  return state.researchAutopilot.jobs.find((job) => job.id === jobId) || null;
+}
+
+function inferChatAutopilotMode(message, fallback = "auto") {
+  const text = String(message || "").toLowerCase();
+  if (/\b(summarize|summarise|synthesize|synthesise|write.?up|wrap.?up|report)\b/u.test(text)) {
+    return "synthesize";
+  }
+  if (/\b(brainstorm|ideate|explore|plan|think through)\b/u.test(text)) {
+    return "brainstorm";
+  }
+  if (/\b(run|test|experiment|try|sweep|ablation|benchmark|train|eval)\b/u.test(text)) {
+    return "experiment";
+  }
+  return RESEARCH_AUTOPILOT_MODES.some((entry) => entry.value === fallback) ? fallback : "auto";
+}
+
+function isChatAutopilotStopMessage(message) {
+  return /^\s*(stop|pause|interrupt|turn off|shut down|halt)\b/iu.test(String(message || ""));
+}
+
+function getChatAutopilotSelectedProjectName(config = {}) {
+  return config.projectName || state.researchAutopilot.projectName || state.researchAutopilot.projects[0]?.name || "";
+}
+
+function renderChatAutopilotProjectOptions(config = {}) {
+  const selected = getChatAutopilotSelectedProjectName(config);
+  if (!state.researchAutopilot.projects.length) {
+    return `<option value="">projects loading</option>`;
+  }
+  return state.researchAutopilot.projects
+    .map((project) => {
+      const name = project.name || "";
+      const labelBits = [
+        name,
+        project.activeCount ? `${project.activeCount} active` : "",
+        project.queueSize ? `${project.queueSize} queued` : "",
+      ].filter(Boolean);
+      return `<option value="${escapeHtml(name)}" ${name === selected ? "selected" : ""}>${escapeHtml(labelBits.join(" · "))}</option>`;
+    })
+    .join("");
+}
+
+function renderRichSessionAutopilotPanel(activeSession) {
+  if (!activeSession?.id) return "";
+  const config = getChatAutopilotSessionConfig(activeSession.id);
+  const job = getChatAutopilotJob(config);
+  const enabled = Boolean(config.enabled);
+  const pending = getChatAutopilotPending(activeSession.id);
+  const running = isResearchAutopilotRunning(job);
+  const projectName = getChatAutopilotSelectedProjectName(config);
+  const title = enabled
+    ? `Autopilot on${projectName ? ` · ${projectName}` : ""}`
+    : "Autopilot off";
+  const status = pending
+    || (job
+      ? `${job.status || "running"} · step ${job.stepCount || 0}/${job.maxSteps || "?"}${job.stopReason ? ` · ${job.stopReason}` : ""}`
+      : enabled
+        ? "send an objective to start"
+        : "turn on to let chat steer the research loop");
+  const showProjectPicker = !enabled || !running;
+  return `
+    <section class="rich-session-autopilot ${enabled ? "is-enabled" : ""} ${running ? "is-running" : ""}" id="rich-session-autopilot" data-rich-session-autopilot-mount>
+      <div class="rich-session-autopilot-main">
+        <button
+          class="rich-session-autopilot-toggle"
+          type="button"
+          data-chat-autopilot-toggle
+          aria-pressed="${enabled ? "true" : "false"}"
+        >
+          <span class="rich-session-autopilot-dot" aria-hidden="true"></span>
+          <span>${escapeHtml(title)}</span>
+        </button>
+        <span class="rich-session-autopilot-status" title="${escapeHtml(status)}">${escapeHtml(status)}</span>
+      </div>
+      <div class="rich-session-autopilot-actions">
+        ${showProjectPicker ? `
+          <label class="sr-only" for="chat-autopilot-project">Research project</label>
+          <select class="rich-session-autopilot-project" id="chat-autopilot-project" data-chat-autopilot-project ${state.researchAutopilot.projectsLoading ? "disabled" : ""}>
+            ${renderChatAutopilotProjectOptions(config)}
+          </select>
+        ` : ""}
+        ${enabled ? `
+          <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="brainstorm">brainstorm</button>
+          <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="synthesize">synthesize</button>
+          <button class="rich-session-autopilot-action is-danger" type="button" data-chat-autopilot-action="pause">pause</button>
+        ` : ""}
+      </div>
+    </section>
+  `;
+}
+
 function renderRichSessionComposerAttachmentTilesHtml(attachments) {
   if (!Array.isArray(attachments) || !attachments.length) return "";
   return attachments.map((att) => {
@@ -7317,6 +7515,7 @@ function renderRichSessionSurface(activeSession) {
         ${activeMonitors.map((m) => `<span class="rich-session-monitor-pill" title="${escapeHtml(m.tooltip)}"><span class="rich-session-monitor-dot" aria-hidden="true"></span>${escapeHtml(m.label)}</span>`).join("")}
       </div>
       <div class="rich-session-plan-panel-mount" id="rich-session-plan-panel-mount" data-rich-session-plan-panel-mount>${renderRichSessionPlanPanel(activeSession)}</div>
+      <div class="rich-session-autopilot-mount" id="rich-session-autopilot-mount" data-rich-session-autopilot-mount>${renderRichSessionAutopilotPanel(activeSession)}</div>
       ${renderRichSessionQueueStrip(activeSession)}
       ${canSend ? `
         <form class="rich-session-composer" id="rich-session-form">
@@ -7481,6 +7680,13 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
     return;
   }
 
+  if (activeSession?.id && !state.researchAutopilot.projectsLoaded && !state.researchAutopilot.projectsLoading) {
+    void loadResearchAutopilotProjects({ render: false }).then(() => refreshRichSessionSurfaceUi());
+  }
+  if (activeSession?.id && !state.researchAutopilot.jobsLoaded && !state.researchAutopilot.jobsLoading) {
+    void loadResearchAutopilotJobs({ render: false }).then(() => refreshRichSessionSurfaceUi());
+  }
+
   const shouldStickToBottom = scrollToBottom || isRichSessionFeedAtBottom(feed);
   // Pre-rebuild scroll anchor. Anchoring to "distance from BOTTOM" (the
   // previous behaviour) shifts the user's view every time a new entry is
@@ -7540,6 +7746,11 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
   const planPanelMount = document.querySelector("[data-rich-session-plan-panel-mount]");
   if (planPanelMount instanceof HTMLElement) {
     planPanelMount.innerHTML = renderRichSessionPlanPanel(activeSession);
+  }
+
+  const autopilotMount = document.querySelector("[data-rich-session-autopilot-mount]");
+  if (autopilotMount instanceof HTMLElement) {
+    autopilotMount.innerHTML = renderRichSessionAutopilotPanel(activeSession);
   }
 
   // Live-update the composer's image-attachment chip strip. Without this,
@@ -38360,6 +38571,189 @@ async function steerResearchAutopilotRun(form) {
   }
 }
 
+async function ensureChatAutopilotResources() {
+  if (!state.researchAutopilot.projectsLoaded && !state.researchAutopilot.projectsLoading) {
+    await loadResearchAutopilotProjects({ render: false });
+  }
+  if (!state.researchAutopilot.jobsLoaded && !state.researchAutopilot.jobsLoading) {
+    await loadResearchAutopilotJobs({ render: false });
+  }
+}
+
+function buildChatAutopilotStartBody(config, objective) {
+  const autopilot = state.researchAutopilot;
+  return {
+    objective,
+    mode: config.mode || inferChatAutopilotMode(objective, "auto"),
+    maxSteps: Number(autopilot.maxSteps) || undefined,
+    intervalMs: Number(autopilot.intervalMs) || 0,
+    wallClockMinutes: Number(autopilot.wallClockMinutes) || undefined,
+    maxFailures: Number(autopilot.maxFailures) || undefined,
+    commandText: autopilot.commandText,
+    metricRegex: autopilot.metricRegex,
+    commandTimeoutMs: Number(autopilot.commandTimeoutMs) || undefined,
+    apply: autopilot.apply,
+    askHuman: autopilot.askHuman,
+    checkPaper: false,
+  };
+}
+
+async function startChatAutopilotRun(activeSession, objective, options = {}) {
+  const sessionId = activeSession?.id || "";
+  if (!sessionId) return null;
+  setChatAutopilotPending(sessionId, "starting autopilot");
+  refreshRichSessionSurfaceUi();
+  await ensureChatAutopilotResources();
+
+  const current = getChatAutopilotSessionConfig(sessionId);
+  const projectName = getChatAutopilotSelectedProjectName(current);
+  if (!projectName) {
+    updateChatAutopilotSessionConfig(sessionId, {
+      enabled: true,
+      statusText: "choose a research project before starting autopilot",
+    });
+    setChatAutopilotPending(sessionId, "");
+    refreshRichSessionSurfaceUi();
+    return null;
+  }
+
+  const mode = options.mode || inferChatAutopilotMode(objective, current.mode);
+  const nextConfig = updateChatAutopilotSessionConfig(sessionId, {
+    enabled: true,
+    projectName,
+    objective,
+    mode,
+    statusText: "starting autopilot",
+  }) || current;
+  try {
+    const payload = await fetchJson(`/api/research/projects/${encodeURIComponent(projectName)}/autopilot/jobs`, {
+      method: "POST",
+      body: JSON.stringify(buildChatAutopilotStartBody({ ...nextConfig, mode }, objective)),
+      timeoutMs: 30_000,
+    });
+    const job = payload?.job || null;
+    applyResearchAutopilotJob(job);
+    updateChatAutopilotSessionConfig(sessionId, {
+      enabled: true,
+      projectName,
+      objective,
+      mode,
+      jobId: job?.id || "",
+      statusText: "autopilot running",
+    });
+    if (job?.id) {
+      void pollResearchAutopilotJob(job.id);
+    }
+    return job;
+  } catch (error) {
+    updateChatAutopilotSessionConfig(sessionId, {
+      enabled: true,
+      projectName,
+      objective,
+      mode,
+      statusText: error.message || "Could not start autopilot.",
+    });
+    return null;
+  } finally {
+    setChatAutopilotPending(sessionId, "");
+    refreshRichSessionSurfaceUi();
+  }
+}
+
+async function steerChatAutopilotRun(activeSession, message, options = {}) {
+  const sessionId = activeSession?.id || "";
+  if (!sessionId) return null;
+  const config = getChatAutopilotSessionConfig(sessionId);
+  const job = getChatAutopilotJob(config);
+  if (!config.enabled) return null;
+  if (!job || isResearchAutopilotTerminalStatus(job.status)) {
+    return startChatAutopilotRun(activeSession, message, options);
+  }
+
+  const mode = options.mode || inferChatAutopilotMode(message, config.mode);
+  const action = options.action || (isChatAutopilotStopMessage(message) ? "pause" : "steer");
+  setChatAutopilotPending(sessionId, action === "pause" ? "pausing autopilot" : "steering autopilot");
+  refreshRichSessionSurfaceUi();
+  try {
+    const payload = await fetchJson(`/api/research/autopilot/jobs/${encodeURIComponent(job.id)}/steer`, {
+      method: "POST",
+      body: JSON.stringify({
+        action,
+        message,
+        mode,
+        objective: config.objective || message,
+        source: "chat",
+      }),
+      timeoutMs: 30_000,
+    });
+    applyResearchAutopilotJob(payload?.job || null);
+    updateChatAutopilotSessionConfig(sessionId, {
+      enabled: action !== "pause",
+      projectName: payload?.job?.projectName || config.projectName,
+      objective: config.objective || message,
+      mode,
+      jobId: payload?.job?.id || config.jobId,
+      statusText: action === "pause" ? "autopilot paused" : "steering queued",
+    });
+    if (payload?.job?.id) {
+      void pollResearchAutopilotJob(payload.job.id);
+    }
+    return payload?.job || null;
+  } catch (error) {
+    updateChatAutopilotSessionConfig(sessionId, {
+      ...config,
+      statusText: error.message || "Could not steer autopilot.",
+    });
+    return null;
+  } finally {
+    setChatAutopilotPending(sessionId, "");
+    refreshRichSessionSurfaceUi();
+  }
+}
+
+async function stopChatAutopilotRun(activeSession) {
+  const sessionId = activeSession?.id || "";
+  if (!sessionId) return;
+  const config = getChatAutopilotSessionConfig(sessionId);
+  const job = getChatAutopilotJob(config);
+  updateChatAutopilotSessionConfig(sessionId, { ...config, enabled: false, statusText: "autopilot off" });
+  if (!job || isResearchAutopilotTerminalStatus(job.status)) {
+    refreshRichSessionSurfaceUi();
+    return;
+  }
+  setChatAutopilotPending(sessionId, "pausing autopilot");
+  refreshRichSessionSurfaceUi();
+  try {
+    const payload = await fetchJson(`/api/research/autopilot/jobs/${encodeURIComponent(job.id)}/stop`, {
+      method: "POST",
+      body: JSON.stringify({ source: "chat" }),
+      timeoutMs: 30_000,
+    });
+    applyResearchAutopilotJob(payload?.job || null);
+  } catch (error) {
+    updateChatAutopilotSessionConfig(sessionId, {
+      ...config,
+      enabled: false,
+      statusText: error.message || "Could not pause autopilot.",
+    });
+  } finally {
+    setChatAutopilotPending(sessionId, "");
+    refreshRichSessionSurfaceUi();
+  }
+}
+
+function handleChatAutopilotSubmittedMessage(activeSession, message) {
+  const sessionId = activeSession?.id || "";
+  if (!sessionId) return;
+  const config = getChatAutopilotSessionConfig(sessionId);
+  if (!config.enabled) return;
+  if (isChatAutopilotStopMessage(message)) {
+    void stopChatAutopilotRun(activeSession);
+    return;
+  }
+  void steerChatAutopilotRun(activeSession, message);
+}
+
 function syncResearchOrgBenchFormDraft(form) {
   if (!(form instanceof HTMLFormElement)) {
     return;
@@ -43683,6 +44077,66 @@ function bindShellEvents() {
     });
   }
 
+  if (!state.__chatAutopilotControlsBound) {
+    state.__chatAutopilotControlsBound = true;
+    document.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const toggle = target?.closest("[data-chat-autopilot-toggle]");
+      if (toggle instanceof HTMLElement) {
+        event.preventDefault();
+        const activeSession = getActiveSession();
+        if (!activeSession?.id) return;
+        const config = getChatAutopilotSessionConfig(activeSession.id);
+        if (config.enabled) {
+          void stopChatAutopilotRun(activeSession);
+        } else {
+          updateChatAutopilotSessionConfig(activeSession.id, {
+            enabled: true,
+            projectName: getChatAutopilotSelectedProjectName(config),
+            mode: config.mode || "auto",
+            statusText: "send an objective to start autopilot",
+          });
+          void ensureChatAutopilotResources().finally(() => refreshRichSessionSurfaceUi());
+          refreshRichSessionSurfaceUi();
+          focusRichSessionComposer();
+        }
+        return;
+      }
+
+      const actionButton = target?.closest("[data-chat-autopilot-action]");
+      if (actionButton instanceof HTMLElement) {
+        event.preventDefault();
+        const activeSession = getActiveSession();
+        if (!activeSession?.id) return;
+        const action = actionButton.getAttribute("data-chat-autopilot-action") || "";
+        if (action === "pause") {
+          void stopChatAutopilotRun(activeSession);
+          return;
+        }
+        const message = action === "synthesize"
+          ? "Synthesize the current autonomous research run for human review."
+          : action === "brainstorm"
+            ? "Return to brainstorming and propose the next research directions."
+            : "Continue the autonomous research loop.";
+        void steerChatAutopilotRun(activeSession, message, { mode: action === "synthesize" ? "synthesize" : action === "brainstorm" ? "brainstorm" : "auto" });
+      }
+    }, { capture: true });
+
+    document.addEventListener("change", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const select = target?.closest("[data-chat-autopilot-project]");
+      if (!(select instanceof HTMLSelectElement)) return;
+      const activeSession = getActiveSession();
+      if (!activeSession?.id) return;
+      updateChatAutopilotSessionConfig(activeSession.id, {
+        ...getChatAutopilotSessionConfig(activeSession.id),
+        projectName: select.value,
+        statusText: select.value ? `project set to ${select.value}` : "",
+      });
+      refreshRichSessionSurfaceUi();
+    });
+  }
+
   // Composer queue — edit / remove buttons on each pending row. The
   // queue strip lives outside the form so a form-level handler doesn't
   // catch it; bind once at the document level. "Edit" pulls the
@@ -44442,6 +44896,7 @@ function bindShellEvents() {
     if (!outgoing) {
       return;
     }
+    handleChatAutopilotSubmittedMessage(activeSession, outgoing);
 
     // Queueing: if the agent is still working on the previous turn, hold
     // this message in the per-session queue instead of sending it. The
