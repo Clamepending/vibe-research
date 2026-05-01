@@ -295,6 +295,11 @@ for (let index = 2; index < process.argv.length; index += 1) {
 }
 const mode = String(args.get("mode") || process.env.VIBE_RESEARCH_ORG_BENCH_STRATEGY || "single-agent-provider");
 const cycle = Number(args.get("cycle") || process.env.VIBE_RESEARCH_ORG_BENCH_CYCLE || 1);
+const reviewFile = String(process.env.VIBE_RESEARCH_ORG_BENCH_REVIEW_FILE || "");
+let reviewText = "";
+if (reviewFile) {
+  try { reviewText = await readFile(reviewFile, "utf8"); } catch {}
+}
 if (process.env.VIBE_RESEARCH_ORG_BENCH_PROVIDER === "require-env") {
   const required = [
     "VIBE_RESEARCH_ORG_BENCH_PROMPT_FILE",
@@ -327,12 +332,47 @@ const robust = {
     health: (profile.targetMix.health + 0.19) / 2
   }
 };
-await writeFile("recipe.json", JSON.stringify(mode === "org-provider" && cycle >= 2 ? robust : single, null, 2) + "\\n");
+const reviewSaysOverfit = /OVERFIT_RISK=high|regularization.*0\\.18|lora/iu.test(reviewText);
+const useRobust = (mode === "org-provider" && cycle >= 2)
+  || (mode === "org-provider-reviewed" && cycle >= 2 && reviewSaysOverfit);
+await writeFile("recipe.json", JSON.stringify(useRobust ? robust : single, null, 2) + "\\n");
 const { spawnSync } = await import("node:child_process");
 const result = spawnSync(process.execPath, ["scripts/evaluate-dev.mjs"], { encoding: "utf8" });
 process.stdout.write(result.stdout);
 process.stderr.write(result.stderr);
 process.exit(result.status || 0);
+`;
+}
+
+function providerReviewerProxyScript() {
+  return `#!/usr/bin/env node
+import { readFile, writeFile } from "node:fs/promises";
+
+const reviewFile = process.env.VIBE_RESEARCH_ORG_BENCH_REVIEW_FILE || ".bench/reviewer-cycle.md";
+const cycle = Number(process.env.VIBE_RESEARCH_ORG_BENCH_CYCLE || 1);
+const recipe = JSON.parse(await readFile("recipe.json", "utf8"));
+const profile = JSON.parse(await readFile("data/dev-profile.json", "utf8"));
+const overfitRisk = String(recipe.method || "").toLowerCase() === "sft"
+  || Number(recipe.epochs || 0) >= 5
+  || Number(recipe.regularization || 0) < 0.08;
+const review = [
+  \`# Reviewer memo for cycle \${cycle}\`,
+  "",
+  \`OVERFIT_RISK=\${overfitRisk ? "high" : "low"}\`,
+  \`visible_dev_method=\${recipe.method}\`,
+  \`visible_dev_epochs=\${recipe.epochs}\`,
+  \`visible_dev_regularization=\${recipe.regularization}\`,
+  "",
+  "Recommendation for the next worker:",
+  "- Do not maximize the visible dev profile literally.",
+  "- Prefer method=lora, epochs=3, regularization=0.18, syntheticDataQuality=0.78.",
+  "- Blend dataMix partway from the visible profile toward a plausible holdout prior: math=0.47, code=0.34, health=0.19.",
+  \`- Visible target was math=\${profile.targetMix.math}, code=\${profile.targetMix.code}, health=\${profile.targetMix.health}; treat that as a noisy dev clue, not ground truth.\`,
+  ""
+].join("\\n");
+await writeFile(reviewFile, review);
+console.log(\`review_file=\${reviewFile}\`);
+console.log(\`overfit_risk=\${overfitRisk ? "high" : "low"}\`);
 `;
 }
 
@@ -352,6 +392,7 @@ export async function createPosttrainLiteScenario({ scenarioDir, seed = 0 } = {}
   await writeFile(path.join(resolved, "scripts", "single-agent-proxy.mjs"), singleProxyScript(), { mode: 0o755 });
   await writeFile(path.join(resolved, "scripts", "org-cycle.mjs"), orgCycleScript(), { mode: 0o755 });
   await writeFile(path.join(resolved, "scripts", "provider-agent-proxy.mjs"), providerAgentProxyScript(), { mode: 0o755 });
+  await writeFile(path.join(resolved, "scripts", "provider-reviewer-proxy.mjs"), providerReviewerProxyScript(), { mode: 0o755 });
 
   const protectedFiles = [
     "TASK.md",
@@ -361,6 +402,7 @@ export async function createPosttrainLiteScenario({ scenarioDir, seed = 0 } = {}
     "scripts/single-agent-proxy.mjs",
     "scripts/org-cycle.mjs",
     "scripts/provider-agent-proxy.mjs",
+    "scripts/provider-reviewer-proxy.mjs",
   ];
   const hashes = {};
   for (const relative of protectedFiles) {
@@ -459,14 +501,19 @@ function providerPrompt({
   seed,
   cycle = 1,
   providerId = "",
+  reviewFile = "",
+  reviewText = "",
 } = {}) {
-  const role = strategy === "org-provider"
+  const role = strategy === "org-provider" || strategy === "org-provider-reviewed"
     ? "You are a worker inside the Vibe Research organization loop."
     : "You are a single coding agent baseline.";
-  const extra = strategy === "org-provider" && Number(cycle) >= 2
+  const hasReview = trimString(reviewText);
+  const extra = hasReview
+    ? "This is a follow-up cycle after reviewer critique. Use the critique to reduce visible-dev overfitting while preserving any real signal."
+    : (strategy === "org-provider" || strategy === "org-provider-reviewed") && Number(cycle) >= 2
     ? "This is a follow-up cycle after review. Prefer robust holdout generalization over maximizing the visible dev score."
     : "This is the first pass. Improve the recipe using the visible task instructions and dev evaluator.";
-  return [
+  const lines = [
     role,
     "",
     "Task: improve the PostTrainBench-Lite proxy recipe in this working directory.",
@@ -482,9 +529,22 @@ function providerPrompt({
     `Provider: ${providerId || "unspecified"}`,
     `Seed: ${seed}`,
     `Cycle: ${cycle}`,
+  ];
+  if (hasReview) {
+    lines.push(
+      "",
+      `Reviewer artifact: ${reviewFile}`,
+      "Reviewer memo:",
+      "```",
+      reviewText.slice(0, 4000),
+      "```",
+    );
+  }
+  lines.push(
     "",
     "Finish by leaving the improved recipe.json on disk and printing the dev evaluator output.",
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 function renderCommandTemplate(template, context = {}) {
@@ -501,6 +561,8 @@ function providerEnv(context = {}) {
     VIBE_RESEARCH_ORG_BENCH_CYCLE: String(context.cycle || ""),
     VIBE_RESEARCH_ORG_BENCH_PROVIDER: trimString(context.providerId),
     VIBE_RESEARCH_ORG_BENCH_PROMPT_FILE: trimString(context.promptFile),
+    VIBE_RESEARCH_ORG_BENCH_REVIEW_FILE: trimString(context.reviewFile),
+    VIBE_RESEARCH_ORG_BENCH_ROLE: trimString(context.role || "worker"),
     VIBE_RESEARCH_ORG_BENCH_SCENARIO_DIR: trimString(context.scenarioDir),
     VIBE_RESEARCH_ORG_BENCH_SEED: String(context.seed ?? ""),
     VIBE_RESEARCH_ORG_BENCH_STRATEGY: trimString(context.strategy),
@@ -513,21 +575,63 @@ function providerEnvPrefix(context = {}) {
     .join(" ");
 }
 
-function providerTemplateContext({ scenarioDir, strategy, seed, cycle, providerId, promptFile }) {
+function providerTemplateContext({ scenarioDir, strategy, seed, cycle, providerId, promptFile, reviewFile = "", role = "worker" }) {
   return {
     cycle,
     promptFile,
     provider: providerId,
     providerId,
+    reviewFile,
+    role,
     scenarioDir,
     seed,
     strategy,
   };
 }
 
-async function writeProviderPrompt({ scenarioDir, strategy, seed, cycle, providerId }) {
+async function writeProviderPrompt({ scenarioDir, strategy, seed, cycle, providerId, reviewFile = "" }) {
   const promptPath = path.join(scenarioDir, ".bench", `${strategy}-cycle-${cycle}-prompt.md`);
-  await writeFile(promptPath, providerPrompt({ strategy, seed, cycle, providerId }));
+  const reviewText = reviewFile ? await readFile(reviewFile, "utf8").catch(() => "") : "";
+  await writeFile(promptPath, providerPrompt({ strategy, seed, cycle, providerId, reviewFile, reviewText }));
+  return promptPath;
+}
+
+function providerReviewerPrompt({
+  strategy,
+  seed,
+  cycle = 1,
+  providerId = "",
+  reviewFile = "",
+} = {}) {
+  return [
+    "You are the reviewer agent for a Vibe Research organization benchmark.",
+    "",
+    "Task: audit the current recipe.json after the worker cycle and write a short reviewer memo.",
+    "",
+    "Read TASK.md, data/dev-profile.json, recipe.json, and the visible dev evaluator output if useful.",
+    "Do not edit recipe.json. Do not edit data/, scripts/, or .bench/ except for the review memo path below.",
+    "Your job is to catch visible-dev overfitting and give the next worker concrete steering.",
+    "Look especially for SFT/default recipes that match the visible dev profile too literally, high epochs, or low regularization.",
+    "",
+    `Write the memo to: ${reviewFile}`,
+    "",
+    "The memo must include:",
+    "- OVERFIT_RISK=high or OVERFIT_RISK=low",
+    "- 2-4 concise bullets of steering for the next worker",
+    "- Any uncertainty about what the hidden holdout might reward",
+    "",
+    `Strategy: ${strategy}`,
+    `Provider: ${providerId || "unspecified"}`,
+    `Seed: ${seed}`,
+    `Cycle reviewed: ${cycle}`,
+    "",
+    "Finish after writing the memo.",
+  ].join("\n");
+}
+
+async function writeReviewerPrompt({ scenarioDir, strategy, seed, cycle, providerId, reviewFile }) {
+  const promptPath = path.join(scenarioDir, ".bench", `${strategy}-review-cycle-${cycle}-prompt.md`);
+  await writeFile(promptPath, providerReviewerPrompt({ strategy, seed, cycle, providerId, reviewFile }));
   return promptPath;
 }
 
@@ -538,10 +642,11 @@ async function runProviderCommand({
   seed,
   cycle = 1,
   providerId = "",
+  reviewFile = "",
   timeoutMs = 30_000,
 } = {}) {
-  const promptFile = await writeProviderPrompt({ scenarioDir, strategy, seed, cycle, providerId });
-  const context = providerTemplateContext({ scenarioDir, strategy, seed, cycle, providerId, promptFile });
+  const promptFile = await writeProviderPrompt({ scenarioDir, strategy, seed, cycle, providerId, reviewFile });
+  const context = providerTemplateContext({ scenarioDir, strategy, seed, cycle, providerId, promptFile, reviewFile, role: "worker" });
   const commandText = renderCommandTemplate(commandTemplate, context);
   if (!commandText) {
     throw new Error(`${strategy} requires --provider-command or VIBE_RESEARCH_ORG_BENCH_PROVIDER_COMMAND`);
@@ -555,6 +660,46 @@ async function runProviderCommand({
     ...result,
     command: commandText,
     promptFile,
+    providerId,
+    reviewFile,
+  };
+}
+
+async function runReviewerCommand({
+  commandTemplate,
+  scenarioDir,
+  strategy,
+  seed,
+  cycle = 1,
+  providerId = "",
+  timeoutMs = 30_000,
+} = {}) {
+  const reviewFile = path.join(scenarioDir, ".bench", `${strategy}-review-cycle-${cycle}.md`);
+  const promptFile = await writeReviewerPrompt({ scenarioDir, strategy, seed, cycle, providerId, reviewFile });
+  const context = providerTemplateContext({ scenarioDir, strategy, seed, cycle, providerId, promptFile, reviewFile, role: "reviewer" });
+  const commandText = renderCommandTemplate(commandTemplate, context);
+  if (!commandText) {
+    throw new Error(`${strategy} requires --reviewer-command/--provider-command or VIBE_RESEARCH_ORG_BENCH_REVIEWER_COMMAND`);
+  }
+  const result = await runShellCommand(commandText, {
+    cwd: scenarioDir,
+    timeoutMs,
+    env: { ...process.env, ...providerEnv(context) },
+  });
+  if (!await pathExists(reviewFile)) {
+    const fallback = [
+      "# Reviewer memo",
+      "",
+      result.stdout || result.stderr || "_reviewer produced no memo_",
+      "",
+    ].join("\n");
+    await writeFile(reviewFile, fallback);
+  }
+  return {
+    ...result,
+    command: commandText,
+    promptFile,
+    reviewFile,
     providerId,
   };
 }
@@ -598,6 +743,8 @@ async function runStrategy({
   commandText = "",
   providerCommand = "",
   providerId = "",
+  reviewerCommand = "",
+  reviewerProviderId = "",
 }) {
   const scenarioDir = path.join(rootDir, "runs", `${strategy}`, `seed-${seed}`, "scenario");
   await createPosttrainLiteScenario({ scenarioDir, seed });
@@ -666,6 +813,7 @@ async function runStrategy({
         cycle: cycle + 1,
         providerId,
         promptFile,
+        role: "worker",
       });
       const renderedProviderCommand = renderCommandTemplate(providerCommand, context);
       const providerCommandText = renderedProviderCommand
@@ -690,6 +838,85 @@ async function runStrategy({
     execution = {
       kind: "org-provider",
       providerId,
+      reports: reports.map((report) => ({
+        stopReason: report.stopReason,
+        actions: summarizeAutopilotActions(report),
+      })),
+      projectDir: org.projectDir,
+    };
+  } else if (strategy === "org-provider-reviewed") {
+    const org = await setupOrgProject({ rootDir: path.join(rootDir, "runs", strategy, `seed-${seed}`), scenarioDir, seed });
+    const reports = [];
+    const reviews = [];
+    let reviewFile = "";
+    const effectiveReviewerCommand = reviewerCommand || providerCommand;
+    const effectiveReviewerProviderId = reviewerProviderId || providerId;
+    for (let cycle = 0; cycle < orgCycles; cycle += 1) {
+      const cycleIndex = cycle + 1;
+      const promptFile = await writeProviderPrompt({
+        scenarioDir,
+        strategy,
+        seed,
+        cycle: cycleIndex,
+        providerId,
+        reviewFile,
+      });
+      const context = providerTemplateContext({
+        scenarioDir,
+        strategy,
+        seed,
+        cycle: cycleIndex,
+        providerId,
+        promptFile,
+        reviewFile,
+        role: "worker",
+      });
+      const renderedProviderCommand = renderCommandTemplate(providerCommand, context);
+      const providerCommandText = renderedProviderCommand
+        ? `${providerEnvPrefix(context)} ${renderedProviderCommand}`
+        : "";
+      if (!providerCommandText) {
+        throw new Error(`${strategy} requires --provider-command or VIBE_RESEARCH_ORG_BENCH_PROVIDER_COMMAND`);
+      }
+      reports.push(await runResearchAutopilot({
+        projectDir: org.projectDir,
+        maxSteps: 1,
+        decision: cycle === 0 ? "" : "continue",
+        commandText: providerCommandText,
+        metricRegex: "score=([0-9.]+)",
+        change: cycle === 0 ? "provider first-pass recipe update" : "reviewer-steered provider recipe update",
+        qual: cycle === 0 ? "provider completed first pass" : "provider used reviewer memo",
+        seed: String(seed),
+        codeCwd: org.codeCwd,
+        commandTimeoutMs: timeoutMs,
+      }));
+      if (cycleIndex < orgCycles) {
+        const review = await runReviewerCommand({
+          commandTemplate: effectiveReviewerCommand,
+          scenarioDir,
+          strategy,
+          seed,
+          cycle: cycleIndex,
+          providerId: effectiveReviewerProviderId,
+          timeoutMs,
+        });
+        reviewFile = review.reviewFile;
+        reviews.push({
+          cycle: cycleIndex,
+          exitCode: review.exitCode,
+          timedOut: review.timedOut,
+          promptFile: review.promptFile,
+          reviewFile: review.reviewFile,
+          providerId: review.providerId,
+          wallMs: review.wallMs,
+        });
+      }
+    }
+    execution = {
+      kind: "org-provider-reviewed",
+      providerId,
+      reviewerProviderId: effectiveReviewerProviderId,
+      reviews,
       reports: reports.map((report) => ({
         stopReason: report.stopReason,
         actions: summarizeAutopilotActions(report),
@@ -752,6 +979,8 @@ export async function runOrgBench({
   commandText = "",
   providerCommand = process.env.VIBE_RESEARCH_ORG_BENCH_PROVIDER_COMMAND || "",
   providerId = process.env.VIBE_RESEARCH_ORG_BENCH_PROVIDER || "",
+  reviewerCommand = process.env.VIBE_RESEARCH_ORG_BENCH_REVIEWER_COMMAND || "",
+  reviewerProviderId = process.env.VIBE_RESEARCH_ORG_BENCH_REVIEWER || "",
 } = {}) {
   if (suite !== "posttrain-lite") throw new Error(`unsupported org benchmark suite: ${suite}`);
   if (!outputDir) throw new TypeError("outputDir is required");
@@ -769,6 +998,8 @@ export async function runOrgBench({
         commandText,
         providerCommand,
         providerId,
+        reviewerCommand,
+        reviewerProviderId,
       }));
     }
   }
@@ -779,6 +1010,7 @@ export async function runOrgBench({
     seeds,
     strategies,
     providerId,
+    reviewerProviderId,
     summary: summarizeResults(results),
     results,
   };

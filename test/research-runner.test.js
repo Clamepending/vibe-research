@@ -170,6 +170,27 @@ test("runCycle executes a command, extracts a metric, and appends cycle provenan
   }
 });
 
+test("runCycle closes stdin for noninteractive commands", async () => {
+  const dir = makeProject("vr-runner-stdin");
+  try {
+    await claimNextMove({ projectDir: dir });
+    const result = await runCycle({
+      projectDir: dir,
+      slug: "first-move",
+      command: "node -e \"process.stdin.on('end',()=>console.log('score=0.91')); process.stdin.resume();\"",
+      metricRegex: "score=([0-9.]+)",
+      change: "stdin closure smoke",
+      qual: "command observed EOF and exited",
+      timeoutMs: 2_000,
+    });
+    assert.equal(result.timedOut, false);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.metric, "0.91");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runCycle can commit code changes and records seed-aware git provenance", async () => {
   const dir = makeProject("vr-runner-git-cycle");
   const work = join(dir, "work");

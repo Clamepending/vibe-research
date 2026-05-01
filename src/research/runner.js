@@ -323,6 +323,7 @@ function runShellCommand({ command, cwd, env, timeoutMs = DEFAULT_TIMEOUT_MS, sp
       shell: true,
       cwd,
       env,
+      stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";

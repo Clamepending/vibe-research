@@ -17,16 +17,22 @@ Options:
   --suite <name>          Benchmark suite (default: posttrain-lite).
   --strategy <name>       Strategy to run. Repeatable.
                           Built-ins: baseline, single-proxy, org-autopilot-proxy,
-                          single-agent-provider, org-provider.
+                          single-agent-provider, org-provider,
+                          org-provider-reviewed.
   --seeds <list>          Comma-separated seed list (default: 0,1,2).
   --timeout-ms <ms>       Per-command timeout (default: 30000).
   --org-cycles <N>        Cycles for org-autopilot-proxy (default: 2).
   --command <text>        Override strategy command for command-backed strategies.
   --agent-provider <id>   Provider label recorded for provider-backed strategies.
   --provider-command <text>
-                          Provider command template for single-agent-provider/org-provider.
+                          Worker command template for provider-backed strategies.
+  --reviewer-provider <id>
+                          Reviewer provider label (defaults to --agent-provider).
+  --reviewer-command <text>
+                          Reviewer command template for org-provider-reviewed
+                          (defaults to --provider-command).
                           Placeholders: {promptFile}, {scenarioDir}, {strategy},
-                          {cycle}, {seed}, {provider}.
+                          {cycle}, {seed}, {provider}, {reviewFile}, {role}.
   --json                  Print JSON instead of a markdown table.
   --help, -h              Show this help.
 `);
@@ -56,6 +62,8 @@ function parseArgs(argv) {
     outputDir: "",
     providerCommand: process.env.VIBE_RESEARCH_ORG_BENCH_PROVIDER_COMMAND || "",
     providerId: process.env.VIBE_RESEARCH_ORG_BENCH_PROVIDER || "",
+    reviewerCommand: process.env.VIBE_RESEARCH_ORG_BENCH_REVIEWER_COMMAND || "",
+    reviewerProviderId: process.env.VIBE_RESEARCH_ORG_BENCH_REVIEWER || "",
     seeds: [0, 1, 2],
     strategies: [],
     subcommand: "run",
@@ -71,6 +79,8 @@ function parseArgs(argv) {
     if (arg === "--command") { opts.commandText = requireValue(argv, index, arg); index += 1; continue; }
     if (arg === "--org-cycles") { opts.orgCycles = Number(requireValue(argv, index, arg)); index += 1; continue; }
     if (arg === "--provider-command") { opts.providerCommand = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--reviewer-command") { opts.reviewerCommand = requireValue(argv, index, arg); index += 1; continue; }
+    if (arg === "--reviewer-provider") { opts.reviewerProviderId = requireValue(argv, index, arg); index += 1; continue; }
     if (arg === "--seeds") { opts.seeds = parseSeeds(requireValue(argv, index, arg)); index += 1; continue; }
     if (arg === "--strategy") { opts.strategies.push(requireValue(argv, index, arg)); index += 1; continue; }
     if (arg === "--suite") { opts.suite = requireValue(argv, index, arg); index += 1; continue; }
@@ -120,6 +130,8 @@ async function main() {
       commandText: opts.commandText,
       providerCommand: opts.providerCommand,
       providerId: opts.providerId,
+      reviewerCommand: opts.reviewerCommand,
+      reviewerProviderId: opts.reviewerProviderId,
     });
     process.stdout.write(opts.json
       ? `${JSON.stringify(report, null, 2)}\n`
