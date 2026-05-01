@@ -15017,8 +15017,14 @@ body.is-reordering-file-tabs {
   min-width: 0;
 }
 
+.rich-session-autopilot-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .rich-session-autopilot-toggle,
-.rich-session-autopilot-action {
+.rich-session-autopilot-action,
+.rich-session-autopilot-project-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -15041,6 +15047,14 @@ body.is-reordering-file-tabs {
 .rich-session-autopilot-action {
   padding: 0 9px;
   color: rgba(244, 244, 242, 0.72);
+}
+
+.rich-session-autopilot-project-pill {
+  max-width: 260px;
+  padding: 0 10px;
+  color: rgba(244, 244, 242, 0.74);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .rich-session-autopilot-action.is-danger {
@@ -18867,6 +18881,11 @@ select:disabled {
   .rich-session-autopilot-project {
     max-width: none;
     flex: 1 1 auto;
+  }
+
+  .rich-session-autopilot-project-pill {
+    max-width: none;
+    flex: 1 1 100%;
   }
 
   .rich-session-plan-panel {

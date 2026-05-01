@@ -708,6 +708,10 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(jsText, /\/research-autopilot\/stop/);
     assert.match(jsText, /research-autopilot-steer-form/);
     assert.match(jsText, /data-chat-autopilot-toggle/);
+    assert.match(jsText, /getChatAutopilotInferredProjectName/);
+    assert.match(jsText, /data-chat-autopilot-change-project/);
+    assert.match(jsText, /Plan next/);
+    assert.match(jsText, /Summarize/);
     assert.match(jsText, /\/api\/research\/org-bench\/jobs/);
 
     const css = await fetch(`${baseUrl}/styles.css`);
@@ -716,6 +720,7 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(cssText, /research-autopilot-card/);
     assert.match(cssText, /research-autopilot-steer/);
     assert.match(cssText, /rich-session-autopilot/);
+    assert.match(cssText, /rich-session-autopilot-project-pill/);
     assert.match(cssText, /research-org-bench-card/);
     assert.match(cssText, /research-bench-table/);
   });
