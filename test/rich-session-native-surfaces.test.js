@@ -207,7 +207,10 @@ test("native UI renders plan card, MCP badge, image strip, /login action, chat d
           projectName: "demo",
           action: "review-research-cycle",
         },
-        evidence: [{ label: "result doc", path: "projects/demo/results/cycle.md", kind: "result" }],
+        evidence: [
+          { label: "result doc", path: "projects/demo/results/cycle.md", kind: "result" },
+          { label: "loss curve", path: "figures/loss.png", kind: "artifact" },
+        ],
         choices: ["continue", "steer"],
       }),
     });
@@ -312,6 +315,11 @@ test("native UI renders plan card, MCP badge, image strip, /login action, chat d
       const evidenceTagName = evidenceLink?.tagName || "";
       const evidenceRichPath = evidenceLink?.getAttribute("data-rich-path") || "";
       const evidenceOpenPath = evidenceLink?.getAttribute("data-agent-town-evidence-path") || "";
+      const evidencePreview = actionCard?.querySelector(".agent-inbox-evidence-preview");
+      const evidencePreviewPath = evidencePreview?.getAttribute("data-rich-path") || "";
+      const evidencePreviewOpenPath = evidencePreview?.getAttribute("data-agent-town-evidence-path") || "";
+      const evidencePreviewSrc = evidencePreview?.querySelector("img")?.getAttribute("src") || "";
+      const evidencePreviewCaption = evidencePreview?.querySelector("span")?.textContent?.trim() || "";
       const actionBeforePlan = Boolean(
         actionPanel
           && planCard
@@ -344,6 +352,10 @@ test("native UI renders plan card, MCP badge, image strip, /login action, chat d
         evidenceTagName,
         evidenceRichPath,
         evidenceOpenPath,
+        evidencePreviewPath,
+        evidencePreviewOpenPath,
+        evidencePreviewSrc,
+        evidencePreviewCaption,
         actionBeforePlan,
         toggleButtons,
         pendingPlaceholderCount,
@@ -406,6 +418,10 @@ test("native UI renders plan card, MCP badge, image strip, /login action, chat d
     assert.equal(surfaces.evidenceTagName, "A", "chat card evidence path renders as an anchor");
     assert.equal(surfaces.evidenceRichPath, "projects/demo/results/cycle.md", "evidence link carries rich-session path metadata");
     assert.equal(surfaces.evidenceOpenPath, "projects/demo/results/cycle.md", "evidence link carries Agent Inbox path metadata");
+    assert.equal(surfaces.evidencePreviewPath, "figures/loss.png", "image evidence preview carries rich-session path metadata");
+    assert.equal(surfaces.evidencePreviewOpenPath, "figures/loss.png", "image evidence preview carries Agent Inbox path metadata");
+    assert.match(surfaces.evidencePreviewSrc, /\/api\/files\/image-by-path\?/u, "image evidence preview resolves through the image endpoint");
+    assert.equal(surfaces.evidencePreviewCaption, "loss.png", "image evidence preview labels the artifact");
 
     await page.evaluate(() => document.activeElement?.blur());
     await page.keyboard.press("Shift+/");

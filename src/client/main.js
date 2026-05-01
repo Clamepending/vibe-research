@@ -19876,10 +19876,36 @@ function renderAgentTownEvidenceLink(entry) {
   return `<span class="agent-inbox-evidence-link" title="${escapeHtml(pathLabel || label)}">${escapeHtml(text)}</span>`;
 }
 
+function renderAgentTownEvidencePreview(entry) {
+  const pathLabel = String(entry?.path || "").trim();
+  if (!pathLabel || !RICH_SESSION_INLINE_IMAGE_EXTENSIONS.test(pathLabel)) {
+    return "";
+  }
+  const url = getRichSessionImageUrl(pathLabel);
+  if (!url) {
+    return "";
+  }
+  const label = String(entry?.label || "image evidence").trim();
+  const filename = pathLabel.replaceAll("\\", "/").split("/").filter(Boolean).pop() || pathLabel;
+  return `
+    <a
+      class="agent-inbox-evidence-preview rich-session-path-link"
+      href="#"
+      data-agent-town-evidence-path="${escapeHtml(pathLabel)}"
+      data-rich-path="${escapeHtml(pathLabel)}"
+      title="${escapeHtml(pathLabel)}"
+    >
+      <img src="${escapeHtml(url)}" alt="${escapeHtml(label || filename)}" loading="lazy" decoding="async" />
+      <span>${escapeHtml(filename)}</span>
+    </a>
+  `;
+}
+
 function renderAgentTownReviewDetails(item) {
   const recommendation = String(item.recommendation || "").trim();
   const consequence = String(item.consequence || "").trim();
   const evidence = Array.isArray(item.evidence) ? item.evidence.slice(0, 4) : [];
+  const evidencePreviews = evidence.map(renderAgentTownEvidencePreview).filter(Boolean).join("");
   if (!recommendation && !consequence && !evidence.length) {
     return "";
   }
@@ -19896,6 +19922,7 @@ function renderAgentTownReviewDetails(item) {
           ? `<div class="agent-inbox-review-row"><span>impact</span><strong>${escapeHtml(consequence)}</strong></div>`
           : ""
       }
+      ${evidencePreviews ? `<div class="agent-inbox-evidence-previews">${evidencePreviews}</div>` : ""}
       ${
         evidence.length
           ? `<div class="agent-inbox-evidence">${evidence.map(renderAgentTownEvidenceLink).join("")}</div>`
