@@ -61,6 +61,7 @@ import { SleepPreventionService } from "./sleep-prevention.js";
 import { getVibeResearchStateDir, getVibeResearchSystemDir } from "./state-paths.js";
 import { collectSystemMetrics } from "./system-metrics.js";
 import { SystemMetricsHistoryStore } from "./system-metrics-history.js";
+import { GpuOwnershipStore, extractGpuOwnershipObservations } from "./gpu-ownership-store.js";
 import {
   readManualReservations,
   readOffLimitsIndices,
@@ -1413,6 +1414,7 @@ export async function createVibeResearchApp({
   const systemRootPath = getVibeResearchSystemDir({ cwd, stateDir });
   const settingsStore = new SettingsStore({ cwd, stateDir, env: serverEnv, defaultAgentSpawnPath: defaultSessionCwd });
   const systemMetricsHistoryStore = new SystemMetricsHistoryStore({ stateDir });
+  const gpuOwnershipStore = new GpuOwnershipStore({ stateDir });
   const portAliasStore = new PortAliasStore({ stateDir });
   await settingsStore.initialize();
   const buildingHubAccountTokenStore =
@@ -1458,6 +1460,7 @@ export async function createVibeResearchApp({
   let sessionDefaultCwd = await ensureDefaultSessionCwd(settingsStore.settings.agentSpawnPath || defaultSessionCwd, cwd);
   await mkdir(systemRootPath, { recursive: true });
   await systemMetricsHistoryStore.initialize();
+  await gpuOwnershipStore.initialize();
   const walletService =
     typeof walletServiceFactory === "function"
       ? walletServiceFactory(settingsStore.settings, { cwd, stateDir, systemRootPath })
@@ -2667,8 +2670,19 @@ export async function createVibeResearchApp({
     forceHistory = false,
     staleWhileRevalidate = false,
   } = {}) {
+    // Live roots come from in-memory session state (PTY pids of running
+    // sessions, plus tmux pane pids of any session whose pane still exists).
+    // Ledger roots are persisted (pid -> session) attributions from prior
+    // metrics ticks — they're how a GPU label survives a server restart that
+    // wiped the live PTY but not the GPU process. The store filters its own
+    // entries down to pids still alive for this OS user, so a recycled pid
+    // cannot mislabel a stranger's process.
+    const liveRoots = sessionManager.listAgentProcessRoots();
+    const ledgerRoots = gpuOwnershipStore.getRootsForKnownSessions(
+      sessionManager.listKnownSessionIds(),
+    );
     const system = await systemMetricsProvider({
-      agentProcessRoots: sessionManager.listAgentProcessRoots(),
+      agentProcessRoots: [...liveRoots, ...ledgerRoots],
       cwd,
       projectPaths: sessionManager.listProjectPaths(),
       staleWhileRevalidate,
@@ -2684,6 +2698,15 @@ export async function createVibeResearchApp({
     // keeps history fresh.
     if (!staleWhileRevalidate) {
       await systemMetricsHistoryStore.record(system, { force: forceHistory });
+      // Persist the (gpuPid -> session) attributions we resolved this tick.
+      // The store replaces its entire claim set each call, so a process that
+      // stops using a GPU naturally drops off — the ledger only ever holds
+      // pids worth labelling. This is what restores labels after restart.
+      try {
+        await gpuOwnershipStore.recordObservations(extractGpuOwnershipObservations(system));
+      } catch (error) {
+        console.error("[vibe-research] gpu ownership ledger update failed:", error?.message || error);
+      }
     }
     // Refresh ~/.claude/visible-gpus.txt from the latest GPU process info so
     // that the next agent Bash call automatically backs off any GPUs now held

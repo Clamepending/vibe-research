@@ -3606,15 +3606,25 @@ export class SessionManager {
     }
   }
 
+  listKnownSessionIds() {
+    return Array.from(this.sessions.values()).map((session) => session.id);
+  }
+
   listAgentProcessRoots() {
     const roots = [];
 
     for (const session of this.sessions.values()) {
-      if (session.status !== "running") {
-        continue;
-      }
+      // Tmux pane PIDs are queried live from `tmux list-panes`, so they only
+      // come back for panes that still exist. Safe to include even when
+      // session.status is stale — for example after a server restart that
+      // wiped session.pty but left the tmux session running. That's exactly
+      // the case where GPU labels were getting lost.
+      roots.push(...this.listTmuxPaneProcessRoots(session));
 
-      if (session.pty?.pid) {
+      // PTY pids, by contrast, can become stale across restarts and risk
+      // colliding with a recycled OS pid. Only trust them while the session
+      // is actively running.
+      if (session.status === "running" && session.pty?.pid) {
         roots.push({
           sessionId: session.id,
           providerId: session.providerId,
@@ -3622,8 +3632,6 @@ export class SessionManager {
           source: "pty",
         });
       }
-
-      roots.push(...this.listTmuxPaneProcessRoots(session));
     }
 
     const seen = new Set();
