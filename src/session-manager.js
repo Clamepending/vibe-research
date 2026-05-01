@@ -2202,10 +2202,23 @@ function summarizeClaudeBackgroundTasksForSession(session, homeDirOrEnv = proces
 
   const taskList = getClaudeTranscriptPathsForSession(session, homeDirOrEnv)
     .flatMap((transcriptPath) => readClaudeBackgroundTasksFromTranscript(transcriptPath));
-  const activeTasks = taskList.filter((task) => isClaudeBackgroundTaskActive(task));
+
+  // A fork inherits the parent's providerState.sessionId so `claude --resume`
+  // continues the same conversation; that means the fork reads the parent's
+  // transcript file. Background tasks belong to the process that launched
+  // them, so a fork must not claim ownership of tasks that started before
+  // it existed. Filter to tasks started at or after the fork's createdAt.
+  const forkCreatedAtMs = session.providerState?.forkedFromSessionId
+    ? Date.parse(session.createdAt || "") || 0
+    : 0;
+  const ownTasks = forkCreatedAtMs > 0
+    ? taskList.filter((task) => Number(task.startedAtMs || 0) >= forkCreatedAtMs)
+    : taskList;
+
+  const activeTasks = ownTasks.filter((task) => isClaudeBackgroundTaskActive(task));
   const latestUpdatedAtMs = Math.max(
     0,
-    ...taskList.map((task) => Number(task.updatedAtMs || task.startedAtMs || 0)),
+    ...ownTasks.map((task) => Number(task.updatedAtMs || task.startedAtMs || 0)),
   );
 
   return {

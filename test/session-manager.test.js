@@ -1334,6 +1334,71 @@ test("Claude background Bash shells keep sessions working", async () => {
   }
 });
 
+test("forked Claude sessions do not inherit the parent's background tasks", async () => {
+  const { manager, workspaceDir, userHomeDir } = await createManager();
+
+  try {
+    const claudeSessionId = "44444444-5555-4666-8777-888888888888";
+    const taskId = "bparent1";
+    const parentTaskStartedAt = new Date(Date.now() - 60_000).toISOString();
+
+    const monitorStarted = {
+      type: "user",
+      timestamp: parentTaskStartedAt,
+      message: {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          content: `Monitor started (task ${taskId}, timeout 600000ms). You will be notified on each event.`,
+        }],
+      },
+      toolUseResult: { taskId, timeoutMs: 600000, persistent: false },
+    };
+
+    await writeClaudeTranscript(userHomeDir, workspaceDir, claudeSessionId, [monitorStarted]);
+
+    const parentSession = manager.buildSessionRecord({
+      id: claudeSessionId,
+      providerId: "claude",
+      providerLabel: "Claude Code",
+      name: "Claude 1",
+      cwd: workspaceDir,
+      activityStatus: "done",
+      status: "running",
+      createdAt: new Date(Date.now() - 120_000).toISOString(),
+      providerState: { sessionId: claudeSessionId },
+    });
+
+    const parentSerialized = manager.serializeSession(parentSession);
+    assert.equal(parentSerialized.backgroundActivity.active, true);
+    assert.equal(parentSerialized.backgroundActivity.activeCount, 1);
+
+    // The fork shares the parent's providerState.sessionId (claude --resume
+    // continues writing to the same transcript), but the parent's running
+    // task is not the fork's. The fork was created after the task started.
+    const forkSession = manager.buildSessionRecord({
+      providerId: "claude",
+      providerLabel: "Claude Code",
+      name: "Claude 1 (fork)",
+      cwd: workspaceDir,
+      activityStatus: "done",
+      status: "running",
+      createdAt: new Date().toISOString(),
+      providerState: {
+        sessionId: claudeSessionId,
+        forkedFromSessionId: claudeSessionId,
+      },
+    });
+
+    const forkSerialized = manager.serializeSession(forkSession);
+    assert.equal(forkSerialized.backgroundActivity.active, false);
+    assert.equal(forkSerialized.backgroundActivity.activeCount, 0);
+    assert.equal(forkSerialized.activityStatus, "done");
+  } finally {
+    await cleanupManager(manager, workspaceDir, userHomeDir);
+  }
+});
+
 test("session swarm graph includes git worktree, fork, subagent, and touched paths", async () => {
   const { manager, workspaceDir, userHomeDir } = await createManager();
 
