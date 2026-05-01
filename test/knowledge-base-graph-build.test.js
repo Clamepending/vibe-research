@@ -30,9 +30,11 @@ test("buildGraph adds every node with the expected attributes", () => {
   assert.equal(a.y, -5);
   assert.equal(a.title, "A");
   assert.equal(a.label, "A");
-  // Base color uses the BRIGHT variant (connectedFill). The dim `fill` was
-  // designed to pair with a CSS stroke ring that sigma's WebGL renderer
-  // doesn't draw, so we render the bright variant always.
+  // Base color uses the BRIGHT variant (connectedFill), normalized to rgba
+  // (sigma's parser doesn't accept hsla). The dim `fill` was designed to
+  // pair with a CSS stroke ring that sigma's WebGL renderer doesn't draw,
+  // so we render the bright variant always with alpha lifted to a
+  // visibility floor.
   assert.equal(a.color, `rgba(97, 220, 150, 0.92)`);
   assert.equal(a.connectedColor, `rgba(97, 220, 150, 1)`);
   assert.equal(a.groupKey, "g1");
@@ -40,20 +42,54 @@ test("buildGraph adds every node with the expected attributes", () => {
   assert.ok(a.size >= 3 && a.size <= 14, `size out of range: ${a.size}`);
 });
 
-test("liftAlpha brings rgba alpha up to a visibility floor", async () => {
-  const { liftAlpha } = await import("../src/client/knowledge-base-graph-data.js");
-  // Below floor → lifted to floor
-  assert.equal(liftAlpha("rgba(120, 130, 200, 0.6)"), "rgba(120, 130, 200, 0.92)");
-  // Already above floor → unchanged
-  assert.equal(liftAlpha("rgba(120, 130, 200, 0.95)"), "rgba(120, 130, 200, 0.95)");
-  // No alpha provided → treated as 1, normalized to rgba (still ≥ floor)
-  assert.equal(liftAlpha("rgb(120, 130, 200)"), "rgba(120, 130, 200, 1)");
-  // hsla also gets lifted
-  assert.equal(liftAlpha("hsla(200, 70%, 60%, 0.5)"), "hsla(200, 70%, 60%, 0.92)");
-  // Custom floor
-  assert.equal(liftAlpha("rgba(0, 0, 0, 0.3)", 1), "rgba(0, 0, 0, 1)");
-  // Garbage input → returned as-is (defensive)
-  assert.equal(liftAlpha("not a color"), "not a color");
+test("normalizeColor converts every color form into rgba (sigma only parses rgb/rgba/hex)", async () => {
+  const { normalizeColor, parseColor } = await import("../src/client/knowledge-base-graph-data.js");
+
+  // The motivating case: sigma's parseColor silently returns BLACK for hsla()
+  // — that's why hub nodes appeared as solid black circles. Make sure we
+  // emit rgba in every case so sigma's parser is guaranteed to match.
+  const fromHsla = normalizeColor("hsla(200, 70%, 60%, 0.5)");
+  assert.match(fromHsla, /^rgba\(\d+, \d+, \d+, [\d.]+\)$/);
+  const reparsed = parseColor(fromHsla);
+  assert.ok(reparsed && reparsed.r > 0 && reparsed.b > 0, `hsla → rgba should not be black, got ${fromHsla}`);
+  // Alpha lifted to floor 0.92.
+  assert.equal(reparsed.a, 0.92);
+
+  // Hex 6: parsed correctly, alpha defaults to 1, exceeds floor.
+  assert.equal(normalizeColor("#71afff"), "rgba(113, 175, 255, 1)");
+  // Hex 3: short form expands.
+  assert.equal(normalizeColor("#f0a"), "rgba(255, 0, 170, 1)");
+  // rgba below floor → lifted.
+  assert.equal(normalizeColor("rgba(120, 130, 200, 0.6)"), "rgba(120, 130, 200, 0.92)");
+  // rgba above floor → unchanged alpha.
+  assert.equal(normalizeColor("rgba(120, 130, 200, 0.95)"), "rgba(120, 130, 200, 0.95)");
+  // rgb (no alpha) → alpha=1.
+  assert.equal(normalizeColor("rgb(120, 130, 200)"), "rgba(120, 130, 200, 1)");
+  // Custom floor.
+  assert.equal(normalizeColor("rgba(20, 30, 40, 0.3)", 1), "rgba(20, 30, 40, 1)");
+  // Unrecognized input passes through (defensive).
+  assert.equal(normalizeColor("not a color"), "not a color");
+});
+
+test("buildGraph normalizes hsla colors so sigma can parse them", async () => {
+  const { parseColor } = await import("../src/client/knowledge-base-graph-data.js");
+  // A project group from buildKnowledgeBaseProjectColor: hsla(...) — was
+  // the source of the "all my hub nodes are black" bug.
+  const projectColor = {
+    fill: "hsla(220, 72%, 64%, 0.62)",
+    connectedFill: "hsla(220, 78%, 66%, 0.82)",
+    label: "hsl(220, 85%, 88%)",
+  };
+  const graph = buildGraph(
+    [{ relativePath: "p.md", title: "P", groupKey: "project:foo", color: projectColor }],
+    [],
+  );
+  const attrs = graph.getNodeAttributes("p.md");
+  // Must be rgba so sigma's RGBA_TEST_REGEX matches.
+  assert.match(attrs.color, /^rgba\(/);
+  // Must NOT be pure black (which is what sigma falls back to when parsing fails).
+  const parsed = parseColor(attrs.color);
+  assert.ok(parsed.r + parsed.g + parsed.b > 50, `expected a bright color, got ${attrs.color}`);
 });
 
 test("buildGraph seeds positions for nodes missing x/y", () => {
@@ -88,7 +124,8 @@ test("buildGraph adds undirected edges and dedupes parallels", () => {
   assert.equal(graph.size, 1);
   const edgeKey = [...graph.edges()][0];
   const attrs = graph.getEdgeAttributes(edgeKey);
-  assert.equal(attrs.color, "rgb(1,2,3)");
+  // Edge color got normalized to rgba (sigma's parser only accepts that form).
+  assert.equal(attrs.color, "rgba(1, 2, 3, 1)");
 });
 
 test("buildGraph drops edges whose endpoints aren't in the node set", () => {

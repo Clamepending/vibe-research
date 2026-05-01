@@ -9,35 +9,83 @@ const DEFAULT_NODE_BRIGHT = "rgba(220, 235, 255, 1)";
 const DEFAULT_EDGE_COLOR = "rgba(255, 255, 255, 0.18)";
 const DEFAULT_EDGE_BRIGHT = "rgba(190, 220, 255, 0.7)";
 
-// Force the color's alpha up to at least `floor`. The original SVG palette
-// drew dim fills (alpha ~0.6) intentionally, paired with a bright stroke
-// ring. WebGL has no stroke, so dim fills come out near-invisible against a
-// dark background. We brighten them by lifting alpha — preserves the hue +
-// saturation, just renders at full visibility.
-export function liftAlpha(color, floor = 0.92) {
-  const value = String(color || "").trim();
-  if (!value) return color;
-  // rgba(R, G, B, A)
-  const rgba = value.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/i);
-  if (rgba) {
-    const r = rgba[1];
-    const g = rgba[2];
-    const b = rgba[3];
-    const a = rgba[4] === undefined ? 1 : Number(rgba[4]);
-    const next = Math.max(a, floor);
-    return `rgba(${r}, ${g}, ${b}, ${next})`;
+const HSL_TO_RGB = (h, s, l) => {
+  const sNorm = s / 100;
+  const lNorm = l / 100;
+  const k = (n) => (n + h / 30) % 12;
+  const a = sNorm * Math.min(lNorm, 1 - lNorm);
+  const f = (n) => lNorm - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  return [
+    Math.round(f(0) * 255),
+    Math.round(f(8) * 255),
+    Math.round(f(4) * 255),
+  ];
+};
+
+const HEX3_RE = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i;
+const HEX6_RE = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
+const HEX8_RE = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
+const RGBA_RE = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/i;
+const HSLA_RE = /^hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%(?:\s*,\s*([\d.]+))?\s*\)$/i;
+
+// Parse any common CSS color string into {r, g, b, a} components, or null if
+// unrecognized. Sigma's WebGL parser only understands rgb/rgba/hex/named
+// colors — NOT hsla — so anything we feed it must be normalized first or
+// project-group nodes silently render as pure black.
+export function parseColor(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+
+  let m;
+  if ((m = text.match(HEX8_RE))) {
+    return {
+      r: parseInt(m[1], 16),
+      g: parseInt(m[2], 16),
+      b: parseInt(m[3], 16),
+      a: parseInt(m[4], 16) / 255,
+    };
   }
-  // hsla(H, S%, L%, A) — same idea
-  const hsla = value.match(/^hsla?\(\s*([\d.]+)\s*,\s*([\d.]+%)\s*,\s*([\d.]+%)(?:\s*,\s*([\d.]+))?\s*\)$/i);
-  if (hsla) {
-    const h = hsla[1];
-    const s = hsla[2];
-    const l = hsla[3];
-    const a = hsla[4] === undefined ? 1 : Number(hsla[4]);
-    const next = Math.max(a, floor);
-    return `hsla(${h}, ${s}, ${l}, ${next})`;
+  if ((m = text.match(HEX6_RE))) {
+    return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16), a: 1 };
   }
-  return value;
+  if ((m = text.match(HEX3_RE))) {
+    return {
+      r: parseInt(m[1] + m[1], 16),
+      g: parseInt(m[2] + m[2], 16),
+      b: parseInt(m[3] + m[3], 16),
+      a: 1,
+    };
+  }
+  if ((m = text.match(RGBA_RE))) {
+    return {
+      r: Math.max(0, Math.min(255, Math.round(Number(m[1])))),
+      g: Math.max(0, Math.min(255, Math.round(Number(m[2])))),
+      b: Math.max(0, Math.min(255, Math.round(Number(m[3])))),
+      a: m[4] === undefined ? 1 : Math.max(0, Math.min(1, Number(m[4]))),
+    };
+  }
+  if ((m = text.match(HSLA_RE))) {
+    const [r, g, b] = HSL_TO_RGB(Number(m[1]) % 360, Number(m[2]), Number(m[3]));
+    return {
+      r,
+      g,
+      b,
+      a: m[4] === undefined ? 1 : Math.max(0, Math.min(1, Number(m[4]))),
+    };
+  }
+  return null;
+}
+
+// Normalize any input color into an `rgba(r, g, b, a)` string that sigma's
+// WebGL parser is guaranteed to accept. Lifts alpha to `alphaFloor` so dim
+// fills (originally meant to be paired with a CSS stroke ring) don't render
+// near-invisible against a dark background.
+export function normalizeColor(value, alphaFloor = 0.92) {
+  const parsed = parseColor(value);
+  if (!parsed) return value; // pass through; sigma will fall back if it can't parse
+  const a = Math.max(parsed.a, alphaFloor);
+  return `rgba(${parsed.r}, ${parsed.g}, ${parsed.b}, ${a})`;
 }
 
 export function buildKnowledgeBaseGraph(nodes, edges) {
@@ -54,11 +102,13 @@ export function buildKnowledgeBaseGraph(nodes, edges) {
     const x = Number.isFinite(node.x) ? node.x : Math.cos(seedAngle) * fallbackRadius;
     const y = Number.isFinite(node.y) ? node.y : Math.sin(seedAngle) * fallbackRadius;
     // Use the brighter "connected" variant of the palette as the base render
-    // color. The dimmer `fill` was meant to be paired with a CSS stroke ring,
+    // color. The dimmer `fill` was meant to be paired with a CSS stroke ring
     // which sigma's WebGL renderer doesn't draw — so without lifting it the
-    // node would fade into a dark background.
-    const baseColor = liftAlpha(node.color?.connectedFill || node.color?.fill || DEFAULT_NODE_COLOR);
-    const brightColor = liftAlpha(node.color?.connectedFill || node.color?.fill || DEFAULT_NODE_BRIGHT, 1);
+    // node would fade into a dark background. We also normalize hsla inputs
+    // to rgba because sigma's parseColor doesn't recognize hsla and silently
+    // returns black for it.
+    const baseInput = node.color?.connectedFill || node.color?.fill || DEFAULT_NODE_COLOR;
+    const brightInput = node.color?.connectedFill || node.color?.fill || DEFAULT_NODE_BRIGHT;
     graph.addNode(node.relativePath, {
       x,
       y,
@@ -68,8 +118,8 @@ export function buildKnowledgeBaseGraph(nodes, edges) {
       label: node.title || node.relativePath || "",
       title: node.title || node.relativePath || "",
       groupKey: node.groupKey || "",
-      color: baseColor,
-      connectedColor: brightColor,
+      color: normalizeColor(baseInput, 0.92),
+      connectedColor: normalizeColor(brightInput, 1),
       labelColor: node.color?.label || "rgba(232, 236, 240, 0.95)",
     });
   });
@@ -81,10 +131,14 @@ export function buildKnowledgeBaseGraph(nodes, edges) {
     if (graph.hasEdge(edge.source, edge.target)) continue;
     graph.addEdge(edge.source, edge.target, {
       size: 0.6,
-      color: edge.edgeColor || DEFAULT_EDGE_COLOR,
-      connectedColor: edge.connectedColor || DEFAULT_EDGE_BRIGHT,
+      color: normalizeColor(edge.edgeColor || DEFAULT_EDGE_COLOR, 0.18),
+      connectedColor: normalizeColor(edge.connectedColor || DEFAULT_EDGE_BRIGHT, 0.7),
     });
   }
 
   return graph;
 }
+
+// Backward-compat re-export. Previous tests imported `liftAlpha`; the new
+// `normalizeColor` subsumes its behavior.
+export { normalizeColor as liftAlpha };
