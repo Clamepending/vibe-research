@@ -7110,6 +7110,383 @@ export async function createVibeResearchApp({
     }
   });
 
+  const researchAutopilotJobs = new Map();
+  const RESEARCH_AUTOPILOT_TERMINAL_STATUSES = new Set(["succeeded", "failed", "stopped"]);
+  const RESEARCH_AUTOPILOT_MODES = new Set(["auto", "brainstorm", "experiment", "synthesize"]);
+
+  function numberInRange(value, fallback, min, max) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(numeric)));
+  }
+
+  function normalizeResearchAutopilotMode(value) {
+    const mode = trimText(value).toLowerCase();
+    return RESEARCH_AUTOPILOT_MODES.has(mode) ? mode : "auto";
+  }
+
+  function decisionForResearchAutopilotMode(mode) {
+    if (mode === "brainstorm") return "brainstorm";
+    if (mode === "experiment") return "continue";
+    if (mode === "synthesize") return "synthesize";
+    return "";
+  }
+
+  function requestServerBaseUrl(request) {
+    return String(publicBaseUrl || helperBaseUrl || `${request.protocol}://${request.get("host") || ""}`)
+      .trim()
+      .replace(/\/+$/, "");
+  }
+
+  function routeError(message, statusCode = 500) {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    return error;
+  }
+
+  async function resolveResearchProjectDir(projectName) {
+    const libraryRoot = settingsStore.settings.wikiPath;
+    if (!libraryRoot) {
+      throw routeError("Library path is not configured.", 503);
+    }
+    const cleanName = trimText(projectName);
+    if (!/^[A-Za-z0-9_-]+$/.test(cleanName)) {
+      throw routeError("invalid project name", 400);
+    }
+    const projectsRoot = path.resolve(libraryRoot, "projects");
+    const projectDir = path.resolve(projectsRoot, cleanName);
+    const relativeProjectPath = path.relative(projectsRoot, projectDir);
+    if (relativeProjectPath.startsWith("..") || path.isAbsolute(relativeProjectPath)) {
+      throw routeError("invalid project name", 400);
+    }
+    const projectStats = await stat(projectDir).catch(() => null);
+    if (!projectStats?.isDirectory()) {
+      throw routeError(`project "${cleanName}" not found`, 404);
+    }
+    return { libraryRoot, projectName: cleanName, projectDir };
+  }
+
+  function appendResearchAutopilotEvent(job, event = {}) {
+    job.events.push({
+      at: new Date().toISOString(),
+      type: event.type || "event",
+      status: event.status || job.status,
+      action: event.action || "",
+      summary: event.summary || "",
+      detail: event.detail || "",
+    });
+    job.events = job.events.slice(-80);
+  }
+
+  function serializeResearchAutopilotJob(job) {
+    return {
+      id: job.id,
+      projectName: job.projectName,
+      objective: job.objective,
+      mode: job.mode,
+      status: job.status,
+      stopRequested: Boolean(job.stopRequested),
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      heartbeatAt: job.heartbeatAt,
+      finishedAt: job.finishedAt,
+      stepCount: job.stepCount,
+      maxSteps: job.maxSteps,
+      failureCount: job.failureCount,
+      maxFailures: job.maxFailures,
+      intervalMs: job.intervalMs,
+      maxWallClockMs: job.maxWallClockMs,
+      currentAction: job.currentAction,
+      stopReason: job.stopReason,
+      stopSummary: job.stopSummary,
+      error: job.error,
+      lastReport: job.lastReport || null,
+      events: [...job.events].reverse().slice(0, 30),
+    };
+  }
+
+  function pruneResearchAutopilotJobs() {
+    const jobs = Array.from(researchAutopilotJobs.values()).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    for (const job of jobs.slice(40)) {
+      if (RESEARCH_AUTOPILOT_TERMINAL_STATUSES.has(job.status)) {
+        researchAutopilotJobs.delete(job.id);
+      }
+    }
+  }
+
+  function researchAutopilotMadeProgress(report) {
+    const action = report?.actions?.[0] || null;
+    if (action?.result && !action.result.skipped) return true;
+    const step = report?.lastStep || {};
+    const orchestrator = step.orchestrator || {};
+    return Boolean(
+      step.phaseUpdate
+      || orchestrator.phaseUpdate
+      || orchestrator.briefDraft
+      || orchestrator.briefCompile,
+    );
+  }
+
+  function shouldContinueResearchAutopilotJob(report) {
+    const reason = report?.stopReason || "";
+    if (reason === "max-steps" || reason === "finished" || reason === "ideation") return true;
+    if (reason === "orchestrator-stop" && researchAutopilotMadeProgress(report)) return true;
+    return false;
+  }
+
+  function buildResearchAutopilotOptions({ projectDir, body, request }) {
+    const serverBaseUrl = requestServerBaseUrl(request);
+    const mode = normalizeResearchAutopilotMode(body.mode);
+    const objective = trimText(body.objective);
+    const decision = trimText(body.decision) || decisionForResearchAutopilotMode(mode);
+    const maxSteps = numberInRange(body.maxSteps, 24, 1, 10_000);
+    const maxFailures = numberInRange(body.maxFailures, 3, 1, 100);
+    const intervalMs = numberInRange(body.intervalMs, 5_000, 0, 60 * 60 * 1000);
+    const wallClockMinutes = numberInRange(body.wallClockMinutes || body.maxWallClockMinutes, 8 * 60, 1, 7 * 24 * 60);
+    const commandText = trimText(body.commandText || body.command);
+    const agentReviewPrompt = trimText(body.agentReviewPrompt)
+      || (objective ? `Review this autonomous research loop against the current objective: ${objective}` : "");
+
+    return {
+      mode,
+      objective,
+      maxSteps,
+      maxFailures,
+      intervalMs,
+      maxWallClockMs: wallClockMinutes * 60 * 1000,
+      runOptions: {
+        projectDir,
+        maxSteps: 1,
+        apply: body.apply !== false,
+        decision,
+        askHuman: Boolean(body.askHuman || body.waitHuman),
+        waitHuman: Boolean(body.waitHuman),
+        agentTownApi: String(body.agentTownApi || body.api || (serverBaseUrl ? `${serverBaseUrl}/api/agent-town` : "")),
+        timeoutMs: body.timeoutMs,
+        allowCrossVersion: Boolean(body.allowCrossVersion),
+        checkPaper: body.checkPaper !== false && !body.noPaper,
+        codeCwd: body.codeCwd,
+        commandText,
+        commandTimeoutMs: body.commandTimeoutMs,
+        metric: body.metric,
+        metricRegex: body.metricRegex,
+        change: body.change || objective,
+        qual: body.qual,
+        seed: body.seed,
+        agentReviewProvider: body.agentReviewProvider,
+        agentReviewName: body.agentReviewName,
+        agentReviewPrompt,
+        finishOnSynthesize: Boolean(body.finishOnSynthesize),
+        finishApply: Boolean(body.finishApply),
+        finishTakeaway: body.finishTakeaway,
+        finishAnalysis: body.finishAnalysis,
+        finishDecision: body.finishDecision,
+        finishSummary: body.finishSummary,
+        finishScore: body.finishScore,
+        finishCostCompute: body.finishCostCompute,
+        finishCostDollars: body.finishCostDollars,
+        finishAggregateMetric: Boolean(body.finishAggregateMetric),
+        finishMetricName: body.finishMetricName,
+        finishHigherIsBetter: typeof body.finishHigherIsBetter === "boolean" ? body.finishHigherIsBetter : undefined,
+        finishAutoAdmit: Boolean(body.finishAutoAdmit),
+        finishUpdatePaper: Boolean(body.finishUpdatePaper),
+        finishPublishCanvas: Boolean(body.finishPublishCanvas),
+        finishPaperFigure: body.finishPaperFigure,
+        finishPaperCaption: body.finishPaperCaption,
+        finishPaperLimitations: body.finishPaperLimitations,
+        finishPaperDiscussion: body.finishPaperDiscussion,
+        finishCanvasImage: body.finishCanvasImage,
+        finishCanvasUrl: body.finishCanvasUrl,
+        finishCanvasTitle: body.finishCanvasTitle,
+        finishCanvasCaption: body.finishCanvasCaption,
+        finishCanvasSessionId: body.finishCanvasSessionId,
+        finishCanvasAgentId: body.finishCanvasAgentId,
+      },
+    };
+  }
+
+  async function waitBetweenResearchAutopilotSteps(job) {
+    const target = Date.now() + job.intervalMs;
+    while (!job.stopRequested && Date.now() < target) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, Math.max(0, target - Date.now()))));
+    }
+  }
+
+  async function runResearchAutopilotJob(job) {
+    job.status = "running";
+    job.startedAt = new Date().toISOString();
+    job.heartbeatAt = job.startedAt;
+    appendResearchAutopilotEvent(job, {
+      type: "started",
+      summary: `started ${job.mode} run for ${job.projectName}`,
+    });
+
+    const deadline = Date.now() + job.maxWallClockMs;
+    while (!job.stopRequested && job.stepCount < job.maxSteps && Date.now() < deadline) {
+      const stepIndex = job.stepCount + 1;
+      try {
+        job.currentAction = `step ${stepIndex}`;
+        job.heartbeatAt = new Date().toISOString();
+        const report = await runResearchAutopilot(job.runOptions);
+        job.lastReport = report;
+        job.stepCount = stepIndex;
+        job.failureCount = 0;
+        const action = report.actions?.[0]?.plannedAction || report.lastStep?.recommendation?.action || "";
+        job.currentAction = action;
+        job.stopReason = report.stopReason || "";
+        job.stopSummary = report.stopSummary || "";
+        job.heartbeatAt = new Date().toISOString();
+        appendResearchAutopilotEvent(job, {
+          type: "step",
+          action,
+          summary: report.stopSummary || action || `completed step ${stepIndex}`,
+          detail: report.stopReason || "",
+        });
+
+        if (!shouldContinueResearchAutopilotJob(report)) {
+          job.status = "stopped";
+          appendResearchAutopilotEvent(job, {
+            type: "stopped",
+            action,
+            summary: report.stopSummary || "autopilot stopped at a gate",
+            detail: report.stopReason || "",
+          });
+          break;
+        }
+      } catch (error) {
+        job.failureCount += 1;
+        job.error = error?.message || "autopilot step failed";
+        job.heartbeatAt = new Date().toISOString();
+        appendResearchAutopilotEvent(job, {
+          type: "error",
+          status: "failed",
+          summary: job.error,
+          detail: `${job.failureCount}/${job.maxFailures} failures`,
+        });
+        if (job.failureCount >= job.maxFailures) {
+          job.status = "failed";
+          job.stopReason = "max-failures";
+          job.stopSummary = job.error;
+          break;
+        }
+      }
+
+      if (!job.stopRequested && job.stepCount < job.maxSteps && Date.now() < deadline) {
+        await waitBetweenResearchAutopilotSteps(job);
+      }
+    }
+
+    if (job.stopRequested) {
+      job.status = "stopped";
+      job.stopReason = "user-stop";
+      job.stopSummary = "stop requested from the Research workspace";
+      appendResearchAutopilotEvent(job, { type: "stopped", summary: job.stopSummary });
+    } else if (job.status === "running") {
+      job.status = "succeeded";
+      job.stopReason = job.stepCount >= job.maxSteps ? "max-steps" : "wall-clock";
+      job.stopSummary = job.stepCount >= job.maxSteps
+        ? `completed ${job.stepCount} autonomous step${job.stepCount === 1 ? "" : "s"}`
+        : "wall-clock budget reached";
+      appendResearchAutopilotEvent(job, { type: "succeeded", summary: job.stopSummary });
+    }
+    job.currentAction = "";
+    job.finishedAt = new Date().toISOString();
+    job.heartbeatAt = job.finishedAt;
+  }
+
+  function startResearchAutopilotJob({ projectName, projectDir, body, request }) {
+    const options = buildResearchAutopilotOptions({ projectDir, body, request });
+    const job = {
+      id: randomUUID(),
+      projectName,
+      projectDir,
+      objective: options.objective,
+      mode: options.mode,
+      status: "queued",
+      stopRequested: false,
+      createdAt: new Date().toISOString(),
+      startedAt: "",
+      heartbeatAt: "",
+      finishedAt: "",
+      stepCount: 0,
+      maxSteps: options.maxSteps,
+      failureCount: 0,
+      maxFailures: options.maxFailures,
+      intervalMs: options.intervalMs,
+      maxWallClockMs: options.maxWallClockMs,
+      currentAction: "",
+      stopReason: "",
+      stopSummary: "",
+      error: "",
+      lastReport: null,
+      events: [],
+      runOptions: options.runOptions,
+    };
+    researchAutopilotJobs.set(job.id, job);
+    pruneResearchAutopilotJobs();
+    Promise.resolve().then(() => runResearchAutopilotJob(job)).catch((error) => {
+      job.status = "failed";
+      job.error = error?.message || "autopilot job failed";
+      job.stopReason = "unhandled-error";
+      job.stopSummary = job.error;
+      job.finishedAt = new Date().toISOString();
+      appendResearchAutopilotEvent(job, { type: "error", status: "failed", summary: job.error });
+    });
+    return job;
+  }
+
+  app.get("/api/research/autopilot/jobs", async (request, response) => {
+    const limit = numberInRange(request.query.limit, 12, 1, 50);
+    const jobs = Array.from(researchAutopilotJobs.values())
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+      .slice(0, limit)
+      .map(serializeResearchAutopilotJob);
+    response.json({ ok: true, jobs });
+  });
+
+  app.get("/api/research/autopilot/jobs/:jobId", async (request, response) => {
+    const job = researchAutopilotJobs.get(String(request.params.jobId || ""));
+    if (!job) {
+      response.status(404).json({ error: "research autopilot job not found" });
+      return;
+    }
+    response.json({ ok: true, job: serializeResearchAutopilotJob(job) });
+  });
+
+  app.post("/api/research/autopilot/jobs/:jobId/stop", async (request, response) => {
+    const job = researchAutopilotJobs.get(String(request.params.jobId || ""));
+    if (!job) {
+      response.status(404).json({ error: "research autopilot job not found" });
+      return;
+    }
+    job.stopRequested = true;
+    if (job.status === "queued") {
+      job.status = "stopped";
+      job.stopReason = "user-stop";
+      job.stopSummary = "stop requested before the first step";
+      job.finishedAt = new Date().toISOString();
+    } else if (job.status === "running") {
+      job.status = "stopping";
+      job.stopReason = "user-stop";
+      job.stopSummary = "stop requested; waiting for the current step to finish";
+    }
+    appendResearchAutopilotEvent(job, { type: "stop-requested", summary: job.stopSummary || "stop requested" });
+    response.json({ ok: true, job: serializeResearchAutopilotJob(job) });
+  });
+
+  app.post("/api/research/projects/:name/autopilot/jobs", async (request, response) => {
+    try {
+      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+        ? request.body
+        : {};
+      const { projectName, projectDir } = await resolveResearchProjectDir(request.params.name);
+      const job = startResearchAutopilotJob({ projectName, projectDir, body, request });
+      response.status(202).json({ ok: true, projectName, job: serializeResearchAutopilotJob(job) });
+    } catch (error) {
+      response.status(error.statusCode || 500).json({ error: error.message || "Could not start research autopilot." });
+    }
+  });
+
   // Research dashboard: full structured state for one project — parsed README
   // sections, benchmark.md (if present), result-doc summaries, and a fresh
   // doctor report. The dashboard at /research/<name> renders this in one pass.

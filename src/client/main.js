@@ -230,6 +230,12 @@ const RESEARCH_ORG_BENCH_PRESETS = {
     model: "gpt-5.4-mini",
   },
 };
+const RESEARCH_AUTOPILOT_MODES = [
+  { value: "auto", label: "Auto" },
+  { value: "brainstorm", label: "Brainstorm" },
+  { value: "experiment", label: "Experiment" },
+  { value: "synthesize", label: "Synthesize" },
+];
 const AGENT_SETUP_STORAGE_KEY = "vibeResearch.agentSetupComplete.v1";
 const AGENT_SETUP_PENDING_STORAGE_KEY = "vibeResearch.agentSetupPending.v1";
 const AGENT_TOWN_SHARE_CAPTURE_TIMEOUT_MS = 2500;
@@ -2163,6 +2169,33 @@ const state = {
   pendingPluginSetupFocus: null,
   buildingHubAdvancedOpen: false,
   buildingHubTab: BUILDINGHUB_DEFAULT_TAB,
+  researchAutopilot: {
+    projects: [],
+    projectsLoaded: false,
+    projectsLoading: false,
+    projectName: "",
+    objective: "",
+    mode: "auto",
+    maxSteps: "24",
+    intervalMs: "5000",
+    wallClockMinutes: "480",
+    maxFailures: "3",
+    commandText: "",
+    metricRegex: "(?:score|metric)=([0-9.]+)",
+    commandTimeoutMs: "1800000",
+    apply: true,
+    askHuman: false,
+    status: "idle",
+    statusText: "",
+    error: "",
+    jobId: "",
+    job: null,
+    jobs: [],
+    jobsLoaded: false,
+    jobsLoading: false,
+    running: false,
+    pollingJobId: "",
+  },
   researchOrgBench: {
     preset: "local-smoke",
     seeds: RESEARCH_ORG_BENCH_PRESETS["local-smoke"].seeds,
@@ -20590,6 +20623,9 @@ function getResearchOrgBenchReviewedLift(report = state.researchOrgBench.report)
 }
 
 function getResearchSidebarMeta() {
+  if (isResearchAutopilotRunning()) {
+    return "autopilot running";
+  }
   const best = getBestResearchOrgBenchRow();
   if (state.researchOrgBench.running) {
     return "benchmark running";
@@ -20640,6 +20676,218 @@ function renderResearchWorkflowPanel() {
         action: `<button class="ghost-button toolbar-control" type="button" data-open-main-view="agent-inbox">open inbox</button>`,
       })}
     </div>
+  `;
+}
+
+function isResearchAutopilotTerminalStatus(status) {
+  return ["succeeded", "failed", "stopped"].includes(String(status || ""));
+}
+
+function isResearchAutopilotRunning(job = state.researchAutopilot.job) {
+  return Boolean(job && !isResearchAutopilotTerminalStatus(job.status));
+}
+
+function getResearchAutopilotSelectedProject() {
+  const autopilot = state.researchAutopilot;
+  if (autopilot.projectName) return autopilot.projectName;
+  return autopilot.projects[0]?.name || "";
+}
+
+function getResearchAutopilotStatusMeta() {
+  const autopilot = state.researchAutopilot;
+  const job = autopilot.job;
+  if (isResearchAutopilotRunning(job)) {
+    return `${job.projectName || "project"} ${job.status || "running"} step ${job.stepCount || 0}/${job.maxSteps || "?"}`;
+  }
+  if (job?.status) {
+    return `${job.projectName || "project"} ${job.status}: ${job.stopReason || "done"}`;
+  }
+  if (autopilot.projectsLoaded) {
+    return `${autopilot.projects.length} project${autopilot.projects.length === 1 ? "" : "s"} ready`;
+  }
+  return "autopilot idle";
+}
+
+function renderResearchAutopilotProjectOptions() {
+  const autopilot = state.researchAutopilot;
+  const selected = getResearchAutopilotSelectedProject();
+  if (!autopilot.projects.length) {
+    return `<option value="">no projects</option>`;
+  }
+  return autopilot.projects
+    .map((project) => {
+      const name = project.name || "";
+      const bits = [
+        project.criterionKind || "",
+        project.activeCount ? `${project.activeCount} active` : "",
+        project.queueSize ? `${project.queueSize} queued` : "",
+      ].filter(Boolean);
+      return `<option value="${escapeHtml(name)}" ${name === selected ? "selected" : ""}>${escapeHtml(bits.length ? `${name} · ${bits.join(" · ")}` : name)}</option>`;
+    })
+    .join("");
+}
+
+function renderResearchAutopilotModeButtons() {
+  const current = state.researchAutopilot.mode || "auto";
+  return RESEARCH_AUTOPILOT_MODES
+    .map((mode) => `
+      <button
+        class="research-preset-button ${current === mode.value ? "is-selected" : ""}"
+        type="button"
+        data-research-autopilot-mode="${escapeHtml(mode.value)}"
+        aria-pressed="${current === mode.value ? "true" : "false"}"
+      >${escapeHtml(mode.label)}</button>
+    `)
+    .join("");
+}
+
+function renderResearchAutopilotEvents() {
+  const job = state.researchAutopilot.job;
+  const events = Array.isArray(job?.events) ? job.events : [];
+  if (!job) {
+    return `<div class="blank-state">no autonomous run started in this server session</div>`;
+  }
+  if (!events.length) {
+    return `<div class="blank-state">waiting for the first heartbeat</div>`;
+  }
+  return `
+    <div class="research-autopilot-event-list">
+      ${events
+        .slice(0, 8)
+        .map((event) => `
+          <div class="research-autopilot-event">
+            <span>${escapeHtml(event.at ? formatRichSessionTimestamp(event.at) : "")}</span>
+            <strong>${escapeHtml(event.action || event.type || "event")}</strong>
+            <p>${escapeHtml(event.summary || event.detail || "")}</p>
+          </div>
+        `)
+        .join("")}
+    </div>
+  `;
+}
+
+function renderResearchAutopilotStatus() {
+  const autopilot = state.researchAutopilot;
+  const job = autopilot.job;
+  if (autopilot.error) {
+    return `<div class="research-status is-error" role="alert">${escapeHtml(autopilot.error)}</div>`;
+  }
+  if (!job && !autopilot.statusText) {
+    return "";
+  }
+  const running = isResearchAutopilotRunning(job) || autopilot.running;
+  return `
+    <div class="research-status ${running ? "is-running" : ""}" role="status">
+      ${job?.id ? `<span class="main-search-kind">${escapeHtml(job.id.slice(0, 8))}</span>` : ""}
+      <span>${escapeHtml(autopilot.statusText || job?.stopSummary || job?.status || autopilot.status)}</span>
+    </div>
+  `;
+}
+
+function renderResearchAutopilotPanel() {
+  const autopilot = state.researchAutopilot;
+  const selectedProject = getResearchAutopilotSelectedProject();
+  const job = autopilot.job;
+  const running = isResearchAutopilotRunning(job) || autopilot.running;
+  const heartbeat = job?.heartbeatAt ? formatRichSessionTimestamp(job.heartbeatAt) : "--";
+  return `
+    <article class="automation-card research-autopilot-card" id="research-autopilot">
+      <div class="research-card-head">
+        <div>
+          <span class="main-search-kind">autonomous loop</span>
+          <strong>Autopilot run</strong>
+          <p>Keep the research loop moving until a budget, gate, or interrupt stops it.</p>
+        </div>
+        <button class="ghost-button toolbar-control" type="button" data-research-autopilot-refresh>
+          ${renderIcon(RefreshCw)}<span>refresh</span>
+        </button>
+      </div>
+      <form class="research-autopilot-form" id="research-autopilot-form">
+        <label class="research-field research-field-wide">
+          <span>project</span>
+          <select class="file-root-input" name="projectName" ${autopilot.projectsLoading ? "disabled" : ""}>
+            ${renderResearchAutopilotProjectOptions()}
+          </select>
+        </label>
+        <label class="research-field research-field-wide">
+          <span>objective</span>
+          <textarea class="file-root-input research-autopilot-objective" name="objective" rows="3" spellcheck="true">${escapeHtml(autopilot.objective)}</textarea>
+        </label>
+        <div class="research-preset-group research-mode-group" role="group" aria-label="Autopilot mode">
+          ${renderResearchAutopilotModeButtons()}
+        </div>
+        <label class="research-field">
+          <span>steps</span>
+          <input class="file-root-input" name="maxSteps" type="number" min="1" max="10000" step="1" value="${escapeHtml(autopilot.maxSteps)}" />
+        </label>
+        <label class="research-field">
+          <span>wall min</span>
+          <input class="file-root-input" name="wallClockMinutes" type="number" min="1" max="10080" step="1" value="${escapeHtml(autopilot.wallClockMinutes)}" />
+        </label>
+        <label class="research-field">
+          <span>gap ms</span>
+          <input class="file-root-input" name="intervalMs" type="number" min="0" step="1000" value="${escapeHtml(autopilot.intervalMs)}" />
+        </label>
+        <label class="research-field">
+          <span>failures</span>
+          <input class="file-root-input" name="maxFailures" type="number" min="1" step="1" value="${escapeHtml(autopilot.maxFailures)}" />
+        </label>
+        <label class="research-field research-field-wide">
+          <span>experiment command</span>
+          <input class="file-root-input" name="commandText" value="${escapeHtml(autopilot.commandText)}" placeholder="node eval.js" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="research-field">
+          <span>metric regex</span>
+          <input class="file-root-input" name="metricRegex" value="${escapeHtml(autopilot.metricRegex)}" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="research-field">
+          <span>cycle timeout</span>
+          <input class="file-root-input" name="commandTimeoutMs" type="number" min="1000" step="1000" value="${escapeHtml(autopilot.commandTimeoutMs)}" />
+        </label>
+        <label class="research-check">
+          <input type="checkbox" name="apply" ${autopilot.apply ? "checked" : ""} />
+          <span>apply safe phase changes</span>
+        </label>
+        <label class="research-check">
+          <input type="checkbox" name="askHuman" ${autopilot.askHuman ? "checked" : ""} />
+          <span>open review gates</span>
+        </label>
+        <div class="research-autopilot-actions">
+          <button class="primary-button toolbar-control" type="submit" ${running || !selectedProject ? "disabled" : ""}>
+            ${running ? "running..." : "start autopilot"}
+          </button>
+          <button class="ghost-button toolbar-control" type="button" data-research-autopilot-stop ${job && !isResearchAutopilotTerminalStatus(job.status) ? "" : "disabled"}>
+            ${renderIcon(X)}<span>interrupt</span>
+          </button>
+        </div>
+      </form>
+      ${renderResearchAutopilotStatus()}
+      <div class="research-stat-grid">
+        <div class="research-stat is-accent">
+          <span>status</span>
+          <strong>${escapeHtml(job?.status || autopilot.status || "idle")}</strong>
+        </div>
+        <div class="research-stat">
+          <span>steps</span>
+          <strong>${escapeHtml(job ? `${job.stepCount || 0}/${job.maxSteps || "?"}` : autopilot.maxSteps)}</strong>
+        </div>
+        <div class="research-stat">
+          <span>heartbeat</span>
+          <strong>${escapeHtml(heartbeat)}</strong>
+        </div>
+        <div class="research-stat ${job?.failureCount ? "is-bad" : "is-good"}">
+          <span>failures</span>
+          <strong>${escapeHtml(job ? `${job.failureCount || 0}/${job.maxFailures || "?"}` : `0/${autopilot.maxFailures}`)}</strong>
+        </div>
+      </div>
+      <div class="research-history-panel">
+        <div class="research-history-head">
+          <strong>Run events</strong>
+          <span>${escapeHtml(job?.currentAction || job?.stopReason || "idle")}</span>
+        </div>
+        ${renderResearchAutopilotEvents()}
+      </div>
+    </article>
   `;
 }
 
@@ -20842,9 +21090,10 @@ function renderResearchView() {
   const summary = best
     ? `${best.strategy} leads holdout at ${formatResearchBenchNumber(best.holdoutMean, 4)}`
     : "benchmark not loaded";
+  const autopilotMeta = getResearchAutopilotStatusMeta();
 
   return `
-    <section class="dashboard-panel main-view research-view" ${renderMainViewAttributes("research", `research:${state.researchOrgBench.status}:${state.researchOrgBench.jobId}:${state.researchOrgBench.reports.length}`)}>
+    <section class="dashboard-panel main-view research-view" ${renderMainViewAttributes("research", `research:${state.researchAutopilot.status}:${state.researchAutopilot.jobId}:${state.researchOrgBench.status}:${state.researchOrgBench.jobId}:${state.researchOrgBench.reports.length}`)}>
       <div class="dashboard-toolbar">
         <button class="icon-button hidden-desktop" type="button" id="open-sidebar" aria-label="Open sidebar" ${tooltipAttributes("Open sidebar")}>${renderIcon(Menu)}</button>
         <div class="dashboard-copy">
@@ -20857,12 +21106,13 @@ function renderResearchView() {
         </div>
       </div>
       <div class="dashboard-range">
-        <span class="dashboard-range-label">org benchmark</span>
-        <span>${escapeHtml(summary)}</span>
-        <span class="dashboard-updated">${escapeHtml(state.researchOrgBench.running ? "running" : state.researchOrgBench.status || "idle")}</span>
+        <span class="dashboard-range-label">autopilot</span>
+        <span>${escapeHtml(autopilotMeta)}</span>
+        <span class="dashboard-updated">${escapeHtml(summary)}</span>
       </div>
       <div class="main-results-grid research-grid">
         ${renderResearchWorkflowPanel()}
+        ${renderResearchAutopilotPanel()}
         ${renderResearchOrgBenchPanel()}
       </div>
     </section>
@@ -37843,6 +38093,195 @@ async function deleteAgentAutomation(automationId) {
   await saveAgentAutomations(getAgentAutomations().filter((automation) => automation.id !== automationId));
 }
 
+function syncResearchAutopilotFormDraft(form) {
+  if (!(form instanceof HTMLFormElement)) {
+    return;
+  }
+  const formData = new FormData(form);
+  state.researchAutopilot.projectName = String(formData.get("projectName") || "").trim();
+  state.researchAutopilot.objective = String(formData.get("objective") || "").trim();
+  state.researchAutopilot.maxSteps = String(formData.get("maxSteps") || "").trim();
+  state.researchAutopilot.intervalMs = String(formData.get("intervalMs") || "").trim();
+  state.researchAutopilot.wallClockMinutes = String(formData.get("wallClockMinutes") || "").trim();
+  state.researchAutopilot.maxFailures = String(formData.get("maxFailures") || "").trim();
+  state.researchAutopilot.commandText = String(formData.get("commandText") || "").trim();
+  state.researchAutopilot.metricRegex = String(formData.get("metricRegex") || "").trim();
+  state.researchAutopilot.commandTimeoutMs = String(formData.get("commandTimeoutMs") || "").trim();
+  state.researchAutopilot.apply = formData.get("apply") === "on";
+  state.researchAutopilot.askHuman = formData.get("askHuman") === "on";
+}
+
+function setResearchAutopilotMode(mode) {
+  const normalized = RESEARCH_AUTOPILOT_MODES.some((entry) => entry.value === mode) ? mode : "auto";
+  state.researchAutopilot.mode = normalized;
+  state.researchAutopilot.error = "";
+  renderShell();
+}
+
+function applyResearchAutopilotJob(job) {
+  if (!job) return;
+  state.researchAutopilot.job = job;
+  state.researchAutopilot.jobId = job.id || "";
+  state.researchAutopilot.status = job.status || "idle";
+  state.researchAutopilot.statusText = job.stopSummary || job.currentAction || job.status || "";
+  state.researchAutopilot.running = isResearchAutopilotRunning(job);
+}
+
+async function loadResearchAutopilotProjects({ render = true } = {}) {
+  if (state.researchAutopilot.projectsLoading) {
+    return;
+  }
+  state.researchAutopilot.projectsLoading = true;
+  state.researchAutopilot.error = "";
+  if (render) renderShell();
+
+  try {
+    const payload = await fetchJson("/api/research/projects", { timeoutMs: 30_000 });
+    const projects = Array.isArray(payload?.projects) ? payload.projects : [];
+    state.researchAutopilot.projects = projects;
+    state.researchAutopilot.projectsLoaded = true;
+    if (!state.researchAutopilot.projectName && projects[0]?.name) {
+      state.researchAutopilot.projectName = projects[0].name;
+    }
+  } catch (error) {
+    state.researchAutopilot.error = error.message || "Could not load research projects.";
+  } finally {
+    state.researchAutopilot.projectsLoading = false;
+    if (render) renderShell();
+  }
+}
+
+async function loadResearchAutopilotJobs({ render = true } = {}) {
+  if (state.researchAutopilot.jobsLoading) {
+    return;
+  }
+  state.researchAutopilot.jobsLoading = true;
+  state.researchAutopilot.error = "";
+  if (render) renderShell();
+
+  try {
+    const payload = await fetchJson("/api/research/autopilot/jobs?limit=8", { timeoutMs: 30_000 });
+    const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+    state.researchAutopilot.jobs = jobs;
+    state.researchAutopilot.jobsLoaded = true;
+    const current = jobs.find((job) => job.id === state.researchAutopilot.jobId) || jobs[0] || null;
+    if (current) {
+      applyResearchAutopilotJob(current);
+    }
+  } catch (error) {
+    state.researchAutopilot.error = error.message || "Could not load autopilot runs.";
+  } finally {
+    state.researchAutopilot.jobsLoading = false;
+    if (render) renderShell();
+  }
+}
+
+async function pollResearchAutopilotJob(jobId) {
+  if (!jobId || state.researchAutopilot.pollingJobId === jobId) {
+    return;
+  }
+  state.researchAutopilot.pollingJobId = jobId;
+  try {
+    for (let attempt = 0; attempt < 24 * 60 * 60; attempt += 1) {
+      if (state.researchAutopilot.jobId !== jobId) {
+        break;
+      }
+      const payload = await fetchJson(`/api/research/autopilot/jobs/${encodeURIComponent(jobId)}`, {
+        timeoutMs: 30_000,
+      });
+      const job = payload?.job || null;
+      if (!job) break;
+      applyResearchAutopilotJob(job);
+      renderShell();
+      if (isResearchAutopilotTerminalStatus(job.status)) {
+        await loadResearchAutopilotJobs({ render: false });
+        renderShell();
+        break;
+      }
+      await sleep(1500);
+    }
+  } catch (error) {
+    state.researchAutopilot.error = error.message || "Could not poll autopilot run.";
+    state.researchAutopilot.running = false;
+    renderShell();
+  } finally {
+    if (state.researchAutopilot.pollingJobId === jobId) {
+      state.researchAutopilot.pollingJobId = "";
+    }
+  }
+}
+
+async function startResearchAutopilotRun(form) {
+  syncResearchAutopilotFormDraft(form);
+  const autopilot = state.researchAutopilot;
+  const projectName = autopilot.projectName || getResearchAutopilotSelectedProject();
+  if (!projectName) {
+    autopilot.error = "Choose a research project before starting autopilot.";
+    renderShell();
+    return;
+  }
+
+  autopilot.running = true;
+  autopilot.status = "queued";
+  autopilot.statusText = "starting autonomous run";
+  autopilot.error = "";
+  renderShell();
+
+  try {
+    const payload = await fetchJson(`/api/research/projects/${encodeURIComponent(projectName)}/autopilot/jobs`, {
+      method: "POST",
+      body: JSON.stringify({
+        objective: autopilot.objective,
+        mode: autopilot.mode,
+        maxSteps: Number(autopilot.maxSteps) || undefined,
+        intervalMs: Number(autopilot.intervalMs) || 0,
+        wallClockMinutes: Number(autopilot.wallClockMinutes) || undefined,
+        maxFailures: Number(autopilot.maxFailures) || undefined,
+        commandText: autopilot.commandText,
+        metricRegex: autopilot.metricRegex,
+        commandTimeoutMs: Number(autopilot.commandTimeoutMs) || undefined,
+        apply: autopilot.apply,
+        askHuman: autopilot.askHuman,
+        checkPaper: false,
+      }),
+      timeoutMs: 30_000,
+    });
+    applyResearchAutopilotJob(payload?.job || null);
+    await loadResearchAutopilotJobs({ render: false });
+    renderShell();
+    void pollResearchAutopilotJob(state.researchAutopilot.jobId);
+  } catch (error) {
+    autopilot.status = "failed";
+    autopilot.statusText = "";
+    autopilot.error = error.message || "Could not start autopilot.";
+    autopilot.running = false;
+    renderShell();
+  }
+}
+
+async function stopResearchAutopilotRun() {
+  const jobId = state.researchAutopilot.jobId;
+  if (!jobId) {
+    return;
+  }
+  state.researchAutopilot.statusText = "requesting interrupt";
+  state.researchAutopilot.error = "";
+  renderShell();
+  try {
+    const payload = await fetchJson(`/api/research/autopilot/jobs/${encodeURIComponent(jobId)}/stop`, {
+      method: "POST",
+      body: JSON.stringify({}),
+      timeoutMs: 30_000,
+    });
+    applyResearchAutopilotJob(payload?.job || null);
+    renderShell();
+    void pollResearchAutopilotJob(jobId);
+  } catch (error) {
+    state.researchAutopilot.error = error.message || "Could not interrupt autopilot.";
+    renderShell();
+  }
+}
+
 function syncResearchOrgBenchFormDraft(form) {
   if (!(form instanceof HTMLFormElement)) {
     return;
@@ -37977,9 +38416,53 @@ async function startResearchOrgBenchRun(form) {
 }
 
 function bindResearchEvents() {
+  if (state.currentView === "research" && !state.researchAutopilot.projectsLoaded && !state.researchAutopilot.projectsLoading) {
+    void loadResearchAutopilotProjects();
+  }
+  if (state.currentView === "research" && !state.researchAutopilot.jobsLoaded && !state.researchAutopilot.jobsLoading) {
+    void loadResearchAutopilotJobs();
+  }
+  if (state.currentView === "research" && isResearchAutopilotRunning(state.researchAutopilot.job)) {
+    void pollResearchAutopilotJob(state.researchAutopilot.jobId);
+  }
   if (state.currentView === "research" && !state.researchOrgBench.reportsLoaded && !state.researchOrgBench.historyLoading) {
     void loadResearchOrgBenchRuns();
   }
+
+  document.querySelectorAll("[data-research-autopilot-mode]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      setResearchAutopilotMode(button.getAttribute("data-research-autopilot-mode") || "auto");
+    });
+  });
+
+  document.querySelector("[data-research-autopilot-refresh]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    void Promise.all([
+      loadResearchAutopilotProjects({ render: false }),
+      loadResearchAutopilotJobs({ render: false }),
+    ]).finally(() => renderShell());
+  });
+
+  document.querySelector("[data-research-autopilot-stop]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    void stopResearchAutopilotRun();
+  });
+
+  document.querySelector("#research-autopilot-form")?.addEventListener("input", (event) => {
+    const form = event.currentTarget;
+    if (form instanceof HTMLFormElement) {
+      syncResearchAutopilotFormDraft(form);
+    }
+  });
+
+  document.querySelector("#research-autopilot-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (form instanceof HTMLFormElement && !isResearchAutopilotRunning(state.researchAutopilot.job)) {
+      void startResearchAutopilotRun(form);
+    }
+  });
 
   document.querySelectorAll("[data-research-org-bench-preset]").forEach((button) => {
     button.addEventListener("click", (event) => {

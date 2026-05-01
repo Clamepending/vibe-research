@@ -234,6 +234,86 @@ test("POST /api/research/projects/<name>/autopilot/run executes one bounded step
   });
 });
 
+test("POST /api/research/projects/<name>/autopilot/jobs runs background loop", async () => {
+  await withLibraryServer(async ({ baseUrl }) => {
+    const start = await fetch(`${baseUrl}/api/research/projects/prose-style/autopilot/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        objective: "keep testing concise prose improvements until interrupted",
+        mode: "experiment",
+        commandText: "node -e \"console.log('score=0.61')\"",
+        metricRegex: "score=([0-9.]+)",
+        maxSteps: 1,
+        intervalMs: 0,
+        checkPaper: false,
+      }),
+    });
+    assert.equal(start.status, 202);
+    const started = await start.json();
+    assert.equal(started.ok, true);
+    assert.equal(started.job.projectName, "prose-style");
+    assert.equal(started.job.objective, "keep testing concise prose improvements until interrupted");
+
+    let job = started.job;
+    for (let attempt = 0; attempt < 40 && !["succeeded", "failed", "stopped"].includes(job.status); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const poll = await fetch(`${baseUrl}/api/research/autopilot/jobs/${job.id}`);
+      assert.equal(poll.status, 200);
+      job = (await poll.json()).job;
+    }
+    assert.equal(job.status, "succeeded", job.error || job.stopSummary);
+    assert.equal(job.stepCount, 1);
+    assert.equal(job.lastReport.actions[0].plannedAction, "orchestrator-run-next");
+    assert.equal(job.lastReport.actions[0].result.cycle.metric, "0.61");
+    assert.ok(job.events.some((event) => event.type === "step"));
+
+    const jobs = await fetch(`${baseUrl}/api/research/autopilot/jobs?limit=5`);
+    assert.equal(jobs.status, 200);
+    const history = await jobs.json();
+    assert.equal(history.ok, true);
+    assert.equal(history.jobs.some((entry) => entry.id === job.id), true);
+  });
+});
+
+test("POST /api/research/autopilot/jobs/<id>/stop interrupts background loop", async () => {
+  await withLibraryServer(async ({ baseUrl }) => {
+    const start = await fetch(`${baseUrl}/api/research/projects/prose-style/autopilot/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "experiment",
+        commandText: "node -e \"setTimeout(() => console.log('score=0.62'), 200)\"",
+        metricRegex: "score=([0-9.]+)",
+        maxSteps: 5,
+        intervalMs: 1000,
+        checkPaper: false,
+      }),
+    });
+    assert.equal(start.status, 202);
+    const started = await start.json();
+    const stop = await fetch(`${baseUrl}/api/research/autopilot/jobs/${started.job.id}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(stop.status, 200);
+    const stopped = await stop.json();
+    assert.equal(stopped.ok, true);
+    assert.equal(stopped.job.stopRequested, true);
+
+    let job = stopped.job;
+    for (let attempt = 0; attempt < 40 && !["succeeded", "failed", "stopped"].includes(job.status); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const poll = await fetch(`${baseUrl}/api/research/autopilot/jobs/${job.id}`);
+      assert.equal(poll.status, 200);
+      job = (await poll.json()).job;
+    }
+    assert.equal(job.status, "stopped");
+    assert.equal(job.stopReason, "user-stop");
+  });
+});
+
 test("POST /api/research/org-bench/run executes local benchmark smoke", async () => {
   await withLibraryServer(async ({ baseUrl }) => {
     const res = await fetch(`${baseUrl}/api/research/org-bench/run`, {
@@ -356,11 +436,14 @@ test("main app bundle exposes the native research workspace", async () => {
     const jsText = await js.text();
     assert.match(jsText, /renderResearchView/);
     assert.match(jsText, /view: "research"/);
+    assert.match(jsText, /renderResearchAutopilotPanel/);
+    assert.match(jsText, /\/api\/research\/autopilot\/jobs/);
     assert.match(jsText, /\/api\/research\/org-bench\/jobs/);
 
     const css = await fetch(`${baseUrl}/styles.css`);
     assert.equal(css.status, 200);
     const cssText = await css.text();
+    assert.match(cssText, /research-autopilot-card/);
     assert.match(cssText, /research-org-bench-card/);
     assert.match(cssText, /research-bench-table/);
   });
