@@ -79,6 +79,7 @@ import { WikiBackupService } from "./wiki-backup.js";
 import { detectProviders, getDefaultProviderId } from "./providers.js";
 import { listKnowledgeBase, readKnowledgeBaseNote } from "./knowledge-base.js";
 import { listProjects as listResearchProjects, getProjectDetail as getResearchProjectDetail } from "./research-api.js";
+import { createProject as createResearchProject, DEFAULT_PROJECT_NAME_PATTERN } from "./research/init.js";
 import { runResearchAutopilot, stepResearchAutopilot } from "./research/autopilot.js";
 import { compileBriefToQueue, updateResearchState } from "./research/brief.js";
 import { formatOrgBenchReport, runOrgBench } from "./research/org-bench.js";
@@ -6997,6 +6998,78 @@ export async function createVibeResearchApp({
     sendResearchPage(researchProjectHtml)(request, response);
   });
 
+  function normalizeResearchProjectCreationString(value, maxLength = 4_000) {
+    return String(value || "").trim().replace(/\s+/g, " ").slice(0, maxLength);
+  }
+
+  function normalizeResearchProjectCreationRanking(value = {}) {
+    const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const kind = String(input.kind || "").trim().toLowerCase();
+    const direction = String(input.direction || "").trim().toLowerCase() === "lower" ? "lower" : "higher";
+    if (kind === "qualitative") {
+      return {
+        kind,
+        dimension: normalizeResearchProjectCreationString(input.dimension, 120) || "research_quality",
+      };
+    }
+    if (kind === "mix") {
+      return {
+        kind,
+        metric: normalizeResearchProjectCreationString(input.metric, 80) || "research_progress_score",
+        direction,
+        dimension: normalizeResearchProjectCreationString(input.dimension, 120) || "research_quality",
+      };
+    }
+    return {
+      kind: "quantitative",
+      metric: normalizeResearchProjectCreationString(input.metric, 80) || "research_progress_score",
+      direction,
+    };
+  }
+
+  function normalizeResearchProjectCreationQueueRows(value) {
+    const rows = Array.isArray(value) ? value : [];
+    return rows
+      .map((row) => {
+        const input = row && typeof row === "object" && !Array.isArray(row) ? row : {};
+        const move = normalizeResearchProjectCreationString(input.move, 120);
+        if (!move) return null;
+        return {
+          move,
+          startingPoint: normalizeResearchProjectCreationString(input.startingPoint, 400) || "main",
+          why: normalizeResearchProjectCreationString(input.why, 400),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 5);
+  }
+
+  function normalizeGitHubRemoteUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const ssh = raw.match(/^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/i);
+    if (ssh) return `https://github.com/${ssh[1]}`;
+    const https = raw.match(/^https?:\/\/github\.com\/([^/]+\/[^/#?]+?)(?:\.git)?(?:[#?].*)?$/i);
+    if (https) return `https://github.com/${https[1]}`;
+    return "";
+  }
+
+  async function inferGitHubCodeRepoUrl(sourcePath) {
+    const candidate = String(sourcePath || "").trim();
+    if (!candidate) return "";
+    try {
+      const stats = await stat(candidate);
+      if (!stats.isDirectory()) return "";
+      const { stdout } = await execFileAsync("git", ["-C", candidate, "remote", "get-url", "origin"], {
+        timeout: 5_000,
+        maxBuffer: 32 * 1024,
+      });
+      return normalizeGitHubRemoteUrl(stdout);
+    } catch {
+      return "";
+    }
+  }
+
   // Research dashboard: list every project under <wikiPath>/projects/ with a
   // one-row summary (criterion, leaderboard size, active count, bench version).
   // Powers the at-a-glance index at /research.
@@ -7011,6 +7084,71 @@ export async function createVibeResearchApp({
       response.json({ libraryRoot, projects });
     } catch (error) {
       response.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/research/projects", async (request, response) => {
+    try {
+      const libraryRoot = settingsStore.settings.wikiPath;
+      if (!libraryRoot) {
+        response.status(503).json({ error: "Library path is not configured." });
+        return;
+      }
+      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+        ? request.body
+        : {};
+      const name = normalizeResearchProjectCreationString(body.name, 80).toLowerCase();
+      if (!DEFAULT_PROJECT_NAME_PATTERN.test(name)) {
+        response.status(400).json({ error: `project name must match ${DEFAULT_PROJECT_NAME_PATTERN}` });
+        return;
+      }
+
+      const explicitCodeRepo = normalizeGitHubRemoteUrl(body.codeRepoUrl || body.codeRepo || "");
+      const inferredCodeRepo = explicitCodeRepo ? "" : await inferGitHubCodeRepoUrl(body.sourcePath || "");
+      const queueRows = normalizeResearchProjectCreationQueueRows(body.queueRows);
+      const result = await createResearchProject({
+        projectsDir: path.join(libraryRoot, "projects"),
+        name,
+        goal: normalizeResearchProjectCreationString(body.goal),
+        codeRepoUrl: explicitCodeRepo || inferredCodeRepo,
+        successCriteria: Array.isArray(body.successCriteria)
+          ? body.successCriteria
+            .map((entry) => normalizeResearchProjectCreationString(entry, 400))
+            .filter(Boolean)
+            .slice(0, 8)
+          : [],
+        ranking: normalizeResearchProjectCreationRanking(body.ranking),
+        queueRows: queueRows.length
+          ? queueRows
+          : [{
+              move: "initial-research-loop",
+              startingPoint: "main",
+              why: "Establish the first benchmark, baseline, and bounded experiment from the chat objective.",
+            }],
+        repoRoot: appRootDir,
+        force: false,
+      });
+      const projects = await listResearchProjects(libraryRoot);
+      const project = projects.find((entry) => entry.name === name) || null;
+      const detail = await getResearchProjectDetail(libraryRoot, name).catch(() => null);
+      response.status(201).json({
+        ok: true,
+        libraryRoot,
+        projectName: name,
+        project,
+        detail,
+        projects,
+        wrote: result.wrote || [],
+        codeRepo: explicitCodeRepo || inferredCodeRepo || "",
+      });
+    } catch (error) {
+      const message = error.message || "Could not create research project.";
+      const status = /already exists/i.test(message)
+        ? 409
+        : /name|ranking|queue|project/i.test(message)
+          ? 400
+          : 500;
+      response.status(status).json({ error: message });
     }
   });
 

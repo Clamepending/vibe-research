@@ -2277,6 +2277,7 @@ const state = {
     projects: [],
     projectsLoaded: false,
     projectsLoading: false,
+    projectCreating: false,
     projectName: "",
     objective: "",
     mode: "auto",
@@ -7533,6 +7534,100 @@ function findChatAutopilotProjectMatch(value) {
   return "";
 }
 
+function inferChatAutopilotProjectSlug(activeSession = getActiveSession()) {
+  const cwdLeaf = activeSession?.cwd ? getWorkspacePathLeafName(activeSession.cwd) : "";
+  const candidates = [
+    cwdLeaf,
+    activeSession?.name || "",
+    activeSession?.providerLabel || "",
+    "research-project",
+  ];
+  for (const candidate of candidates) {
+    const token = normalizeChatAutopilotProjectToken(candidate);
+    const slug = token.replace(/^-+|-+$/g, "").slice(0, 80).replace(/-+$/g, "");
+    if (/^[a-z0-9][a-z0-9-]*$/u.test(slug)) return slug;
+  }
+  return "research-project";
+}
+
+function buildChatAutopilotBootstrapGoal(activeSession = getActiveSession(), slug = "") {
+  const cwdLeaf = getWorkspacePathLeafName(activeSession?.cwd || "");
+  const label = String(cwdLeaf && cwdLeaf !== "folder" ? cwdLeaf : slug || "this project").trim();
+  return [
+    `Advance ${label} as an autonomous research project from this chat.`,
+    "Use the project README, LOG, result docs, and paper as durable state; brainstorm with the human when direction is unclear, run bounded experiments when evidence is needed, and keep moving until interrupted or a true human gate is required.",
+  ].join(" ");
+}
+
+async function createChatAutopilotProjectForSession(activeSession = getActiveSession(), { render = true } = {}) {
+  const sessionId = activeSession?.id || "";
+  if (!sessionId || state.researchAutopilot.projectCreating) return "";
+  const name = inferChatAutopilotProjectSlug(activeSession);
+  const goal = buildChatAutopilotBootstrapGoal(activeSession, name);
+  state.researchAutopilot.projectCreating = true;
+  state.researchAutopilot.error = "";
+  setChatAutopilotPending(sessionId, "creating project index");
+  if (render) refreshRichSessionSurfaceUi();
+  try {
+    const payload = await fetchJson("/api/research/projects", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        goal,
+        sourcePath: activeSession?.cwd || "",
+        ranking: {
+          kind: "quantitative",
+          metric: "research_progress_score",
+          direction: "higher",
+        },
+        successCriteria: [
+          "The supervisor can keep this same chat moving through brainstorm, experiment, and review phases.",
+          "Every material research move has durable provenance in README, LOG, result docs, paper, and pushed code links when available.",
+          "The human can interrupt, redirect, or resume without losing project state.",
+        ],
+      }),
+      timeoutMs: 30_000,
+    });
+    const projects = Array.isArray(payload?.projects) ? payload.projects : [];
+    state.researchAutopilot.projects = projects;
+    state.researchAutopilot.projectsLoaded = true;
+    state.researchAutopilot.projectName = payload?.projectName || name;
+    state.researchAutopilot.objective = getResearchAutopilotProjectGoal(state.researchAutopilot.projectName) || goal;
+    delete state.chatAutopilotProjectPickerOpen[sessionId];
+    await updateChatAutopilotAttachment(sessionId, {
+      ...getChatAutopilotSessionConfig(sessionId),
+      projectName: state.researchAutopilot.projectName,
+      objective: state.researchAutopilot.objective,
+      statusText: "project index ready",
+    }, { render: false });
+    return state.researchAutopilot.projectName;
+  } catch (error) {
+    if (error.status === 409) {
+      await loadResearchAutopilotProjects({ render: false });
+      const matched = findChatAutopilotProjectMatch(name) || name;
+      state.researchAutopilot.projectName = matched;
+      state.researchAutopilot.objective = getResearchAutopilotProjectGoal(matched) || goal;
+      await updateChatAutopilotAttachment(sessionId, {
+        ...getChatAutopilotSessionConfig(sessionId),
+        projectName: matched,
+        objective: state.researchAutopilot.objective,
+        statusText: "using existing project index",
+      }, { render: false });
+      return matched;
+    }
+    state.researchAutopilot.error = error.message || "Could not create research project.";
+    updateChatAutopilotSessionConfig(sessionId, {
+      ...getChatAutopilotSessionConfig(sessionId),
+      statusText: state.researchAutopilot.error,
+    });
+    return "";
+  } finally {
+    state.researchAutopilot.projectCreating = false;
+    setChatAutopilotPending(sessionId, "");
+    if (render) refreshRichSessionSurfaceUi();
+  }
+}
+
 function getChatAutopilotInferredProjectName(activeSession = getActiveSession(), config = {}) {
   const savedProject = String(config.projectName || "").trim();
   if (savedProject && getResearchAutopilotProjectByName(savedProject)) return savedProject;
@@ -7666,6 +7761,10 @@ function renderRichSessionAutopilotPanel(activeSession) {
   const objectiveSource = getChatAutopilotObjectiveSource(config, activeSession);
   const objectivePreview = summarizeChatAutopilotObjective(objective);
   const supervisorSummary = summarizeChatAutopilotSupervisor(config);
+  const noProjects = state.researchAutopilot.projectsLoaded
+    && !state.researchAutopilot.projects.length
+    && !state.researchAutopilot.projectsLoading;
+  const projectCreating = Boolean(state.researchAutopilot.projectCreating);
   const pickerOpen = Boolean(state.chatAutopilotProjectPickerOpen[activeSession.id]) || !projectName;
   const title = enabled
     ? sessionDriver ? "Supervisor on" : "Runner on"
@@ -7686,13 +7785,19 @@ function renderRichSessionAutopilotPanel(activeSession) {
         ? objectivePreview
           ? `${objectiveSource === "wiki" ? "wiki" : "saved"} objective: ${objectivePreview}`
           : "needs research objective"
+        : projectCreating
+          ? "creating project index"
+        : noProjects
+          ? "no project index yet"
         : projectName
           ? "ready to hand off"
           : "choose a project");
   const toggleTitle = enabled
     ? "Pause the supervisor for this chat."
-    : "Let the supervisor take the next research step in this same chat.";
-  const showProjectPicker = !running && pickerOpen;
+    : noProjects
+      ? "Create a project index for this chat, then let the supervisor take the next step."
+      : "Let the supervisor take the next research step in this same chat.";
+  const showProjectPicker = !noProjects && !running && pickerOpen;
   const showSteeringActions = enabled && (sessionDriver || (job && !isResearchAutopilotTerminalStatus(job.status)));
   const projectTitle = projectName
     ? `The supervisor will use ${projectName}${projectSource ? ` (${projectSource})` : ""}.${objectivePreview ? ` Objective: ${objectivePreview}` : ""} Click to change.`
@@ -7701,7 +7806,7 @@ function renderRichSessionAutopilotPanel(activeSession) {
   const nextActionTitle = sessionExited && sessionDriver
     ? "Start a fresh chat in the same folder and let the supervisor continue."
     : "Ask the supervisor to take the next research step.";
-  const actionDisabled = pending ? "disabled" : "";
+  const actionDisabled = pending || projectCreating ? "disabled" : "";
   return `
     <section class="rich-session-autopilot ${enabled ? "is-enabled" : ""} ${running ? "is-running" : ""}" id="rich-session-autopilot" data-rich-session-autopilot-mount>
       <div class="rich-session-autopilot-main">
@@ -7718,7 +7823,11 @@ function renderRichSessionAutopilotPanel(activeSession) {
         <span class="rich-session-autopilot-status" title="${escapeHtml(status)}">${escapeHtml(status)}</span>
       </div>
       <div class="rich-session-autopilot-actions">
-        ${showProjectPicker ? `
+        ${noProjects ? `
+          <button class="rich-session-autopilot-action is-primary" type="button" data-chat-autopilot-create-project title="Create a durable project README, LOG, paper, and first QUEUE row for this chat." ${actionDisabled}>
+            ${projectCreating ? "Indexing..." : "Index chat"}
+          </button>
+        ` : showProjectPicker ? `
           <label class="sr-only" for="chat-autopilot-project">Research project</label>
           <select class="rich-session-autopilot-project" id="chat-autopilot-project" data-chat-autopilot-project title="Change the research project for this chat." ${state.researchAutopilot.projectsLoading ? "disabled" : ""}>
             ${renderChatAutopilotProjectOptions(config, activeSession)}
@@ -39256,8 +39365,13 @@ async function startChatAutopilotSupervisorForSession(activeSession) {
   setChatAutopilotPending(sessionId, "enabling supervisor");
   refreshRichSessionSurfaceUi();
   await ensureChatAutopilotResources();
-  const config = getChatAutopilotSessionConfig(sessionId);
-  const projectName = getChatAutopilotSelectedProjectName(config, activeSession);
+  let config = getChatAutopilotSessionConfig(sessionId);
+  let projectName = getChatAutopilotSelectedProjectName(config, activeSession);
+  if (!projectName && state.researchAutopilot.projectsLoaded && !state.researchAutopilot.projects.length) {
+    await createChatAutopilotProjectForSession(activeSession, { render: false });
+    config = getChatAutopilotSessionConfig(sessionId);
+    projectName = getChatAutopilotSelectedProjectName(config, activeSession);
+  }
   const objective = getChatAutopilotDefaultObjective(config, activeSession);
   const mode = config.mode || "auto";
   if (!projectName || !objective) {
@@ -44945,6 +45059,15 @@ function bindShellEvents() {
         state.chatAutopilotProjectPickerOpen[activeSession.id] = true;
         void ensureChatAutopilotResources().finally(() => refreshRichSessionSurfaceUi());
         refreshRichSessionSurfaceUi();
+        return;
+      }
+
+      const createProjectButton = target?.closest("[data-chat-autopilot-create-project]");
+      if (createProjectButton instanceof HTMLElement) {
+        event.preventDefault();
+        const activeSession = getActiveSession();
+        if (!activeSession?.id) return;
+        void createChatAutopilotProjectForSession(activeSession);
         return;
       }
 

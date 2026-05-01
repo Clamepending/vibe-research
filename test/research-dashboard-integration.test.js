@@ -90,6 +90,40 @@ test("GET /api/research/projects returns the list with summary fields", async ()
   });
 });
 
+test("POST /api/research/projects creates a project index for chat supervision", async () => {
+  await withLibraryServer(async ({ baseUrl, libraryRoot }) => {
+    const res = await fetch(`${baseUrl}/api/research/projects`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "semantic-autogaze",
+        goal: "Advance semantic autogaze from the active chat.",
+        ranking: { kind: "quantitative", metric: "research_progress_score", direction: "higher" },
+        successCriteria: ["same-chat supervisor can continue from durable project state"],
+      }),
+    });
+    assert.equal(res.status, 201);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.projectName, "semantic-autogaze");
+    assert.ok(body.projects.some((project) => project.name === "semantic-autogaze"));
+
+    const projectDir = path.join(libraryRoot, "projects", "semantic-autogaze");
+    const readme = await readFile(path.join(projectDir, "README.md"), "utf8");
+    assert.match(readme, /Advance semantic autogaze from the active chat\./);
+    assert.match(readme, /quantitative: research_progress_score \(higher is better\)/);
+    assert.match(readme, /\| initial-research-loop \| main \| Establish the first benchmark/);
+
+    const detailRes = await fetch(`${baseUrl}/api/research/projects/semantic-autogaze`);
+    assert.equal(detailRes.status, 200);
+    const detail = await detailRes.json();
+    assert.equal(detail.name, "semantic-autogaze");
+    assert.equal(detail.goal, "Advance semantic autogaze from the active chat.");
+    assert.equal(detail.queue[0].slug, "initial-research-loop");
+    assert.equal(detail.doctor.counts.error, 0);
+  });
+});
+
 test("GET /api/research/projects/<name> returns full detail with doctor result", async () => {
   await withLibraryServer(async ({ baseUrl }) => {
     const res = await fetch(`${baseUrl}/api/research/projects/prose-style`);
@@ -1011,6 +1045,10 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(jsText, /Next/);
     assert.match(jsText, /Replan/);
     assert.match(jsText, /Checkpoint/);
+    assert.match(jsText, /Index chat/);
+    assert.match(jsText, /data-chat-autopilot-create-project/);
+    assert.match(jsText, /\/api\/research\/projects/);
+    assert.match(jsText, /research_progress_score/);
     assert.doesNotMatch(jsText, /Autopilot driving/);
     assert.doesNotMatch(jsText, /Pause Autopilot/);
     assert.doesNotMatch(jsText, /Let Autopilot drive/);
