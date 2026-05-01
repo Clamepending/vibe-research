@@ -163,6 +163,12 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
       dragging.node.fx = point.x;
       dragging.node.fy = point.y;
       dragging.moved = true;
+      // Prevent sigma's default camera pan during a node drag — without
+      // these three calls, mousemovebody also moves the viewport, so the
+      // user feels like the whole map slides while they drag a node.
+      rawEvent.preventSigmaDefault?.();
+      rawEvent.original?.preventDefault?.();
+      rawEvent.original?.stopPropagation?.();
     };
     const onUp = () => {
       if (!dragging) return;
@@ -183,7 +189,11 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
   // simulation has room to settle without crushing everything together at
   // the origin. Density stays roughly constant as the graph grows.
   function spreadInitialPositions(nodes) {
-    const radius = 90 * Math.sqrt(Math.max(4, nodes.length));
+    // Tight spread — enough room for the simulation to find structure,
+    // but close enough to the eventual equilibrium that orphan nodes
+    // aren't stranded out at the perimeter waiting for a weak gravity
+    // to drag them home.
+    const radius = 50 * Math.sqrt(Math.max(4, nodes.length));
     for (const node of nodes) {
       const angle = Math.random() * Math.PI * 2;
       const r = Math.sqrt(Math.random()) * radius;
@@ -234,6 +244,10 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
   function onSimulationEnd() {
     if (cameraFitOnEnd) {
       cameraFitOnEnd = false;
+      // Recompute the graph extent (skipped during ticks for performance)
+      // before resetting the camera, so animatedReset's "fit to graph"
+      // sees the settled positions instead of the stale initial extent.
+      sigma?.refresh({ skipIndexation: false });
       sigma?.getCamera().animatedReset({ duration: 350 });
     }
   }
@@ -257,25 +271,65 @@ export function createKnowledgeBaseGraphRenderer(container, options = {}) {
   function applyForces() {
     ensureSimulation();
     simulation.nodes(d3Nodes);
+
+    // Pre-compute degrees so the link force can weaken its pull from the
+    // hub side (otherwise every leaf has a full-strength rope tugging it
+    // straight onto the hub, the hub has only one rope back, and you get
+    // the smashed-leaves-on-hub look instead of an open flower).
+    const degree = new Map();
+    graph.forEachNode((key) => {
+      degree.set(key, graph.degree(key));
+    });
+
     const linkForce = forceLink(d3Links)
       .id((n) => n.id)
-      .distance(50)
-      .strength(0.6);
+      // Distance scales with both endpoints' radii so a fat hub keeps its
+      // satellites pushed out beyond its own visual edge.
+      .distance((link) => 30 + (link.source.radius || 5) + (link.target.radius || 5))
+      // Outbound-attraction-distribution: link strength = 1 / min(degree).
+      // Leaf-to-leaf links keep full pull; hub-side links weaken so the
+      // hub doesn't crush its neighborhood.
+      .strength((link) => {
+        const a = degree.get(link.source.id) || 1;
+        const b = degree.get(link.target.id) || 1;
+        return 1 / Math.max(1, Math.min(a, b));
+      });
+
     const chargeForce = forceManyBody()
-      // Bigger nodes repel harder — gives hub-with-satellites the
-      // breathing room Obsidian's graph has.
-      .strength((n) => -180 - (n.radius || 5) * 12)
-      .distanceMax(900);
+      // Stronger base + bigger size scaling so leaves actually have room
+      // to spread around their hubs.
+      .strength((n) => -260 - (n.radius || 5) * 18)
+      .distanceMax(1400)
+      .theta(0.9);
+
     const collideForce = forceCollide()
-      .radius((n) => (n.radius || 5) + 4)
-      .strength(0.85);
-    const centerForce = forceCenter(0, 0).strength(0.04);
+      // Generous collision radius prevents visual overlap; ~1.4x the
+      // node radius leaves a comfortable gap.
+      .radius((n) => (n.radius || 5) * 1.4 + 6)
+      .strength(0.9)
+      .iterations(2);
+
+    // Center pull, plus separate forceX/forceY at higher strength to drag
+    // disconnected orphans out of the initial-spread ring and toward the
+    // middle. Pure forceCenter is too weak to overcome the velocityDecay
+    // for nodes that have no links anchoring them.
+    const centerForce = forceCenter(0, 0).strength(0.05);
+    const xPull = (n) => -n.x * 0.02;
+    const yPull = (n) => -n.y * 0.02;
 
     simulation
       .force("link", linkForce)
       .force("charge", chargeForce)
       .force("collide", collideForce)
-      .force("center", centerForce);
+      .force("center", centerForce)
+      // Custom drift toward origin: like forceX(0).strength(0.02) but
+      // applied by hand so we don't need an extra import.
+      .force("xCenter", (alpha) => {
+        for (const n of d3Nodes) n.vx += xPull(n) * alpha;
+      })
+      .force("yCenter", (alpha) => {
+        for (const n of d3Nodes) n.vy += yPull(n) * alpha;
+      });
   }
 
   function startInitialSimulation() {
