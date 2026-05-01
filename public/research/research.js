@@ -61,7 +61,104 @@
 
   // ----- Project list page -----
 
+  async function postOrgBenchRun(preset) {
+    const res = await fetch("/api/research/org-bench/run", {
+      method: "POST",
+      headers: { accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ preset }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+    return payload;
+  }
+
+  function formatBenchNumber(value, digits) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return "—";
+    return numeric.toFixed(digits);
+  }
+
+  function renderOrgBenchReport(container, payload) {
+    const report = payload.report || {};
+    const rows = Array.isArray(report.summary) ? report.summary : [];
+    container.innerHTML = "";
+    container.appendChild(el("div", { class: "vr-next-header" }, [
+      chip(payload.preset || "benchmark", "accent"),
+      report.outputDir ? chip("report saved") : null,
+    ]));
+    if (report.outputDir) {
+      container.appendChild(el("pre", { class: "vr-next-command" }, report.outputDir));
+    }
+    if (!rows.length) {
+      container.appendChild(el("p", { class: "vr-card-empty" }, "No benchmark rows returned."));
+      return;
+    }
+    container.appendChild(el("table", { class: "vr-table vr-org-bench-table" }, [
+      el("thead", null, el("tr", null, [
+        el("th", null, "strategy"),
+        el("th", null, "holdout"),
+        el("th", null, "dev"),
+        el("th", null, "integrity"),
+        el("th", null, "cycles"),
+        el("th", null, "reviews"),
+        el("th", null, "timeout"),
+        el("th", null, "metric Δ"),
+      ])),
+      el("tbody", null, rows.map((row) => el("tr", null, [
+        el("td", { class: "vr-slug" }, row.strategy || "—"),
+        el("td", null, formatBenchNumber(row.holdoutMean, 4)),
+        el("td", null, formatBenchNumber(row.devMean, 4)),
+        el("td", null, `${formatBenchNumber(Number(row.integrityPassRate) * 100, 0)}%`),
+        el("td", null, formatBenchNumber(row.workerCyclesMean, 2)),
+        el("td", null, formatBenchNumber(row.reviewCountMean, 2)),
+        el("td", null, `${formatBenchNumber(Number(row.timeoutRate) * 100, 0)}%`),
+        el("td", null, formatBenchNumber(row.metricDeltaMean, 4)),
+      ]))),
+    ]));
+  }
+
+  function renderOrgBenchPanel() {
+    const card = document.getElementById("org-bench-section");
+    if (!card) return;
+    card.innerHTML = "";
+    card.appendChild(el("h2", null, "Organization benchmark"));
+    card.appendChild(el(
+      "p",
+      { class: "vr-org-bench-copy" },
+      "Run the PostTrainBench-lite proxy from the browser and compare one-shot agents against the reviewed organization loop.",
+    ));
+
+    const result = el("div", { class: "vr-org-bench-result" });
+    const controls = el("div", { class: "vr-next-actions" });
+    const run = async (preset, label, event) => {
+      const target = event.currentTarget;
+      const buttons = Array.from(controls.querySelectorAll("button"));
+      buttons.forEach((buttonNode) => { buttonNode.disabled = true; });
+      card.setAttribute("aria-busy", "true");
+      result.innerHTML = "";
+      result.appendChild(el("p", { class: "vr-next-status" }, `${label} running…`));
+      try {
+        const payload = await postOrgBenchRun(preset);
+        renderOrgBenchReport(result, payload);
+      } catch (err) {
+        result.innerHTML = "";
+        result.appendChild(el("p", { class: "vr-next-status is-error" }, `Benchmark failed: ${err.message}`));
+      } finally {
+        card.setAttribute("aria-busy", "false");
+        buttons.forEach((buttonNode) => { buttonNode.disabled = false; });
+        if (target.isConnected) target.focus();
+      }
+    };
+
+    controls.appendChild(button("Run local smoke", (event) => run("local-smoke", "Local smoke", event), "primary"));
+    controls.appendChild(button("Run Codex canary", (event) => run("codex-reviewed", "Codex canary", event)));
+    card.appendChild(controls);
+    card.appendChild(el("p", { class: "vr-card-empty vr-org-bench-note" }, "Local smoke usually finishes in under a second. Codex canary can take a few minutes."));
+    card.appendChild(result);
+  }
+
   async function renderProjectList() {
+    renderOrgBenchPanel();
     setStatus("Loading projects…");
     let payload;
     try {

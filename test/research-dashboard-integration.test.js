@@ -234,12 +234,38 @@ test("POST /api/research/projects/<name>/autopilot/run executes one bounded step
   });
 });
 
+test("POST /api/research/org-bench/run executes local benchmark smoke", async () => {
+  await withLibraryServer(async ({ baseUrl }) => {
+    const res = await fetch(`${baseUrl}/api/research/org-bench/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset: "local-smoke", seeds: [0] }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    try {
+      assert.equal(body.ok, true);
+      assert.equal(body.preset, "local-smoke");
+      assert.match(body.text, /Org bench: posttrain-lite/);
+      const byStrategy = new Map(body.report.summary.map((row) => [row.strategy, row]));
+      assert.equal(byStrategy.get("single-agent-provider").runs, 1);
+      assert.equal(byStrategy.get("org-provider-reviewed").reviewCountMean, 1);
+      assert.equal(byStrategy.get("org-provider-reviewed").timeoutRate, 0);
+    } finally {
+      if (body.report?.outputDir) {
+        await rm(body.report.outputDir, { recursive: true, force: true });
+      }
+    }
+  });
+});
+
 test("GET /research returns the static index page", async () => {
   await withLibraryServer(async ({ baseUrl }) => {
     const res = await fetch(`${baseUrl}/research`);
     assert.equal(res.status, 200);
     const text = await res.text();
     assert.match(text, /<title>Vibe Research — Projects<\/title>/);
+    assert.match(text, /id="org-bench-section"/);
     assert.match(text, /id="project-list"/);
     assert.match(text, /\/research\/research\.js/);
   });
@@ -276,6 +302,7 @@ test("GET /research/research.js + research.css are served", async () => {
     assert.match(jsText, /autopilot\/step/);
     assert.match(jsText, /orchestrator\/tick/);
     assert.match(jsText, /briefs\/.*compile/);
+    assert.match(jsText, /org-bench\/run/);
     assert.match(jsText, /vr-next-candidates/);
     assert.match(jsText, /renderSweepsCard/);
     const css = await fetch(`${baseUrl}/research/research.css`);

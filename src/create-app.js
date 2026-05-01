@@ -81,6 +81,7 @@ import { listKnowledgeBase, readKnowledgeBaseNote } from "./knowledge-base.js";
 import { listProjects as listResearchProjects, getProjectDetail as getResearchProjectDetail } from "./research-api.js";
 import { runResearchAutopilot, stepResearchAutopilot } from "./research/autopilot.js";
 import { compileBriefToQueue, updateResearchState } from "./research/brief.js";
+import { formatOrgBenchReport, runOrgBench } from "./research/org-bench.js";
 import { tickResearchOrchestrator } from "./research/orchestrator.js";
 import {
   ensureWorkspaceDirectory,
@@ -152,6 +153,28 @@ const GOOGLE_OAUTH_FLOWS = Object.freeze({
     prompt: "consent",
   }),
 });
+
+function trimText(value) {
+  return String(value || "").trim();
+}
+
+function shellQuote(value) {
+  const text = String(value || "");
+  if (/^[A-Za-z0-9_./:=@+-]+$/.test(text)) return text;
+  return `'${text.replace(/'/g, "'\\''")}'`;
+}
+
+function parseOrgBenchSeeds(value, fallback = [0]) {
+  const raw = Array.isArray(value)
+    ? value
+    : String(value || "").split(",");
+  const seeds = raw
+    .map((entry) => Number(String(entry).trim()))
+    .filter(Number.isFinite)
+    .map((entry) => Math.max(0, Math.floor(entry)))
+    .slice(0, 5);
+  return seeds.length ? seeds : fallback;
+}
 const LIBRARY_SYNC_SETTING_KEYS = new Set([
   "wikiGitBackupEnabled",
   "wikiGitRemoteBranch",
@@ -6852,6 +6875,67 @@ export async function createVibeResearchApp({
       response.json({ libraryRoot, projects });
     } catch (error) {
       response.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/research/org-bench/run", async (request, response) => {
+    try {
+      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+        ? request.body
+        : {};
+      const preset = trimText(body.preset || "local-smoke");
+      const timestamp = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+      const runId = `${timestamp}-${randomUUID().slice(0, 8)}`;
+      let options;
+
+      if (preset === "local-smoke") {
+        options = {
+          outputDir: path.join(appRootDir, "output", "org-bench", `ui-local-smoke-${runId}`),
+          seeds: parseOrgBenchSeeds(body.seeds, [0, 1]),
+          strategies: ["single-agent-provider", "org-provider-reviewed"],
+          timeoutMs: Number(body.timeoutMs) || 30_000,
+          providerId: "local-proxy",
+          providerCommand: `${shellQuote(process.execPath)} scripts/provider-agent-proxy.mjs`,
+          reviewerProviderId: "local-reviewer-proxy",
+          reviewerCommand: `${shellQuote(process.execPath)} scripts/provider-reviewer-proxy.mjs`,
+        };
+      } else if (preset === "codex-reviewed") {
+        const model = trimText(body.model || process.env.VIBE_RESEARCH_ORG_BENCH_CODEX_MODEL || "gpt-5.4-mini");
+        const codexCommand = trimText(body.codexCommand || process.env.VIBE_RESEARCH_CODEX_COMMAND || "codex");
+        const workerTemplate = [
+          shellQuote(codexCommand),
+          "exec",
+          "--model", shellQuote(model),
+          "--sandbox", "workspace-write",
+          "--skip-git-repo-check",
+          "--cd", "{scenarioDir}",
+          "\"$(cat {promptFile})\"",
+          "</dev/null",
+        ].join(" ");
+        options = {
+          outputDir: path.join(appRootDir, "output", "org-bench", `ui-codex-reviewed-${runId}`),
+          seeds: parseOrgBenchSeeds(body.seeds, [0]).slice(0, 3),
+          strategies: ["single-agent-provider", "org-provider-reviewed"],
+          timeoutMs: Number(body.timeoutMs) || 240_000,
+          providerId: "codex-worker",
+          providerCommand: workerTemplate,
+          reviewerProviderId: "codex-reviewer",
+          reviewerCommand: workerTemplate,
+        };
+      } else {
+        response.status(400).json({ error: `unknown org benchmark preset: ${preset}` });
+        return;
+      }
+
+      const report = await runOrgBench(options);
+      response.json({
+        ok: true,
+        preset,
+        report,
+        text: formatOrgBenchReport(report),
+      });
+    } catch (error) {
+      response.status(500).json({ error: error.message || "Could not run organization benchmark." });
     }
   });
 
