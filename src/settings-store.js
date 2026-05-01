@@ -24,6 +24,16 @@ function normalizeSecret(value) {
   return String(value || "").trim();
 }
 
+function isEphemeralDemoWikiPath(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return false;
+  const segments = path.resolve(normalized).split(path.sep).filter(Boolean);
+  const hasDemoSegment = segments.some((segment) => /^vr-demo-ui-/u.test(segment));
+  const expectedTail = WORKSPACE_LIBRARY_RELATIVE_PATH.split(path.sep).filter(Boolean);
+  const actualTail = segments.slice(-expectedTail.length);
+  return hasDemoSegment && expectedTail.every((segment, index) => actualTail[index] === segment);
+}
+
 function expandHomePath(value, homeDir = os.homedir()) {
   const rawValue = String(value || "").trim();
 
@@ -640,6 +650,12 @@ export class SettingsStore {
       payload.wikiPathConfigured === true ||
       (payload.wikiPathConfigured === undefined &&
         (defaults.wikiPathConfigured || Boolean(String(payload.wikiPath || payload.workspaceRootPath || "").trim())));
+    let wikiPath = this.normalizeWikiPath(payload.wikiPath || defaults.wikiPath, workspacePaths.wikiPath);
+    let normalizedWikiPathConfigured = wikiPathConfigured;
+    if (isEphemeralDemoWikiPath(wikiPath) && path.resolve(wikiPath) !== path.resolve(workspacePaths.wikiPath)) {
+      wikiPath = workspacePaths.wikiPath;
+      normalizedWikiPathConfigured = true;
+    }
 
     return {
       agentAnthropicApiKey:
@@ -1102,8 +1118,8 @@ export class SettingsStore {
         payload.agentSpawnPath || defaults.agentSpawnPath,
         workspacePaths.agentSpawnPath,
       ),
-      wikiPath: this.normalizeWikiPath(payload.wikiPath || defaults.wikiPath, workspacePaths.wikiPath),
-      wikiPathConfigured,
+      wikiPath,
+      wikiPathConfigured: normalizedWikiPathConfigured,
     };
   }
 
