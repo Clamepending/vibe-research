@@ -182,7 +182,7 @@ test("same-chat supervisor Start creates project memory and arms silently while 
       drawerPosition: getComputedStyle(document.querySelector("[data-chat-autopilot-supervisor-drawer]")).position,
     }));
     assert.equal(drawerState.title, "Side chat");
-    assert.equal(drawerState.status, "resting");
+    assert.equal(drawerState.status, "worker running");
     assert.match(drawerState.preview, /Waiting for the next worker pause/);
     assert.ok(drawerState.signals.includes("worker running"));
     assert.ok(drawerState.signals.includes("1 subagent working"));

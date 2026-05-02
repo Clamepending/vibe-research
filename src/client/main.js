@@ -7882,19 +7882,26 @@ function renderChatAutopilotSupervisorSignal(label, tone = "") {
   return `<span class="rich-session-supervisor-signal${toneClass}">${escapeHtml(label)}</span>`;
 }
 
-function renderChatAutopilotSupervisorSignals(activeSession = {}, card = {}) {
+function getChatAutopilotSupervisorSignals(activeSession = {}, card = {}) {
   const subagents = Array.isArray(activeSession?.subagents) ? activeSession.subagents : [];
   const workingSubagents = subagents.filter((subagent) => subagent?.status === "working").length;
+  const failedSubagents = subagents.filter((subagent) => subagent?.status === "failed").length;
   const backgroundCount = Math.max(0, Math.floor(Number(activeSession?.backgroundActivity?.activeCount) || 0));
-  const workerLabel = activeSession?.streamWorking
+  const workerRunning = activeSession?.streamMode
+    ? Boolean(activeSession?.streamWorking)
+    : activeSession?.activityStatus === "working";
+  const workerExited = activeSession?.status === "exited";
+  const workerLabel = workerRunning
     ? "worker running"
-    : activeSession?.status === "exited"
+    : workerExited
       ? "worker exited"
       : "worker idle";
   const subagentLabel = workingSubagents
     ? `${workingSubagents} subagent${workingSubagents === 1 ? "" : "s"} working`
     : subagents.length
-      ? `${subagents.length} subagent${subagents.length === 1 ? "" : "s"} idle`
+      ? failedSubagents === subagents.length
+        ? `${subagents.length} subagent${subagents.length === 1 ? "" : "s"} failed`
+        : `${subagents.length} previous subagent${subagents.length === 1 ? "" : "s"}`
       : "no active subagents";
   const backgroundLabel = backgroundCount
     ? `${backgroundCount} background task${backgroundCount === 1 ? "" : "s"}`
@@ -7912,14 +7919,48 @@ function renderChatAutopilotSupervisorSignals(activeSession = {}, card = {}) {
     continuityLabel = summarizeChatAutopilotObjective(continuityText, 42);
   }
 
+  return {
+    workerRunning,
+    workerExited,
+    workingSubagents,
+    backgroundCount,
+    continuityArmed: continuityTone === "live",
+    continuityWarning: continuityTone === "warning",
+    labels: [
+      { text: workerLabel, tone: workerRunning ? "live" : workerExited ? "warning" : "" },
+      { text: subagentLabel, tone: workingSubagents ? "live" : failedSubagents === subagents.length && subagents.length ? "warning" : "" },
+      { text: backgroundLabel, tone: backgroundCount ? "live" : "" },
+      { text: continuityLabel, tone: continuityTone },
+    ],
+  };
+}
+
+function renderChatAutopilotSupervisorSignals(activeSession = {}, card = {}) {
+  const signalState = getChatAutopilotSupervisorSignals(activeSession, card);
   return `
     <div class="rich-session-supervisor-signals" aria-label="Supervisor observed signals">
-      ${renderChatAutopilotSupervisorSignal(workerLabel, activeSession?.streamWorking ? "live" : activeSession?.status === "exited" ? "warning" : "")}
-      ${renderChatAutopilotSupervisorSignal(subagentLabel, workingSubagents ? "live" : "")}
-      ${renderChatAutopilotSupervisorSignal(backgroundLabel, backgroundCount ? "live" : "")}
-      ${renderChatAutopilotSupervisorSignal(continuityLabel, continuityTone)}
+      ${signalState.labels.map((signal) => renderChatAutopilotSupervisorSignal(signal.text, signal.tone)).join("")}
     </div>
   `;
+}
+
+function getChatAutopilotSupervisorDrawerStatus({ activeSession = {}, card = {}, enabled = false, ticking = false, sendingMode = "", pending = "" } = {}) {
+  if (ticking) return { text: "reviewing", live: true };
+  if (sendingMode) {
+    return {
+      text: sendingMode === "directive" ? "preparing directive" : "answering",
+      live: true,
+    };
+  }
+  if (pending) return { text: pending, live: true };
+  if (!enabled) return { text: "manual", live: false };
+
+  const signals = getChatAutopilotSupervisorSignals(activeSession, card);
+  if (signals.workerRunning) return { text: "worker running", live: true };
+  if (signals.workingSubagents) return { text: "subagent active", live: true };
+  if (signals.backgroundCount) return { text: "monitoring", live: true };
+  if (signals.continuityArmed) return { text: "armed", live: false };
+  return { text: "armed", live: false };
 }
 
 function isSupervisorSideChatDesktopViewport() {
@@ -7945,20 +7986,20 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
   const { projectSupervisor, supervisor, scope } = getChatAutopilotSupervisorDisplayState(config);
   const card = supervisor.lastDirectiveCard || {};
   const auditRows = supervisor.audit.slice(-12).reverse();
-  const threadRows = supervisor.thread.slice(-80);
+  const threadRows = supervisor.thread.slice(-80).reverse();
   const ticking = Boolean(state.chatAutopilotSupervisorTicking[sessionId]);
   const sendingMode = String(state.chatAutopilotSupervisorSending[sessionId] || "");
   const pending = getChatAutopilotPending(sessionId);
   const enabled = Boolean(config.enabled && isChatAutopilotSessionDriver(config));
-  const status = ticking
-    ? "reviewing"
-    : sendingMode
-      ? sendingMode === "directive" ? "preparing directive" : "answering"
-    : pending
-      ? pending
-      : enabled
-        ? "resting"
-        : "manual";
+  const drawerStatus = getChatAutopilotSupervisorDrawerStatus({
+    activeSession,
+    card,
+    enabled,
+    ticking,
+    sendingMode,
+    pending,
+  });
+  const status = drawerStatus.text;
   const projectName = getChatAutopilotSelectedProjectName(config, activeSession) || projectSupervisor.projectName || "this chat";
   const lastAt = supervisor.lastDirectiveAt || supervisor.lastObservedAt || "";
   const lastTime = lastAt ? relativeTimeAgo(lastAt) || formatRichSessionTimestamp(lastAt) : "";
@@ -8007,7 +8048,7 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
           <strong>Side chat</strong>
         </div>
         <div class="rich-session-supervisor-head-actions">
-          <span class="rich-session-supervisor-state ${ticking ? "is-live" : ""}">${escapeHtml(status)}</span>
+          <span class="rich-session-supervisor-state ${drawerStatus.live ? "is-live" : ""}">${escapeHtml(status)}</span>
           <button class="rich-session-supervisor-close" type="button" data-chat-autopilot-supervisor-close aria-label="Close side chat">x</button>
         </div>
       </div>
