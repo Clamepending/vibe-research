@@ -100,8 +100,13 @@ test("same-chat supervisor Start creates project memory and arms silently while 
     }));
     assert.equal(preStartSideChat.label, "Side chat");
     assert.match(preStartSideChat.title, /side-by-side supervisor chat and history/i);
-    assert.equal(preStartSideChat.expanded, "false");
+    assert.equal(preStartSideChat.expanded, "true");
     assert.equal(preStartSideChat.disabled, false);
+    await page.waitForSelector("[data-chat-autopilot-supervisor-drawer].is-open", { timeout: 10_000 });
+    assert.equal(
+      await page.locator(".rich-session-surface").evaluate((surface) => surface.classList.contains("is-supervisor-open")),
+      true,
+    );
     assert.match(
       await page.locator(".rich-session-autopilot-status").textContent(),
       /ready to supervise this chat/,
@@ -143,12 +148,11 @@ test("same-chat supervisor Start creates project memory and arms silently while 
     assert.match(uiState.policyTitle, /Continuity:/);
     assert.match(uiState.traceTitle, /side-by-side supervisor chat and history/i);
     assert.equal(uiState.traceLabel, "Side chat");
-    assert.equal(uiState.traceExpanded, "false");
+    assert.equal(uiState.traceExpanded, "true");
     assert.equal(uiState.queueCount, 0);
     assert.equal(uiState.queuePreview, "");
     assert.equal(uiState.queueMeta, "");
 
-    await page.click("[data-chat-autopilot-supervisor-history]");
     await page.waitForSelector("[data-chat-autopilot-supervisor-drawer].is-open", { timeout: 10_000 });
     const drawerState = await page.evaluate(() => ({
       title: document.querySelector(".rich-session-supervisor-drawer-head strong")?.textContent?.trim() || "",

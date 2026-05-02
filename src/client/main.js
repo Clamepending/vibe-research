@@ -7852,10 +7852,25 @@ function chatAutopilotSupervisorRoleLabel(role = "", kind = "") {
   return cleanRole || "Event";
 }
 
+function isSupervisorSideChatDesktopViewport() {
+  return typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(min-width: 1080px)").matches;
+}
+
+function isChatAutopilotSupervisorDrawerOpen(activeSession) {
+  const sessionId = activeSession?.id || "";
+  if (!sessionId) return false;
+  if (Object.prototype.hasOwnProperty.call(state.chatAutopilotSupervisorDrawerOpen, sessionId)) {
+    return Boolean(state.chatAutopilotSupervisorDrawerOpen[sessionId]);
+  }
+  return getShellSurfaceMode(activeSession) === "native" && isSupervisorSideChatDesktopViewport();
+}
+
 function renderChatAutopilotSupervisorDrawer(activeSession) {
   const sessionId = activeSession?.id || "";
   if (!sessionId) return "";
-  const open = Boolean(state.chatAutopilotSupervisorDrawerOpen[sessionId]);
+  const open = isChatAutopilotSupervisorDrawerOpen(activeSession);
   const config = getChatAutopilotSessionConfig(sessionId);
   const { projectSupervisor, supervisor, scope } = getChatAutopilotSupervisorDisplayState(config);
   const card = supervisor.lastDirectiveCard || {};
@@ -8058,7 +8073,7 @@ function renderRichSessionAutopilotPanel(activeSession) {
     ? "Start a fresh chat in the same folder and let the supervisor continue."
     : "Ask the supervisor to take the next research step.";
   const actionDisabled = pending || projectCreating ? "disabled" : "";
-  const historyOpen = Boolean(state.chatAutopilotSupervisorDrawerOpen[activeSession.id]);
+  const historyOpen = isChatAutopilotSupervisorDrawerOpen(activeSession);
   const historyButton = `<button class="rich-session-autopilot-action" type="button" data-chat-autopilot-supervisor-history aria-expanded="${historyOpen ? "true" : "false"}" title="Open the side-by-side supervisor chat and history.">Side chat</button>`;
   return `
     <section class="rich-session-autopilot ${enabled ? "is-enabled" : ""} ${running ? "is-running" : ""}" id="rich-session-autopilot" data-rich-session-autopilot-mount>
@@ -8142,7 +8157,7 @@ function renderRichSessionSurface(activeSession) {
   const richActive = surfaceMode === "native";
   const streamLogActive = surfaceMode === "stream-json";
   const surfaceActive = richActive || streamLogActive;
-  const supervisorOpen = Boolean(activeSession?.id && state.chatAutopilotSupervisorDrawerOpen[activeSession.id]);
+  const supervisorOpen = isChatAutopilotSupervisorDrawerOpen(activeSession);
   // The "agent is doing X right now" signal lives ON the send button now
   // (it morphs into a spinner while streamWorking is true). The standalone
   // activity strip used to be a full-width row above the composer with
@@ -8293,7 +8308,7 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
   const richActive = surfaceMode === "native";
   const streamLogActive = surfaceMode === "stream-json";
   const surfaceActive = richActive || streamLogActive;
-  const supervisorOpen = Boolean(activeSession?.id && state.chatAutopilotSupervisorDrawerOpen[activeSession.id]);
+  const supervisorOpen = isChatAutopilotSupervisorDrawerOpen(activeSession);
   const stack = document.querySelector(".terminal-stack");
   const surface = document.querySelector("#rich-session-surface");
   const feed = getRichSessionFeedViewport();
@@ -45398,7 +45413,7 @@ function bindShellEvents() {
         event.preventDefault();
         const activeSession = getActiveSession();
         if (!activeSession?.id) return;
-        state.chatAutopilotSupervisorDrawerOpen[activeSession.id] = !state.chatAutopilotSupervisorDrawerOpen[activeSession.id];
+        state.chatAutopilotSupervisorDrawerOpen[activeSession.id] = !isChatAutopilotSupervisorDrawerOpen(activeSession);
         refreshRichSessionSurfaceUi();
         return;
       }
@@ -45408,7 +45423,7 @@ function bindShellEvents() {
         event.preventDefault();
         const activeSession = getActiveSession();
         if (!activeSession?.id) return;
-        delete state.chatAutopilotSupervisorDrawerOpen[activeSession.id];
+        state.chatAutopilotSupervisorDrawerOpen[activeSession.id] = false;
         refreshRichSessionSurfaceUi();
         return;
       }
