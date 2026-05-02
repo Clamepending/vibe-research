@@ -62,6 +62,20 @@ test("same-chat supervisor Start creates project memory and arms silently while 
     });
     session.streamWorking = true;
     app.sessionManager.sessions.set(session.id, session);
+    app.sessionManager.setExtraSubagentsProvider((candidate) => {
+      if (candidate.id !== session.id) return [];
+      return [
+        {
+          id: "subagent-qualitative-review",
+          name: "Qualitative review",
+          source: "codex",
+          status: "working",
+          updatedAt: timestamp,
+          messageCount: 4,
+          toolUseCount: 2,
+        },
+      ];
+    });
     app.sessionManager.getSessionNarrative = async (sessionId) => {
       if (sessionId !== session.id) return null;
       return {
@@ -158,6 +172,8 @@ test("same-chat supervisor Start creates project memory and arms silently while 
       title: document.querySelector(".rich-session-supervisor-drawer-head strong")?.textContent?.trim() || "",
       status: document.querySelector(".rich-session-supervisor-state")?.textContent?.trim() || "",
       preview: document.querySelector(".rich-session-supervisor-card p")?.textContent?.trim() || "",
+      signals: Array.from(document.querySelectorAll(".rich-session-supervisor-signal"))
+        .map((entry) => entry.textContent?.trim() || ""),
       history: Array.from(document.querySelectorAll(".rich-session-supervisor-event"))
         .map((entry) => entry.textContent?.trim() || "")
         .join(" "),
@@ -168,6 +184,10 @@ test("same-chat supervisor Start creates project memory and arms silently while 
     assert.equal(drawerState.title, "Side chat");
     assert.equal(drawerState.status, "resting");
     assert.match(drawerState.preview, /Waiting for the next worker pause/);
+    assert.ok(drawerState.signals.includes("worker running"));
+    assert.ok(drawerState.signals.includes("1 subagent working"));
+    assert.ok(drawerState.signals.includes("no background tasks"));
+    assert.ok(drawerState.signals.includes("continuity unknown"));
     assert.match(drawerState.history, /No supervisor decisions yet/);
     assert.equal(drawerState.expanded, "true");
     assert.equal(drawerState.surfaceOpen, true);
@@ -224,6 +244,7 @@ test("same-chat supervisor Start creates project memory and arms silently while 
     assert.equal(askState.queueCount, 0);
     assert.ok(askState.messages.some((text) => /Should I ask for qualitative heatmaps or ablations next\?/i.test(text)));
     assert.ok(askState.messages.some((text) => /Recommendation:/i.test(text)));
+    assert.ok(askState.messages.some((text) => /1 active subagent/i.test(text)));
 
     await page.fill("[data-chat-autopilot-supervisor-input]", "Please tell the worker to inspect qualitative heatmaps before more GPU spend.");
     await page.click('[data-chat-autopilot-supervisor-submit="directive"]');
@@ -253,6 +274,10 @@ test("same-chat supervisor Start creates project memory and arms silently while 
     assert.equal(directiveState.queueCount, 1);
     assert.match(directiveState.queuedText, /Please prioritize:/);
     assert.match(directiveState.queuedText, /qualitative heatmaps/);
+    assert.match(directiveState.queuedText, /GPU\/process state/);
+    assert.match(directiveState.queuedText, /validation samples\/heatmaps\/failure cases yourself/);
+    assert.match(directiveState.queuedText, /safe idle GPUs\/subagents saturated/);
+    assert.match(directiveState.queuedText, /literature\/current-docs/);
     assert.doesNotMatch(directiveState.queuedText, /\n/);
     assert.equal(directiveState.queuedMeta, "supervisor next step - sends after current turn");
     assert.match(directiveState.messages, /Sent to worker|Directive sent/i);

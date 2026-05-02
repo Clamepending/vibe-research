@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -23,6 +23,55 @@ async function copyDir(src, dest) {
   }
 }
 
+async function writeClaudeSubagent(homeDir, cwd, sessionId, {
+  agentId = "a1234567890abcdef",
+  description = "Research helper",
+  agentType = "general-purpose",
+  timestamps = null,
+  complete = false,
+} = {}) {
+  const resolvedTimestamps = Array.isArray(timestamps) && timestamps.length >= 2
+    ? timestamps
+    : [new Date(Date.now() - 1_000).toISOString(), new Date().toISOString()];
+  const projectDir = path.join(homeDir, ".claude", "projects", path.resolve(cwd).replaceAll(path.sep, "-"));
+  const subagentsDir = path.join(projectDir, sessionId, "subagents");
+  const fileBase = `agent-${agentId}`;
+  await mkdir(subagentsDir, { recursive: true });
+  await writeFile(
+    path.join(subagentsDir, `${fileBase}.meta.json`),
+    `${JSON.stringify({ agentType, description })}\n`,
+    "utf8",
+  );
+  const lines = [
+    {
+      type: "user",
+      isSidechain: true,
+      agentId,
+      promptId: "prompt-1",
+      timestamp: resolvedTimestamps[0],
+      message: { role: "user", content: "Inspect validation failures in parallel." },
+    },
+    {
+      type: "assistant",
+      isSidechain: true,
+      agentId,
+      timestamp: resolvedTimestamps[1],
+      message: {
+        role: "assistant",
+        stop_reason: complete ? "end_turn" : "tool_use",
+        content: complete
+          ? [{ type: "text", text: "Finished." }]
+          : [{ type: "tool_use", name: "Read", input: { file_path: "figures/failure-grid.png" } }],
+      },
+    },
+  ];
+  await writeFile(
+    path.join(subagentsDir, `${fileBase}.jsonl`),
+    `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`,
+    "utf8",
+  );
+}
+
 async function rmTreeWithRetry(target) {
   let lastError = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -44,7 +93,9 @@ async function withLibraryServer(fn) {
   await copyDir(FIXTURE_LIBRARY, libraryRoot);
 
   const previousWorkspace = process.env.VIBE_RESEARCH_WORKSPACE_DIR;
+  const previousHome = process.env.HOME;
   process.env.VIBE_RESEARCH_WORKSPACE_DIR = tmp;
+  process.env.HOME = tmp;
   let app = null;
   try {
     app = await createVibeResearchApp({
@@ -57,11 +108,13 @@ async function withLibraryServer(fn) {
       sleepPreventionFactory: (settings) =>
         new SleepPreventionService({ enabled: settings.preventSleepEnabled, platform: "test" }),
     });
-    await fn({ app, baseUrl: `http://127.0.0.1:${app.config.port}` });
+    await fn({ app, baseUrl: `http://127.0.0.1:${app.config.port}`, workspaceDir: tmp, homeDir: tmp });
   } finally {
     if (app) await app.close();
     if (previousWorkspace === undefined) delete process.env.VIBE_RESEARCH_WORKSPACE_DIR;
     else process.env.VIBE_RESEARCH_WORKSPACE_DIR = previousWorkspace;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
     await rmTreeWithRetry(tmp);
   }
 }
@@ -83,6 +136,51 @@ async function putJson(url, body) {
   });
   return { response, body: await response.json() };
 }
+
+test("supervisor runtime counts real Claude sidechain subagent transcripts", async () => {
+  await withLibraryServer(async ({ app, baseUrl, workspaceDir, homeDir }) => {
+    const claudeSessionId = "22222222-3333-4444-8555-666666666666";
+    await writeClaudeSubagent(homeDir, workspaceDir, claudeSessionId, {
+      description: "Validation artifact scout",
+      agentType: "explorer",
+      complete: false,
+    });
+
+    const session = app.sessionManager.buildSessionRecord({
+      id: "claude-parent-with-sidechain",
+      providerId: "claude",
+      providerLabel: "Claude Code",
+      name: "Claude parent with sidechain",
+      cwd: workspaceDir,
+      status: "running",
+      streamMode: true,
+      providerState: {
+        sessionId: claudeSessionId,
+      },
+    });
+    session.streamWorking = false;
+    app.sessionManager.sessions.set(session.id, session);
+
+    const saved = await putJson(`${baseUrl}/api/sessions/${session.id}/research-autopilot`, {
+      enabled: true,
+      projectName: "prose-style",
+      objective: "make prose more concise while preserving evidence",
+      driver: "session",
+      mode: "auto",
+    });
+    assert.equal(saved.response.status, 200);
+
+    const tick = await postJson(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/tick`, {
+      event: { type: "agent-idle", source: "session", turnMarker: "claude-sidechain-visible" },
+    });
+    assert.equal(tick.response.status, 200);
+    assert.equal(tick.body.runtime.activeSubagents, 1);
+    assert.match(tick.body.runtime.summary, /1 active subagent/);
+    assert.equal(tick.body.decision.shouldSend, true);
+    assert.match(tick.body.directive.text, /1 active subagent is visible, but I do not see a monitor\/wakeup/);
+    assert.match(tick.body.decision.card.continuity, /1 active subagent/);
+  });
+});
 
 test("supervisor side history treats human chat as steering and worker/subagent activity as observations", async () => {
   await withLibraryServer(async ({ app, baseUrl }) => {
@@ -152,7 +250,12 @@ test("supervisor side history treats human chat as steering and worker/subagent 
     );
 
     const subagentObservation = await postJson(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/tick`, {
-      event: { type: "agent-idle", source: "subagent", turnMarker: "heatmap-review-paused" },
+      event: {
+        type: "agent-idle",
+        source: "subagent",
+        subagentName: "Heatmap review",
+        turnMarker: "heatmap-review-paused",
+      },
     });
     assert.equal(subagentObservation.response.status, 200);
     assert.equal(subagentObservation.body.runtime.activeSubagents, 1);
@@ -160,6 +263,9 @@ test("supervisor side history treats human chat as steering and worker/subagent 
     assert.equal(subagentObservation.body.decision.action, "directive");
     assert.equal(subagentObservation.body.decision.shouldSend, true);
     assert.match(subagentObservation.body.directive.text, /Resume the active research move|Claim QUEUE row 1/);
+    assert.match(subagentObservation.body.directive.text, /safe idle GPUs saturated/);
+    assert.match(subagentObservation.body.directive.text, /validation samples\/heatmaps\/failure cases yourself/);
+    assert.match(subagentObservation.body.directive.text, /literature\/current-docs/);
     assert.match(subagentObservation.body.directive.text, /1 active subagent is visible, but I do not see a monitor\/wakeup/);
     assert.match(subagentObservation.body.directive.text, /set one before leaving long-running work/);
     assert.doesNotMatch(subagentObservation.body.directive.text, /\n/);
@@ -171,13 +277,16 @@ test("supervisor side history treats human chat as steering and worker/subagent 
         ["agent-idle", "directive"],
       ],
     );
+    const subagentThreadTail = subagentObservation.body.attachment.supervisor.thread.slice(-2);
     assert.deepEqual(
-      subagentObservation.body.attachment.supervisor.thread.slice(-2).map((entry) => [entry.role, entry.kind]),
+      subagentThreadTail.map((entry) => [entry.role, entry.kind]),
       [
         ["worker", "agent-idle"],
         ["directive", "directive_sent"],
       ],
     );
+    assert.equal(subagentThreadTail[0].title, "Subagent observed · Heatmap review");
+    assert.match(subagentThreadTail[1].title, /run bounded cycle|continue active move/);
 
     app.sessionManager.pushNativeNarrativeEntry(serverSession, {
       kind: "assistant",

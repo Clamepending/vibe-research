@@ -8521,10 +8521,11 @@ export async function createVibeResearchApp({
     const route = rec.slug ? `Current route: ${rec.action} ${rec.slug}; ${rec.reason}.` : `Current route: ${rec.action}; ${rec.reason}.`;
     return compactSupervisorChatText([
       `Please prioritize: ${head}`,
-      "First inspect README/ACTIVE/QUEUE/LOG, the result doc, recent commits, metrics, and qualitative artifacts.",
+      "First inspect README/ACTIVE/QUEUE/LOG, the result doc, recent commits, GPU/process state, metrics, and validation samples/heatmaps/failure cases yourself.",
       route,
       `Continuity: ${runtimeLine}.`,
-      "Use idle GPUs/subagents only for independent, provenance-preserving work; audit shortcuts or stale artifacts; stop only for a true human gate.",
+      "Keep safe idle GPUs/subagents saturated only with independent, provenance-preserving work; if stuck or changing recipe, do lightweight literature/current-docs before more GPU spend.",
+      "Audit shortcuts or stale artifacts; stop only for a true human gate.",
     ].join(" "), 1_000);
   }
 
@@ -8786,9 +8787,9 @@ export async function createVibeResearchApp({
         mode: mode === "directive" ? "route" : "review",
         action: mode === "directive" ? "send directive" : "answer human",
         reason: message,
-        evidence: "Answer from durable project state, worker trace, runtime, and recent artifacts.",
+        evidence: "Answer from durable project state, worker/subagent trace, runtime, and validation artifacts.",
         integrity: "Worker and subagent output are observations; human messages are supervisory input.",
-        compute: "Mention idle GPUs/subagents only when they are independent and provenance-preserving.",
+        compute: "Keep safe idle GPUs/subagents saturated only when work is independent and provenance-preserving.",
         continuity: supervisorRuntimeSummary(runtime),
         stop: "Send one directive only when explicitly requested.",
         preview: directiveText || reply,

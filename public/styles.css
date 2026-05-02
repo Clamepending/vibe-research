@@ -15320,6 +15320,39 @@ body.is-reordering-file-tabs {
   margin: 2px 0 0;
 }
 
+.rich-session-supervisor-signals {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.rich-session-supervisor-signal {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(244, 244, 242, 0.58);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.62rem;
+  line-height: 1.25;
+  padding: 5px 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rich-session-supervisor-signal.is-live {
+  border-color: rgba(142, 210, 185, 0.16);
+  background: rgba(142, 210, 185, 0.07);
+  color: rgba(224, 248, 237, 0.82);
+}
+
+.rich-session-supervisor-signal.is-warning {
+  border-color: rgba(255, 213, 128, 0.18);
+  background: rgba(255, 213, 128, 0.07);
+  color: rgba(255, 232, 185, 0.82);
+}
+
 .rich-session-supervisor-principles div {
   display: grid;
   gap: 2px;

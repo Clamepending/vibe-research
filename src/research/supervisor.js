@@ -135,6 +135,7 @@ function normalizeSupervisorEvent(event = {}) {
     action: trimString(input.action).toLowerCase(),
     source: trimString(input.source || "chat").toLowerCase(),
     turnMarker: boundedText(input.turnMarker || input.turnId || input.observedTurn || "", 120),
+    subagentName: boundedText(input.subagentName || input.agentName || input.workerName || "", 120),
     message: boundedText(input.message || input.observedMessage || input.text || "", 2_000),
   };
 }
@@ -864,11 +865,15 @@ export function updateResearchSupervisorState(previous = {}, decision = {}, even
   const threadEntries = [];
   if (normalizedEvent.type && !["toggle-on", "toggle-off", "supervisor-chat"].includes(normalizedEvent.type)) {
     const isHuman = normalizedEvent.source === "human";
+    const isSubagent = normalizedEvent.source === "subagent";
+    const subagentTitle = normalizedEvent.subagentName
+      ? `Subagent observed · ${normalizedEvent.subagentName}`
+      : "Subagent observed";
     threadEntries.push(supervisorThreadEntry({
       at,
       role: isHuman ? "human" : "worker",
       kind: normalizedEvent.type,
-      title: isHuman ? "Human action" : "Worker observed",
+      title: isHuman ? "Human action" : isSubagent ? subagentTitle : "Worker observed",
       text: normalizedEvent.message || decision.reason || normalizedEvent.action || normalizedEvent.type,
       source: normalizedEvent.source,
     }));

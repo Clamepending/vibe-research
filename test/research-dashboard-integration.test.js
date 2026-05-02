@@ -834,6 +834,10 @@ test("chat research supervisor side chat separates questions from worker directi
     assert.equal(directiveBody.mode, "directive");
     assert.match(directiveBody.directive.text, /Please prioritize:/);
     assert.match(directiveBody.directive.text, /qualitative heatmaps/);
+    assert.match(directiveBody.directive.text, /GPU\/process state/);
+    assert.match(directiveBody.directive.text, /validation samples\/heatmaps\/failure cases yourself/);
+    assert.match(directiveBody.directive.text, /safe idle GPUs\/subagents saturated/);
+    assert.match(directiveBody.directive.text, /literature\/current-docs/);
     assert.doesNotMatch(directiveBody.directive.text, /\n/);
     assert.equal(directiveBody.attachment.supervisor.interventionCount, 1);
     assert.deepEqual(

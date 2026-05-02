@@ -7827,9 +7827,9 @@ function getChatAutopilotSupervisorDisplayState(config = {}) {
 function renderChatAutopilotSupervisorPolicy(supervisorSummary = {}) {
   const card = supervisorSummary.card || {
     preview: "",
-    evidence: "Require current metrics plus qualitative samples, heatmaps, or failure cases before spending more compute.",
+    evidence: "Require current metrics plus first-hand validation samples, heatmaps, or failure cases before spending more compute.",
     integrity: "Check the recent trace for evaluator edits, leakage, cherry-picking, stale artifacts, and unverifiable numbers.",
-    compute: "Keep idle GPUs busy only with independent seeds, ablations, or sweeps that preserve provenance.",
+    compute: "Keep safe idle GPUs saturated with independent seeds, ablations, or sweeps that preserve provenance.",
     continuity: "When long-running work remains, verify a monitor, wakeup, or log watcher is attached.",
   };
   const title = [
@@ -7850,6 +7850,51 @@ function chatAutopilotSupervisorRoleLabel(role = "", kind = "") {
   if (cleanRole === "supervisor") return "Supervisor";
   if (cleanRole === "state") return kind ? `State · ${kind}` : "State";
   return cleanRole || "Event";
+}
+
+function renderChatAutopilotSupervisorSignal(label, tone = "") {
+  const toneClass = tone ? ` is-${tone}` : "";
+  return `<span class="rich-session-supervisor-signal${toneClass}">${escapeHtml(label)}</span>`;
+}
+
+function renderChatAutopilotSupervisorSignals(activeSession = {}, card = {}) {
+  const subagents = Array.isArray(activeSession?.subagents) ? activeSession.subagents : [];
+  const workingSubagents = subagents.filter((subagent) => subagent?.status === "working").length;
+  const backgroundCount = Math.max(0, Math.floor(Number(activeSession?.backgroundActivity?.activeCount) || 0));
+  const workerLabel = activeSession?.streamWorking
+    ? "worker running"
+    : activeSession?.status === "exited"
+      ? "worker exited"
+      : "worker idle";
+  const subagentLabel = workingSubagents
+    ? `${workingSubagents} subagent${workingSubagents === 1 ? "" : "s"} working`
+    : subagents.length
+      ? `${subagents.length} subagent${subagents.length === 1 ? "" : "s"} idle`
+      : "no active subagents";
+  const backgroundLabel = backgroundCount
+    ? `${backgroundCount} background task${backgroundCount === 1 ? "" : "s"}`
+    : "no background tasks";
+  const continuityText = String(card?.continuity || "").trim();
+  let continuityLabel = "continuity unknown";
+  let continuityTone = "";
+  if (/(?:monitor\/wakeup visible|monitor visible|wakeup visible|recent trace has monitor|recent trace has wakeup)/iu.test(continuityText)) {
+    continuityLabel = "continuity armed";
+    continuityTone = "live";
+  } else if (/(?:no active monitor|do not see a monitor|no monitor\/wakeup|set one before)/iu.test(continuityText)) {
+    continuityLabel = "monitor missing";
+    continuityTone = "warning";
+  } else if (continuityText) {
+    continuityLabel = summarizeChatAutopilotObjective(continuityText, 42);
+  }
+
+  return `
+    <div class="rich-session-supervisor-signals" aria-label="Supervisor observed signals">
+      ${renderChatAutopilotSupervisorSignal(workerLabel, activeSession?.streamWorking ? "live" : activeSession?.status === "exited" ? "warning" : "")}
+      ${renderChatAutopilotSupervisorSignal(subagentLabel, workingSubagents ? "live" : "")}
+      ${renderChatAutopilotSupervisorSignal(backgroundLabel, backgroundCount ? "live" : "")}
+      ${renderChatAutopilotSupervisorSignal(continuityLabel, continuityTone)}
+    </div>
+  `;
 }
 
 function isSupervisorSideChatDesktopViewport() {
@@ -7946,6 +7991,7 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
           <span class="rich-session-supervisor-kicker">${escapeHtml(projectName)}${lastTime ? ` · ${escapeHtml(lastTime)}` : ""}</span>
           <strong>${escapeHtml(decisionTitle)}</strong>
           <p>${escapeHtml(lastPreview)}</p>
+          ${renderChatAutopilotSupervisorSignals(activeSession, card)}
           ${card.evidence || card.integrity || card.compute || card.continuity ? `
             <dl class="rich-session-supervisor-principles">
               ${card.evidence ? `<div><dt>Evidence</dt><dd>${escapeHtml(card.evidence)}</dd></div>` : ""}
