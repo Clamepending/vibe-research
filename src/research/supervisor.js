@@ -341,10 +341,10 @@ function objectiveSentence(objective) {
 function supervisorDecisionChecklistBlock() {
   return [
     "Supervisor policy:",
-    "- Evidence: require current metrics plus qualitative samples, heatmaps, or failure cases before spending more compute.",
+    "- Evidence: require current metrics plus first-hand inspection of validation samples, heatmaps, or failure cases before spending more compute.",
     "- Integrity: audit the recent trace for evaluator edits, leakage, cherry-picking, stale artifacts, and unverifiable numbers.",
-    "- Compute: keep idle GPUs busy only with independent seeds, ablations, or sweeps that preserve provenance.",
-    "- Priority: choose the current bottleneck: monitor, diagnose, ablate, sweep, literature review, synthesize, or human gate.",
+    "- Compute: keep safe idle GPUs saturated with independent seeds, ablations, or sweeps that preserve provenance.",
+    "- Priority: when stuck or changing recipe, do a lightweight literature/current-docs pass before more GPU spend; otherwise choose the current bottleneck.",
     "- Communication: send one concrete next instruction with the artifact and stop condition.",
   ].join("\n");
 }
@@ -403,18 +403,19 @@ function operatingBrief({
   const commandHint = conciseCommandHint(command);
   const lines = [
     headline,
-    `Check ${stateHint}, the result doc, recent commits, metrics, and qualitative artifacts first.`,
+    `Check ${stateHint}, the result doc, recent commits, GPU/process state, metrics, and validation/qualitative artifacts first.`,
     objectiveSentence(objective),
   ];
   if (reason) {
     lines.push(`Why: ${reason}`);
   }
-  lines.push("Keep it evidence-first: use current metrics plus samples/heatmaps/failure cases; audit stale or cherry-picked artifacts; preserve provenance.");
+  lines.push("Keep it evidence-first: inspect validation samples/heatmaps/failure cases yourself; audit stale or cherry-picked artifacts; preserve provenance.");
+  lines.push("Keep safe idle GPUs saturated with independent seeds/ablations/sweeps; if stuck or changing recipe, do lightweight literature/current-docs before more GPU spend.");
   if (continuityLine) lines.push(continuityLine);
-  if (focus) lines.push(compactDirectiveText(focus, 190));
   if (commandHint) lines.push(`Command if useful: ${commandHint}.`);
+  if (focus) lines.push(compactDirectiveText(focus, 220));
   lines.push(compactDirectiveText(finish || "Update durable state after the bounded step and stop only for a true human gate.", 150));
-  return compactDirectiveText(lines.join(" "), 760);
+  return compactDirectiveText(lines.join(" "), 1_040);
 }
 
 function supervisorModeForAction(action = "") {
@@ -439,19 +440,19 @@ function supervisorActionLabel(action = "") {
 
 function supervisorEvidenceLine(action = "") {
   const mode = supervisorModeForAction(action);
-  if (mode === "review") return "Compare current metrics with qualitative artifacts before changing direction.";
-  if (mode === "plan") return "If artifacts are stale, ask for samples or heatmaps before proposing more compute.";
-  if (mode === "experiment") return "Confirm pre-flight, falsifier, and expected artifacts before launch.";
-  if (mode === "continue") return "Check whether the running cycle already has enough metrics or qualitative evidence.";
-  return "Require current quantitative and qualitative evidence before steering.";
+  if (mode === "review") return "Inspect validation samples/heatmaps/failure cases yourself alongside metrics before changing direction.";
+  if (mode === "plan") return "If artifacts are stale, inspect or request validation samples/heatmaps before proposing more compute.";
+  if (mode === "experiment") return "Confirm pre-flight, falsifier, expected artifacts, and validation/qual review plan before launch.";
+  if (mode === "continue") return "Inspect current validation artifacts yourself and check whether the cycle has enough metrics or qualitative evidence.";
+  return "Require current quantitative evidence plus first-hand validation/qual review before steering.";
 }
 
 function supervisorComputeLine(action = "") {
   const mode = supervisorModeForAction(action);
-  if (mode === "review" || mode === "repair") return "Avoid new GPU work until the state or verdict is clean.";
-  if (mode === "plan") return "Queue parallel work only after the bottleneck is explicit.";
-  if (/sweep/u.test(action)) return "Use parallel rows only when each has separate artifacts and provenance.";
-  return "Use idle GPUs for independent seeds, ablations, or sweeps; do not overlap conflicting cycles.";
+  if (mode === "review" || mode === "repair") return "Avoid new GPU work until the state or verdict is clean; then refill idle GPUs with independent follow-ups.";
+  if (mode === "plan") return "Queue parallel GPU work only after the bottleneck and grounding check are explicit.";
+  if (/sweep/u.test(action)) return "Use all safe idle GPUs for separate sweep rows with separate artifacts and provenance.";
+  return "Keep safe idle GPUs saturated with independent seeds, ablations, or sweeps; do not overlap conflicting cycles.";
 }
 
 function supervisorContinuityLine(action = "", runtime = {}) {
@@ -524,7 +525,7 @@ function automaticDirective({ action, report, attachment }) {
         command: nextCommand,
         action,
         runtime,
-        focus: "If a cycle is already running, verify process/GPU/artifact state and wait or monitor rather than launching a conflicting cycle. If evidence is complete, finish the move with the registered verdict instead of drifting into new work.",
+        focus: "If a cycle is running, verify process/GPU/artifact state and monitor it. If GPUs are idle, launch only independent seeds/ablations/sweeps with separate artifacts; inspect validation samples before claiming progress. If stuck, do a lightweight literature/current-docs pass before changing recipe.",
       }),
       reason: reason || "active move needs the next supervised step",
     };
@@ -541,7 +542,7 @@ function automaticDirective({ action, report, attachment }) {
         command: nextCommand,
         action,
         runtime,
-        focus: "Create or resume the result doc before expensive work, move the row into ACTIVE, and make the pre-flight/falsifier explicit.",
+        focus: "Create or resume the result doc before expensive work, move the row into ACTIVE, make the pre-flight/falsifier explicit, and plan validation artifacts plus safe GPU saturation up front.",
       }),
       reason: reason || "queued move is ready to run",
     };
@@ -558,7 +559,7 @@ function automaticDirective({ action, report, attachment }) {
         command: nextCommand,
         action,
         runtime,
-        focus: "Run the next runnable sweep row, preserve per-row artifacts and metrics, and do not collapse distinct recipes into one undocumented comparison.",
+        focus: "Run the next runnable sweep rows across all safe idle GPUs, preserve per-row artifacts and metrics, and do not collapse distinct recipes into one undocumented comparison.",
       }),
       reason: reason || "planned sweep has runnable rows",
     };
@@ -593,7 +594,7 @@ function automaticDirective({ action, report, attachment }) {
         command: nextCommand,
         action,
         runtime,
-        focus: "Use the README, LOG, leaderboard, prior result docs, and current artifacts to propose one small next move with a falsifier before running it.",
+        focus: "Use the README, LOG, leaderboard, prior result docs, current artifacts, and lightweight literature/current-docs grounding to propose one small next move with a falsifier before running it.",
         finish: "Save the brief, ask for review if the choice is material, and do not start experiments until the brief is fit to queue.",
       }),
       reason: reason || "project needs a brief before experiments",
@@ -611,7 +612,7 @@ function automaticDirective({ action, report, attachment }) {
         command: nextCommand,
         action,
         runtime,
-        focus: "Use the latest negative and positive evidence to propose a few candidate moves, then pick the smallest one that would change a decision.",
+        focus: "Use latest positive/negative evidence plus a lightweight literature/current-docs pass when stuck to propose candidate moves, then pick the smallest one that would change a decision.",
         finish: "Save the plan or brief, include falsifiers and expected artifacts, and ask for review before expensive execution if the choice is ambiguous.",
       }),
       reason: reason || "project needs planning before experiments",
@@ -629,7 +630,7 @@ function automaticDirective({ action, report, attachment }) {
         command: nextCommand,
         action,
         runtime,
-        focus: "If it is already fit to run, compile it into QUEUE; otherwise tighten the question, grounding, expected artifact, and falsifier first.",
+        focus: "If it is already fit to run, compile it into QUEUE; otherwise tighten the question, literature/current-docs grounding, validation artifacts, and falsifier first.",
       }),
       reason: reason || "brief needs review before queueing",
     };
@@ -648,7 +649,7 @@ function automaticDirective({ action, report, attachment }) {
           command: nextCommand,
           action,
           runtime,
-          focus: "Inspect the judge issues, run the narrowest confirming cycle, and keep the leaderboard unchanged until evidence is strong.",
+          focus: "Inspect the judge issues and validation artifacts yourself, run the narrowest confirming cycle, and keep the leaderboard unchanged until evidence is strong.",
         }),
         reason: reason || "judge recommends rerun",
       };
@@ -680,7 +681,7 @@ function automaticDirective({ action, report, attachment }) {
           command: nextCommand,
           action,
           runtime,
-          focus: "Use judge output, negative results, leaderboard state, and qualitative artifact review to propose the smallest useful follow-up.",
+          focus: "Use judge output, negative results, leaderboard state, qualitative artifact review, and literature/current-docs grounding if stuck to propose the smallest useful follow-up.",
         }),
         reason: reason || "judge recommends brainstorming",
       };

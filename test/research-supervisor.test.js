@@ -68,6 +68,8 @@ test("research supervisor emits opaque directives on manual actions", () => {
   assert.match(decision.directive.text, /Use the README\/project goal as the north star/);
   assert.match(decision.directive.text, /qualitative sample\/heatmap status/);
   assert.match(decision.directive.text, /evidence-first/);
+  assert.match(decision.directive.text, /safe idle GPUs saturated/);
+  assert.match(decision.directive.text, /literature\/current-docs/);
   assert.doesNotMatch(decision.directive.text, /\n/);
   assert.doesNotMatch(decision.directive.text, /^(State|Goal|Ranking|Success|Supervisor policy):/m);
   assert.equal(decision.card.mode, "review");
@@ -135,15 +137,20 @@ test("research supervisor emits worker-idle directives and dedupes later idle ch
   assert.match(first.directive.text, /latest LOG 2026-04-28/);
   assert.match(first.directive.text, /bench v1/);
   assert.match(first.directive.text, /Use the README\/project goal as the north star/);
+  assert.match(first.directive.text, /GPU\/process state/);
   assert.match(first.directive.text, /samples\/heatmaps\/failure cases/);
+  assert.match(first.directive.text, /validation samples\/heatmaps\/failure cases yourself/);
   assert.match(first.directive.text, /stale or cherry-picked artifacts/);
+  assert.match(first.directive.text, /safe idle GPUs saturated/);
+  assert.match(first.directive.text, /literature\/current-docs/);
   assert.match(first.directive.text, /set a monitor\/wakeup\/log watcher/);
   assert.doesNotMatch(first.directive.text, /\n/);
   assert.doesNotMatch(first.directive.text, /^(State|Goal|Ranking|Success|Supervisor policy):/m);
   assert.ok(first.directive.text.length < 1_100, `directive was too long: ${first.directive.text.length}`);
   assert.equal(first.card.mode, "experiment");
   assert.match(first.card.evidence, /pre-flight/);
-  assert.match(first.card.compute, /idle GPUs/);
+  assert.match(first.card.evidence, /validation\/qual review plan/);
+  assert.match(first.card.compute, /safe idle GPUs saturated/);
   assert.match(first.card.continuity, /no active monitor\/wakeup is visible/);
 
   const supervisor = updateResearchSupervisorState(
@@ -225,6 +232,8 @@ test("research supervisor compacts long objectives and keeps tactical priorities
   assert.doesNotMatch(decision.directive.text, /TAIL_SENTINEL_SHOULD_NOT_APPEAR_IN_DIRECTIVE/);
   assert.doesNotMatch(decision.directive.text, /Build a text-conditioned semantic patch-filter/);
   assert.match(decision.directive.text, /samples\/heatmaps\/failure cases/);
+  assert.match(decision.directive.text, /safe idle GPUs saturated/);
+  assert.match(decision.directive.text, /literature\/current-docs/);
   assert.match(decision.directive.text, /stale or cherry-picked artifacts/);
   assert.match(decision.directive.text, /set a monitor\/wakeup\/log watcher/);
   assert.doesNotMatch(decision.directive.text, /\n/);
@@ -287,7 +296,10 @@ test("research supervisor gives active-move execution briefs", () => {
   assert.equal(decision.action, "directive");
   assert.equal(decision.shouldSend, true);
   assert.match(decision.directive.text, /Resume the active research move v070/);
-  assert.match(decision.directive.text, /If a cycle is already running/);
+  assert.match(decision.directive.text, /If a cycle is running/);
+  assert.match(decision.directive.text, /GPU\/artifact state/);
+  assert.match(decision.directive.text, /validation samples/);
+  assert.match(decision.directive.text, /literature\/current-docs/);
   assert.match(decision.directive.text, /Command if useful: vr-research-runner/);
   assert.match(decision.directive.text, /set a monitor\/wakeup\/log watcher/);
   assert.doesNotMatch(decision.directive.text, /Autopilot/i);

@@ -662,6 +662,10 @@ test("chat research supervisor arms silently and routes only on worker-idle or e
     assert.match(firstIdleBody.directive.text, /Check QUEUE (baseline|v3-fewshot)/);
     assert.match(firstIdleBody.directive.text, /bench v1/);
     assert.match(firstIdleBody.directive.text, /Use the README\/project goal as the north star/);
+    assert.match(firstIdleBody.directive.text, /GPU\/process state/);
+    assert.match(firstIdleBody.directive.text, /validation samples\/heatmaps\/failure cases yourself/);
+    assert.match(firstIdleBody.directive.text, /safe idle GPUs saturated/);
+    assert.match(firstIdleBody.directive.text, /literature\/current-docs/);
     assert.match(firstIdleBody.directive.text, /set a monitor\/wakeup\/log watcher/);
     assert.doesNotMatch(firstIdleBody.directive.text, /\n/);
     assert.doesNotMatch(firstIdleBody.directive.text, /^(State|Goal|Ranking|Success|Supervisor policy):/m);
@@ -728,6 +732,8 @@ test("chat research supervisor arms silently and routes only on worker-idle or e
     assert.match(manualBody.directive.text, /Check QUEUE v3-fewshot/);
     assert.match(manualBody.directive.text, /Use the README\/project goal as the north star/);
     assert.match(manualBody.directive.text, /qualitative sample\/heatmap status/);
+    assert.match(manualBody.directive.text, /safe idle GPUs saturated/);
+    assert.match(manualBody.directive.text, /literature\/current-docs/);
     assert.doesNotMatch(manualBody.directive.text, /\n/);
     assert.equal(manualBody.decision.card.mode, "review");
     assert.doesNotMatch(manualBody.directive.text, /Autopilot/i);
