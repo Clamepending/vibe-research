@@ -905,13 +905,10 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
     updatedAt = parseTimestamp(payload.timestamp) || updatedAt;
 
     if (payload.type === "permission-mode") {
-      dedupePush(entries, {
-        id: makeEntryId("claude-permissions", entries.length + 1),
-        kind: "status",
-        label: "Permissions",
-        text: `Claude is running with ${payload.permissionMode || "default"} permissions.`,
-        timestamp: updatedAt,
-      }, maxEntries);
+      // Claude writes this metadata line every time a stream-json process
+      // starts or resumes. It is useful launch configuration, not a chat
+      // event; rendering it turns every reload into another "Permissions"
+      // card in long-lived sessions.
       continue;
     }
 
@@ -1084,8 +1081,12 @@ function buildClaudeNarrativeFromText(text, session = {}, { maxEntries = DEFAULT
           continue;
         }
 
+        const userIdSource = payload.uuid || payload.promptId || entries.length + 1;
+        const userIdSlug = String(userIdSource)
+          .replace(/[^a-zA-Z0-9_-]/g, "")
+          .slice(0, 40) || String(entries.length + 1);
         const userEntry = {
-          id: makeEntryId("claude-user", entries.length + 1),
+          id: `claude-user-${userIdSlug}`,
           kind: classified.kind,
           label: classified.kind === "status" ? "Kickoff" : "You",
           text: classified.text,

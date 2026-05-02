@@ -40,6 +40,11 @@ function inferImageMimeType(absolutePath, declaredMime = "") {
   return IMAGE_MIME_BY_EXTENSION[ext] || "image/png";
 }
 
+function normalizeIsoTimestamp(value) {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : "";
+}
+
 const DEFAULT_MAX_ENTRIES = 96;
 
 export class ClaudeStreamSession extends EventEmitter {
@@ -402,11 +407,11 @@ export class ClaudeStreamSession extends EventEmitter {
     const rawEntries = rawEntriesAll.filter(
       (entry) => !(entry?.kind === "status" && /^thinking$/iu.test(String(entry?.label || ""))),
     );
-    // Stamp each raw entry with our first-observation timestamp AND a
-    // session-wide monotonic sequence number. The sequence number is the
-    // sort key the merger uses (see mergeNarrativeEntries) — wall-clock
-    // timestamps from Claude's stream events bleed across turns and aren't
-    // safe for ordering.
+    // Stamp each raw entry with a session-wide monotonic sequence number.
+    // Preserve provider timestamps when Claude supplies them, especially on
+    // resume/replay where old transcript rows can be emitted by a fresh child.
+    // For timestamp-less stream-json status rows, fall back to first
+    // observation time so live partials still have a stable place.
     const stampedRaw = rawEntries.map((entry, index) => {
       const cacheKey = entry?.id || `raw-${index}`;
       let cachedStamp = this._entryStamps.get(cacheKey);
@@ -419,7 +424,7 @@ export class ClaudeStreamSession extends EventEmitter {
         seq = this._allocateSeq();
         this._entrySeqs.set(cacheKey, seq);
       }
-      return { ...entry, timestamp: cachedStamp, seq };
+      return { ...entry, timestamp: normalizeIsoTimestamp(entry?.timestamp) || cachedStamp, seq };
     });
     const synthesizedEntries = this._synthesizePartialEntries(stamp);
     this.entries = [...stampedRaw, ...synthesizedEntries];

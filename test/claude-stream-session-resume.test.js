@@ -49,3 +49,43 @@ test("buildLaunchArgs: extraArgs are appended verbatim", () => {
   assert.ok(modelIdx > 0, "--model present");
   assert.equal(args[modelIdx + 1], "claude-haiku-4-5-20251001");
 });
+
+test("stream parser preserves valid provider timestamps for replayed resume history", () => {
+  let seq = 0;
+  const stream = new ClaudeStreamSession({
+    sessionId: "replay-history",
+    allocateSeq: () => {
+      seq += 1;
+      return seq;
+    },
+  });
+
+  stream._handleLine(JSON.stringify({
+    type: "permission-mode",
+    permissionMode: "bypassPermissions",
+    sessionId: "replay-history",
+  }));
+  stream._handleLine(JSON.stringify({
+    type: "user",
+    uuid: "old-user",
+    timestamp: "2026-05-02T10:04:00.000Z",
+    message: { role: "user", content: "how is it going?" },
+  }));
+  stream._handleLine(JSON.stringify({
+    type: "assistant",
+    timestamp: "2026-05-02T10:04:02.000Z",
+    message: {
+      id: "old-assistant",
+      role: "assistant",
+      content: [{ type: "text", text: "It is going." }],
+    },
+  }));
+
+  assert.deepEqual(
+    stream.entries.map((entry) => ({ kind: entry.kind, text: entry.text, timestamp: entry.timestamp })),
+    [
+      { kind: "user", text: "how is it going?", timestamp: "2026-05-02T10:04:00.000Z" },
+      { kind: "assistant", text: "It is going.", timestamp: "2026-05-02T10:04:02.000Z" },
+    ],
+  );
+});

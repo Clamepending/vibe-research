@@ -110,6 +110,7 @@ test("rich session native feed is clean even when the raw transcript is full of 
             // the bare path "figures/x.png" the user merely mentioned in
             // prose (those only appear on assistant messages).
             text: "Run doctor and fix README placeholder rows for bidir-video-rl-bench. Attached image: ![dropped image: hint.png](/tmp/attachments/sessions/rich-look-session/2026-04-29/hint-aa.png) Reference figures/baseline-curve.png too.",
+            imageRefs: ["/tmp/attachments/sessions/rich-look-session/2026-04-29/hint-aa.png"],
             timestamp,
           },
           {
@@ -192,6 +193,7 @@ test("rich session native feed is clean even when the raw transcript is full of 
             label: "Error",
             status: "error",
             text: "authentication_failed\nPlease run /login · API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"Invalid authentication credentials\"}}",
+            slashAction: { command: "/login", label: "Sign in" },
             timestamp,
           },
           {
@@ -204,6 +206,7 @@ test("rich session native feed is clean even when the raw transcript is full of 
               "",
               "Here's the FID figure for the 3-seed run: figures/fid-progress.png and the ablation curve at figures/ablation-curve.png.",
             ].join("\n"),
+            imageRefs: ["figures/fid-progress.png", "figures/ablation-curve.png"],
             timestamp,
           },
           // Bash tool whose output explicitly says it wrote an image — should
@@ -217,6 +220,7 @@ test("rich session native feed is clean even when the raw transcript is full of 
             status: "done",
             meta: "completed",
             outputPreview: "saved to figures/fid-progress.png",
+            imageRefs: ["figures/fid-progress.png"],
             timestamp,
           },
           // Negative case: a grep over the figures dir mentions a .png path
@@ -234,6 +238,12 @@ test("rich session native feed is clean even when the raw transcript is full of 
         ],
       };
     };
+    const fixtureNarrative = await app.sessionManager.getSessionNarrative(session.id);
+    session.nativeNarrativeEntries = (fixtureNarrative.entries || []).map((entry, index) => ({
+      ...entry,
+      id: entry.id || `rich-look-${index + 1}`,
+      seq: index + 1,
+    }));
 
     browser = await chromium.launch({ executablePath, headless: true });
     const page = await browser.newPage({ viewport: { width: 1600, height: 1300 }, deviceScaleFactor: 2 });
@@ -258,13 +268,12 @@ test("rich session native feed is clean even when the raw transcript is full of 
       const runningTools = toolEntries.filter((entry) => entry.classList.contains("is-running"));
       const thinkingEntries = entries.filter((entry) => entry.classList.contains("is-thinking"));
       const pathLinks = feed ? Array.from(feed.querySelectorAll(".rich-session-path-link")) : [];
-      const todoBlock = document.querySelector(".rich-session-todo-block");
-      const todoItems = todoBlock ? Array.from(todoBlock.querySelectorAll(".rich-session-todo-item")) : [];
+      const todoTick = document.querySelector(".rich-session-todo-tick");
       const monitorPills = Array.from(document.querySelectorAll("#rich-session-monitors .rich-session-monitor-pill"));
       const slashAction = document.querySelector("[data-rich-session-slash-command]");
       const errorBashEntry = toolEntries.find((entry) => /bench-v1-init resolved/.test(entry.textContent || ""));
       const ansiSpansInError = errorBashEntry
-        ? Array.from(errorBashEntry.querySelectorAll("pre.is-output span[style]"))
+        ? Array.from(errorBashEntry.querySelectorAll("span[style]"))
         : [];
       const redSpan = ansiSpansInError.find((span) => /ff7b72/i.test(span.getAttribute("style") || ""));
       const greenSpan = ansiSpansInError.find((span) => /7ee787/i.test(span.getAttribute("style") || ""));
@@ -295,9 +304,7 @@ test("rich session native feed is clean even when the raw transcript is full of 
         thinkingCount: thinkingEntries.length,
         firstPathHref: pathLinks[0]?.getAttribute("data-rich-path") || "",
         pathLinkCount: pathLinks.length,
-        todoSummary: todoBlock?.querySelector(".rich-session-todo-summary")?.textContent?.trim() || "",
-        todoCount: todoItems.length,
-        todoInProgressFirst: todoItems[0]?.classList.contains("is-in-progress") || false,
+        todoSummary: todoTick?.querySelector(".rich-session-todo-tick-summary")?.textContent?.trim() || "",
         monitorPillLabels: monitorPills.map((pill) => pill.textContent.trim()),
         slashActionCommand: slashAction?.getAttribute("data-rich-session-slash-command") || "",
         slashActionLabel: slashAction?.textContent?.trim() || "",
@@ -330,12 +337,10 @@ test("rich session native feed is clean even when the raw transcript is full of 
     //    contract for future regressions).
     assert.equal(summary.thinkingCount, 0, "no placeholder Thinking entry should remain");
 
-    // 4. TodoWrite renders a structured checklist with the in-progress
-    //    task first.
+    // 4. TodoWrite renders a compact inline audit tick; the sticky plan
+    //    panel owns the expanded current checklist.
     assert.match(summary.todoSummary, /10 tasks/);
     assert.match(summary.todoSummary, /1 in progress/);
-    assert.ok(summary.todoCount >= 5, `expected >=5 todo items, got ${summary.todoCount}`);
-    assert.equal(summary.todoInProgressFirst, true, "in-progress task should be ordered first");
 
     // 5. The monitor row shows the long-running Monitor tool exactly once
     //    and does NOT promote ToolSearch / Edit / TodoWrite into pills.

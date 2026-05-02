@@ -183,7 +183,6 @@ test("Claude native narrative turns onboarding seed prompts into kickoff status 
   assert.deepEqual(
     narrative.entries.map((entry) => ({ kind: entry.kind, label: entry.label, text: entry.text })),
     [
-      { kind: "status", label: "Permissions", text: "Claude is running with bypassPermissions permissions." },
       { kind: "status", label: "Kickoff", text: "Session seeded with app instructions." },
       { kind: "user", label: "You", text: "can you help me connect google calendar?" },
       { kind: "assistant", label: "Claude Code", text: "Absolutely. We'll do it one small step at a time." },
@@ -194,7 +193,41 @@ test("Claude native narrative turns onboarding seed prompts into kickoff status 
   assert.equal(narrative.entries.at(-1).outputPreview, "ready");
 });
 
-test("Codex native narrative uses event messages for thinking and commentary before the final answer lands", () => {
+test("Claude native narrative treats repeated permission-mode events as non-chat metadata", () => {
+  const text = [
+    JSON.stringify({ type: "permission-mode", permissionMode: "bypassPermissions", sessionId: "s1" }),
+    JSON.stringify({
+      type: "user",
+      timestamp: "2026-05-02T08:19:00.000Z",
+      uuid: "user-1",
+      message: { role: "user", content: "how is it going?" },
+    }),
+    JSON.stringify({ type: "permission-mode", permissionMode: "bypassPermissions", sessionId: "s1" }),
+    JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-05-02T08:19:02.000Z",
+      message: {
+        id: "msg_1",
+        role: "assistant",
+        content: [{ type: "text", text: "Still working through the validation set." }],
+      },
+    }),
+    JSON.stringify({ type: "permission-mode", permissionMode: "bypassPermissions", sessionId: "s1" }),
+  ].join("\n");
+
+  const narrative = buildClaudeNarrativeFromText(text, { providerId: "claude", providerLabel: "Claude Code" });
+
+  assert.equal(narrative.entries.some((entry) => entry.label === "Permissions"), false);
+  assert.deepEqual(
+    narrative.entries.map((entry) => ({ kind: entry.kind, label: entry.label, text: entry.text })),
+    [
+      { kind: "user", label: "You", text: "how is it going?" },
+      { kind: "assistant", label: "Claude Code", text: "Still working through the validation set." },
+    ],
+  );
+});
+
+test("Codex native narrative uses event messages for commentary before the final answer lands", () => {
   const timestamp = "2026-04-24T04:51:37.075Z";
   const text = [
     JSON.stringify({ timestamp, type: "session_meta", payload: { id: "codex-thread", cwd: "/tmp/demo" } }),
@@ -231,7 +264,6 @@ test("Codex native narrative uses event messages for thinking and commentary bef
   assert.deepEqual(
     narrative.entries.map((entry) => ({ kind: entry.kind, label: entry.label, text: entry.text })),
     [
-      { kind: "status", label: "Thinking", text: "Codex is thinking..." },
       { kind: "status", label: "Activity", text: "I am checking the repo before I touch anything." },
       { kind: "assistant", label: "Codex", text: "The changes are in place." },
     ],

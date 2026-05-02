@@ -21,6 +21,7 @@ import { chromium } from "playwright-core";
 import { createVibeResearchApp } from "../src/create-app.js";
 import { resolveBrowserExecutablePath } from "../src/browser-runtime.js";
 import { SleepPreventionService } from "../src/sleep-prevention.js";
+import { buildClaudeNarrativeFromText } from "../src/session-native-narrative.js";
 
 const ESC = String.fromCharCode(0x1b);
 const BEL = String.fromCharCode(0x07);
@@ -464,6 +465,136 @@ test("native UI renders plan card, MCP badge, image strip, /login action, chat d
   } finally {
     await browser?.close().catch(() => {});
     await app.close?.().catch(() => {});
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("native UI reload keeps Claude resume history interleaved and hides permission metadata", async (t) => {
+  const executablePath = await resolveBrowserExecutablePath({ env: process.env });
+  if (!executablePath) {
+    t.skip("No local Chromium/Chrome executable available for the resume-history smoke.");
+    return;
+  }
+
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "vibe-research-resume-history-"));
+  const providers = [
+    { id: "claude", label: "Claude Code", available: true, command: "claude", launchCommand: "claude", defaultName: "Claude" },
+    { id: "shell", label: "Shell", available: true, command: null, launchCommand: null, defaultName: "Shell" },
+  ];
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, providers });
+  let browser = null;
+
+  try {
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceRootPath: workspaceDir, wikiPathConfigured: true }),
+    });
+
+    const timestamp = "2026-05-02T08:19:00.000Z";
+    const session = app.sessionManager.buildSessionRecord({
+      id: "resume-history-session",
+      providerId: "claude",
+      providerLabel: "Claude Code",
+      name: "semantic-autogaze",
+      cwd: workspaceDir,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      status: "running",
+      streamMode: true,
+    });
+
+    const transcript = [
+      JSON.stringify({ type: "permission-mode", permissionMode: "bypassPermissions", sessionId: session.id }),
+      JSON.stringify({
+        type: "user",
+        uuid: "u-1004",
+        timestamp: "2026-05-02T10:04:00.000Z",
+        message: { role: "user", content: "how is it going?" },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-05-02T10:04:04.000Z",
+        message: {
+          id: "a-1004",
+          role: "assistant",
+          content: [{ type: "text", text: "The validation pass is still running." }],
+        },
+      }),
+      JSON.stringify({ type: "permission-mode", permissionMode: "bypassPermissions", sessionId: session.id }),
+      JSON.stringify({
+        type: "user",
+        uuid: "u-1006",
+        timestamp: "2026-05-02T10:06:00.000Z",
+        message: { role: "user", content: "yup please continue and fully utilize the gpus" },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-05-02T10:06:05.000Z",
+        message: {
+          id: "a-1006",
+          role: "assistant",
+          content: [{ type: "text", text: "Continuing with the GPU-backed run." }],
+        },
+      }),
+      JSON.stringify({ type: "permission-mode", permissionMode: "bypassPermissions", sessionId: session.id }),
+    ].join("\n");
+
+    const narrative = buildClaudeNarrativeFromText(transcript, {
+      providerId: "claude",
+      providerLabel: "Claude Code",
+    });
+    session.streamEntries = narrative.entries.map((entry, index) => ({ ...entry, seq: index + 1 }));
+    app.sessionManager.sessions.set(session.id, session);
+
+    browser = await chromium.launch({ executablePath, headless: true });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    const readFeed = async () => page.evaluate(() => {
+      const entries = Array.from(document.querySelectorAll("[data-rich-session-entry]"));
+      return {
+        bodyText: document.body?.textContent || "",
+        rows: entries.map((entry) => {
+          const kind = entry.classList.contains("is-user")
+            ? "user"
+            : entry.classList.contains("is-assistant")
+              ? "assistant"
+              : entry.classList.contains("is-status")
+                ? "status"
+                : "other";
+          return {
+            kind,
+            text: (entry.textContent || "").replace(/\s+/g, " ").trim(),
+          };
+        }),
+      };
+    });
+
+    const assertCleanAndInterleaved = (snapshot) => {
+      assert.doesNotMatch(snapshot.bodyText, /Permissions/);
+      assert.doesNotMatch(snapshot.bodyText, /bypassPermissions/);
+      assert.deepEqual(
+        snapshot.rows.map((row) => row.kind),
+        ["user", "assistant", "user", "assistant"],
+      );
+      assert.match(snapshot.rows[0].text, /how is it going\?/);
+      assert.match(snapshot.rows[1].text, /validation pass is still running/);
+      assert.match(snapshot.rows[2].text, /fully utilize the gpus/);
+      assert.match(snapshot.rows[3].text, /GPU-backed run/);
+    };
+
+    await page.goto(`${baseUrl}/?view=shell`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector(".rich-session-surface.is-active", { timeout: 30_000 });
+    await page.waitForSelector(".rich-session-entry.is-assistant", { timeout: 10_000 });
+    assertCleanAndInterleaved(await readFeed());
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector(".rich-session-surface.is-active", { timeout: 30_000 });
+    await page.waitForSelector(".rich-session-entry.is-assistant", { timeout: 10_000 });
+    assertCleanAndInterleaved(await readFeed());
+  } finally {
+    await browser?.close();
+    await app.close();
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });
