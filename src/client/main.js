@@ -7919,11 +7919,11 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
       <div class="rich-session-supervisor-drawer-head">
         <div>
           <span class="rich-session-supervisor-kicker">${escapeHtml(scope)} supervisor</span>
-          <strong>Supervisor</strong>
+          <strong>Side chat</strong>
         </div>
         <div class="rich-session-supervisor-head-actions">
           <span class="rich-session-supervisor-state ${ticking ? "is-live" : ""}">${escapeHtml(status)}</span>
-          <button class="rich-session-supervisor-close" type="button" data-chat-autopilot-supervisor-close aria-label="Close supervisor history">x</button>
+          <button class="rich-session-supervisor-close" type="button" data-chat-autopilot-supervisor-close aria-label="Close side chat">x</button>
         </div>
       </div>
       <div class="rich-session-supervisor-drawer-body">
@@ -7947,7 +7947,7 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
           </section>
         ` : ""}
         <section class="rich-session-supervisor-history">
-          <div class="rich-session-supervisor-section-title">Supervisor chat</div>
+          <div class="rich-session-supervisor-section-title">Side chat</div>
           <div class="rich-session-supervisor-chat-log">${chatHistory}</div>
         </section>
         <section class="rich-session-supervisor-history is-audit">
@@ -8059,7 +8059,7 @@ function renderRichSessionAutopilotPanel(activeSession) {
     : "Ask the supervisor to take the next research step.";
   const actionDisabled = pending || projectCreating ? "disabled" : "";
   const historyOpen = Boolean(state.chatAutopilotSupervisorDrawerOpen[activeSession.id]);
-  const historyButton = `<button class="rich-session-autopilot-action" type="button" data-chat-autopilot-supervisor-history aria-expanded="${historyOpen ? "true" : "false"}" title="Open the supervisor side chat and history." ${actionDisabled}>Supervisor</button>`;
+  const historyButton = `<button class="rich-session-autopilot-action" type="button" data-chat-autopilot-supervisor-history aria-expanded="${historyOpen ? "true" : "false"}" title="Open the side-by-side supervisor chat and history.">Side chat</button>`;
   return `
     <section class="rich-session-autopilot ${enabled ? "is-enabled" : ""} ${running ? "is-running" : ""}" id="rich-session-autopilot" data-rich-session-autopilot-mount>
       <div class="rich-session-autopilot-main">
@@ -8090,10 +8090,10 @@ function renderRichSessionAutopilotPanel(activeSession) {
             ${escapeHtml(projectLabel)}
           </button>
         `}
+        ${historyButton}
         ${showSteeringActions ? `
           <span class="rich-session-autopilot-supervisor-pill" title="${escapeHtml(supervisorSummary.title)}">${escapeHtml(supervisorSummary.label)}</span>
           ${renderChatAutopilotSupervisorPolicy(supervisorSummary)}
-          ${historyButton}
           <button class="rich-session-autopilot-action is-primary" type="button" data-chat-autopilot-action="continue" title="${escapeHtml(nextActionTitle)}" ${actionDisabled}>${escapeHtml(nextActionLabel)}</button>
           <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="brainstorm" title="Ask the supervisor to pause execution and propose next directions." ${actionDisabled}>Replan</button>
           <button class="rich-session-autopilot-action" type="button" data-chat-autopilot-action="synthesize" title="Ask the supervisor for a checkpoint summary, evidence, risks, and recommendation." ${actionDisabled}>Checkpoint</button>
@@ -8101,7 +8101,6 @@ function renderRichSessionAutopilotPanel(activeSession) {
         ` : enabled ? `
           <span class="rich-session-autopilot-supervisor-pill" title="${escapeHtml(supervisorSummary.title)}">${escapeHtml(supervisorSummary.label)}</span>
           ${renderChatAutopilotSupervisorPolicy(supervisorSummary)}
-          ${historyButton}
           <button class="rich-session-autopilot-action is-danger" type="button" data-chat-autopilot-action="pause" title="Turn Autopilot off for this chat." ${actionDisabled}>Pause</button>
         ` : ""}
       </div>

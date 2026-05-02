@@ -92,6 +92,16 @@ test("same-chat supervisor Start creates project memory and arms silently while 
 
     const startButton = page.locator("[data-chat-autopilot-start-project]");
     await startButton.waitFor({ timeout: 20_000 });
+    const preStartSideChat = await page.locator("[data-chat-autopilot-supervisor-history]").evaluate((button) => ({
+      label: button.textContent?.trim() || "",
+      title: button.getAttribute("title") || "",
+      expanded: button.getAttribute("aria-expanded") || "",
+      disabled: button.hasAttribute("disabled"),
+    }));
+    assert.equal(preStartSideChat.label, "Side chat");
+    assert.match(preStartSideChat.title, /side-by-side supervisor chat and history/i);
+    assert.equal(preStartSideChat.expanded, "false");
+    assert.equal(preStartSideChat.disabled, false);
     assert.match(
       await page.locator(".rich-session-autopilot-status").textContent(),
       /ready to supervise this chat/,
@@ -131,8 +141,8 @@ test("same-chat supervisor Start creates project memory and arms silently while 
     assert.match(uiState.policyTitle, /Integrity:/);
     assert.match(uiState.policyTitle, /Compute:/);
     assert.match(uiState.policyTitle, /Continuity:/);
-    assert.match(uiState.traceTitle, /supervisor side chat and history/i);
-    assert.equal(uiState.traceLabel, "Supervisor");
+    assert.match(uiState.traceTitle, /side-by-side supervisor chat and history/i);
+    assert.equal(uiState.traceLabel, "Side chat");
     assert.equal(uiState.traceExpanded, "false");
     assert.equal(uiState.queueCount, 0);
     assert.equal(uiState.queuePreview, "");
@@ -151,7 +161,7 @@ test("same-chat supervisor Start creates project memory and arms silently while 
       surfaceOpen: document.querySelector(".rich-session-surface")?.classList.contains("is-supervisor-open") || false,
       drawerPosition: getComputedStyle(document.querySelector("[data-chat-autopilot-supervisor-drawer]")).position,
     }));
-    assert.equal(drawerState.title, "Supervisor");
+    assert.equal(drawerState.title, "Side chat");
     assert.equal(drawerState.status, "resting");
     assert.match(drawerState.preview, /Waiting for the next worker pause/);
     assert.match(drawerState.history, /No supervisor decisions yet/);
