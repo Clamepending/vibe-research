@@ -15151,8 +15151,8 @@ body.is-reordering-file-tabs {
   right: 16px;
   bottom: 104px;
   z-index: 38;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   width: min(380px, calc(100% - 32px));
   min-height: 0;
   overflow: hidden;
@@ -15198,7 +15198,7 @@ body.is-reordering-file-tabs {
     bottom: auto;
     width: 100%;
     height: calc(100dvh - 128px);
-    max-height: calc(100% - 32px);
+    max-height: calc(100dvh - 128px);
     transform: translateX(0);
   }
 }
@@ -15259,13 +15259,23 @@ body.is-reordering-file-tabs {
 
 .rich-session-supervisor-drawer-body {
   display: grid;
+  flex: 1 1 auto;
   align-content: start;
   gap: 12px;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 12px;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
   scrollbar-color: rgba(230, 234, 240, 0.3) rgba(255, 255, 255, 0.035);
   scrollbar-width: thin;
+}
+
+.rich-session-supervisor-drawer-body:focus-visible {
+  outline: 2px solid rgba(142, 210, 185, 0.22);
+  outline-offset: -2px;
 }
 
 .rich-session-supervisor-card,

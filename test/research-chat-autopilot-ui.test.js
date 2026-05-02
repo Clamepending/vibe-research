@@ -172,6 +172,31 @@ test("same-chat supervisor Start creates project memory and arms silently while 
     assert.equal(drawerState.expanded, "true");
     assert.equal(drawerState.surfaceOpen, true);
     assert.equal(drawerState.drawerPosition, "sticky");
+    const scrollState = await page.evaluate(() => {
+      const body = document.querySelector(".rich-session-supervisor-drawer-body");
+      if (!(body instanceof HTMLElement)) return null;
+      const filler = document.createElement("div");
+      filler.style.minHeight = "1400px";
+      filler.setAttribute("data-test-supervisor-scroll-filler", "true");
+      body.appendChild(filler);
+      body.scrollTop = 0;
+      body.scrollBy(0, 320);
+      const state = {
+        clientHeight: body.clientHeight,
+        scrollHeight: body.scrollHeight,
+        scrollTop: body.scrollTop,
+        overflowY: getComputedStyle(body).overflowY,
+        tabIndex: body.tabIndex,
+      };
+      filler.remove();
+      body.scrollTop = 0;
+      return state;
+    });
+    assert.ok(scrollState);
+    assert.equal(scrollState.overflowY, "auto");
+    assert.equal(scrollState.tabIndex, 0);
+    assert.ok(scrollState.scrollHeight > scrollState.clientHeight);
+    assert.ok(scrollState.scrollTop > 0);
 
     await page.fill("[data-chat-autopilot-supervisor-input]", "Should I ask for qualitative heatmaps or ablations next?");
     await page.click('[data-chat-autopilot-supervisor-submit="ask"]');

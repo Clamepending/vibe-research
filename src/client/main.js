@@ -7941,7 +7941,7 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
           <button class="rich-session-supervisor-close" type="button" data-chat-autopilot-supervisor-close aria-label="Close side chat">x</button>
         </div>
       </div>
-      <div class="rich-session-supervisor-drawer-body">
+      <div class="rich-session-supervisor-drawer-body" tabindex="0" aria-label="Supervisor side chat and trace">
         <section class="rich-session-supervisor-card">
           <span class="rich-session-supervisor-kicker">${escapeHtml(projectName)}${lastTime ? ` · ${escapeHtml(lastTime)}` : ""}</span>
           <strong>${escapeHtml(decisionTitle)}</strong>
