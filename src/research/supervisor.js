@@ -165,6 +165,7 @@ function normalizeSupervisorRuntime(value = {}) {
   const recentTraceHasMonitor = Boolean(input.recentTraceHasMonitor || input.monitorArmed || input.hasMonitor);
   const recentTraceHasWakeup = Boolean(input.recentTraceHasWakeup || input.wakeupArmed || input.hasWakeup);
   const hasContinuity = Boolean(input.hasContinuity || recentTraceHasMonitor || recentTraceHasWakeup);
+  const streamWorking = Boolean(input.streamWorking || input.workerWorking);
   const summaryParts = [
     hasContinuity
       ? [
@@ -177,6 +178,9 @@ function normalizeSupervisorRuntime(value = {}) {
     input.summary || input.monitorSummary || input.wakeupSummary || "",
   ].filter(Boolean);
   return {
+    sessionStatus: boundedText(input.sessionStatus || input.status, 80),
+    activityStatus: boundedText(input.activityStatus, 80),
+    streamWorking,
     activeBackgroundTasks,
     activeSubagents,
     recentTraceHasMonitor,
@@ -188,6 +192,18 @@ function normalizeSupervisorRuntime(value = {}) {
 
 function observedAttachmentRuntime(attachment = {}) {
   return attachment?.runtime || attachment?.sessionRuntime || {};
+}
+
+function automaticEventAllowsDirective(event = {}) {
+  const type = normalizeSupervisorEvent(event).type;
+  return type === "agent-idle"
+    || type === "worker-idle"
+    || type === "turn-complete"
+    || type === "recover-exited";
+}
+
+function automaticEventIsRecovery(event = {}) {
+  return normalizeSupervisorEvent(event).type === "recover-exited";
 }
 
 function actionNeedsContinuityReminder(action = "") {
@@ -775,6 +791,28 @@ export function decideResearchSupervisorIntervention({
         },
       };
     }
+  }
+
+  const runtime = observedAttachmentRuntime(attachment);
+  const runtimeStatus = normalizeSupervisorRuntime(runtime);
+  if (!automaticEventAllowsDirective(normalizedEvent)) {
+    return {
+      action: "silent",
+      shouldSend: false,
+      reason: "automatic supervisor directives only fire on worker handoff, recovery, or explicit Tell worker/manual actions",
+      event: normalizedEvent,
+      signature: directiveSignature({ event: normalizedEvent, action: "silent", reason: "not-handoff-event" }),
+    };
+  }
+
+  if (!automaticEventIsRecovery(normalizedEvent) && runtimeStatus.streamWorking) {
+    return {
+      action: "silent",
+      shouldSend: false,
+      reason: "worker is still running; wait for the next handoff before sending a supervisor directive",
+      event: normalizedEvent,
+      signature: directiveSignature({ event: normalizedEvent, action: "silent", reason: "worker-running" }),
+    };
   }
 
   if (!trimString(attachment.projectName)) {

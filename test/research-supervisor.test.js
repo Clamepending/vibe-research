@@ -102,6 +102,51 @@ test("research supervisor routes manual continue through project recommendation"
   assert.equal(decision.card.action, "continue active move");
 });
 
+test("research supervisor only auto-directs at worker handoff unless explicitly told", () => {
+  const report = {
+    recommendation: {
+      action: "continue-active",
+      reason: "ACTIVE has v070; continue or finish that move before claiming another.",
+      slug: "v070",
+    },
+  };
+
+  const ordinaryTick = decideResearchSupervisorIntervention({
+    attachment: attachment(),
+    event: { type: "tick", source: "session" },
+    orchestratorReport: report,
+  });
+  assert.equal(ordinaryTick.action, "silent");
+  assert.equal(ordinaryTick.shouldSend, false);
+  assert.match(ordinaryTick.reason, /worker handoff/);
+
+  const stillRunning = decideResearchSupervisorIntervention({
+    attachment: attachment({ runtime: { streamWorking: true } }),
+    event: { type: "agent-idle", source: "session", turnMarker: "premature-idle" },
+    orchestratorReport: report,
+  });
+  assert.equal(stillRunning.action, "silent");
+  assert.equal(stillRunning.shouldSend, false);
+  assert.match(stillRunning.reason, /worker is still running/);
+
+  const explicitTellWorker = decideResearchSupervisorIntervention({
+    attachment: attachment({ runtime: { streamWorking: true } }),
+    event: { type: "manual-action", action: "continue", source: "human" },
+    orchestratorReport: report,
+  });
+  assert.equal(explicitTellWorker.action, "directive");
+  assert.equal(explicitTellWorker.shouldSend, true);
+  assert.match(explicitTellWorker.directive.text, /Resume the active research move v070/);
+
+  const handoff = decideResearchSupervisorIntervention({
+    attachment: attachment({ runtime: { streamWorking: false } }),
+    event: { type: "agent-idle", source: "session", turnMarker: "turn-complete" },
+    orchestratorReport: report,
+  });
+  assert.equal(handoff.action, "directive");
+  assert.equal(handoff.shouldSend, true);
+});
+
 test("research supervisor emits worker-idle directives and dedupes later idle checks", () => {
   const report = {
     recommendation: {
