@@ -1811,6 +1811,170 @@ input[readonly][data-folder-picker-target] {
   min-height: 0;
 }
 
+.sidebar-devices-section .section-actions {
+  gap: 4px;
+}
+
+.sidebar-devices-summary {
+  max-width: 104px;
+  overflow: hidden;
+  color: rgba(232, 236, 240, 0.46);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-devices-list {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.sidebar-device-empty {
+  display: grid;
+  gap: 7px;
+}
+
+.sidebar-device-action {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 9px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sidebar-device-error {
+  padding: 7px 9px;
+  border: 1px solid rgba(255, 141, 134, 0.16);
+  border-radius: 9px;
+  background: rgba(255, 141, 134, 0.07);
+  color: #ffb3ad;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.sidebar-camera-preview-card {
+  display: grid;
+  gap: 7px;
+  overflow: hidden;
+  padding: 7px;
+  border: 1px solid rgba(124, 231, 240, 0.18);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(124, 231, 240, 0.08), transparent 52%),
+    rgba(255, 255, 255, 0.035);
+}
+
+.sidebar-camera-preview-video {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border-radius: 9px;
+  background: #050608;
+  object-fit: cover;
+}
+
+.sidebar-camera-preview-meta {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 26px;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.sidebar-camera-preview-meta > span {
+  display: inline-grid;
+  place-items: center;
+  color: #aef6fb;
+}
+
+.sidebar-camera-preview-meta .vr-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.sidebar-camera-preview-meta strong {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(244, 247, 251, 0.94);
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-camera-close {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 8px;
+}
+
+.sidebar-camera-device {
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr) 26px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-camera-device:hover,
+.sidebar-camera-device:focus-visible {
+  border-color: rgba(124, 231, 240, 0.18);
+  background: rgba(124, 231, 240, 0.08);
+  outline: none;
+  transform: none;
+}
+
+.sidebar-camera-device.is-active {
+  border-color: rgba(124, 231, 240, 0.25);
+  background: rgba(124, 231, 240, 0.12);
+}
+
+.sidebar-camera-device-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sidebar-camera-device .session-subtitle {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-camera-device-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(232, 236, 240, 0.66);
+}
+
+.sidebar-camera-device.is-active .sidebar-camera-device-icon {
+  background: rgba(124, 231, 240, 0.14);
+  color: #aef6fb;
+}
+
+.sidebar-camera-device-icon .vr-icon {
+  width: 14px;
+  height: 14px;
+}
+
 .sidebar-section-fill {
   min-height: 0;
   align-content: start;

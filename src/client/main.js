@@ -2296,6 +2296,19 @@ const state = {
   deferredSelectableRefreshTimer: null,
   ports: [],
   portsLoadedAt: 0,
+  cameraDevices: {
+    devices: [],
+    loaded: false,
+    loading: false,
+    error: "",
+    activeDeviceKey: "",
+    activeDeviceId: "",
+    activeLabel: "",
+    activeStream: null,
+    activeStreamError: "",
+    permissionGranted: false,
+    deviceChangeBound: false,
+  },
   currentView: "shell",
   mainViewNavigationToken: 0,
   workspaceEmpty: false,
@@ -10008,6 +10021,306 @@ async function requestVideoMemoryCameraPermission() {
   }
 
   await loadVideoMemoryStatus({ renderOnComplete: false });
+  await loadSidebarCameraDevices({ renderOnComplete: true });
+}
+
+function getBrowserMediaDevices() {
+  if (typeof navigator === "undefined") {
+    return null;
+  }
+  return navigator.mediaDevices || null;
+}
+
+function isSidebarCameraSupported() {
+  const mediaDevices = getBrowserMediaDevices();
+  return Boolean(mediaDevices?.enumerateDevices && mediaDevices?.getUserMedia);
+}
+
+function getSidebarCameraErrorMessage(error) {
+  const name = String(error?.name || "");
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+    return "camera access denied";
+  }
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+    return "no cameras found";
+  }
+  if (name === "NotReadableError" || name === "TrackStartError") {
+    return "camera is already in use";
+  }
+  if (name === "OverconstrainedError" || name === "ConstraintNotSatisfiedError") {
+    return "that camera is unavailable";
+  }
+  if (!isSidebarCameraSupported()) {
+    return "camera API unavailable";
+  }
+  return error?.message || "could not open camera";
+}
+
+function normalizeSidebarCameraDevices(devices) {
+  return (Array.isArray(devices) ? devices : [])
+    .filter((device) => device?.kind === "videoinput")
+    .map((device, index) => ({
+      deviceId: String(device.deviceId || ""),
+      groupId: String(device.groupId || ""),
+      kind: "videoinput",
+      label: String(device.label || "").trim(),
+      ordinal: index,
+    }));
+}
+
+function getSidebarCameraDeviceKey(device, index = 0) {
+  return String(device?.deviceId || device?.groupId || `camera-${index}`);
+}
+
+function getSidebarCameraDeviceLabel(device, index = 0) {
+  const label = String(device?.label || "").trim();
+  if (label) {
+    return label;
+  }
+  return `Camera ${Number(index) + 1}`;
+}
+
+function getSidebarCameraDeviceMeta(device) {
+  const label = String(device?.label || "").trim().toLowerCase();
+  if (label.includes("usb")) {
+    return "USB camera";
+  }
+  if (label.includes("facetime") || label.includes("built-in") || label.includes("builtin")) {
+    return "built-in camera";
+  }
+  return "video input";
+}
+
+function refreshSidebarDevicesUi() {
+  const section = document.querySelector("[data-sidebar-devices-section]");
+  if (!(section instanceof HTMLElement)) {
+    return;
+  }
+  section.outerHTML = renderSidebarDevicesSection();
+  bindSidebarDeviceEvents();
+  syncSidebarCameraPreviewStream();
+}
+
+function stopSidebarCameraStream() {
+  const stream = state.cameraDevices.activeStream;
+  if (stream && typeof stream.getTracks === "function") {
+    for (const track of stream.getTracks()) {
+      try {
+        track.stop();
+      } catch {
+        // Track cleanup is best-effort; the browser owns the device handle.
+      }
+    }
+  }
+  state.cameraDevices.activeStream = null;
+  state.cameraDevices.activeDeviceKey = "";
+  state.cameraDevices.activeDeviceId = "";
+  state.cameraDevices.activeLabel = "";
+}
+
+async function enumerateSidebarCameraDevices() {
+  const mediaDevices = getBrowserMediaDevices();
+  if (!mediaDevices?.enumerateDevices) {
+    throw new Error("camera API unavailable");
+  }
+  const devices = await mediaDevices.enumerateDevices();
+  return normalizeSidebarCameraDevices(devices);
+}
+
+async function loadSidebarCameraDevices({ requestPermission = false, renderOnComplete = false } = {}) {
+  if (!isSidebarCameraSupported()) {
+    state.cameraDevices.loaded = true;
+    state.cameraDevices.loading = false;
+    state.cameraDevices.error = "camera API unavailable";
+    if (renderOnComplete) {
+      refreshSidebarDevicesUi();
+    }
+    return;
+  }
+
+  if (state.cameraDevices.loading && !requestPermission) {
+    return;
+  }
+
+  const mediaDevices = getBrowserMediaDevices();
+  state.cameraDevices.loading = true;
+  state.cameraDevices.error = "";
+  if (renderOnComplete) {
+    refreshSidebarDevicesUi();
+  }
+
+  let permissionStream = null;
+  try {
+    if (requestPermission) {
+      permissionStream = await mediaDevices.getUserMedia({ video: true, audio: false });
+      state.cameraDevices.permissionGranted = true;
+    }
+
+    state.cameraDevices.devices = await enumerateSidebarCameraDevices();
+    state.cameraDevices.loaded = true;
+    state.cameraDevices.error = "";
+
+    if (
+      state.cameraDevices.activeDeviceKey
+      && !state.cameraDevices.devices.some((device, index) => getSidebarCameraDeviceKey(device, index) === state.cameraDevices.activeDeviceKey)
+    ) {
+      stopSidebarCameraStream();
+      state.cameraDevices.activeStreamError = "camera disconnected";
+    }
+  } catch (error) {
+    state.cameraDevices.error = getSidebarCameraErrorMessage(error);
+    state.cameraDevices.loaded = true;
+  } finally {
+    if (permissionStream && permissionStream !== state.cameraDevices.activeStream) {
+      for (const track of permissionStream.getTracks()) {
+        track.stop();
+      }
+    }
+    state.cameraDevices.loading = false;
+    if (renderOnComplete) {
+      refreshSidebarDevicesUi();
+    }
+  }
+}
+
+async function openSidebarCameraDevice(indexValue) {
+  const index = Number(indexValue);
+  const mediaDevices = getBrowserMediaDevices();
+  if (!Number.isInteger(index) || index < 0 || !mediaDevices?.getUserMedia) {
+    return;
+  }
+
+  if (!state.cameraDevices.devices[index]) {
+    await loadSidebarCameraDevices({ requestPermission: true, renderOnComplete: false });
+  }
+
+  const device = state.cameraDevices.devices[index];
+  if (!device) {
+    state.cameraDevices.activeStreamError = "camera not found";
+    refreshSidebarDevicesUi();
+    return;
+  }
+
+  const deviceKey = getSidebarCameraDeviceKey(device, index);
+  state.cameraDevices.activeStreamError = "";
+  if (state.cameraDevices.activeStream) {
+    stopSidebarCameraStream();
+  }
+  state.cameraDevices.activeDeviceKey = deviceKey;
+  refreshSidebarDevicesUi();
+
+  const exactConstraints = device.deviceId
+    ? { video: { deviceId: { exact: device.deviceId } }, audio: false }
+    : { video: true, audio: false };
+
+  let stream = null;
+  try {
+    try {
+      stream = await mediaDevices.getUserMedia(exactConstraints);
+    } catch (error) {
+      const name = String(error?.name || "");
+      if (!device.deviceId || (name !== "OverconstrainedError" && name !== "NotFoundError")) {
+        throw error;
+      }
+      stream = await mediaDevices.getUserMedia({ video: true, audio: false });
+    }
+
+    stopSidebarCameraStream();
+    state.cameraDevices.activeStream = stream;
+    state.cameraDevices.activeDeviceKey = deviceKey;
+    state.cameraDevices.activeDeviceId = device.deviceId;
+    state.cameraDevices.activeLabel = getSidebarCameraDeviceLabel(device, index);
+    state.cameraDevices.activeStreamError = "";
+    state.cameraDevices.permissionGranted = true;
+
+    for (const track of stream.getVideoTracks()) {
+      track.addEventListener("ended", () => {
+        if (state.cameraDevices.activeStream === stream) {
+          stopSidebarCameraStream();
+          state.cameraDevices.activeStreamError = "camera stopped";
+          refreshSidebarDevicesUi();
+        }
+      }, { once: true });
+    }
+
+    state.cameraDevices.devices = await enumerateSidebarCameraDevices();
+    const matchedIndex = state.cameraDevices.devices.findIndex((candidate) => candidate.deviceId && candidate.deviceId === device.deviceId);
+    if (matchedIndex >= 0) {
+      state.cameraDevices.activeDeviceKey = getSidebarCameraDeviceKey(state.cameraDevices.devices[matchedIndex], matchedIndex);
+      state.cameraDevices.activeLabel = getSidebarCameraDeviceLabel(state.cameraDevices.devices[matchedIndex], matchedIndex);
+    }
+  } catch (error) {
+    stopSidebarCameraStream();
+    state.cameraDevices.activeStreamError = getSidebarCameraErrorMessage(error);
+  } finally {
+    refreshSidebarDevicesUi();
+  }
+}
+
+function closeSidebarCameraDevice() {
+  stopSidebarCameraStream();
+  state.cameraDevices.activeStreamError = "";
+  refreshSidebarDevicesUi();
+}
+
+function syncSidebarCameraPreviewStream() {
+  const video = document.querySelector("[data-sidebar-camera-preview]");
+  if (!(video instanceof HTMLVideoElement)) {
+    return;
+  }
+  const stream = state.cameraDevices.activeStream || null;
+  if (video.srcObject !== stream) {
+    video.srcObject = stream;
+  }
+  if (stream) {
+    void video.play().catch((error) => {
+      console.warn("[vibe-research] camera preview play failed", error);
+    });
+  }
+}
+
+function bindSidebarCameraDeviceChange() {
+  if (state.cameraDevices.deviceChangeBound) {
+    return;
+  }
+  const mediaDevices = getBrowserMediaDevices();
+  if (!mediaDevices?.addEventListener) {
+    return;
+  }
+  state.cameraDevices.deviceChangeBound = true;
+  mediaDevices.addEventListener("devicechange", () => {
+    void loadSidebarCameraDevices({ renderOnComplete: true });
+  });
+}
+
+function bindSidebarDeviceEvents() {
+  document.querySelectorAll("[data-sidebar-camera-refresh]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      void loadSidebarCameraDevices({ renderOnComplete: true });
+    });
+  });
+
+  document.querySelectorAll("[data-sidebar-camera-request]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      void loadSidebarCameraDevices({ requestPermission: true, renderOnComplete: true });
+    });
+  });
+
+  document.querySelectorAll("[data-sidebar-camera-open]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      void openSidebarCameraDevice(button.getAttribute("data-sidebar-camera-open"));
+    });
+  });
+
+  document.querySelectorAll("[data-sidebar-camera-close]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      closeSidebarCameraDevice();
+    });
+  });
 }
 
 function getAgentCredentialsStatusText() {
@@ -16908,6 +17221,132 @@ function handleAgentTownShareClick() {
   closeMobileSidebar();
   const targetWindow = openAgentTownSharePlaceholderWindow();
   void shareAgentTownToBuildingHub({ targetWindow });
+}
+
+function getSidebarDevicesSummary() {
+  if (!isSidebarCameraSupported()) {
+    return "unavailable";
+  }
+  if (state.cameraDevices.loading) {
+    return "checking";
+  }
+  if (state.cameraDevices.activeStream) {
+    return "camera live";
+  }
+  if (state.cameraDevices.error) {
+    return "needs access";
+  }
+  if (!state.cameraDevices.loaded) {
+    return "local cameras";
+  }
+  const count = state.cameraDevices.devices.length;
+  return count === 1 ? "1 camera" : `${count} cameras`;
+}
+
+function renderSidebarCameraPreview() {
+  if (!state.cameraDevices.activeStream) {
+    return "";
+  }
+
+  return `
+    <article class="sidebar-camera-preview-card">
+      <video class="sidebar-camera-preview-video" data-sidebar-camera-preview autoplay muted playsinline></video>
+      <div class="sidebar-camera-preview-meta">
+        <span>${renderIcon(Camera)}</span>
+        <strong>${escapeHtml(state.cameraDevices.activeLabel || "Camera feed")}</strong>
+        <button class="icon-button sidebar-camera-close" type="button" data-sidebar-camera-close aria-label="Close camera feed" ${tooltipAttributes("Close camera feed")}>${renderIcon(X)}</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderSidebarCameraDeviceRows() {
+  if (!isSidebarCameraSupported()) {
+    return `<div class="blank-state">camera API unavailable</div>`;
+  }
+
+  if (state.cameraDevices.error && !state.cameraDevices.devices.length) {
+    return `
+      <div class="sidebar-device-empty">
+        <div class="blank-state">${escapeHtml(state.cameraDevices.error)}</div>
+        <button class="ghost-button sidebar-device-action" type="button" data-sidebar-camera-request>grant access</button>
+      </div>
+    `;
+  }
+
+  if (!state.cameraDevices.loaded && !state.cameraDevices.loading) {
+    return `
+      <div class="sidebar-device-empty">
+        <div class="blank-state">camera devices not checked</div>
+        <button class="ghost-button sidebar-device-action" type="button" data-sidebar-camera-refresh>check cameras</button>
+      </div>
+    `;
+  }
+
+  if (state.cameraDevices.loading && !state.cameraDevices.devices.length) {
+    return `<div class="blank-state">checking cameras</div>`;
+  }
+
+  if (!state.cameraDevices.devices.length) {
+    return `
+      <div class="sidebar-device-empty">
+        <div class="blank-state">no cameras found</div>
+        <button class="ghost-button sidebar-device-action" type="button" data-sidebar-camera-request>grant access</button>
+      </div>
+    `;
+  }
+
+  return state.cameraDevices.devices
+    .map((device, index) => {
+      const key = getSidebarCameraDeviceKey(device, index);
+      const active = key === state.cameraDevices.activeDeviceKey && Boolean(state.cameraDevices.activeStream);
+      const opening = key === state.cameraDevices.activeDeviceKey && !state.cameraDevices.activeStream && !state.cameraDevices.activeStreamError;
+      const label = getSidebarCameraDeviceLabel(device, index);
+      const meta = active
+        ? "live"
+        : opening
+          ? "opening"
+          : getSidebarCameraDeviceMeta(device);
+      const dotClass = active ? "live" : opening ? "working" : "read";
+      return `
+        <button
+          class="sidebar-camera-device ${active ? "is-active" : ""}"
+          type="button"
+          data-sidebar-camera-open="${escapeHtml(String(index))}"
+          aria-label="Open ${escapeHtml(label)}"
+          ${tooltipAttributes(`Open ${label}`)}
+        >
+          <span class="session-activity-dot ${dotClass}" aria-hidden="true"></span>
+          <span class="sidebar-camera-device-main">
+            <span class="session-name">${escapeHtml(label)}</span>
+            <span class="session-subtitle">${escapeHtml(meta)}</span>
+          </span>
+          <span class="sidebar-camera-device-icon" aria-hidden="true">${renderIcon(Camera)}</span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function renderSidebarDevicesSection() {
+  const error = state.cameraDevices.activeStreamError || (state.cameraDevices.devices.length ? state.cameraDevices.error : "");
+
+  return `
+    <section class="sidebar-section sidebar-devices-section" data-sidebar-devices-section>
+      <div class="section-head">
+        <span>devices</span>
+        <div class="section-actions">
+          <span class="sidebar-devices-summary">${escapeHtml(getSidebarDevicesSummary())}</span>
+          <button class="icon-button" type="button" data-sidebar-camera-refresh aria-label="Refresh camera devices" ${tooltipAttributes("Refresh camera devices")}>${renderIcon(RefreshCw)}</button>
+        </div>
+      </div>
+      <div class="sidebar-devices-list">
+        ${renderSidebarCameraPreview()}
+        ${error ? `<div class="sidebar-device-error">${escapeHtml(error)}</div>` : ""}
+        ${renderSidebarCameraDeviceRows()}
+      </div>
+    </section>
+  `;
 }
 
 async function publishCurrentAgentTownShareFromUi() {
@@ -35135,6 +35574,8 @@ function renderShell() {
             <div class="list-shell" id="sessions-list">${renderSessionCards()}</div>
           </section>
 
+          ${renderSidebarDevicesSection()}
+
           <section class="sidebar-section">
             <div class="section-head" data-workspace-files-header>
               <span>files</span>
@@ -45196,6 +45637,8 @@ function bindShellEvents() {
   bindFolderPickerDragEvents();
   bindLayoutResizeEvents();
   bindWorkspaceTabEvents();
+  bindSidebarDeviceEvents();
+  syncSidebarCameraPreviewStream();
 
   if (!app.dataset.mainViewNavigationBound) {
     app.dataset.mainViewNavigationBound = "true";
@@ -48790,6 +49233,8 @@ async function bootstrapApp() {
   }
 
   renderShell();
+  bindSidebarCameraDeviceChange();
+  void loadSidebarCameraDevices({ renderOnComplete: true });
   if (state.currentView === "system") {
     void loadSystemMetrics({ forceRender: true });
   }
