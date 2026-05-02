@@ -7846,7 +7846,7 @@ function chatAutopilotSupervisorRoleLabel(role = "", kind = "") {
   const cleanRole = String(role || "").toLowerCase();
   if (cleanRole === "human") return "You";
   if (cleanRole === "worker") return "Worker observed";
-  if (cleanRole === "directive") return "Sent to worker";
+  if (cleanRole === "directive") return "Sent to session agent";
   if (cleanRole === "supervisor") return "Supervisor";
   if (cleanRole === "state") return kind ? `State · ${kind}` : "State";
   return cleanRole || "Event";
@@ -7975,7 +7975,7 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
     : `<li class="rich-session-supervisor-event is-empty">No supervisor decisions yet.</li>`;
 
   return `
-    <aside class="rich-session-supervisor-drawer ${open ? "is-open" : ""}" data-chat-autopilot-supervisor-drawer aria-hidden="${open ? "false" : "true"}">
+    <aside class="rich-session-supervisor-drawer ${open ? "is-open" : ""}" data-chat-autopilot-supervisor-drawer data-session-id="${escapeHtml(sessionId)}" aria-hidden="${open ? "false" : "true"}">
       <div class="rich-session-supervisor-drawer-head">
         <div>
           <span class="rich-session-supervisor-kicker">${escapeHtml(scope)} supervisor</span>
@@ -7987,19 +7987,11 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
         </div>
       </div>
       <div class="rich-session-supervisor-drawer-body" tabindex="0" aria-label="Supervisor side chat and trace">
-        <section class="rich-session-supervisor-card">
+        <section class="rich-session-supervisor-summary">
           <span class="rich-session-supervisor-kicker">${escapeHtml(projectName)}${lastTime ? ` · ${escapeHtml(lastTime)}` : ""}</span>
-          <strong>${escapeHtml(decisionTitle)}</strong>
+          <div class="rich-session-supervisor-summary-title">${escapeHtml(decisionTitle)}</div>
           <p>${escapeHtml(lastPreview)}</p>
           ${renderChatAutopilotSupervisorSignals(activeSession, card)}
-          ${card.evidence || card.integrity || card.compute || card.continuity ? `
-            <dl class="rich-session-supervisor-principles">
-              ${card.evidence ? `<div><dt>Evidence</dt><dd>${escapeHtml(card.evidence)}</dd></div>` : ""}
-              ${card.integrity ? `<div><dt>Integrity</dt><dd>${escapeHtml(card.integrity)}</dd></div>` : ""}
-              ${card.compute ? `<div><dt>Compute</dt><dd>${escapeHtml(card.compute)}</dd></div>` : ""}
-              ${card.continuity ? `<div><dt>Continuity</dt><dd>${escapeHtml(card.continuity)}</dd></div>` : ""}
-            </dl>
-          ` : ""}
         </section>
         ${ticking ? `
           <section class="rich-session-supervisor-processing">
@@ -8007,14 +7999,13 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
             Reviewing durable state, recent trace, artifacts, and continuity.
           </section>
         ` : ""}
-        <section class="rich-session-supervisor-history">
-          <div class="rich-session-supervisor-section-title">Side chat</div>
+        <section class="rich-session-supervisor-history" aria-label="Supervisor side chat">
           <div class="rich-session-supervisor-chat-log">${chatHistory}</div>
         </section>
-        <section class="rich-session-supervisor-history is-audit">
-          <div class="rich-session-supervisor-section-title">Trace</div>
+        <details class="rich-session-supervisor-history is-audit">
+          <summary class="rich-session-supervisor-section-title">Trace</summary>
           <ol>${history}</ol>
-        </section>
+        </details>
       </div>
       <form class="rich-session-supervisor-composer" data-chat-autopilot-supervisor-form>
         <label class="sr-only" for="chat-autopilot-supervisor-input">Ask supervisor</label>
@@ -8348,6 +8339,32 @@ function restoreRichSessionScrollAnchor(feed, anchor) {
   feed.scrollTop = feed.scrollTop + (currentOffset - anchor.offsetFromViewportTop);
 }
 
+function captureChatAutopilotSupervisorScroll() {
+  const drawer = document.querySelector("[data-chat-autopilot-supervisor-drawer]");
+  const body = drawer?.querySelector(".rich-session-supervisor-drawer-body");
+  if (!(drawer instanceof HTMLElement) || !(body instanceof HTMLElement)) return null;
+  if (!drawer.classList.contains("is-open")) return null;
+  const maxScrollTop = Math.max(0, body.scrollHeight - body.clientHeight);
+  return {
+    sessionId: drawer.getAttribute("data-session-id") || "",
+    scrollTop: body.scrollTop,
+    atBottom: maxScrollTop - body.scrollTop <= 4,
+  };
+}
+
+function restoreChatAutopilotSupervisorScroll(snapshot, activeSession) {
+  if (!snapshot) return;
+  const sessionId = activeSession?.id || "";
+  if (snapshot.sessionId && sessionId && snapshot.sessionId !== sessionId) return;
+  const drawer = document.querySelector("[data-chat-autopilot-supervisor-drawer]");
+  const body = drawer?.querySelector(".rich-session-supervisor-drawer-body");
+  if (!(body instanceof HTMLElement)) return;
+  const maxScrollTop = Math.max(0, body.scrollHeight - body.clientHeight);
+  body.scrollTop = snapshot.atBottom
+    ? maxScrollTop
+    : Math.min(maxScrollTop, Math.max(0, Number(snapshot.scrollTop) || 0));
+}
+
 function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
   const activeSession = getActiveSession();
   const surfaceMode = getShellSurfaceMode(activeSession);
@@ -8412,6 +8429,7 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
   const scrollAnchor = (!shouldStickToBottom && feed instanceof HTMLElement)
     ? captureRichSessionScrollAnchor(feed)
     : null;
+  const supervisorScrollSnapshot = captureChatAutopilotSupervisorScroll();
 
   surface.classList.toggle("is-active", surfaceActive);
   surface.classList.toggle("is-stream-log", streamLogActive);
@@ -8480,6 +8498,7 @@ function refreshRichSessionSurfaceUi({ scrollToBottom = false } = {}) {
   const supervisorDrawerMount = document.querySelector("[data-rich-session-supervisor-drawer-mount]");
   if (supervisorDrawerMount instanceof HTMLElement) {
     supervisorDrawerMount.innerHTML = renderChatAutopilotSupervisorDrawer(activeSession);
+    restoreChatAutopilotSupervisorScroll(supervisorScrollSnapshot, activeSession);
   }
 
   // Live-update the composer's image-attachment chip strip. Without this,

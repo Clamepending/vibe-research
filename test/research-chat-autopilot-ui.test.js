@@ -171,7 +171,7 @@ test("same-chat supervisor Start creates project memory and arms silently while 
     const drawerState = await page.evaluate(() => ({
       title: document.querySelector(".rich-session-supervisor-drawer-head strong")?.textContent?.trim() || "",
       status: document.querySelector(".rich-session-supervisor-state")?.textContent?.trim() || "",
-      preview: document.querySelector(".rich-session-supervisor-card p")?.textContent?.trim() || "",
+      preview: document.querySelector(".rich-session-supervisor-summary p")?.textContent?.trim() || "",
       signals: Array.from(document.querySelectorAll(".rich-session-supervisor-signal"))
         .map((entry) => entry.textContent?.trim() || ""),
       history: Array.from(document.querySelectorAll(".rich-session-supervisor-event"))
@@ -246,6 +246,29 @@ test("same-chat supervisor Start creates project memory and arms silently while 
     assert.ok(askState.messages.some((text) => /Recommendation:/i.test(text)));
     assert.ok(askState.messages.some((text) => /1 active subagent/i.test(text)));
 
+    const longSideQuestion = `Scroll retention probe. ${"Keep this in the supervisor side chat only while I read older messages. ".repeat(90)}`;
+    await page.fill("[data-chat-autopilot-supervisor-input]", longSideQuestion);
+    await page.click('[data-chat-autopilot-supervisor-submit="ask"]');
+    await page.waitForFunction(() => {
+      const text = Array.from(document.querySelectorAll(".rich-session-supervisor-message"))
+        .map((entry) => entry.textContent || "")
+        .join(" ");
+      return /Scroll retention probe/i.test(text) && /Recommendation:/i.test(text);
+    }, null, { timeout: 20_000 });
+    const preservedScroll = await page.evaluate(() => {
+      const body = document.querySelector(".rich-session-supervisor-drawer-body");
+      const projectButton = document.querySelector("[data-chat-autopilot-change-project]");
+      if (!(body instanceof HTMLElement) || !(projectButton instanceof HTMLElement)) return null;
+      body.scrollTop = Math.min(360, Math.max(0, body.scrollHeight - body.clientHeight));
+      const before = body.scrollTop;
+      projectButton.click();
+      const after = document.querySelector(".rich-session-supervisor-drawer-body")?.scrollTop || 0;
+      return { before, after };
+    });
+    assert.ok(preservedScroll);
+    assert.ok(preservedScroll.before > 0);
+    assert.ok(preservedScroll.after >= preservedScroll.before - 8, JSON.stringify(preservedScroll));
+
     await page.fill("[data-chat-autopilot-supervisor-input]", "Please tell the worker to inspect qualitative heatmaps before more GPU spend.");
     await page.click('[data-chat-autopilot-supervisor-submit="directive"]');
     await page.waitForFunction((sessionId) => {
@@ -255,7 +278,7 @@ test("same-chat supervisor Start creates project memory and arms silently while 
       const text = Array.from(document.querySelectorAll(".rich-session-supervisor-message"))
         .map((entry) => entry.textContent || "")
         .join(" ");
-      return items.length >= 1 && /Sent to worker|Directive sent/i.test(text);
+      return items.length >= 1 && /Sent to session agent|Directive sent/i.test(text);
     }, session.id, { timeout: 20_000 });
     const directiveState = await page.evaluate((sessionId) => {
       const rawQueue = window.localStorage.getItem("vibe-research-composer-queue-v1") || "{}";
@@ -280,7 +303,20 @@ test("same-chat supervisor Start creates project memory and arms silently while 
     assert.match(directiveState.queuedText, /literature\/current-docs/);
     assert.doesNotMatch(directiveState.queuedText, /\n/);
     assert.equal(directiveState.queuedMeta, "supervisor next step - sends after current turn");
-    assert.match(directiveState.messages, /Sent to worker|Directive sent/i);
+    assert.match(directiveState.messages, /Sent to session agent|Directive sent/i);
+    const directiveHighlight = await page.evaluate(() => {
+      const entry = Array.from(document.querySelectorAll(".rich-session-supervisor-message"))
+        .find((candidate) => /Sent to session agent|Directive sent/i.test(candidate.textContent || ""));
+      if (!(entry instanceof HTMLElement)) return null;
+      const style = getComputedStyle(entry);
+      return {
+        hasDirectiveClass: entry.classList.contains("is-directive"),
+        borderColor: style.borderColor,
+        backgroundColor: style.backgroundColor,
+      };
+    });
+    assert.ok(directiveHighlight?.hasDirectiveClass);
+    assert.match(directiveHighlight.borderColor, /255,\s*121,\s*109/);
 
     const projectsResponse = await fetch(`${baseUrl}/api/research/projects`);
     assert.equal(projectsResponse.status, 200);

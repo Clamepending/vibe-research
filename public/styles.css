@@ -15219,7 +15219,7 @@ body.is-reordering-file-tabs {
 }
 
 .rich-session-supervisor-drawer-head strong,
-.rich-session-supervisor-card strong {
+.rich-session-supervisor-summary-title {
   display: block;
   color: rgba(244, 244, 242, 0.9);
   font-size: 0.94rem;
@@ -15281,18 +15281,19 @@ body.is-reordering-file-tabs {
   outline-offset: -2px;
 }
 
-.rich-session-supervisor-card,
+.rich-session-supervisor-summary,
 .rich-session-supervisor-processing,
 .rich-session-supervisor-history {
-  border: 1px solid rgba(255, 255, 255, 0.075);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.035);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
-.rich-session-supervisor-card {
+.rich-session-supervisor-summary {
   display: grid;
-  gap: 8px;
-  padding: 12px;
+  gap: 7px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .rich-session-supervisor-kicker,
@@ -15304,7 +15305,13 @@ body.is-reordering-file-tabs {
   text-transform: uppercase;
 }
 
-.rich-session-supervisor-card p,
+.rich-session-supervisor-summary-title {
+  color: rgba(244, 244, 242, 0.84);
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+.rich-session-supervisor-summary p,
 .rich-session-supervisor-event p,
 .rich-session-supervisor-message p,
 .rich-session-supervisor-processing,
@@ -15370,7 +15377,8 @@ body.is-reordering-file-tabs {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 9px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
 }
 
 .rich-session-supervisor-dot {
@@ -15382,42 +15390,48 @@ body.is-reordering-file-tabs {
 }
 
 .rich-session-supervisor-history {
-  overflow: hidden;
+  overflow: visible;
 }
 
 .rich-session-supervisor-chat-log {
   display: grid;
-  gap: 8px;
-  padding: 10px 12px 12px;
+  gap: 12px;
+  padding: 12px;
 }
 
 .rich-session-supervisor-message {
   display: grid;
-  gap: 5px;
-  padding: 9px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.065);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.035);
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .rich-session-supervisor-message.is-human {
-  border-color: rgba(123, 195, 255, 0.18);
-  background: rgba(123, 195, 255, 0.075);
+  justify-self: end;
+  max-width: min(86%, 340px);
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .rich-session-supervisor-message.is-supervisor {
-  border-color: rgba(142, 210, 185, 0.16);
-  background: rgba(142, 210, 185, 0.065);
+  padding: 2px 4px 4px;
 }
 
 .rich-session-supervisor-message.is-directive {
-  border-color: rgba(255, 213, 128, 0.2);
-  background: rgba(255, 213, 128, 0.07);
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 121, 109, 0.24);
+  border-radius: 10px;
+  background: rgba(255, 121, 109, 0.08);
 }
 
 .rich-session-supervisor-message.is-worker {
-  border-color: rgba(255, 255, 255, 0.075);
-  background: rgba(0, 0, 0, 0.12);
+  padding: 4px 6px;
+  opacity: 0.72;
 }
 
 .rich-session-supervisor-message-top {
@@ -15425,9 +15439,35 @@ body.is-reordering-file-tabs {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  color: rgba(244, 244, 242, 0.72);
+  color: rgba(244, 244, 242, 0.44);
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.68rem;
+}
+
+.rich-session-supervisor-message.is-directive .rich-session-supervisor-message-top,
+.rich-session-supervisor-message.is-directive p {
+  color: rgba(255, 226, 222, 0.9);
+}
+
+.rich-session-supervisor-message.is-human .rich-session-supervisor-message-top {
+  color: rgba(244, 244, 242, 0.5);
+}
+
+.rich-session-supervisor-message.is-supervisor p {
+  color: rgba(251, 251, 248, 0.88);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.rich-session-supervisor-message.is-human p,
+.rich-session-supervisor-message.is-directive p {
+  font-size: 0.84rem;
+  line-height: 1.46;
+}
+
+.rich-session-supervisor-message.is-worker p {
+  color: rgba(244, 244, 242, 0.52);
+  font-size: 0.78rem;
 }
 
 .rich-session-supervisor-message-top time {
@@ -15443,7 +15483,9 @@ body.is-reordering-file-tabs {
 }
 
 .rich-session-supervisor-section-title {
-  padding: 10px 12px 0;
+  display: block;
+  padding: 8px 12px 0;
+  cursor: pointer;
 }
 
 .rich-session-supervisor-history ol {
