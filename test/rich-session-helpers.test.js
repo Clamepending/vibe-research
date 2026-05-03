@@ -245,6 +245,7 @@ test("image url: absolute path outside workspace root falls through to /api/file
   assert.match(url, /^\/api\/files\/image-by-path\?/);
   const params = new URL(url, "http://x").searchParams;
   assert.equal(params.get("path"), "/home/agent/figures/x.png");
+  assert.equal(params.get("root"), "/Users/me/proj");
 });
 
 test("image url: bare relative path with no workspace root still returns '' (nothing to anchor against)", () => {

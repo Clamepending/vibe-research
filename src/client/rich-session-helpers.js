@@ -381,10 +381,15 @@ export function getRichSessionImageUrl(rawPath, { workspaceRoot = "" } = {}) {
   }
 
   // Absolute path that doesn't fit the workspace branch — let the server
-  // try its alias rules. Bare relative paths with no usable workspace
-  // root still fall through to "" because there's nothing to anchor them.
+  // try its alias rules and its automatic same-project/same-library suffix
+  // mapping. Passing `root` gives the server the active session cwd as an
+  // additional safe local anchor for remotes whose absolute prefix differs.
   if (trimmed.startsWith("/")) {
-    return `/api/files/image-by-path?${new URLSearchParams({ path: trimmed }).toString()}`;
+    const params = new URLSearchParams({ path: trimmed });
+    if (root && root !== "/") {
+      params.set("root", root);
+    }
+    return `/api/files/image-by-path?${params.toString()}`;
   }
 
   return "";

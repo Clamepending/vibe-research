@@ -363,6 +363,91 @@ function buildHttpError(message, statusCode = 400) {
   return error;
 }
 
+function pushUniqueAbsolutePath(out, seen, value) {
+  const raw = String(value || "").trim();
+  if (!raw || !path.isAbsolute(raw)) {
+    return "";
+  }
+  const normalized = path.resolve(raw);
+  if (!seen.has(normalized)) {
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return normalized;
+}
+
+function isPathInsideRoot(rootPath, targetPath) {
+  if (!rootPath || !targetPath) {
+    return false;
+  }
+  const relative = path.relative(rootPath, targetPath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function addSuffixMatchedImagePathCandidates(out, seen, rawPath, roots) {
+  const rawSegments = String(rawPath || "").replaceAll("\\", "/").split("/").filter(Boolean);
+  if (rawSegments.length < 2) {
+    return;
+  }
+
+  for (const root of roots) {
+    const localRoot = String(root || "").trim();
+    if (!localRoot || !path.isAbsolute(localRoot)) {
+      continue;
+    }
+
+    const rootPath = path.resolve(localRoot);
+    const rootSegments = rootPath.split(path.sep).filter(Boolean);
+    if (!rootSegments.length) {
+      continue;
+    }
+
+    let bestMatch = null;
+    for (let start = 0; start < rawSegments.length - 1; start += 1) {
+      const maxLength = Math.min(rootSegments.length, rawSegments.length - start - 1);
+      for (let length = maxLength; length >= 1; length -= 1) {
+        const rootTail = rootSegments.slice(-length);
+        const rawWindow = rawSegments.slice(start, start + length);
+        if (rootTail.every((segment, index) => segment === rawWindow[index])) {
+          if (!bestMatch || length > bestMatch.length) {
+            bestMatch = { start, length };
+          }
+          break;
+        }
+      }
+    }
+
+    if (!bestMatch) {
+      continue;
+    }
+
+    const tail = rawSegments.slice(bestMatch.start + bestMatch.length);
+    if (tail.length) {
+      pushUniqueAbsolutePath(out, seen, path.join(rootPath, ...tail));
+    }
+  }
+}
+
+function collectImagePathCandidates(rawPath, { aliases = [], localRoots = [] } = {}) {
+  const candidates = [];
+  const seen = new Set();
+
+  for (const alias of aliases) {
+    if (!alias?.from || !alias?.to) {
+      continue;
+    }
+    if (rawPath === alias.from.slice(0, -1) || rawPath.startsWith(alias.from)) {
+      const tail = rawPath.startsWith(alias.from) ? rawPath.slice(alias.from.length) : "";
+      pushUniqueAbsolutePath(candidates, seen, path.resolve(alias.to, tail));
+      break;
+    }
+  }
+
+  pushUniqueAbsolutePath(candidates, seen, rawPath);
+  addSuffixMatchedImagePathCandidates(candidates, seen, rawPath, localRoots);
+  return candidates;
+}
+
 function safeCompare(left, right) {
   const leftBuffer = Buffer.from(String(left || ""));
   const rightBuffer = Buffer.from(String(right || ""));
@@ -6632,19 +6717,6 @@ export async function createVibeResearchApp({
         ? settingsStore.settings.imagePathAliases
         : [];
 
-      // Translate the foreign path through the first matching alias. If
-      // none matches we still try the path as-is — useful when the agent
-      // is on the same machine as the user and the file is just outside
-      // any workspace root.
-      let candidate = rawPath;
-      for (const alias of aliases) {
-        if (rawPath === alias.from.slice(0, -1) || rawPath.startsWith(alias.from)) {
-          const tail = rawPath.startsWith(alias.from) ? rawPath.slice(alias.from.length) : "";
-          candidate = path.resolve(alias.to, tail);
-          break;
-        }
-      }
-
       // Optional `root` query param: when the chat helper rebuilds a
       // workspace-relative image path into an absolute path, it also
       // sends the workspace root that anchored it. We add that root (and
@@ -6667,54 +6739,66 @@ export async function createVibeResearchApp({
         }
       }
 
-      // Build the whitelist of allowed real-path roots. Each alias `to`
-      // and the active workspace root + cwd are valid serving roots.
+      const localRootCandidates = [
+        ...aliases.map((alias) => alias.to),
+        ...requestRoots,
+        settingsStore.settings.workspaceRootPath || "",
+        settingsStore.settings.wikiPath || "",
+        settingsStore.settings.agentSpawnPath || "",
+        cwd,
+      ];
+      const imagePathCandidates = collectImagePathCandidates(rawPath, {
+        aliases,
+        localRoots: localRootCandidates,
+      });
+
+      // Build the whitelist of allowed real-path roots. Each alias `to`,
+      // request root, workspace root, Library root, agent spawn root, and cwd
+      // is valid. Candidate inference can propose many paths, but only real
+      // files inside these roots are ever served.
       const whitelistRoots = [];
-      for (const alias of aliases) {
+      const seenWhitelistRoots = new Set();
+      for (const root of localRootCandidates) {
         try {
-          whitelistRoots.push(await realpath(alias.to));
+          const resolvedRoot = await realpath(root);
+          if (!seenWhitelistRoots.has(resolvedRoot)) {
+            seenWhitelistRoots.add(resolvedRoot);
+            whitelistRoots.push(resolvedRoot);
+          }
         } catch {
-          // alias.to may not exist on this machine yet — skip silently
-          // rather than 500ing on a stale config entry.
+          // Configured aliases / roots may not exist on this machine yet —
+          // skip silently rather than 500ing on stale settings.
         }
       }
-      for (const root of requestRoots) {
-        try {
-          whitelistRoots.push(await realpath(root));
-        } catch {
-          // The requested root may be a foreign path with no local
-          // equivalent — that's fine, the alias-translated version
-          // (also pushed above) will provide coverage.
+
+      let resolvedPath = "";
+      let foundOutsideWhitelist = false;
+      for (const candidate of imagePathCandidates) {
+        const candidatePath = await realpath(candidate).catch((error) => {
+          if (error?.code === "ENOENT") {
+            return "";
+          }
+          throw error;
+        });
+        if (!candidatePath) {
+          continue;
         }
-      }
-      try {
-        whitelistRoots.push(await realpath(settingsStore.settings.workspaceRootPath || cwd));
-      } catch {
-        // Workspace root must exist; if it doesn't this server is in a
-        // weird state already, but don't let it block alias-based paths.
-      }
-      try {
-        whitelistRoots.push(await realpath(cwd));
-      } catch {
-        // cwd is set at startup so this should always exist.
-      }
-
-      const resolvedPath = await realpath(candidate).catch((error) => {
-        if (error?.code === "ENOENT") {
-          throw buildHttpError("Image not found at the resolved path.", 404);
+        if (whitelistRoots.some((root) => isPathInsideRoot(root, candidatePath))) {
+          resolvedPath = candidatePath;
+          break;
         }
-        throw error;
-      });
+        foundOutsideWhitelist = true;
+      }
 
-      const insideWhitelist = whitelistRoots.some((root) => {
-        if (!root) return false;
-        const rel = path.relative(root, resolvedPath);
-        return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-      });
-
-      if (!insideWhitelist) {
+      if (!resolvedPath && foundOutsideWhitelist) {
         response.status(403).json({
           error: "resolved path is outside the configured image roots",
+        });
+        return;
+      }
+      if (!resolvedPath) {
+        response.status(404).json({
+          error: "Image not found at the resolved path.",
         });
         return;
       }

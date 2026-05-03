@@ -9506,6 +9506,46 @@ test("workspace file api serves content from hidden install roots", async () => 
   }
 });
 
+test("image-by-path auto-resolves foreign absolute paths against the configured Library root", async () => {
+  const workspaceDir = await createTempWorkspace("vibe-research-image-path-alias-");
+  const stateDir = path.join(workspaceDir, ".vibe-research");
+  const wikiDir = path.join(workspaceDir, "mac-brain");
+  const imagePath = path.join(wikiDir, "projects", "semantic-autogaze", "figures", "panel.png");
+
+  await mkdir(path.dirname(imagePath), { recursive: true });
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(imagePath, PNG_FIXTURE);
+  await writeFile(
+    path.join(stateDir, "settings.json"),
+    `${JSON.stringify({
+      version: 1,
+      settings: {
+        workspaceRootPath: workspaceDir,
+        wikiPath: wikiDir,
+        wikiPathConfigured: true,
+      },
+    }, null, 2)}\n`,
+    "utf8",
+  );
+
+  const { app, baseUrl } = await startApp({ cwd: workspaceDir, stateDir });
+
+  try {
+    const foreignPath = "/home/ogata/mac-brain/projects/semantic-autogaze/figures/panel.png";
+    const imageResponse = await fetch(
+      `${baseUrl}/api/files/image-by-path?path=${encodeURIComponent(foreignPath)}`,
+    );
+    assert.equal(imageResponse.status, 200);
+    assert.match(imageResponse.headers.get("content-type") || "", /image\/png/);
+
+    const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+    assert.equal(imageBuffer.compare(PNG_FIXTURE), 0);
+  } finally {
+    await app.close();
+    await removeTempWorkspace(workspaceDir);
+  }
+});
+
 test("tutorials API lists curated tutorials and serves their markdown bodies", async () => {
   const workspaceDir = await createTempWorkspace("vibe-research-tutorials-api-");
   const stateDir = await createTempWorkspace("vibe-research-tutorials-api-state-");

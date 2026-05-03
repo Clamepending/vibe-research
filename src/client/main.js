@@ -11799,7 +11799,10 @@ function getKnowledgeBaseMediaResource(currentPath, targetPath, { defaultToImage
   const absoluteAssetUrl = getKnowledgeBaseAbsoluteFileUrl(cleanedTarget);
   if (absoluteAssetUrl) {
     const kind = getKnowledgeBaseMediaKind(cleanedTarget, { defaultToImage });
-    return kind ? { kind, url: absoluteAssetUrl, local: true } : null;
+    const url = kind === "image"
+      ? (getRichSessionImageUrl(cleanedTarget) || absoluteAssetUrl)
+      : absoluteAssetUrl;
+    return kind ? { kind, url, local: true } : null;
   }
 
   const relativeAssetPath = resolveKnowledgeBaseRelativePath(currentPath, cleanedTarget);
