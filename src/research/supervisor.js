@@ -374,11 +374,6 @@ function projectPhraseFor(project) {
   return project ? ` for ${project}` : "";
 }
 
-function objectiveSentence(objective) {
-  const text = trimString(objective);
-  return text ? "Use the README/project goal as the north star." : "Infer the objective from the project README before acting.";
-}
-
 function supervisorDecisionChecklistBlock() {
   return [
     "Supervisor policy:",
@@ -409,14 +404,15 @@ function conciseStateHint(context = {}) {
 function conciseContinuityLine({ action = "", runtime = {} } = {}) {
   const status = normalizeSupervisorRuntime(runtime);
   if (status.hasContinuity) {
-    return `Monitor/wakeup is visible; keep the completion signal attached.`;
+    return "";
   }
   if (!actionNeedsContinuityReminder(action)) return "";
   if (status.activeBackgroundTasks || status.activeSubagents) {
     const backgroundCount = status.activeBackgroundTasks + status.activeSubagents;
-    return `${status.summary} ${backgroundCount === 1 ? "is" : "are"} visible, but I do not see a monitor/wakeup; set one before leaving long-running work.`;
+    const activity = status.summary || `${backgroundCount} background task${backgroundCount === 1 ? "" : "s"}`;
+    return `${activity} visible; set monitor/wakeup before leaving it.`;
   }
-  return "If any long run is active or launched, set a monitor/wakeup/log watcher with a clear completion signal.";
+  return "Set monitor/wakeup before leaving long-running work.";
 }
 
 function conciseCommandHint(command = "") {
@@ -428,8 +424,19 @@ function conciseCommandHint(command = "") {
 }
 
 function workerHandoffLine(event = {}) {
-  const observed = compactDirectiveText(normalizeSupervisorEvent(event).message, 180);
-  return observed ? `Worker just reported: ${observed}.` : "";
+  const observed = compactDirectiveText(normalizeSupervisorEvent(event).message, 220);
+  if (!observed) return "";
+  return `Worker: ${observed}${/[.!?]$/u.test(observed) ? "" : "."}`;
+}
+
+function workerMessageRequestsHumanDirection(event = {}) {
+  const normalized = normalizeSupervisorEvent(event);
+  if (!automaticEventAllowsDirective(normalized) || normalized.source === "human") return false;
+  const text = trimString(normalized.message).toLowerCase();
+  if (text.length < 24) return false;
+  const asksChoice = /\b(?:which|choose|pick|option|options|a:|b:|c:|default to|weigh in|want me to|should i|should we|do you want|would you like)\b/u.test(text);
+  const gatesWork = /\b(?:paus(?:e|ing)|human gate|before i|rather than|instead of|burn|spend|gpu|claim|run|launch|start|scope|pivot|direction)\b/u.test(text);
+  return asksChoice && (gatesWork || /\?\s*$/u.test(text));
 }
 
 function supervisorWatchlistItems(value = "") {
@@ -438,12 +445,6 @@ function supervisorWatchlistItems(value = "") {
     .map((line) => trimString(line).replace(/^[-*•]\s*/u, ""))
     .filter(Boolean)
     .slice(0, 8);
-}
-
-function supervisorWatchlistLine(value = "") {
-  const items = supervisorWatchlistItems(value);
-  if (!items.length) return "";
-  return `Supervisor look-fors: ${compactDirectiveText(items.join("; "), 420)}.`;
 }
 
 function supervisorWatchlistSignaturePart(value = "") {
@@ -466,26 +467,21 @@ function operatingBrief({
   watchlist = "",
 } = {}) {
   const continuityLine = conciseContinuityLine({ action, runtime });
-  const stateHint = conciseStateHint(context);
   const commandHint = conciseCommandHint(command);
-  const watchlistLine = supervisorWatchlistLine(watchlist);
+  const mode = supervisorModeForAction(action);
   const lines = [
     headline,
     handoff,
-    `Check ${stateHint}, the result doc, recent commits, GPU/process state, metrics, and validation/qualitative artifacts first.`,
-    objectiveSentence(objective),
   ];
-  if (reason) {
-    lines.push(`Why: ${reason}`);
-  }
-  if (watchlistLine) lines.push(watchlistLine);
-  lines.push("Keep it evidence-first: inspect validation samples/heatmaps/failure cases yourself; audit stale or cherry-picked artifacts; preserve provenance.");
-  lines.push("Keep safe idle GPUs saturated with independent seeds/ablations/sweeps; if stuck or changing recipe, do lightweight literature/current-docs before more GPU spend.");
   if (continuityLine) lines.push(continuityLine);
-  if (commandHint) lines.push(`Command if useful: ${commandHint}.`);
-  if (focus) lines.push(compactDirectiveText(focus, 220));
-  lines.push(compactDirectiveText(finish || "Update durable state after the bounded step and stop only for a true human gate.", 150));
-  return compactDirectiveText(lines.join(" "), 1_200);
+  if (focus) lines.push(trimString(focus));
+  if (mode === "repair" || mode === "review" || mode === "plan") {
+    if (commandHint) lines.push(`Command: ${commandHint}.`);
+  }
+  if (finish !== "") {
+    lines.push(trimString(finish || "Update durable state after the bounded step."));
+  }
+  return lines.filter(Boolean).join(" ");
 }
 
 function supervisorModeForAction(action = "") {
@@ -581,7 +577,7 @@ function automaticDirective({ action, report, attachment, event = {} }) {
         runtime,
         handoff,
         watchlist,
-        focus: "Do not start experiments while the project contract is corrupt; repair the README/LOG/result-doc shape first.",
+        focus: "Repair the README/LOG/result-doc state first; do not start experiments.",
         finish: "Re-run the doctor, commit/push the repair, then continue from the durable README/LOG state.",
       }),
       reason: reason || "doctor reported a blocking issue",
@@ -591,7 +587,7 @@ function automaticDirective({ action, report, attachment, event = {} }) {
   if (action === "continue-active" || action === "orchestrator-continue-active") {
     return {
       text: operatingBrief({
-        headline: `Resume the active research move${slug ? ` ${slug}` : ""}${projectPhrase}.`,
+        headline: `Resume${slug ? ` ${slug}` : " the active move"}${projectPhrase}.`,
         project,
         objective,
         context,
@@ -601,7 +597,8 @@ function automaticDirective({ action, report, attachment, event = {} }) {
         runtime,
         handoff,
         watchlist,
-        focus: "If a cycle is running, verify process/GPU/artifact state and monitor it. If GPUs are idle, launch only independent seeds/ablations/sweeps with separate artifacts; inspect validation samples before claiming progress. If stuck, do a lightweight literature/current-docs pass before changing recipe.",
+        focus: "If runs are active, verify logs/GPU/artifacts and monitor only. If complete, run evals, inspect key qualitative artifacts, and update the result doc/provenance.",
+        finish: "",
       }),
       reason: reason || "active move needs the next supervised step",
     };
@@ -620,7 +617,7 @@ function automaticDirective({ action, report, attachment, event = {} }) {
         runtime,
         handoff,
         watchlist,
-        focus: "Create or resume the result doc before expensive work, move the row into ACTIVE, make the pre-flight/falsifier explicit, and plan validation artifacts plus safe GPU saturation up front.",
+        focus: "Claim it, create result doc/ACTIVE, do preflight, then run one bounded cycle using safe idle GPUs and separate artifacts.",
       }),
       reason: reason || "queued move is ready to run",
     };
@@ -639,7 +636,7 @@ function automaticDirective({ action, report, attachment, event = {} }) {
         runtime,
         handoff,
         watchlist,
-        focus: "Run the next runnable sweep rows across all safe idle GPUs, preserve per-row artifacts and metrics, and do not collapse distinct recipes into one undocumented comparison.",
+        focus: "Run the next sweep rows on safe idle GPUs. Keep separate artifacts, metrics, and provenance per row.",
       }),
       reason: reason || "planned sweep has runnable rows",
     };
@@ -658,7 +655,7 @@ function automaticDirective({ action, report, attachment, event = {} }) {
         runtime,
         handoff,
         watchlist,
-        focus: "Judge the latest result, distill what changed, identify failure modes and qualitative evidence, then propose the next move with a falsifier.",
+        focus: "Reflect on the latest result: metrics, qualitative artifacts, failure modes, and the next move/falsifier.",
         finish: "Write the review/brief update, surface the recommendation for approval if needed, and only then compile new QUEUE rows.",
       }),
       reason: reason || "project should transition into review",
@@ -678,8 +675,8 @@ function automaticDirective({ action, report, attachment, event = {} }) {
         runtime,
         handoff,
         watchlist,
-        focus: "Use the README, LOG, leaderboard, prior result docs, current artifacts, and lightweight literature/current-docs grounding to propose one small next move with a falsifier before running it.",
-        finish: "Save the brief, ask for review if the choice is material, and do not start experiments until the brief is fit to queue.",
+        focus: "Do a lightweight lit/docs pass if direction changed or evidence is stale; write one small move with a falsifier.",
+        finish: "Save the brief and wait to run until it is fit to queue.",
       }),
       reason: reason || "project needs a brief before experiments",
     };
@@ -698,7 +695,7 @@ function automaticDirective({ action, report, attachment, event = {} }) {
         runtime,
         handoff,
         watchlist,
-        focus: "Use latest positive/negative evidence plus a lightweight literature/current-docs pass when stuck to propose candidate moves, then pick the smallest one that would change a decision.",
+        focus: "Use latest evidence, qualitative misses, and lit/docs if stuck. Pick the smallest move that would change a decision.",
         finish: "Save the plan or brief, include falsifiers and expected artifacts, and ask for review before expensive execution if the choice is ambiguous.",
       }),
       reason: reason || "project needs planning before experiments",
@@ -718,7 +715,7 @@ function automaticDirective({ action, report, attachment, event = {} }) {
         runtime,
         handoff,
         watchlist,
-        focus: "If it is already fit to run, compile it into QUEUE; otherwise tighten the question, literature/current-docs grounding, validation artifacts, and falsifier first.",
+        focus: "If the brief is fit, compile it into QUEUE. Otherwise tighten the question, grounding, artifacts, and falsifier.",
       }),
       reason: reason || "brief needs review before queueing",
     };
@@ -739,7 +736,7 @@ function automaticDirective({ action, report, attachment, event = {} }) {
           runtime,
           handoff,
           watchlist,
-          focus: "Inspect the judge issues and validation artifacts yourself, run the narrowest confirming cycle, and keep the leaderboard unchanged until evidence is strong.",
+          focus: "Inspect judge issues and qualitative artifacts; run only the narrow confirming cycle.",
         }),
         reason: reason || "judge recommends rerun",
       };
@@ -757,7 +754,7 @@ function automaticDirective({ action, report, attachment, event = {} }) {
           runtime,
           handoff,
           watchlist,
-          focus: "Update the narrative, limitations, and durable project state according to the judge evidence before choosing new work.",
+          focus: "Update narrative, limitations, and durable state from the judge evidence before choosing new work.",
         }),
         reason: reason || "judge recommends synthesis",
       };
@@ -775,7 +772,7 @@ function automaticDirective({ action, report, attachment, event = {} }) {
           runtime,
           handoff,
           watchlist,
-          focus: "Use judge output, negative results, leaderboard state, qualitative artifact review, and literature/current-docs grounding if stuck to propose the smallest useful follow-up.",
+          focus: "Use judge output, negative results, qual review, and lit/docs if stuck; propose the smallest useful follow-up.",
         }),
         reason: reason || "judge recommends brainstorming",
       };
@@ -891,6 +888,33 @@ export function decideResearchSupervisorIntervention({
       reason: "worker is still running; wait for the next handoff before sending a supervisor directive",
       event: normalizedEvent,
       signature: directiveSignature({ event: normalizedEvent, action: "silent", reason: "worker-running" }),
+    };
+  }
+
+  if (workerMessageRequestsHumanDirection(normalizedEvent)) {
+    const reason = "worker asked for a human research-direction decision; do not override it with the default queue route";
+    return {
+      action: "human-gate",
+      shouldSend: false,
+      reason,
+      event: normalizedEvent,
+      signature: directiveSignature({
+        event: normalizedEvent,
+        action: "human-gate",
+        reason,
+      }),
+      card: normalizeSupervisorCard({
+        label: "Evidence-first supervisor",
+        mode: "gate",
+        action: "wait for direction",
+        reason,
+        evidence: "Worker is explicitly asking for a choice before spending more compute.",
+        integrity: "Do not turn a human-gated pivot into an automatic QUEUE row claim.",
+        compute: "Keep GPUs idle until the direction is chosen or send a concise explicit directive.",
+        continuity: supervisorContinuityLine("review", observedAttachmentRuntime(attachment)),
+        stop: "Wait for the human choice or an explicit Tell worker directive.",
+        preview: compactDirectiveText(normalizedEvent.message, 220),
+      }),
     };
   }
 

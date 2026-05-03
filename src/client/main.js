@@ -7967,7 +7967,7 @@ function renderChatAutopilotSupervisorDrawer(activeSession) {
   const { projectSupervisor, supervisor, scope } = getChatAutopilotSupervisorDisplayState(config);
   const card = supervisor.lastDirectiveCard || {};
   const auditRows = supervisor.audit.slice(-12).reverse();
-  const threadRows = supervisor.thread.slice(-80).reverse();
+  const threadRows = supervisor.thread.slice(-80);
   const ticking = Boolean(state.chatAutopilotSupervisorTicking[sessionId]);
   const sendingMode = String(state.chatAutopilotSupervisorSending[sessionId] || "");
   const pending = getChatAutopilotPending(sessionId);

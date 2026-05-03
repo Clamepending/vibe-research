@@ -304,12 +304,11 @@ test("same-chat supervisor Start creates project memory and arms silently while 
       };
     }, session.id);
     assert.equal(directiveState.queueCount, 1);
-    assert.match(directiveState.queuedText, /Please prioritize:/);
+    assert.match(directiveState.queuedText, /Supervisor direction:/);
     assert.match(directiveState.queuedText, /qualitative heatmaps/);
-    assert.match(directiveState.queuedText, /GPU\/process state/);
-    assert.match(directiveState.queuedText, /validation samples\/heatmaps\/failure cases yourself/);
-    assert.match(directiveState.queuedText, /safe idle GPUs\/subagents saturated/);
-    assert.match(directiveState.queuedText, /literature\/current-docs/);
+    assert.match(directiveState.queuedText, /State says/);
+    assert.match(directiveState.queuedText, /smallest bounded step/);
+    assert.doesNotMatch(directiveState.queuedText, /GPU\/process state/);
     assert.doesNotMatch(directiveState.queuedText, /\n/);
     assert.equal(directiveState.queuedMeta, "supervisor next step - sends after current turn");
     assert.match(directiveState.messages, /Sent to session agent|Directive sent/i);

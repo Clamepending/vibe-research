@@ -8617,8 +8617,8 @@ export async function createVibeResearchApp({
       projectName ? `Project: ${projectName}.` : "",
       `Recommendation: ${action}; ${rec.reason}.`,
       `Continuity: ${runtimeLine}.`,
-      "I treat the session agent and subagents as observed worker output, while your messages remain the supervisory instruction source.",
-      message ? `Worker next: ${compactSupervisorChatText(message, 180)}.` : `Worker next: ${rec.reason}.`,
+      message ? `Question: ${compactSupervisorChatText(message, 180)}.` : "",
+      `Worker next: ${rec.reason}.`,
     ].filter(Boolean).join(" "), 900);
   }
 
@@ -8636,18 +8636,17 @@ export async function createVibeResearchApp({
   function buildSupervisorSideChatDirective({ message = "", orchestrator = null, runtime = {}, watchlist = "" } = {}) {
     const rec = supervisorRecommendationSummary(orchestrator);
     const runtimeLine = supervisorRuntimeSummary(runtime);
-    const head = compactSupervisorChatText(message, 360) || "Continue from the current project state.";
-    const route = rec.slug ? `Current route: ${rec.action} ${rec.slug}; ${rec.reason}.` : `Current route: ${rec.action}; ${rec.reason}.`;
+    const head = compactSupervisorChatText(message, 420) || "Continue from the current project state.";
+    const route = rec.slug ? `State says ${rec.action} ${rec.slug}: ${rec.reason}.` : `State says ${rec.action}: ${rec.reason}.`;
     const watchlistLine = supervisorWatchlistSummary(watchlist);
+    const runtimeNeedsMention = runtime?.hasContinuity || runtime?.activeBackgroundTasks || runtime?.activeSubagents || runtime?.streamWorking;
     return compactSupervisorChatText([
-      `Please prioritize: ${head}`,
-      watchlistLine ? `Supervisor look-fors: ${watchlistLine}.` : "",
-      "First inspect README/ACTIVE/QUEUE/LOG, the result doc, recent commits, GPU/process state, metrics, and validation samples/heatmaps/failure cases yourself.",
+      `Supervisor direction: ${head}`,
       route,
-      `Continuity: ${runtimeLine}.`,
-      "Keep safe idle GPUs/subagents saturated only with independent, provenance-preserving work; if stuck or changing recipe, do lightweight literature/current-docs before more GPU spend.",
-      "Audit shortcuts or stale artifacts; stop only for a true human gate.",
-    ].join(" "), 1_200);
+      watchlistLine ? `Look-fors: ${watchlistLine}.` : "",
+      runtimeNeedsMention ? `Runtime: ${runtimeLine}.` : "",
+      "Use the smallest bounded step, preserve provenance, and stop only if genuinely blocked.",
+    ].filter(Boolean).join(" "), 700);
   }
 
   function getAttachedResearchAutopilotJob(attachment) {

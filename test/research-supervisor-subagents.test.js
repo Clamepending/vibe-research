@@ -177,7 +177,7 @@ test("supervisor runtime counts real Claude sidechain subagent transcripts", asy
     assert.equal(tick.body.runtime.activeSubagents, 1);
     assert.match(tick.body.runtime.summary, /1 active subagent/);
     assert.equal(tick.body.decision.shouldSend, true);
-    assert.match(tick.body.directive.text, /1 active subagent is visible, but I do not see a monitor\/wakeup/);
+    assert.match(tick.body.directive.text, /1 active subagent visible; set monitor\/wakeup/);
     assert.match(tick.body.decision.card.continuity, /1 active subagent/);
   });
 });
@@ -262,12 +262,9 @@ test("supervisor side history treats human chat as steering and worker/subagent 
     assert.equal(subagentObservation.body.runtime.hasContinuity, false);
     assert.equal(subagentObservation.body.decision.action, "directive");
     assert.equal(subagentObservation.body.decision.shouldSend, true);
-    assert.match(subagentObservation.body.directive.text, /Resume the active research move|Claim QUEUE row 1/);
-    assert.match(subagentObservation.body.directive.text, /safe idle GPUs saturated/);
-    assert.match(subagentObservation.body.directive.text, /validation samples\/heatmaps\/failure cases yourself/);
-    assert.match(subagentObservation.body.directive.text, /literature\/current-docs/);
-    assert.match(subagentObservation.body.directive.text, /1 active subagent is visible, but I do not see a monitor\/wakeup/);
-    assert.match(subagentObservation.body.directive.text, /set one before leaving long-running work/);
+    assert.match(subagentObservation.body.directive.text, /Resume |Claim QUEUE row 1/);
+    assert.match(subagentObservation.body.directive.text, /safe idle GPUs|logs\/GPU\/artifacts/);
+    assert.match(subagentObservation.body.directive.text, /1 active subagent visible; set monitor\/wakeup/);
     assert.doesNotMatch(subagentObservation.body.directive.text, /\n/);
     assert.equal(subagentObservation.body.attachment.supervisor.interventionCount, 1);
     assert.deepEqual(

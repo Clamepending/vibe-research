@@ -663,17 +663,10 @@ test("chat research supervisor arms silently and routes only on worker-idle or e
     assert.equal(firstIdleBody.decision.action, "directive");
     assert.equal(firstIdleBody.decision.shouldSend, true);
     assert.match(firstIdleBody.directive.text, /Claim QUEUE row 1/);
-    assert.match(firstIdleBody.directive.text, /Check QUEUE (baseline|v3-fewshot)/);
-    assert.match(firstIdleBody.directive.text, /bench v1/);
-    assert.match(firstIdleBody.directive.text, /Use the README\/project goal as the north star/);
-    assert.match(firstIdleBody.directive.text, /GPU\/process state/);
-    assert.match(firstIdleBody.directive.text, /validation samples\/heatmaps\/failure cases yourself/);
-    assert.match(firstIdleBody.directive.text, /Supervisor look-fors:/);
-    assert.match(firstIdleBody.directive.text, /assess qualitative results/);
-    assert.match(firstIdleBody.directive.text, /cheating \/ reward hacking/);
-    assert.match(firstIdleBody.directive.text, /safe idle GPUs saturated/);
-    assert.match(firstIdleBody.directive.text, /literature\/current-docs/);
-    assert.match(firstIdleBody.directive.text, /set a monitor\/wakeup\/log watcher/);
+    assert.match(firstIdleBody.directive.text, /result doc\/ACTIVE/);
+    assert.match(firstIdleBody.directive.text, /safe idle GPUs/);
+    assert.match(firstIdleBody.directive.text, /Set monitor\/wakeup/);
+    assert.doesNotMatch(firstIdleBody.directive.text, /Supervisor look-fors:/);
     assert.doesNotMatch(firstIdleBody.directive.text, /\n/);
     assert.doesNotMatch(firstIdleBody.directive.text, /^(State|Goal|Ranking|Success|Supervisor policy):/m);
     assert.equal(firstIdleBody.decision.card.mode, "experiment");
@@ -737,11 +730,7 @@ test("chat research supervisor arms silently and routes only on worker-idle or e
     assert.equal(manualBody.decision.action, "directive");
     assert.equal(manualBody.decision.shouldSend, true);
     assert.match(manualBody.directive.text, /Synthesize the current research state/);
-    assert.match(manualBody.directive.text, /Check QUEUE v3-fewshot/);
-    assert.match(manualBody.directive.text, /Use the README\/project goal as the north star/);
     assert.match(manualBody.directive.text, /qualitative sample\/heatmap status/);
-    assert.match(manualBody.directive.text, /safe idle GPUs saturated/);
-    assert.match(manualBody.directive.text, /literature\/current-docs/);
     assert.doesNotMatch(manualBody.directive.text, /\n/);
     assert.equal(manualBody.decision.card.mode, "review");
     assert.doesNotMatch(manualBody.directive.text, /Autopilot/i);
@@ -840,12 +829,11 @@ test("chat research supervisor side chat separates questions from worker directi
     assert.equal(directive.status, 200);
     const directiveBody = await directive.json();
     assert.equal(directiveBody.mode, "directive");
-    assert.match(directiveBody.directive.text, /Please prioritize:/);
+    assert.match(directiveBody.directive.text, /Supervisor direction:/);
     assert.match(directiveBody.directive.text, /qualitative heatmaps/);
-    assert.match(directiveBody.directive.text, /GPU\/process state/);
-    assert.match(directiveBody.directive.text, /validation samples\/heatmaps\/failure cases yourself/);
-    assert.match(directiveBody.directive.text, /safe idle GPUs\/subagents saturated/);
-    assert.match(directiveBody.directive.text, /literature\/current-docs/);
+    assert.match(directiveBody.directive.text, /State says/);
+    assert.match(directiveBody.directive.text, /smallest bounded step/);
+    assert.doesNotMatch(directiveBody.directive.text, /GPU\/process state/);
     assert.doesNotMatch(directiveBody.directive.text, /\n/);
     assert.equal(directiveBody.attachment.supervisor.interventionCount, 1);
     assert.deepEqual(
@@ -854,6 +842,57 @@ test("chat research supervisor side chat separates questions from worker directi
         ["human", "directive_request"],
         ["supervisor", "decision"],
         ["directive", "directive_sent"],
+      ],
+    );
+  });
+});
+
+test("chat research supervisor treats worker clarification prompts as human gates", async () => {
+  await withLibraryServer(async ({ baseUrl }) => {
+    const sessionRes = await fetch(`${baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "shell", name: "Supervisor human gate" }),
+    });
+    assert.equal(sessionRes.status, 201);
+    const session = (await sessionRes.json()).session;
+
+    const save = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        projectName: "prose-style",
+        objective: "make prose more concise while preserving evidence",
+        driver: "session",
+        mode: "auto",
+      }),
+    });
+    assert.equal(save.status, 200);
+
+    const gateTick = await fetch(`${baseUrl}/api/sessions/${session.id}/research-autopilot/supervisor/tick`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        event: {
+          type: "agent-idle",
+          source: "session",
+          turnMarker: "worker-asks-choice",
+          message: "Pausing before I spend GPU. A: run the queued sweep. B: scope the architecture pivot. Which should I do?",
+        },
+      }),
+    });
+    assert.equal(gateTick.status, 200);
+    const gateBody = await gateTick.json();
+    assert.equal(gateBody.decision.action, "human-gate");
+    assert.equal(gateBody.decision.shouldSend, false);
+    assert.equal(gateBody.directive, null);
+    assert.match(gateBody.decision.reason, /human research-direction decision/);
+    assert.deepEqual(
+      gateBody.attachment.supervisor.thread.slice(-2).map((entry) => [entry.role, entry.kind]),
+      [
+        ["worker", "agent-idle"],
+        ["supervisor", "gate"],
       ],
     );
   });
@@ -889,7 +928,7 @@ test("chat research supervisor ignores its own continuity reminder until the wor
     });
     assert.equal(firstIdleTick.status, 200);
     const firstIdleBody = await firstIdleTick.json();
-    assert.match(firstIdleBody.directive.text, /set a monitor\/wakeup\/log watcher/);
+    assert.match(firstIdleBody.directive.text, /Set monitor\/wakeup/);
     assert.equal(firstIdleBody.runtime.hasContinuity, false);
 
     const serverSession = app.sessionManager.getSession(session.id);
@@ -1324,6 +1363,8 @@ test("main app bundle exposes the native research workspace", async () => {
     assert.match(jsText, /data-chat-autopilot-supervisor-watchlist/);
     assert.match(jsText, /renderChatAutopilotSupervisorDrawer/);
     assert.match(jsText, /formatChatAutopilotSupervisorDirective/);
+    assert.match(jsText, /const threadRows = supervisor\.thread\.slice\(-80\);/);
+    assert.doesNotMatch(jsText, /supervisor\.thread\.slice\(-80\)\.reverse/);
     assert.match(jsText, /Human driving/);
     assert.match(jsText, /agent stopped; ready to resume/);
     assert.match(jsText, /ready to supervise this chat/);

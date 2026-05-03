@@ -64,12 +64,7 @@ test("research supervisor emits opaque directives on manual actions", () => {
   assert.equal(decision.action, "directive");
   assert.equal(decision.shouldSend, true);
   assert.match(decision.directive.text, /Synthesize the current research state/);
-  assert.match(decision.directive.text, /Check QUEUE baseline/);
-  assert.match(decision.directive.text, /Use the README\/project goal as the north star/);
   assert.match(decision.directive.text, /qualitative sample\/heatmap status/);
-  assert.match(decision.directive.text, /evidence-first/);
-  assert.match(decision.directive.text, /safe idle GPUs saturated/);
-  assert.match(decision.directive.text, /literature\/current-docs/);
   assert.doesNotMatch(decision.directive.text, /\n/);
   assert.doesNotMatch(decision.directive.text, /^(State|Goal|Ranking|Success|Supervisor policy):/m);
   assert.equal(decision.card.mode, "review");
@@ -96,8 +91,8 @@ test("research supervisor routes manual continue through project recommendation"
   assert.equal(decision.action, "directive");
   assert.equal(decision.shouldSend, true);
   assert.match(decision.reason, /manual continue requested/);
-  assert.match(decision.directive.text, /Resume the active research move v070/);
-  assert.match(decision.directive.text, /Check ACTIVE v070/);
+  assert.match(decision.directive.text, /Resume v070/);
+  assert.match(decision.directive.text, /logs\/GPU\/artifacts/);
   assert.doesNotMatch(decision.directive.text, /\n/);
   assert.equal(decision.card.action, "continue active move");
 });
@@ -131,12 +126,8 @@ test("research supervisor includes human-defined look-fors in worker directives"
   });
   assert.equal(decision.action, "directive");
   assert.equal(decision.shouldSend, true);
-  assert.match(decision.directive.text, /Worker just reported: cycle 2 finished/);
-  assert.match(decision.directive.text, /Supervisor look-fors:/);
-  assert.match(decision.directive.text, /fully parallelizing/);
-  assert.match(decision.directive.text, /assess qualitative results/);
-  assert.match(decision.directive.text, /cheating \/ reward hacking/);
-  assert.match(decision.directive.text, /literature review and code\/experiment audit/);
+  assert.match(decision.directive.text, /Worker: cycle 2 finished/);
+  assert.doesNotMatch(decision.directive.text, /Supervisor look-fors:/);
 });
 
 test("research supervisor only auto-directs at worker handoff unless explicitly told", () => {
@@ -173,7 +164,7 @@ test("research supervisor only auto-directs at worker handoff unless explicitly 
   });
   assert.equal(explicitTellWorker.action, "directive");
   assert.equal(explicitTellWorker.shouldSend, true);
-  assert.match(explicitTellWorker.directive.text, /Resume the active research move v070/);
+  assert.match(explicitTellWorker.directive.text, /Resume v070/);
 
   const handoff = decideResearchSupervisorIntervention({
     attachment: attachment({ runtime: { streamWorking: false } }),
@@ -215,20 +206,12 @@ test("research supervisor emits worker-idle directives and dedupes later idle ch
   assert.equal(first.action, "directive");
   assert.equal(first.shouldSend, true);
   assert.match(first.directive.text, /Claim QUEUE row 1/);
-  assert.match(first.directive.text, /Check QUEUE baseline/);
-  assert.match(first.directive.text, /latest LOG 2026-04-28/);
-  assert.match(first.directive.text, /bench v1/);
-  assert.match(first.directive.text, /Use the README\/project goal as the north star/);
-  assert.match(first.directive.text, /GPU\/process state/);
-  assert.match(first.directive.text, /samples\/heatmaps\/failure cases/);
-  assert.match(first.directive.text, /validation samples\/heatmaps\/failure cases yourself/);
-  assert.match(first.directive.text, /stale or cherry-picked artifacts/);
-  assert.match(first.directive.text, /safe idle GPUs saturated/);
-  assert.match(first.directive.text, /literature\/current-docs/);
-  assert.match(first.directive.text, /set a monitor\/wakeup\/log watcher/);
+  assert.match(first.directive.text, /result doc\/ACTIVE/);
+  assert.match(first.directive.text, /safe idle GPUs/);
+  assert.match(first.directive.text, /Set monitor\/wakeup/);
   assert.doesNotMatch(first.directive.text, /\n/);
   assert.doesNotMatch(first.directive.text, /^(State|Goal|Ranking|Success|Supervisor policy):/m);
-  assert.ok(first.directive.text.length < 1_100, `directive was too long: ${first.directive.text.length}`);
+  assert.ok(first.directive.text.length < 360, `directive was too long: ${first.directive.text.length}`);
   assert.equal(first.card.mode, "experiment");
   assert.match(first.card.evidence, /pre-flight/);
   assert.match(first.card.evidence, /validation\/qual review plan/);
@@ -279,8 +262,7 @@ test("research supervisor falls back to the project goal when no chat objective 
   });
   assert.equal(decision.action, "directive");
   assert.equal(decision.shouldSend, true);
-  assert.match(decision.directive.text, /Use the README\/project goal as the north star/);
-  assert.match(decision.directive.text, /Check QUEUE baseline/);
+  assert.match(decision.directive.text, /Claim QUEUE row 1 \(baseline\)/);
   assert.doesNotMatch(decision.directive.text, /Use the wiki goal as the supervisor north star/);
 });
 
@@ -309,18 +291,15 @@ test("research supervisor compacts long objectives and keeps tactical priorities
   });
   assert.equal(decision.action, "directive");
   assert.equal(decision.shouldSend, true);
-  assert.match(decision.directive.text, /Resume the active research move v070-cocoonly/);
-  assert.match(decision.directive.text, /Use the README\/project goal as the north star/);
+  assert.match(decision.directive.text, /Resume v070-cocoonly/);
   assert.doesNotMatch(decision.directive.text, /TAIL_SENTINEL_SHOULD_NOT_APPEAR_IN_DIRECTIVE/);
   assert.doesNotMatch(decision.directive.text, /Build a text-conditioned semantic patch-filter/);
-  assert.match(decision.directive.text, /samples\/heatmaps\/failure cases/);
-  assert.match(decision.directive.text, /safe idle GPUs saturated/);
-  assert.match(decision.directive.text, /literature\/current-docs/);
-  assert.match(decision.directive.text, /stale or cherry-picked artifacts/);
-  assert.match(decision.directive.text, /set a monitor\/wakeup\/log watcher/);
+  assert.match(decision.directive.text, /logs\/GPU\/artifacts/);
+  assert.match(decision.directive.text, /key qualitative artifacts/);
+  assert.match(decision.directive.text, /Set monitor\/wakeup/);
   assert.doesNotMatch(decision.directive.text, /\n/);
   assert.equal(decision.card.mode, "continue");
-  assert.ok(decision.directive.text.length < 1_100, `directive was too long: ${decision.directive.text.length}`);
+  assert.ok(decision.directive.text.length < 320, `directive was too long: ${decision.directive.text.length}`);
 });
 
 test("research supervisor changes automatic directives only after new worker evidence", () => {
@@ -375,7 +354,7 @@ test("research supervisor changes automatic directives only after new worker evi
   assert.equal(newWorkerEvidence.action, "directive");
   assert.equal(newWorkerEvidence.shouldSend, true);
   assert.notEqual(newWorkerEvidence.directive.text, first.directive.text);
-  assert.match(newWorkerEvidence.directive.text, /Worker just reported: cycle 1 finished with metric=0\.42/);
+  assert.match(newWorkerEvidence.directive.text, /Worker: cycle 1 finished with metric=0\.42/);
 });
 
 test("research supervisor gives active-move execution briefs", () => {
@@ -393,13 +372,10 @@ test("research supervisor gives active-move execution briefs", () => {
   });
   assert.equal(decision.action, "directive");
   assert.equal(decision.shouldSend, true);
-  assert.match(decision.directive.text, /Resume the active research move v070/);
-  assert.match(decision.directive.text, /If a cycle is running/);
-  assert.match(decision.directive.text, /GPU\/artifact state/);
-  assert.match(decision.directive.text, /validation samples/);
-  assert.match(decision.directive.text, /literature\/current-docs/);
-  assert.match(decision.directive.text, /Command if useful: vr-research-runner/);
-  assert.match(decision.directive.text, /set a monitor\/wakeup\/log watcher/);
+  assert.match(decision.directive.text, /Resume v070/);
+  assert.match(decision.directive.text, /logs\/GPU\/artifacts/);
+  assert.match(decision.directive.text, /run evals/);
+  assert.doesNotMatch(decision.directive.text, /vr-research-runner/);
   assert.doesNotMatch(decision.directive.text, /Autopilot/i);
 });
 
@@ -423,8 +399,7 @@ test("research supervisor notices monitor and wakeup continuity state", () => {
     },
   });
   assert.equal(noMonitor.shouldSend, true);
-  assert.match(noMonitor.directive.text, /2 background tasks are visible, but I do not see a monitor\/wakeup/);
-  assert.match(noMonitor.directive.text, /set one before leaving long-running work/);
+  assert.match(noMonitor.directive.text, /2 background tasks visible; set monitor\/wakeup/);
   assert.match(noMonitor.card.continuity, /2 background tasks?/);
 
   const withMonitor = decideResearchSupervisorIntervention({
@@ -444,7 +419,7 @@ test("research supervisor notices monitor and wakeup continuity state", () => {
     },
   });
   assert.equal(withMonitor.shouldSend, true);
-  assert.match(withMonitor.directive.text, /Monitor\/wakeup is visible/);
+  assert.doesNotMatch(withMonitor.directive.text, /Monitor\/wakeup is visible/);
   assert.doesNotMatch(withMonitor.directive.text, /no active monitor\/wakeup is visible/);
   assert.match(withMonitor.card.continuity, /Monitor started for train\.log/);
   assert.match(withMonitor.card.continuity, /monitor\/wakeup visible/);
@@ -460,4 +435,22 @@ test("research supervisor gates missing project instead of messaging worker", ()
   });
   assert.equal(decision.action, "human-gate");
   assert.equal(decision.shouldSend, false);
+});
+
+test("research supervisor does not override worker clarification prompts", () => {
+  const decision = decideResearchSupervisorIntervention({
+    attachment: attachment(),
+    event: {
+      type: "agent-idle",
+      source: "session",
+      message: "Pausing before I spend GPU. A: run the queued sweep. B: scope the architecture pivot. Which should I do?",
+    },
+    orchestratorReport: {
+      recommendation: { action: "run-next", reason: "QUEUE row 1 is ready", slug: "baseline" },
+    },
+  });
+  assert.equal(decision.action, "human-gate");
+  assert.equal(decision.shouldSend, false);
+  assert.equal(decision.directive, undefined);
+  assert.match(decision.reason, /human research-direction decision/);
 });
